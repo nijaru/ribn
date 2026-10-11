@@ -58,6 +58,14 @@ Minimum online serving metrics:
 - cold and warm startup time for startup comparisons.
 
 Throughput without latency/SLO context is not sufficient for a serving claim.
+Report freshly computed input tokens separately from cache hits; reused tokens are not
+new device work. For multi-turn/branching workloads, also measure completed jobs per
+device and job-latency distributions under declared objectives. Keep tool delays,
+prefix identity, compaction and branch/join structure in client-side replay; the engine
+is not an agent orchestrator. Structural synthetic replay does not establish speculative
+acceptance, MoE routing or output quality; use content-real cases for those comparisons.
+The [target design's research basis](../docs/inference-engine-design.md#research-basis-reviewed-2026-10-11)
+records the primary sources and their scope.
 
 ## Qualification evidence
 
@@ -82,10 +90,13 @@ Start with deterministic synthetic workloads because they isolate engine behavio
 | long-context 8k+ -> 256 | KV/state and chunked-prefill behavior |
 | mixed lengths | scheduler robustness under heterogeneity |
 | repeated shared prefix | prefix-cache/reuse behavior |
+| multi-turn continuation / branching with tool delays | retained-cache economics and job-level latency/throughput |
 | request-rate sweep | saturation curve and goodput frontier |
 | concurrency sweep | queueing and scheduling behavior |
 
-Add multimodal, MoE, speculation-specific, trace-replay, and distributed cases only when the corresponding Engine capability exists.
+Add modality-, MoE-, speculation- and distribution-specific cases when the corresponding
+capability exists. Client-side text trace replay does not require an engine stage graph,
+agent runtime or prefix cache; with reuse disabled it establishes the no-cache baseline.
 
 ## Native Qwen serving sweep
 
@@ -112,8 +123,9 @@ backend batch lanes; mixed/single rows stay per-row. Explicit `--gemv=scalar|war
 `--prefill-chunk`, fixture prompts and six divergence probes remain available.
 Preparation timing now includes loading/staging/kernels; execution timing includes
 AR admission and event observation. The effective batch-token limit is printed.
-This fixed-arrival sweep is not representative online serving evidence, and device
-execution of the migrated harness remains pending.
+This fixed-arrival sweep is not representative online serving evidence. Only the
+separately documented [device cases](runtime-contract.md#mixed-arrival-native-qwen-gate)
+are qualified; neither old timings nor a smoke trace qualify the complete sweep matrix.
 
 ### Mixed-arrival native traces
 

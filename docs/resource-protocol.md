@@ -1,9 +1,11 @@
 # Resource, submission and snapshot protocol
 
-Status: accepted direction. Encoder preparation, AR completion/discard and AR
-pre-submit preparation are implemented as identified below. Preparation control
-is host-qualified; dynamic Qwen growth and snapshot replacement remain unimplemented. The [roadmap](roadmap.md) owns implementation order and
-qualification gaps.
+Status: accepted execution contract, revised 2026-10-11. Implemented behavior and
+qualification limits are identified below; targets do not retroactively qualify source.
+AR preparation control is host-qualified. Dynamic Qwen growth, bounded overlap,
+non-AR application lifecycle and snapshot replacement remain unimplemented. Text
+allocation-retention and CUDA physical-accounting gaps remain open. The
+[roadmap](roadmap.md) owns delivery order and acceptance gates.
 
 ## Current boundary
 
@@ -71,8 +73,9 @@ uncertain partial submission. Never return ownership to the caller as though not
 happened after device-visible mutations. A separate `prepare` method alone cannot
 make enqueue infallible; the implementation must retain a concrete completion owner.
 
-Do not add public generic `PreparedSubmission`, `PoolClaim` or lease traits until the
-real encoder/backend integration establishes their necessary representation.
+Keep prepared ownership concrete to the model/backend. Add shared types only where
+real consumers demonstrate the same lifetime and settlement contract; no public
+universal claim/lease interface follows from these states.
 
 ## Feasible batches and waiting
 
@@ -107,10 +110,21 @@ a request relinquishes interest once; it does not maintain a second cleanup queu
 Discard must work after an execution slot is freed but its terminal mailbox remains.
 It suppresses future delivery without releasing in-flight storage early.
 
-Bound submission count, input bytes/tokens, retained event count/bytes and active
-physical storage separately. A bounded channel containing arbitrarily large vectors
-is not a memory bound. Public collect helpers intentionally allocate the requested
-result; document their limit and offer incremental consumption for large workloads.
+Bound submission count, owned input/options bytes, retained event count/bytes and
+physical storage separately. Payload length is not retained allocation size: include
+string/vector capacity, message-container storage, stop lists and retained clones.
+At application acceptance, validate or normalize owned allocations before queue
+insertion, including bounded temporary overlap during normalization. Define shared
+immutable storage accounting explicitly: conservative per-request envelopes may
+count shared input in each request's allowance, but a physical allocation has only one
+charged owner. Caller-owned storage before acceptance is outside the application budget,
+not after acceptance.
+Allocator overhead and external library/device pools need separately stated margins;
+do not describe payload accounting as a process-RSS or device-wide peak bound.
+
+A bounded channel containing arbitrarily large vectors is not a memory bound. Public
+collect helpers intentionally allocate the requested result; document their limit
+and offer incremental consumption for large workloads.
 
 Cancellation must remain deliverable when the ordinary submission queue is full.
 Use per-request cancellation intent plus a wakeup, or a separately bounded control
@@ -135,10 +149,11 @@ contract, and `engine-bert` supplies the concrete shape decisions
 paths on device (constrained pool, cancellation before and after enqueue, a lagging
 consumer beside a healthy peer, permanent rejection with peer progress, charges
 surviving dequeue) except for one criterion whose precondition does not exist yet:
-downstream workspace headroom needs a real downstream stage sharing the pool, which
-slice 4 introduces. Two limits are recorded: a request's whole envelope stays charged
-until its result is dropped, so completed temporary storage is not released early, and a
-release that no drain can prove keeps its storage and its charge until one can.
+downstream workspace headroom needs a real downstream stage sharing the pool; it
+is not established by the separate AR/encoder fixtures. Two limits are recorded:
+a request's whole envelope remains with its result rather than releasing temporary
+storage early; retirement that no drain can prove retains storage and charge. These
+are logical lease rules, not proof that result Drop completes queued device frees.
 Partial allocation/upload failure during submission construction is an additional
 source-traced gap: already-created buffers can drop into stream-ordered frees while
 no retained submission carries their charge. Post-enqueue qualification does not
@@ -160,10 +175,12 @@ hard shared CUDA bound.
    and popping a result from a queue does not release its charge. A lease carries the
    allocation identity that a later derived-state compatibility check needs; a bare byte
    count is not an allocation identity.
-2. **Accepted ranges.** Preparation reports the concrete work the executor accepted and
-   the reservations it granted for that work. The runtime prepares an executable prefix
-   of its queue; it never prepares an arbitrary iterator. Aggregate submission resources
-   are budgeted across the whole prepared range, not reset per row.
+2. **Accepted work.** Preparation reports the concrete work the executor accepted and
+   its reservations. Current BERT selects a bounded FIFO prefix. The target permits
+   bounded indexed selection/bucketing with age protection so a temporarily infeasible
+   head cannot strand feasible peers. Selection order is not caller-visible result order;
+   retain request identity and reserve bounded delivery/reorder storage. Aggregate
+   resources are budgeted across the whole accepted work, never reset per row.
 3. **Waiting versus rejection.** Waiting names both a condition and a readiness source.
    Byte-pool and AR capacity waits share `ReadinessWait`: register before checking,
    then arm the caller's wake transport before parking. Arming rechecks the
@@ -197,9 +214,28 @@ hard shared CUDA bound.
    quarantine rules; preparation adds only the lease and dependency that make them
    checkable.
 
-Do not add public generic `PreparedSubmission`, `PoolClaim` or lease traits yet. The
-first representation should be concrete enough to be exercised by a real encoder, and
-generalized only when a second consumer demonstrates the same shape.
+### Non-AR application lifecycle
+
+Status: accepted target, not qualified by the current direct BERT fixture. `BatchRuntime`
+currently bounds waiting/result counts, accepts executor-defined inputs without an
+input-byte budget, selects a FIFO prefix and has no model-local close/shutdown surface.
+Pool waits have `capacity_wait`; `BatchSelection::Blocked(C)` supplies no general
+executor readiness registration. Temporary head pressure can strand feasible later
+requests and postpone a cancelled peer's terminal delivery.
+
+Before exposing owned encoder access, establish these contracts through the real runtime:
+
+- Bound retained input/options before acceptance, independently of device/result leases.
+- Select bounded feasible peers with aging; keep result ordering in the chosen application
+  contract, not as a compulsory execution FIFO. Cancelled queued work must settle without
+  waiting for an unrelated head to become feasible, subject to delivery backpressure.
+- Every temporary wait carries registration/recheck or an explicit completion dependency.
+  A reason enum alone is insufficient. Wake local cancellation, closure and output release.
+- Close this model's admission without closing a shared pool used by siblings. The execution
+  owner retains submitted work, abandoned results, charges and retry/quarantine cleanup.
+  Dequeued device results retain their own safe-retirement owner after model shutdown.
+- Output dequeue returns delivery capacity, not physical bytes. Charges release only when
+  backing is safely reusable within its charged arena or proven released to the byte pool.
 
 ## AR continuation resources
 
@@ -213,10 +249,13 @@ unimplemented; this section states the contract they must satisfy.
 Continuation is the state a sequence must keep to continue: full-attention KV,
 sliding-window KV, recurrent matrices and convolution history, and hybrid combinations
 of them. It is owned per sequence until a cache owns it. The target is one physical
-byte authority per shared device pool. Current Qwen logical accounting and encoder
-`BytePool` accounting remain separate; common readiness does not establish a shared
-capacity bound. Resident backing and reusable slot occupancy obey the distinction
-above.
+byte authority per shared device pool. AR and encoder use the same `BytePool` mechanism,
+but production Qwen still owns a private authority; neither common types nor readiness
+establish shared physical capacity. Resident backing and slot occupancy remain distinct.
+The first paged Qwen materialization uses bounded resident K/V arenas matching the
+qualified common-base reader. Account recurrent storage, workspace, immutable table/copy
+staging and retirement overlap separately. Online arena growth is outside the initial
+path until its allocation, peak overlap and physical retirement are qualified.
 
 ### AR reservation authority
 
@@ -288,13 +327,24 @@ partial-construction retirement must qualify before sharing it with the encoder.
    and accounting. Recompute requires one bounded owner of the prompt and committed
    generated history. Its physical replay cursor is separate from externally committed
    progress; replay must not duplicate output, usage or sampling. Survivor growth takes
-   precedence over victim readmission. Before partial-envelope admission, prove protected
-   completion headroom or a preemption policy that breaks all-active-growth deadlock.
-   A request whose own required state cannot fit rejects locally, not through endless
-   self-preemption.
-8. **Restore includes execution semantics.** A matching hash is not proof that every
-   ancestor KV block or hybrid checkpoint remains present. Restore only a complete valid
-   boundary and reserve a private writable recurrent copy. Initially that boundary must
+   precedence over victim readmission. Initial partial-envelope admission uses recomputation
+   preemption, not resource waiting alone or a host-swap tier. Before admitting partial
+   envelopes, demonstrate that a selected survivor can finish within the available grant
+   after completion-safe victim/cache reclamation, including workspace and replay storage.
+   Capacity feasibility is not consumer-dependent liveness: choose an output-ready survivor.
+   If its consumer stalls and credits run out, relinquish protection through completion-safe
+   preemption and reselect a healthy peer. Park its replay/readmission until output readiness
+   changes; do not require client cancellation or release in-flight storage early.
+   While a survivor remains runnable, do not readmit victims/newcomers at the expense of
+   its required growth. Keep victims bounded and age their readmission; new arrivals cannot
+   repeatedly displace them. Individually impossible requests reject locally, never through
+   endless self-preemption.
+   Failure to prove safe reclamation faults the owner; it is not a reason to refund early.
+8. **Restore includes execution semantics.** A matching hash is not proof of model-required
+   retained KV coverage or hybrid checkpoints. Full attention requires prefix coverage;
+   sliding attention requires its valid window, and recurrent/other components must agree
+   at the same boundary. Restore only a complete valid boundary and reserve a private
+   writable recurrent copy. Initially that boundary must
    be strictly before the final prompt sampling token; execute the remaining suffix to
    produce logits. Re-consuming a token after restoring its post-token recurrent state
    would advance state twice. Cached logits/output state is a separate deferred policy.
@@ -324,16 +374,18 @@ finish locally; peers remain eligible. An all-omitted offer triggers a bounded r
 for unoffered runnable peers before parking, without reactivating unchanged waits.
 A source change permits another attempt, not a guaranteed allocation.
 
-`submit` consumes the exact ready subset in its original order. There is at most one
-outstanding preparation and one submission; another preparation cannot overwrite either.
+`submit` consumes the exact ready subset in its original order. Current source supports
+at most one outstanding preparation and one submission; another preparation cannot
+overwrite either. This is the depth-one implementation, not the target limit.
 `abandon_preparation` is idempotent and releases only new, unsubmitted reservations.
 The engine abandons an invalid report or an offer with no accepted rows. Preparation,
 abandonment or enqueue errors fault the owner and keep executor retirement ownership;
 `synchronize` must also settle any outstanding preparation. Fallible retirement cannot
 turn into implicit Drop-based proof of device completion.
 
-Preparation and submission are synchronous within one `Engine::step`; driver intent
-cannot interrupt that call. Cancellation observed after launch waits for completion.
+In current source preparation and submission are synchronous within one `Engine::step`;
+driver intent cannot interrupt that call. Cancellation observed after launch waits for
+completion.
 Cancellation of a parked row drops its registration and retires its old continuation
 without restoring it to a runnable queue. Logical prefixes still advance only at valid
 completion. This control seam does not enable partial-envelope Qwen admission or prove
@@ -343,6 +395,62 @@ The engine owns which sequence holds which committed prefix and the policy decis
 (admission, eviction, preemption, priority). The model/backend owns layout, block or
 page granularity, checkpoint materialization and kernel-facing indexing. The authority
 owns bytes. None of these three charges the same reservation again.
+
+### Bounded overlap and submission ownership
+
+Status: accepted target; current AR/Qwen remains depth one. One mutable execution owner
+remains authoritative even when CPU preparation overlaps device execution. Do not widen
+`prepare`/`submit` until pending records, completion mapping and release semantics own
+multiple submissions without singleton overwrite.
+
+- Configure a finite preparation/submission depth and aggregate byte/output-credit bounds.
+  Each concrete prepared record is uniquely identifiable and consumed once; abandoned
+  records release only their new unsubmitted resources. Completion refers to its actual
+  submission and sequence generation, not a reused row index or current batch ordering.
+- The first overlap increment permits independent sequences only, with at most one
+  unresolved state-mutating transaction per sequence. Logical prefixes advance on validated
+  completion. Persistent request rows are independent of gathered kernel input order.
+- Each submission owns immutable transfer staging, block-table versions, descriptors,
+  output slots, workspaces and referenced storage until every device dependency completes.
+  Safe shared immutable backing can be charged once; scratch cannot be shared concurrently
+  without an execution dependency. Depth-one buffer reuse is not proof of overlap safety.
+- Dependent same-sequence work ahead of host commitment needs an explicit device dependency
+  and a separate projected versus committed cursor. The backend must own the input token
+  and tentative state; guessed progress cannot enter ordinary scheduling or cache validity.
+  EOS/cancellation may leave extra physical work to drain but never extra delivery or usage.
+  This later capability is separate from independent-sequence overlap and speculation.
+- Validate an entire completion report before committing its rows. Deliver per-request
+  output in order even if independent submissions complete out of order. Reserve delivery
+  and temporary reorder capacity before launch; a stalled consumer cannot hold an
+  unbounded reorder list. Unknown completion faults the owner across all dependent work.
+- A backend release acknowledgement must prove storage safely reusable/released, or
+  transfer storage **and its charge** to an executor-owned retirement record. Returning
+  success while deferring only the physical buffer cannot authorize a logical refund.
+  The current NVIDIA deferred-release/Qwen-refund seam must change before overlap enables
+  it as an ordinary path. Kernel completion alone does not prove queued frees completed.
+- Shutdown closes admission, abandons new unsubmitted preparation and drains/quarantines
+  every submitted owner. Failed drain retains table/staging/output slots and charges for
+  retry; no slot generation or pool charge recycles on cancellation, Drop or timeout.
+
+### Speculative settlement
+
+Status: prerequisites for a future concrete implementation, not a current capability.
+Draft/verification work owns tentative KV, recurrent/convolution state, scratch and
+sampling state separately from committed continuation. Reserve its entire envelope and
+potential output before launch. Report physical work and the accepted logical boundary
+separately; cache publication, usage and delivery follow only accepted commitment.
+
+Rejected drafts must restore **every** model-required component to that boundary,
+including recurrent state and the chosen RNG/sampling semantics. KV truncation alone is
+not hybrid rollback. Early stop/cancellation settles or retires all later tentative work
+without delivering it. A zero-acceptance draft round must either commit a valid correction
+or terminate/park for a named external condition; it cannot spin on zero progress.
+
+Qualify the actual contract: reproducible greedy/keyed token equality versus ordinary
+decode, or independently justified target-distribution preservation for stochastic
+sampling. Those are different guarantees. Multi-token positive-completion fixtures do not
+establish either, nor do they provide rejection rollback. Choose a concrete representation
+only with a real drafter/target backend; no public speculative framework is selected here.
 
 ## Owned AR driver contract
 
@@ -436,8 +544,11 @@ No force-kill timeout may release device-visible memory.
 ## Text application facade
 
 Status: implemented; host-qualified, with the CUDA lifecycle, cancellation and
-multi-request determinism gates passing on the RTX 4090. The one
-accepted deviation from the first draft is that this layer does **not** own an
+multi-request determinism gates passing on the RTX 4090. Those gates do not cover
+allocation-capacity retention: current `ProcessorLimits::retained_bytes` counts payload
+lengths, omits chat-container storage, and preprocessing queues options before the driver's
+stop-list envelope check. These are open bounds defects, not qualified byte guarantees.
+The one accepted deviation from the first draft is that this layer does **not** own an
 architecture registry or a second worker: it owns text preprocessing, incremental
 decoding and offline batching above the owned token driver. It holds no scheduler,
 no second execution loop and no device state.
@@ -479,9 +590,12 @@ above it and must be bounded independently:
   explicit token limit; a caller-supplied token vector is checked before admission.
   Exceeding any limit is a request-local rejection with a typed error; it is never a
   device fault.
-- The retained-input bound is checked **before** an input is queued, so aggregate
-  queued retention is the permit count times that envelope rather than whatever
-  callers happen to hold while preprocessing waits.
+- The retained-allocation bound must be checked **before** queue insertion, including
+  input container/capacity and generation options. Payload validation is separate.
+  Normalize or reject excess capacity with bounded temporary storage; arbitrary numbers
+  of empty messages and oversized stop lists must not bypass retention accounting.
+  This target is not met by the current length-only preprocessing check. Once implemented,
+  aggregate queued retention is bounded by permits times the owned envelope.
 - Encoded tokens plus the runtime's stop-list copy must still fit the permit's
   encoded-input envelope. The text layer does not enlarge that envelope.
 - Preprocessing runs on a fixed, bounded worker pool with a bounded queue. Jobs
@@ -604,6 +718,12 @@ master weights and quantized serving weights to share an allocation.
   as waitable backpressure rather than a fault or an unbounded deferral, reuse only at a
   boundary whose every component is valid, eviction of unreferenced storage, preemption
   by recomputation, and cancellation that leaves no continuation charge behind.
+- Small payloads with large capacities, many empty messages, oversized options behind
+  blocked preprocessing, non-AR input-byte saturation and local shutdown with sibling progress.
+- Multiple independent submissions, out-of-order completion, immutable staging/table ownership,
+  EOS/cancellation with extra physical work, and failed-drain retention without slot reuse.
+- Speculative zero/partial acceptance, correction, early stop, all-component rollback and
+  sampling consistency; no cache publication of tentative state.
 - Snapshot draining and replacement, incompatible adapter/processor state, and later
   explicit overlap accounting before supporting concurrent versions.
 

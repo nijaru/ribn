@@ -2,190 +2,272 @@
 
 [Target design](inference-engine-design.md) owns product direction and architecture;
 [resource protocol](resource-protocol.md) owns execution/resource ownership;
-[architecture](architecture.md) maps current source. This document owns work order,
-unresolved decisions and acceptance gates. All v0 interfaces may change.
+[architecture](architecture.md) maps current code. This document owns delivery order,
+open implementation choices and acceptance gates. All v0 interfaces may change.
 
 ## Current execution order
 
-**Next: the coherent constrained-memory AR continuation path (4b/4c), then scheduling
-qualification (4d) and minimal serving (5).** Broader model/composition coverage (4e)
-and complete CUDA Rust migration are not prerequisites for minimal serving.
+**Next: repair owned-input retention, then deliver minimal text serving and a matched
+competitive baseline on the qualified contiguous path.** Develop heterogeneous physical
+batching/scheduling and constrained-memory continuation alongside that baseline.
+Prefix-cache benefit, a second decoder/VLM, CUDA Rust migration and distributed execution
+are not prerequisites for the first server. They remain important product work.
 
-The [CUDA Rust gate-2 candidate](cuda-rust-migration.md#gate-2-candidate-deferred-2026-09-22)
-is deferred: tested arithmetic/sanitizer gates pass, but single-row projection and GDN
-regress against the qualified C++ path. Preparation measurements do not offset those
-regressions. Do not start gate 3 or turn the experiment into a compiler project. A
-blocked kernel-language migration does not block runtime work on the existing backend.
+This replaces the serial 4b/4c → 4d → 5 dependency. The historical slice identifiers below
+still locate evidence; they no longer require finishing prefix reuse before serving or
+measuring scheduling. Safety prerequisites apply to the path being enabled, not every
+future capability. No redesigned capability is implemented or qualified by this document.
 
-Desktop unavailability permits host implementation and CUDA-feature compile checks,
-not device qualification. Keep the qualified contiguous/full-reachable Qwen policy
-until paged writes, growth, restoration and retirement pass their device gates. Host
-fixtures may establish control contracts without enabling an unqualified physical path.
+| Delivery | Required outcome | Dependency |
+| --- | --- | --- |
+| Owned-input repair | Bound accepted allocations/options, not merely payload lengths | Before claiming bounded text admission or exposing it to untrusted network clients |
+| Minimal text serving (5) | Thin owned-facade adapter, protocol/overload/cancellation gates, matched endpoint measurements | Repaired text retention and current path's applicable lifecycle gates; no paging dependency |
+| Physical execution and scheduling (4d) | Useful heterogeneous lanes, measured scheduling costs/goodput, bounded metadata | Numerical/retirement qualification for each selected lane; can start on contiguous storage |
+| Dynamic continuation (4b/4c) | Paged writes/growth, resident accounting and recomputation progress | Physical retirement, replay history and all-active-pressure proof before partial envelopes |
+| Exact prefix reuse (4b reuse) | Valid hybrid restoration with measured net workload benefit | Qualified dynamic storage and bounded checkpoint ownership; not a serving prerequisite |
+| Model-local breadth (4e) | Real second decoder, then VLM, proving integration and loading boundaries | Relevant operation/backend contracts, not every runtime optimization |
+
+Desktop unavailability permits host implementation and CUDA-feature compilation, not
+device qualification. Preserve contiguous/full-reachable Qwen and qualified small-row
+kernels until their replacements pass. The [CUDA Rust gate-2 candidate](cuda-rust-migration.md#gate-2-candidate-deferred-2026-09-22)
+remains deferred: arithmetic/sanitizer results do not offset its single-row projection
+and GDN regressions. Do not start gate 3 or build a compiler project around it.
 
 ## Completed foundations
 
 | Slice | Result and retained evidence |
 | --- | --- |
-| 1. Ownership baseline | Positive partial progress, whole-completion validation, runtime-owned discard and retryable retirement. Completion-time blocking was removed. [Runtime evidence](../benchmarks/runtime-contract.md) |
-| 2. Concurrent application access | One token execution worker, cloneable bounded handles/streams, cancellation and shutdown retry; bounded text preprocessing/decoding and ordered offline batching. [Contract](resource-protocol.md#owned-ar-driver-contract), [frontend overhead](../benchmarks/runtime-alignment/README.md) |
-| 3. Real encoder preparation | BERT CUDA fixture through `ribn-batch`, shared byte leases, completion-owned results, uncertain-enqueue retirement and cancellation. [Encoder qualification](../benchmarks/encoder-qualification.md) |
-| 4a. Request-reachable continuation | Qwen charges prompt plus output reach, not maximum context. Three reference-matching requests fit a 500 MiB authority that cannot hold two context-sized charges. [Runtime evidence](../benchmarks/runtime-contract.md) |
-| 4b host preparation | Aggregate accepted ranges, credit refunds, parked readiness, local rejection and uncertain-retirement ownership through the real AR engine. Qwen validates/retains a full-reachable prepared batch; no dynamic physical growth. [Host gate](../benchmarks/runtime-contract.md#ar-pre-submit-preparation-host-gate) |
-| 4b host authority | AR reservations use supplied `BytePool` authorities with one atomic hybrid grant, sibling readiness and closure handling. Production Qwen keeps a private pool. [Host gate](../benchmarks/runtime-contract.md#ar-reservation-authority-host-gate) |
-| 4b prerequisite | Block-table attention **reads** qualified at `ee689d7`; production Qwen remains contiguous. [Addressing evidence](../benchmarks/runtime-contract.md#block-table-kv-addressing-2026-10-12-ee689d7) |
+| 1. Ownership baseline | Positive partial progress, whole-completion validation, runtime-owned discard and retryable retirement. Completion-time blocking removed. [Runtime evidence](../benchmarks/runtime-contract.md) |
+| 2. Concurrent application access | One token worker, bounded request/event counts, handles/streams, cancellation and shutdown retry; text preprocessing/decoding and ordered offline batching. Allocation-retention gaps remain below. [Contract](resource-protocol.md#owned-ar-driver-contract) |
+| 3. Encoder preparation | BERT CUDA fixture through `ribn-batch`, result leases/dependencies and post-enqueue retirement gates. Not a complete encoder application lifecycle or hard physical-memory bound. [Qualification](../benchmarks/encoder-qualification.md) |
+| 4a. Request-reachable continuation | Prompt plus output reach, not maximum context. Three reference-matching requests fit a 500 MiB authority that cannot hold two context-sized charges. [Evidence](../benchmarks/runtime-contract.md) |
+| 4b host preparation | Aggregate accepted ranges, credit refunds, readiness/local rejection and uncertain ownership through the AR engine. Qwen validates/retains a fully reserved backend batch; no physical growth. [Host gate](../benchmarks/runtime-contract.md#ar-pre-submit-preparation-host-gate) |
+| 4b host authority | Supplied `BytePool` authorities, atomic hybrid grants and sibling readiness/closure. Production Qwen remains private. [Host gate](../benchmarks/runtime-contract.md#ar-reservation-authority-host-gate) |
+| 4b prerequisite | Block-table attention **reads** qualified at `ee689d7`; no paged executor follows from that primitive. [Addressing evidence](../benchmarks/runtime-contract.md#block-table-kv-addressing-2026-10-12-ee689d7) |
 
 Admission notification (`3e4dbec`) and shared batch/AR readiness (`e8e3b48`) are
-host-qualified; device requalification is pending. The driver arms one-shot resource
-notifications on its bounded wake channel; only pending device completion uses timed
-polling. Idle admission no longer polls. Pool closure wakes waiting consumers without
-refunding live leases.
+host-qualified; their device requalification remains pending. Only pending device
+completion retains timed polling; idle resource waits arm one-shot notifications.
 
-Cleanup removes the duplicate core scheduler/runtime and `ribn local`, retaining the
-Qwen/backend bridge and moving its benchmark onto the real AR engine. Legacy host
-lifecycle tests retire with that implementation; current runtime/Qwen tests retain
-ownership protection. Migrated linear/GGUF/8–9-row retirement fixtures and the new
-nine-row AR cancellation case passed device re-execution on 2026-10-06; see the
-[current Qwen gate](../benchmarks/runtime-contract.md#mixed-arrival-native-qwen-gate).
-Historical benchmark measurements remain historical; the migrated harness has no
-inherited performance qualification.
+The duplicate core scheduler/runtime and `ribn local` are removed. The Qwen benchmark
+now uses the real AR engine. Migrated linear/GGUF/8–9-row retirement fixtures and the
+nine-row AR cancellation case passed device re-execution; see the [current Qwen gate](../benchmarks/runtime-contract.md#mixed-arrival-native-qwen-gate).
+Historical timings do not qualify the migrated harness.
 
-## 4. Dynamic hybrid AR and model-local integration
+## Immediate bounds and lifecycle repairs
+
+Source audit at `093cd28` found gaps that passing current fixtures do not cover:
+
+1. **Text accepted-allocation retention.** `ProcessorLimits::retained_bytes` in
+   `crates/text/src/process.rs` counts lengths, not capacity or chat-container storage.
+   Preprocessing retains unchecked generation options before the driver checks stop-list
+   storage. Validate or normalize all owned input/options before queue insertion, with
+   bounded temporary overlap. Keep semantic payload and allocation envelopes distinct.
+   Gate small strings/vectors with large capacities, many empty messages and oversized
+   stop options behind blocked preprocessing. Preserve permit lifetime and local errors.
+2. **Non-AR application access.** `BatchRuntime` in `crates/batch/src/lib.rs` bounds counts,
+   not submitted input bytes, selects FIFO prefixes and lacks local close/shutdown.
+   Executor `Blocked(C)` has no general readiness registration. Add retained-input
+   admission, bounded feasible-peer selection/aging, cancellation settlement behind a
+   blocked head and local retryable shutdown without closing sibling pools. Preserve
+   request identity/result ownership. This gates encoder application exposure, not the
+   text-only server. See the [non-AR contract](resource-protocol.md#non-ar-application-lifecycle).
+3. **Physical release/accounting.** BERT partial construction and normal result/quarantine
+   teardown need charge ownership until safe allocator reuse or backing release. Locked
+   cudarc 0.19.9 can lose an allocation pointer if tracking-event creation fails; a drain
+   cannot release an unreachable pointer. NVIDIA's deferred-release acknowledgement and
+   Qwen's following logical refund must be reconciled before overlapping submissions make
+   that an ordinary path. Gate partial allocation/upload, teardown, failed drain and
+   sibling-stream pressure. No hard shared-device peak claim until these owners qualify.
+
+These are implementation defects/limitations, not grounds to weaken the owning contracts.
+The first repair is the next concrete implementation task. Do not relabel existing
+count/payload or post-enqueue tests as allocation-retention/physical-release evidence.
+
+## 4. Dynamic AR, physical execution and model-local integration
 
 ### 4b. Block storage, preparation and prefix reuse
 
-Source review found that the previous five-step plan omitted physical backing,
-replay ownership and restore-to-logits semantics. Resolve those before dependent
-paging code; a scalar prefix or block hash is not an allocation owner.
+Deliver storage/progress separately from cache policy:
 
-1. **Choose physical backing and its accounting.** The qualified block-table kernel
-   indexes one shared contiguous K/V base per layer, not a vector of independent device
-   allocations. Decide a bounded resident arena or qualify another addressing scheme.
-   Arena bytes stay charged while resident; reusable slots have a separate occupancy
-   authority and cannot refund physical bytes. AR now uses the encoder's `BytePool`
-   mechanism with host-tested supplied authorities and atomic bundle grants. Production
-   Qwen still owns a private pool; qualify physical retirement before sharing it with
-   encoder execution or claiming a bound across runtimes on one device. Include paged
-   **writes**, block-table transfer lifetime and all prepared lanes; read addressing alone is insufficient.
-2. **Integrate physical growth with AR preparation.** The host control seam now accepts
-   positive ranges, refunds unused credits, parks unaffordable rows with readiness and
-   rejects impossible rows locally. Whole-report validation and abandoned/uncertain
-   growth ownership pass through the real engine and byte authority. An all-omitted
-   offer cannot strand an unoffered healthy peer. Qwen retains its validated backend
-   batch but keeps full-reachable reservation; integrate real growth and retain that
-   policy until the affected device gates pass.
-3. **Prove progress before partial envelopes.** Active sequences can exhaust the pool
-   while all wait to grow. Readiness cannot break this deadlock. Resolve protected
-   completion headroom versus recomputation preemption. Recompute needs one bounded
-   owner of prompt plus committed generated history, physical replay progress separate
-   from delivered progress, no duplicate output/usage/resampling, and survivor growth
-   priority over victim readmission. Reject requests whose own required state cannot
-   fit rather than endlessly preempting them. Reclaim only completion-safe state.
-4. **Add snapshot-scoped immutable content blocks and sparse recurrent checkpoints.**
-   A reusable boundary requires all ancestor KV blocks and every hybrid component,
-   not just a matching hash. Restore a private writable recurrent copy. Initially cap
-   restoration strictly before the final prompt token and execute the suffix for logits;
-   caching logits/output state is deferred. Replay when no complete boundary exists.
-5. **Qualify through real Qwen execution.** Compare common histories with paging on/off
-   and reuse on/off, including exact full-prompt hits, partial tails, missing ancestor
-   blocks/checkpoints, cancellation during restoration, abandoned preparation and failed
-   retirement. Demonstrate shared-prefix reuse admitting work that dynamic per-sequence
-   allocation cannot, using a geometry where checkpoint economics permit it. Record
-   checkpoint/copy peak bytes and replay/TTFT benefit separately.
+1. **Bounded resident backing.** Use a bounded resident K/V arena per required backend
+   layout, matching the qualified common-base reader. Charge physical arenas until safe
+   retirement; maintain separate block-slot occupancy. Include private recurrent state,
+   scratch, table/copy staging and retirement overlap. Qualify paged writes and table
+   lifetime across all selected lanes, not just reads. Initial arena capacity is fixed
+   within the load-time grant; online growth is deferred until peak/retirement evidence.
+2. **Growth preparation.** Integrate physical block grants into the real AR preparation
+   transaction. Reserve whole accepted ranges, settle only valid committed growth, and
+   retain old continuation plus new growth after partial enqueue. Gate abandoned/invalid
+   preparation, positive shortening, waits with healthy-peer progress and local rejection.
+3. **Replay ownership and pressure progress.** Retain prompt plus committed generation
+   under one bounded sequence-history owner. Keep replay cursor separate from delivered
+   progress. Implement completion-safe recomputation preemption, with a protected survivor
+   and growth/workspace priority over victim readmission. Show the survivor can finish
+   after reclaiming safe victim/cache occupancy; reject individually impossible requests.
+   Select output-ready survivors. If delivery credits exhaust, completion-safely preempt
+   the stalled survivor, park it on output readiness and reselect a healthy peer; memory
+   feasibility alone is not eventual completion. Bound/age victims so fresh arrivals
+   cannot starve readmission. Readiness is not a solution to all-active-growth deadlock.
+   This gate precedes partial-envelope admission.
+4. **Storage qualification with reuse disabled.** Compare real Qwen common histories with
+   contiguous versus paged execution, mixed reaches/positions, tails, pressure, cancellation,
+   failed enqueue and failed retirement. Demonstrate progress and capacity recovery and
+   measure physical peaks, throughput and latency. Preserve the fallback outside scope.
+5. **Exact reuse as a separate experiment.** Add snapshot-scoped immutable content blocks
+   and selected sparse recurrent checkpoints. Require model-specific retained KV coverage
+   and every hybrid component at the restore boundary; copy private recurrence and replay
+   a suffix ending at the prompt's logits-producing token. Gate exact hits, partial tails,
+   missing components, cancellation during restore and uncertain retirement. Compare reuse
+   off/on with equal grants, quality and traffic, including copy/retention peaks and replay
+   cost. Enable only where repeated net TTFT/goodput or capacity benefit justifies retention;
+   a nonbeneficial policy remains disabled rather than manufacturing a favorable workload.
 
-Open layout/policy choices: arena size/growth, block size, checkpoint spacing,
-completion headroom/preemption policy and concrete physical growth reservations.
-The single-owner preparation transaction is defined in the resource protocol. Avoid a universal continuation framework or cost vector.
+Open implementation measurements: arena/block geometry, bounded history envelope,
+workspace grant, victim ordering and checkpoint budget/placement. The decisions are
+bounded resident backing, recomputation first and optional exact reuse—not a universal
+continuation framework or cost vector.
 
-Recorded hybrid geometry: 149.6 MiB recurrent state per live sequence, 16.8 MiB KV at
-257-token reach and 275 MiB KV at 4096. Three private recurrent copies plus even one
-checkpoint exceed the recorded 500 MiB pool before KV. Dense checkpoints and a blanket
-short-request concurrency improvement claim are therefore unjustified. Choose and
-measure a longer shared-prefix workload; compare paging **with versus without reuse**,
-not only against the older full-envelope implementation.
+Recorded hybrid geometry: 149.6 MiB recurrence per sequence, 16.8 MiB KV at 257-token
+reach and 275 MiB KV at 4096. Three private recurrent copies plus one checkpoint exceed
+500 MiB before KV. Dense snapshots and blanket short-request concurrency claims are
+unjustified. Start with no reuse and a few selected completed boundaries; only compare
+more elaborate overlap-aware retention when traces expose useful partial matches.
 
 ### 4c. Eviction and preemption
 
-Evict unreferenced cached slots in LRU order. Physical arena charges release only when
-arenas retire safely. Live-sequence recomputation begins with 4b's progress gate, not
-a later optional cleanup. Keep cache eviction, request preemption and cancellation
-distinct. Qualify constrained-pool progress, retained charges during device access,
-replay correctness and complete recovery of capacity.
+Implement live recomputation with 4b's progress gate, not as optional cleanup after
+partial admission. Evict unreferenced cached occupancy first where present; preempt live
+state only after completion-safe retirement. Resident arena bytes remain charged.
+
+Gate all-active pressure, a stalled survivor beside healthy victims, preempted cancellation,
+survivor completion, aged readmission, replay without duplicated output/usage/sampling,
+uncertainty without early reuse and
+capacity recovery. Keep cancellation, cache eviction and live preemption distinct.
+Host swap/tiered caching follows measured replay/retention costs, not paging by default.
 
 ### 4d. Scheduling with real costs
 
-Compare unified token-budget scheduling against current prefill/decode queues on mixed
-lengths/arrivals, memory pressure and latency objectives. Prefill/decode remain execution
-distinctions. Pin workload, numerical policy and revisions; repeat matched measurements
-and retain the losing case as well as the selected policy. A single prompt sweep is not
-representative serving evidence.
+This work starts alongside serving and paging, not after prefix reuse.
+
+1. **Observe actual execution.** Record phase costs, physically batched rows/tokens,
+   fallback frequency, host/device gaps, queue age and allocated/resident/occupied bytes.
+   Keep instrumentation bounded; kernel timelines establish hypotheses before expensive
+   profiler-counter work. Current 13.74 tok/s / zero-goodput smoke evidence does not isolate
+   a bottleneck. Historical traces and same-prompt sweeps are not matched endpoint baselines.
+2. **Qualify useful physical lanes.** Compare packed/ragged heterogeneous-capacity work,
+   scalable prefill GEMM and tiled attention against qualified small-row kernels and native
+   vendor options. Preserve independent nonadjacent histories/completion mapping. Do not
+   remove uniform-capacity guards until descriptors/scratch/addressing qualify, or restore
+   maximum-context reservation just to batch. Measure conversion/repacking/workspace costs.
+3. **Evaluate unified logical policy.** Select bounded prefill/decode/replay frontiers using
+   age/priority, output credits, token bounds and aggregate backend feasibility. Protect
+   decode latency and prefill/replay progress. Compare against current queues with the same
+   physical lanes, then compare lane changes separately. Tune chunk sizes with actual
+   TTFT/ITL/E2E objectives, mixed arrivals and pressure; submission counts are not time bounds.
+4. **Persistent metadata and bounded overlap.** Separate stable request rows from kernel
+   ordering. Start with independent-sequence preparation/execution overlap only after
+   per-submission owners and physical release qualify. Gate immutable staging/table versions,
+   out-of-order completion, stalled delivery, shutdown and failed-drain recycling. Graph
+   capture needs qualified stable storage and measured eager-versus-replay benefit.
+
+Promote policies/variants only over their qualified scope, with repeatable benefit beyond
+run variability and no hidden quality, memory, fairness or latency regressions. Retain
+losing cases. Dependent work ahead of host commitment and speculation need their own
+[contracts](resource-protocol.md#bounded-overlap-and-submission-ownership) and gates.
 
 ### 4e. Model-local integration and composition
 
-A real second decoder and real VLM/processor must integrate through model/processor,
-backend, registration and tests, not family branches in unrelated lifecycle/routing.
-Then test a sequential encoder-decoder and small iterative model. Let actual models
-determine staged versus coupled execution. Independent numerical references and the
-encoder preparation path are required. Prove downstream workspace headroom under a
-shared-pool constrained test; slice 3's sibling-progress test does not establish it.
+Integrate a real dense second decoder through model/processor/backend, central registration
+and tests, then a real VLM/processor. Use these to replace hard-coded geometry and the
+transitional core bridge where appropriate, not to add family branches in lifecycle/routing
+or create a universal operator layer. Start after applicable baseline contracts; it need
+not wait for prefix-cache or overlap promotion. Pin independent numerical references and
+measure integration effort and loading/physical peaks, not just compilation.
+
+A byte-aware streaming loader must bound concurrent reads, decoded weights, retained shard
+clones and upload staging before large-model memory claims. Remote resolution and package
+processors follow a concrete integration need; a registry alone is not day-zero support.
+
+Then qualify a sequential encoder-decoder and a small iterative model. Actual models decide
+staged versus coupled execution. Prove downstream workspace progress under a shared grant;
+separate AR/BERT fixtures do not establish it. Non-AR access repairs precede encoder serving.
 
 ## 5. Minimal serving, then wider systems
 
-Implement a documented protocol subset over the owned application API, not another
-execution loop. Test streaming, disconnects, overload, cancellation, health/readiness,
-metrics, security limits and shutdown. Python in-process access follows the same semantics.
+This is the first user-facing milestone, not the final step of slice 4.
 
-Qualify mixed arrivals/lengths, long context, stalled clients and memory pressure. Report
-throughput within explicit latency objectives, latency distributions, memory peaks, host
-cost and cancellation latency. Compare vLLM/SGLang or a suitable overlapping baseline
-with matched hardware/quality, pinned artifacts/configurations and repeated runs. Report
-unsupported scope separately; internal speedups do not establish competitiveness.
+Deliver a documented text protocol subset over `TextModel`/`TextOwner`, preserving the
+existing execution owner. Start with conventional completion/chat streaming semantics;
+state supported parameters and explicitly reject unsupported ones. Bound connections,
+body parsing, messages/options, preprocessing and streaming buffers; default to local
+binding and require an explicit authentication/exposure policy for non-local deployment.
+No remote URL/media fetching is needed for this first text path.
 
-A materially different backend, real collectives/sharding and state transfer need their
-own gates before portability/distributed claims. Single-device use must not require
-serialization or synthetic process layers.
+Gate streaming/terminal order, disconnect and queue-saturated cancellation, overload,
+malformed/oversized requests, stalled clients with healthy-peer progress, readiness,
+metrics and retryable shutdown. Health/readiness must distinguish loading, serving,
+closing and faulted states. Python access follows the same owned semantics later.
+
+### First competitive acceptance matrix
+
+Use AIPerf plus the incumbent-native cross-check described in [benchmark methodology](../benchmarks/README.md).
+Pin revisions, artifacts/tokenizer, numerical policy, device/software, protocol fields,
+warmup and objectives. Compare identical artifacts where supported; otherwise report
+quality-matched configurations as a separate comparison, never an equal-artifact ratio.
+
+| Workload | Required evidence |
+| --- | --- |
+| Mixed short/balanced/prefill-heavy/decode-heavy/long-context arrivals and load sweeps | TTFT/ITL/E2E tails, SLO goodput, queue age/fairness, overload/failure/cancellation, host/device cost |
+| Tight grant with cancellations, long reaches and stalled consumers | Positive progress, safe retirement, physical peak and recovery; no logical-byte proxy for device residency |
+| Cold/warm shared-prefix, multi-turn continuation and branching/tool-delay traces | Actual computed/cached tokens, cache/copy peaks, replay, completed-job latency/throughput per device; client owns orchestration |
+| Lane/policy/graph/overlap variants off versus on | Common-history numerical evidence, matched repeats, capacity/quality/SLO costs and qualified fallback |
+
+Structural synthetic traces test load and prefix patterns; content-real cases are required
+for speculative acceptance, MoE routing and output quality. Separate steady-state execution
+from loading/warmup and network/tokenization from native diagnostics. Current eight-request
+smoke traces do not satisfy this matrix. Report unsupported scope and competitor startup
+failures explicitly rather than interpreting them as a Ribn win. No SOTA claim until matched
+representative results establish it.
+
+A materially different backend, real collectives/sharding and disaggregated transfer have
+independent gates. External systems own fleet allocation. Do not make single-device use
+traverse serialization or distributed-worker layers.
 
 ## 6. Training integration, then execution
 
 Start with coherent trainer-to-rollout publication and Python tensor/result interchange.
-Drain-and-replace precedes overlapping snapshots; overlap requires explicit capacity and
-compatibility evidence. Never expose optimizer-mutating weights to inference.
+Drain-and-replace precedes overlapping snapshots; overlap requires explicit extra capacity
+and cache compatibility. Never expose optimizer-mutating weights to inference.
 
-A reference-backed forward/backward/update experiment determines useful shared model
-mathematics. Training owns gradients, activations, autograd and optimizer scheduling.
-Checkpoint recovery and distributed training require separate qualification.
+A reference-backed forward/backward/update experiment decides useful shared mathematics.
+Training owns gradients, activations, autograd and optimizer scheduling; checkpoint recovery
+and distributed training need separate qualification. Training is not an AR scheduling mode.
 
-## Independent blockers and conditional work
+## Conditional work and known non-promotions
 
-- **GDN scan:** remains opt-in. Full-model error `1.10e-2` exceeds `5.0e-3`; cause
-  unestablished. Compare captured common-history state against higher-precision recurrence.
-  Existing baseline error grants no tolerance budget.
-- **Decode subgroups:** the default-off candidate passed bounded device gates at
-  1–9 rows, cancellation at 2/8/9, mixed reaches, staggered prefill/decode, distinct
-  independently referenced nonadjacent histories, stalled/abandoned consumers and
-  partial enqueue followed by a successful drain. The matched mixed trace showed
-  no measurable throughput/latency benefit and zero SLO goodput for both policies.
-  Do not promote without a representative benefit and targeted failed-drain ownership
-  evidence: no uncertain pinned-slot reuse and exactly-once recycling after a proven
-  drain. See [qualification](../benchmarks/runtime-contract.md#compatible-decode-subgroup-candidate)
-  and [measurements](../benchmarks/README.md#mixed-arrival-native-traces).
-- **Kernel scaling:** retain qualified small-M kernels. Investigate tiled quantized GEMM,
-  packed work and tiled attention with actual measurements. Do not repeat measured losers
-  without new evidence: four rows per warp, shared IQ4 codebook, pre-elimination decayed keys.
-- **Encoder accounting:** partial allocation/upload construction and result/quarantine
-  teardown need charge retention through proven backing release. cudarc stream-ordered
-  free is not instantaneous physical capacity for sibling streams. Existing post-enqueue
-  fault injection does not cover partial construction. Locked cudarc 0.19.9 can also
-  lose the allocated pointer when tracking-event creation fails: a stream drain cannot
-  release it. Resolve that failure owner and add partial-construction/teardown gates
-  before a hard cross-stream peak-memory claim. See the
-  [physical accounting contract](resource-protocol.md#encoder-preparation-and-prepared-resources).
-- **Artifact loading:** HF shard-cache count does not bound peak bytes; incoming loads and
-  retained clones overlap eviction. Establish streaming/byte-aware ownership before
-  large-model claims.
-- **Text access:** thinking controls, non-Send/thread-affine construction and higher-window
-  offline throughput remain conditional work, not reasons to replace the existing owner.
-- **Research/reference backend:** evaluate only when a concrete model/backend decision
-  needs it. Architecture breadth is not a second implementation backlog.
+- **GDN scan:** opt-in while full-model error `1.10e-2` exceeds `5.0e-3`. Compare captured
+  common-history state against higher precision; no tolerance widening from baseline error.
+- **Long-prompt fidelity:** the reference divergence after the agreed eighteen-token prefix
+  remains unresolved. Assess common-history distributions/state and task-level effect;
+  short token-equality gates do not qualify broad long-context quality.
+- **Decode subgroups:** bounded device cases passed, but matched mixed traces showed no
+  benefit and zero SLO goodput. Promotion also needs failed-drain evidence: no uncertain
+  pinned-slot reuse and exactly-once recycling after proven drain. See [qualification](../benchmarks/runtime-contract.md#compatible-decode-subgroup-candidate).
+- **Kernel losers:** do not repeat four rows per warp, shared IQ4 codebook or pre-elimination
+  decayed keys without new evidence. Keep qualified small-M fallback while scaling work runs.
+- **Approximate hybrid replay:** recent suffix-replay research changes numerical/quality
+  semantics. Outside initial production work; any experiment needs explicit policy/cache
+  identity and independent task-level acceptance, not an exact-cache label.
+- **Speculation:** select a concrete draft/verify backend only after target commitment,
+  hybrid rollback, output/usage and sampling-state contracts qualify. Measure whole-round
+  net goodput with draft weights/state/scratch charged; allow drafting to be disabled.
+- **Text access:** thinking controls, thread-affine construction and offline-window throughput
+  remain conditional. They do not justify replacing the owned facade or raising buffers
+  without boundedness/progress evidence.
+- **Research/reference backend:** evaluate when a concrete integration needs it, not as a
+  parallel universal implementation backlog. Research sources/limits live in the
+  [target design](inference-engine-design.md#research-basis-reviewed-2026-10-11).
 
 ## Required checks
 
@@ -200,4 +282,4 @@ cargo clippy --workspace --all-targets --locked --features cuda -- -D warnings
 Capture actual exit codes. CUDA compilation does not qualify device execution. Follow
 [model integration](../.agents/skills/model-integration/SKILL.md) for numerical gates and
 [execution contracts](../.agents/skills/execution-contracts/SKILL.md) for lifecycle changes.
-Keep unavailable gates explicit rather than relabeling a host fixture as device evidence.
+Keep unrun gates explicit; documentation redesign does not complete implementation gates.

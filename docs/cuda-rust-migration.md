@@ -2,19 +2,22 @@
 
 ## Decision and scope
 
-CUDA Rust is the intended foundation for Engine's NVIDIA backend: Rust-authored device kernels with cuTile for tile-oriented computations and cuda-oxide for explicit SIMT control. This is a migration direction, not a claim of hardware qualification or improved performance. The existing CUDA C++ implementation is the migration oracle, not a permanent second implementation to maintain after equivalent coverage is qualified.
+CUDA Rust is a conditional NVIDIA kernel-authoring experiment, not a mandatory production destination. The 2026-10-11 design review replaces the language-driven migration commitment with operation-specific adoption: qualify correctness, resource ownership and representative performance, then adopt a replacement only for a concrete performance or maintenance benefit without unacceptable regression. cuTile and cuda-oxide remain candidates; vendor and CUDA C++ kernels remain valid production choices. [Target design](inference-engine-design.md#backend-native-optimized-execution) owns that policy.
 
-Focus on NVIDIA now. A second hardware backend should test the semantic boundary when it has a real implementation and qualification target; a speculative Metal/AMD framework or backend survey is not a prerequisite.
+The evidence and ordered gates below retain the experiment's tested conditions. They do not require completing a Rust-only backend or establish current upstream capability. Keep one authoritative production resource lifecycle, remove superseded implementations when replacements qualify, and preserve scoped fallbacks—not parallel language-defined serving engines.
 
-Vendor libraries remain valid implementation choices. “Rust-first” does not require rewriting cuBLAS or every third-party kernel. Full migration means replacing Engine-owned CUDA C++ kernels and their NVRTC authoring pipeline, and converging on one coherent NVIDIA resource/execution owner. It does not mean replacing the CUDA driver or NVIDIA's compilers with Engine code.
+This experiment concerns NVIDIA; it does not select the engine's hardware breadth or reorder the product roadmap. A second real backend must test the semantic boundary for portability claims; a speculative Metal/AMD framework is not a prerequisite to this experiment or minimal serving.
+
+“Rust-first” does not require rewriting cuBLAS, qualified external kernels or the CUDA driver/compiler. Resource-owner convergence is an execution requirement, independent of device language. Removing all CUDA C++/NVRTC authoring is no longer an acceptance criterion; remove each superseded operation/path only after its chosen replacement qualifies.
 
 ## Current priority (2026-09-22)
 
 The current gate-2 candidate is **deferred, not accepted** after the bounded
 [representative timing comparison](#gate-2-candidate-deferred-2026-09-22). Correctness
 progress does not offset its single-row projection and GDN regressions. Do not start
-gate 3 or expand kernel coverage on this candidate. Continue the roadmap's 4b/4c path
-on the qualified backend; this is not a rejection of the CUDA Rust direction.
+gate 3 or expand kernel coverage on this candidate. Continue the [serving, physical
+execution and continuation deliveries](roadmap.md#current-execution-order) on qualified
+kernels. Reconsider CUDA Rust per operation, not as an inevitable whole-backend migration.
 
 Reopen with evidence from a focused source specialization or upstream change that
 addresses the measured regressions, then finish the outstanding rejection and loaded-
@@ -30,7 +33,7 @@ A failed numerical/performance/integration gate should produce a bounded diagnos
 an explicit stop/defer decision, not an open-ended compiler or framework project. Ribn
 can continue on its qualified backend. Migration success and competitive inference are
 separate claims; test both. This ordering changes priority, not numerical tolerances,
-resource-lifetime contracts or the eventual one-owner migration target.
+resource-lifetime contracts or the requirement for one coherent execution/resource owner.
 
 ## Runtime integration update (2026-09-11)
 
@@ -50,7 +53,7 @@ The NVIDIA-specific `NvidiaDispatcher` and adapter now live in `crates/nvidia/sr
 
 Keep these ownership boundaries:
 
-- Core owns admission, stable request identities, scheduling, logical state position, cancellation intent, and committed output.
+- The AR runtime owns admission, request/sequence identities, scheduling, committed progress, cancellation intent and output. Qwen translates into transitional core contracts; core has no second scheduler.
 - The NVIDIA backend owns physical KV and recurrent state, model residency, scratch, device allocations, compilation, streams, launches, and completion observation.
 - The dispatcher retains resources for in-flight submissions. Completion permits logical commitment; requesting cancellation does not establish device completion.
 - Partial enqueue failure must drain successfully before recycling resources. Uncertain completion faults the backend and retains resources rather than reporting successful release.
@@ -58,7 +61,7 @@ Keep these ownership boundaries:
 
 `crates/nvidia/src/serving.rs` already documents and implements the relevant stream ordering, pinned output leases, pending submission records, deferred release, and fault retention. Preserve those contracts even if their physical implementation changes.
 
-## Target shape
+## Candidate shape
 
 ```text
 Engine request scheduler / typed state / submit-poll contract
@@ -73,7 +76,7 @@ Engine request scheduler / typed state / submit-poll contract
                      NVIDIA device
 ```
 
-The two upstream projects share `cuda-core` and `cuda-async`. Assess those as the eventual common substrate, rather than assuming cudarc must stay forever or that two host runtimes must coexist permanently. During migration, borrowed handles and allocation adapters can let new kernels use existing resources. The bridge must have one deallocation owner and explicit access ordering; an `Arc` proves liveness, not freedom from conflicting accesses.
+The two pinned upstream projects share `cuda-core` and `cuda-async`. Assess those as a possible common substrate if adoption is justified, rather than mandating their use or assuming two host runtimes must coexist permanently. During migration, borrowed handles and allocation adapters can let new kernels use existing resources. The bridge must have one deallocation owner and explicit access ordering; an `Arc` proves liveness, not freedom from conflicting accesses.
 
 Select Tile versus SIMT per operation. Start by investigating Tile for normalization, attention, and recurrent matrix operations, and SIMT for packed quantization, integer-dot GEMV, and warp-sensitive code. These are hypotheses, not fixed assignments: preserve algorithms where appropriate and change layout or tiling when measurements justify it.
 
@@ -118,7 +121,7 @@ Three independent checks agree, so this is a real floor rather than a message ar
 
 **One shared substrate, confirmed by dependency direction rather than by convention.** `cuda-bindings`, `cuda-core`, and `cuda-async` are published from NVlabs/cutile-rs at 0.3.1 (crates.io, 2026-09-04); cuda-oxide 0.3.1 depends on those crates.io versions and keeps its SIMT surface in their `simt` modules. cuda-oxide's kernel-authoring crates (`cuda-device`, `cuda-macros`, `cuda-host`, `cuda-artifact-finalizer`) are not published, so any Engine kernel-authoring proof pins the cuda-oxide revision. The shared layer also reuses cuda-oxide's published `oxide-artifacts` 0.2.1 for artifact loading. There is no second host runtime to reconcile and no allocation bridge to invent between the two tracks.
 
-**The resource-owner decision is constrained by what cuda-core can borrow.** Its `runtime` layer exposes deliberately non-owning foreign adoption: `Device::borrow_raw` / `borrow_with_owner`, `Stream::borrow_raw` / `borrow_with_owner`, and module/function `borrow_raw`, documented for external frameworks including cudarc. The `simt` layer that both kernel tracks launch through is different: the only raw-construction path for `DeviceBuffer` is `from_raw_parts`, whose contract transfers ownership and frees the pointer on drop, and `CudaStream` has no foreign-handle constructor at all. So Engine cannot adopt a cudarc allocation into cuda-core without handing over ownership, and should not keep two live wrappers over one allocation. The coherent target is the one the migration already names: make cuda-core the single context/stream/buffer owner, and let any remaining legacy code receive borrowed raw handles until it is retired.
+**The resource-owner decision is constrained by what cuda-core can borrow.** Its `runtime` layer exposes deliberately non-owning foreign adoption: `Device::borrow_raw` / `borrow_with_owner`, `Stream::borrow_raw` / `borrow_with_owner`, and module/function `borrow_raw`, documented for external frameworks including cudarc. The `simt` layer that both kernel tracks launch through is different: the only raw-construction path for `DeviceBuffer` is `from_raw_parts`, whose contract transfers ownership and frees the pointer on drop, and `CudaStream` has no foreign-handle constructor at all. So Engine cannot adopt a cudarc allocation into cuda-core without handing over ownership, and should not keep two live wrappers over one allocation. For that historical candidate, the proposed arrangement was cuda-core owning the context/stream/buffers while remaining operations received borrowed raw handles. This is conditional on adoption, interoperability and lifecycle qualification, not a production allocator mandate; one deallocation authority remains required regardless of substrate.
 
 The tile track is the exception worth knowing about, because it is where the borrowed direction is actually supported: cuTile's `Tensor::from_foreign` is documented as its preferred interop entry point, takes a foreign owner token, and holds it alive "so the memory provably outlives every use — no copy, no ownership transfer", naming cudarc and torch as the intended owners. So a tile kernel can run over Engine-owned memory without taking it over, while a SIMT kernel launch through cuda-core's `simt` layer cannot. That asymmetry is what the next probe increment should exercise: `cuda-rust-probe/interop` proves the ownership directions with raw driver work, and an Engine-authored kernel probe should prove the same with a real kernel — `Tensor::from_foreign` for the tile track, and cuda-core-owned memory for the SIMT track.
 
@@ -315,16 +318,16 @@ Integrate the proven kernels into a real scheduler submission with existing kern
 
 Deliverable: hardware-gated lifecycle tests and same-artifact full-model greedy replay. Keep compilation and specialization outside the per-step scheduler path. Required kernels must be prepared before readiness or use an explicitly qualified fallback; measure cold and warm preparation independently from steady-state execution.
 
-### 4. Complete kernel coverage and converge resources
+### 4. Qualify selected operations and converge resources
 
-Migrate remaining quantization families, embeddings, model operations, and both single-row and batched execution paths in verifiable families. Reuse host references and preserve their independence from the new device implementation. Converge on the selected CUDA resource owner and remove transitional allocation/stream adapters when their callers are gone.
+Replace additional quantization families, embeddings or model operations only where the operation-specific adoption gate justifies them. Cover both single-row and batched selection scope; reuse independent host references. Converge on one resource owner and remove transitional allocation/stream adapters when their callers are gone.
 
-Deliverable: the complete text path uses Rust-authored Engine kernels; no permanent legacy/new-backend selection matrix is introduced. Graphs or new algorithms are separate changes unless required for the adopted execution contract.
+Deliverable: each adopted operation has one maintained owner and explicit qualified scope, not a requirement that the complete text path use Rust-authored kernels. Graphs or new algorithms are separate changes unless required for the adopted execution contract.
 
 ### 5. Qualify and retire the legacy pipeline
 
 Repeat existing full-model parity and diverse long greedy replay gates, asynchronous failure/cancellation tests, and matched serving sweeps at concurrency 1–8. Record artifact, compiler, driver/toolkit, GPU, execution mode, numerical tolerances, preparation time, memory use, latency, and throughput. Investigate material regressions rather than treating a language change as a performance win by definition.
 
-Remove superseded `.cu` files, embedded CUDA strings, Engine's NVRTC compilation path, temporary migration flags, and unused dependencies only after replacement coverage passes. Keep reference mathematics and qualification fixtures. Historical commits retain the old implementation without requiring it in the shipped backend.
+Remove superseded `.cu` files, embedded CUDA strings, temporary flags and unused dependencies after the selected replacement's full scope passes; retain NVRTC or other authoring paths still required by qualified production operations. Keep reference mathematics and fixtures. Historical commits retain retired implementations.
 
-Completion means a qualified Rust-authored NVIDIA path with one coherent resource lifecycle and non-CUDA builds still green—not merely that CUDA Rust examples run.
+Completion of an adoption slice means a justified, qualified operation under one coherent resource lifecycle with non-CUDA builds still green—not a Rust-only backend or merely runnable CUDA Rust examples.

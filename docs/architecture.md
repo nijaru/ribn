@@ -17,8 +17,11 @@ CLI run
 ```
 
 `TextOwner::load` assembles the Qwen GGUF/CUDA path. `TextOwner` owns shutdown;
-cloneable `TextModel` handles share its token worker. Preprocessing uses a bounded
-pool, not a second execution loop. Offline batching consumes a bounded window and
+cloneable `TextModel` handles share its token worker. Preprocessing uses a count-bounded
+pool, not a second execution loop. Current raw/chat/token checks bound payload lengths,
+not spare allocation capacity or chat-container storage; options are queued before the
+driver checks stop-list retention. These open byte-bound defects gate untrusted serving.
+Offline batching consumes a bounded window and
 yields ordered per-item outcomes. A slow head bounds lookahead; decoding failure
 abandons only its request. See [text semantics](resource-protocol.md#text-application-facade).
 
@@ -72,7 +75,13 @@ The executor chooses a feasible FIFO prefix and concrete byte envelope. Results 
 device storage, a producer completion dependency and the lease covering them together.
 Dequeue does not refund the charge. Cancellation and malformed handoff return storage
 through the executor's retirement path; uncertain enqueue quarantines storage and its
-charge until a drain proves completion.
+charge until a drain proves completion. Partial construction and normal result/quarantine
+teardown still lack qualified charge retention through allocator-safe reuse/backing release;
+post-enqueue tests do not prove a hard physical-memory bound. `ribn-batch` bounds waiting
+and result counts, not accepted input bytes, selects FIFO prefixes and lacks model-local
+close/shutdown. Pool readiness exists; generic executor blocking has no corresponding
+registration. Temporary head pressure can stall otherwise feasible peers. These limitations
+are owned by the [repair gates](roadmap.md#immediate-bounds-and-lifecycle-repairs).
 
 `ribn-foundation` owns `BytePool`/`PoolLease`/`AllocationId`, shared readiness,
 parameter version labels and scalar metadata. Unused topology/materialization/placement

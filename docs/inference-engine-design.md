@@ -1,40 +1,41 @@
 # Inference engine design
 
-Status: accepted target, not a support claim. Public signatures and prepared-resource
-representations remain unstable. [Resource protocol](resource-protocol.md) owns
-execution ownership; [roadmap](roadmap.md) owns sequencing and unresolved decisions;
-[architecture](architecture.md) describes current code.
+Status: accepted target, revised 2026-10-11; not implemented support or a SOTA claim.
+[Resource protocol](resource-protocol.md) owns execution/resource transitions;
+[roadmap](roadmap.md) owns delivery order, open implementation choices and gates;
+[architecture](architecture.md) maps current source. Public v0 interfaces are unstable.
 
 ## Scope and success criterion
 
 Ribn targets a state-of-the-art, idiomatic Rust, **server-first** inference engine,
 initially competitive with vLLM, SGLang and similar engines. Throughput within latency
 objectives, memory efficiency, model-support velocity, hardware breadth and reliability
-are joint goals. Correct ownership is an enabler, not a smaller correctness-only niche.
+are joint goals. Correct ownership enables that destination; it is not a substitute
+correctness-only niche. Rust alone is neither a performance advantage nor a kernel strategy.
 
 Qwen GGUF/CUDA and the development RTX 4090 are qualification workloads, not the
-product boundary. Qualify selected workloads first, then expand coverage. Compare
-pinned competitor configurations on matched hardware, artifacts, quality settings and
-mixed workloads; report gaps and regressions. No current SOTA or broad-support claim
-follows from this design.
+product boundary. Establish a matched competitive baseline now, expand qualified
+workloads and support, and report gaps. Pin hardware, artifacts, quality policy,
+competitor versions, protocol semantics and arrival distributions. Neither internal
+speedups nor a feature checklist establishes competitiveness or optimality.
 
-Server-first prioritizes sustained concurrency, fairness, overload, cancellation and
-bounded memory over local startup convenience. It does not require IPC or multiple
-processes. CLI, Rust, Python and HTTP must reuse model behavior and execution ownership,
-not implement separate schedulers.
+Server-first means sustained concurrency, fairness, overload, cancellation and bounded
+memory. It does not require IPC. CLI, Rust, Python and HTTP reuse model behavior and
+execution ownership rather than implementing separate schedulers. Minimal serving and
+competitive measurement must not wait for prefix caching, broad model coverage or a
+kernel-language migration. The qualified contiguous path is a valid initial baseline.
 
-All v0 APIs are unstable. Replace flawed contracts and remove superseded paths rather
-than adding compatibility shims. Preserve released behavior only where an actual
-commitment exists; preserve correctness evidence regardless.
+All v0 APIs may be replaced. Remove superseded paths rather than adding compatibility
+shims; retain correctness evidence and explicitly scoped qualified fallbacks.
 
 ## Four boundaries
 
 1. **Artifacts and model definition:** validated configuration, processors, parameter
-   mappings, operation semantics and supported capabilities; no serving lifecycle.
-2. **Prepared execution:** owning backend-specific weights, storage, qualified kernels,
-   completion dependencies and resource ownership.
-3. **Execution policy:** specialized AR, batch/encoder and later iterative or training
-   runtimes. Share mechanisms only when real consumers demonstrate reuse.
+   interpretation, operations and continuation semantics; no serving lifecycle.
+2. **Prepared execution:** owning backend-specific weights, storage, kernels, workspaces
+   and completion dependencies; lower accepted logical work into actual device work.
+3. **Execution policy:** specialized AR, batch/encoder and later iterative/training
+   runtimes; own admission, progress, fairness and logical commitment.
 4. **Application access:** operation-specific owned requests/results, bounded submission,
    cancellation, diagnostics and frontend adapters.
 
@@ -48,169 +49,233 @@ operation-specific model handle + processor
 AR token runtime       batch / encoder    iterative runtime
 continuation           pooling / scores    diffusion / other
    |                         |                |
-   +------ model/backend execution -----------+
+   +------ model/backend prepared execution --+
                          |
              storage / devices / kernels
 ```
 
 A single-runtime model crosses one application boundary to one mutable execution owner.
-Do not insert orchestrator/worker/executor/engine layers that forward identical calls.
-A shallow orchestrator is justified only for genuine cross-runtime dependencies: routing,
-cancellation, output ordering, placement and bounded handoff. It does not allocate KV
-pages, schedule attention tokens or choose kernels.
+Do not insert pass-through orchestrator/worker/executor layers. A shallow composition
+owner is justified by actual cross-runtime dependencies, placement, bounded handoff,
+cancellation or output ordering, not merely by a model having multiple components.
 
-`crates/runtime` (`ribn`) is the AR runtime, not the universal inference API. Text output
-does not imply autoregressive execution. Encoders, speech encoder-decoder models,
-multimodal/omni and diffusion/media models may need materially different loops.
+`crates/runtime` (`ribn`) remains the AR runtime, not the universal inference API.
+Encoders, speech encoder-decoder models and iterative media generation have different
+units of progress. Share mechanisms where concrete consumers demonstrate reuse, not
+scheduling policy or fictional token requests.
 
-## Application API and UX
+## Application API and serving
 
-Users load or serve a model and invoke a supported operation; internal runtime selection
+Users load or serve a model and invoke a supported operation. Internal runtime selection
 is not a mandatory task-default ceremony.
 
-- CLI: `ribn run <model>` and inspection/benchmark utilities. Add operation-specific
-  commands only when semantics genuinely differ.
-- Server: `ribn serve <model>` with a tested, documented protocol subset, health/readiness,
-  metrics, bounded admission, disconnect cancellation and security limits.
-- Rust/Python: cloneable in-process loaded handles with owned responses/streams and
-  operation-specific methods such as generate/chat/embed/score/transcribe. Keep a direct,
-  channel-free runtime surface for embedding and specialized scheduling.
-- Use conventional operation-appropriate protocols: chat/Responses, embeddings, reranking,
-  transcription, speech and image/video generation are not interchangeable payloads.
+- CLI: `ribn run <model>`, inspection and benchmark utilities.
+- Server: `ribn serve <model>` with a documented protocol subset, streaming,
+  health/readiness, metrics, bounded overload, disconnect cancellation and shutdown.
+- Rust/Python: cloneable loaded handles and owned results/streams; operation-specific
+  generate/chat/embed/score/transcribe methods as support exists. Preserve direct,
+  channel-free runtime access.
+- Use operation-appropriate protocols. Chat, embeddings, reranking, audio and media
+  generation are not interchangeable payloads. Reject unsupported operations/options.
 
-These are targets. There is no HTTP server or general model loader yet.
+These are targets; current source has no HTTP server or general loader. Start the
+server as a thin adapter over the owned text facade, not a second execution loop.
+Bound connections, request-body bytes, retained input/options, preprocessing, application
+requests and buffered responses separately. Payload lengths do not bound spare capacity,
+message containers or stop lists. Acquire admission before expensive processing and
+validate retained allocations before queue insertion. Slow clients
+cannot occupy unbounded transport buffers or prevent cancellation and healthy-peer
+progress. Network/authentication/fetching policy stays above model execution.
 
-Keep one mutable execution owner. Blocking and async clients drive the same engine;
-async submission must not block an executor with GPU polling or tokenization. An owned
-stream can outlive submission, yields ordered deltas and one terminal outcome, and owns
-cancellation interest. Dropping it abandons delivery without waiting for device completion.
-Direct use does not require a worker thread. Thread-affine construction needs a real
-backend contract before it is added.
+Separate load/resource configuration, scheduler policy, request generation settings and
+serving settings. Prefer ordinary typed structs/errors to typestate machinery or
+`infer(Any) -> Any`. Async submission must not block an async executor with tokenization
+or GPU polling. An owned stream yields ordered deltas and one terminal outcome;
+abandoning it never asserts device completion. Direct access need not create a worker.
 
-Separate load/resource configuration, scheduler policy, per-request generation settings
-and serving settings. Validate defaults and let explicit request values override supported
-model defaults. Prefer ordinary structs/builders and typed errors to typestate machinery
-or an `infer(Any) -> Any` interface. Unsupported operations fail explicitly.
+## Execution and scheduling
 
-Bound preprocessing, submitted inputs, output buffers and physical resources separately.
-Offline batching admits a bounded window, yields ordered per-item results and does not
-collect an arbitrary iterator first. A stalled consumer cannot block cancellation or
-healthy peers. Caller-collected results are distinct from buffered application storage.
-The [text contract](resource-protocol.md#text-application-facade) owns current details.
+### One owner, bounded overlap
 
-## Model and artifact ownership
+One mutable owner serializes authoritative state transitions, not all CPU and GPU work.
+The target separates persistent sequence state from each submission's input ordering.
+Backend request rows remain stable while live; batch indirection gathers the rows needed
+by a prepared kernel lane. Row identity is not allocation lifetime. Preemption/reuse needs
+completion-safe reclamation, and derived metadata follows its executable snapshot.
 
-A model family owns configuration semantics, parameter interpretation, processors,
-special-token behavior, public capabilities, continuation semantics and backend execution.
-Registration is centralized selection, not family branches scattered through lifecycle,
-routing and protocols. A second real decoder and real VLM must prove this contribution
-boundary before routine integration is advertised.
+First remove avoidable per-step allocation, metadata rebuilding and synchronization.
+Then qualify bounded preparation/execution overlap when timelines show a benefit.
+Each outstanding submission owns immutable transfer staging, table versions, output
+credits, workspace and completion dependencies. A later submission cannot overwrite an
+older buffer. Same-sequence dependencies, ordered commitment, EOS/cancellation and
+failed-drain retirement must be explicit before allowing dependent work ahead of host
+commitment. Start at depth one; deeper execution is a qualified backend capability,
+not an async API guarantee. See the [overlap contract](resource-protocol.md#bounded-overlap-and-submission-ownership).
 
-GGUF and SafeTensors expose format data, not model semantics. HF package resolution
-owns source/revision/config/weight files; it does not choose execution policy. Remote HF
-resolution, tokenizer/processor metadata and architecture registration remain future work.
-GGUF is useful but must not define the whole loading architecture.
+### Logical policy and physical batching
 
-Queued inputs are owned or share explicitly immutable allocations. Raw media, fetching
-policy and preprocessing stay above token scheduling. Actual operations should introduce
-typed text/messages, images, audio, video and tensor interchange where needed; do not
-encode every modality as fictional text tokens. Network APIs must not expose backend
-CUDA/Metal tensor types. Structured/media outputs need their own representation and bounds.
+Use one logical progress frontier per sequence and a bounded token budget across prefill,
+decode and replay. Phase remains an execution distinction, not a reason for unrelated
+ownership paths. Give decoding latency protection while aging prefills/replays so neither
+starves. Select policy and chunk sizes from measured TTFT/ITL/goodput tradeoffs; a token
+budget is not a universal estimate of bytes or execution time.
 
-Native optimized execution is the production target. Evaluate an optional reference path
-for bring-up and numerical comparison: Transformers/PyTorch, exported graphs or suitable
-Rust components are candidates, not decisions. Measure fidelity, model/operator coverage
-and maintenance cost. Python must not become a mandatory production runtime for fallback
-coverage. A registry alone cannot provide automatic day-zero model support.
+The model/backend negotiates aggregate feasible ranges and lowers them into a bounded
+set of compatible physical lanes. Packed/ragged work must amortize weight reads across
+heterogeneous requests where qualified kernels permit it. Request lengths, positions and
+reachable capacities are data, not inherent model incompatibility. Actual layout, dtype,
+state shape and kernel constraints still determine compatibility. Never remove a check
+without qualifying the replacement addressing path or pad every request to maximum
+context merely to preserve a dense kernel.
+
+A mixed logical batch is not evidence of mixed physical batching. Measure scheduled versus
+actually batched rows/tokens, per-phase execution time, host dispatch gaps and fallback
+frequency. Compare policy changes independently of lane changes, including workloads
+where homogeneous batching wins. Keep the current scheduler as a baseline, not an API
+to preserve or a policy to replace without evidence.
+
+### Backend-native optimized execution
+
+Prioritize scalable prefill GEMM, tiled attention, packed/ragged work and persistent
+metadata/workspace before micro-optimization. Evaluate qualified vendor/external kernels
+alongside custom kernels; compare end-to-end costs, including format conversion,
+repacking, workspace, startup and native Rust integration. A Python wrapper's existence
+is not proof of a usable native dependency. GGUF-specific encodings need their own gates.
+
+Resolve static compatibility at preparation where practical. Choose shape/device-specific
+lanes without a universal tensor IR, operator registry, plugin ABI or compiler project.
+Graph capture and fusion are backend-owned variants: stable storage, capture/replay
+lifetimes and numerical scope are part of qualification. Tune in the actual eager or
+captured execution mode; isolated kernel winners may lose in a dependent serving loop.
+
+For non-AR batching, separate execution selection from result ordering. Bound owned input
+bytes before acceptance, permit bounded bypass/bucketing of temporarily infeasible heads
+with aging, and attach real readiness to every temporary wait. Model-local closure and
+retryable cleanup must not close sibling pool authorities. The current BERT FIFO/count-only
+runtime does not yet meet these application-access and healthy-peer-progress targets.
+
+Speculation is a later bounded draft/verify/commit operation, not a flag on ordinary
+decode. It needs target sampling semantics, rollback for every continuation component,
+charged draft/verification storage and accepted-prefix-only delivery/usage. Permit zero
+drafting; optimize committed tokens per complete round and SLO goodput, not acceptance
+rate alone. Deterministic token replay and distribution-preserving sampling are distinct
+contracts. No drafter or algorithm is selected by this design.
 
 ## Continuation resources and prefix reuse
 
-Full-reachable reservation is the safe current Qwen policy, not the serving destination.
-The target is backend-owned block storage, aggregate pre-submit growth negotiation,
-completion-safe settlement, valid hybrid reuse and a progress policy under pressure.
-[Resource protocol](resource-protocol.md#ar-continuation-resources) owns those transitions.
+Dynamic storage, pressure progress and prefix-cache policy are separate deliveries.
+Full-reachable reservation remains the current qualified Qwen fallback, not the destination.
 
-- Declared component shape and maximum capacity are not reservations. Charge only concrete
-  storage; growth is a reservation transaction, not an edit of the declaration.
-- Separate a physical arena/slab's resident byte charge from occupancy of reusable block
-  slots. Evicting a slot does not free the still-resident arena's bytes to sibling runtimes.
-- Start with snapshot-scoped, content-keyed fixed blocks rather than a token-granular radix
-  tree. Parent identity plus tokens identifies content, not proof of live allocations.
-  Restore only where all required KV ancestors and recurrent/other components remain valid.
-- A hybrid KV match without matching recurrent state is not a continuation. Checkpoints
-  must be sparse, and the cache may decline reuse. Restore recurrent state into a private
-  writable allocation; copying and temporary overlap cost real memory.
-- Initial restoration must stop strictly before the prompt's final sampling token, then
-  execute the suffix to obtain logits. A checkpoint after that token cannot simply consume
-  it again in a recurrent model. Cached logits/output state is a separate, deferred policy.
-- Eviction reclaims unreferenced cache occupancy. Preemption reclaims live continuation
-  only after completion, retaining bounded replay history. Start with recomputation, not
-  a host swap tier. Replay cannot duplicate delivery, usage or sampling.
-- Before partial-envelope admission, prove progress: readiness alone cannot break a pool
-  held by active sequences all waiting to grow. Survivor growth must take precedence over
-  victim readmission; permanently infeasible work must reject locally.
+- Initial Qwen paging uses bounded resident K/V arenas, matching the qualified common-base
+  addressing primitive. Charge backing while resident; separately grant reusable slots.
+  Reserve recurrence, workspace, staging and retirement overlap as well as KV occupancy.
+  Do not grow arenas online until allocation/retirement and transient peaks qualify.
+- Negotiate growth for the whole accepted range before launch. Abandonment releases only
+  new unsubmitted ownership; partial enqueue retains old state and new growth until safe
+  settlement. Declarations describe shape/bounds, never reservations.
+- Use completion-safe recomputation as the initial live-pressure mechanism, with survivor
+  growth ahead of victim readmission. Prove a survivor can finish within the granted
+  continuation/workspace envelope. Waiting alone cannot break all-active-growth deadlock.
+  Protection requires output readiness: completion-safely preempt/reselect a survivor
+  whose consumer stalls, rather than letting it strand healthy victims. Retain one
+  bounded replay history; do not duplicate output, usage or sampling.
+- Prefix reuse initially uses snapshot-scoped immutable content blocks and sparse exact
+  recurrent checkpoints. The index identifies content; live allocation owners establish
+  residency. Full attention needs retained prefix coverage, sliding attention its required
+  window, and recurrence its matching state. Reuse advances only to a boundary valid for
+  every model-required component; physical page sizes need not be universal.
+- Restore recurrence into private writable state. Stop before the final prompt sampling
+  token and execute the suffix for logits; cached output/logit state is deferred.
+- Cache admission has a byte budget and a measured benefit requirement. Initially retain
+  selected completed boundaries, not periodic snapshots everywhere. Compare no reuse,
+  simple bounded retention and overlap-aware placement. Cache eviction reclaims safe
+  occupancy; it does not refund resident arena bytes or preempt a live sequence.
 
-The pinned hybrid has 149.6 MiB of recurrent state per sequence versus 16.8 MiB of KV at
-257-token reach. That evidence argues against dense checkpoints; it does not show that
-reuse improves short-request concurrency. Compare paging with and without reuse on a
-justified shared-prefix geometry, including checkpoint residency/copy peaks and TTFT.
+The pinned hybrid's 149.6 MiB recurrent state per sequence versus 16.8 MiB KV at
+257-token reach makes dense checkpoints unattractive. It does not prove that hybrid
+reuse improves short-request concurrency. Measure checkpoint/copy peaks, retained
+capacity, computed tokens, replay cost and net goodput on branching and continuation
+traffic. A cache may decline a hit or retain nothing.
 
-## Execution and performance direction
+Approximate recurrent reconstruction, such as recent suffix-replay research, is not exact
+prefix reuse. Keep it outside the initial production path. Any later experiment requires
+an explicit numerical/quality policy, independent task-level acceptance, separate cache
+identity and opt-in selection; existing numerical error grants no additional error budget.
 
-Keep physical layouts, storage, kernels and device submission backend-native. Idiomatic
-Rust does not mean Rust-only kernels. Qualified vendor/external kernels are appropriate;
-do not build a compiler, tensor IR, operator registry or plugin ABI without concrete need.
-Resolve static compatibility during preparation where practical, not repeated hot-path
-lookup. Coarse dispatch at model/batch boundaries is acceptable.
+## Model support and loading
 
-Prioritize algorithm and data movement before micro-optimization: scalable prefill GEMM,
-tiled attention, packed/ragged cross-request work, dynamic hybrid state, persistent request
-rows and reusable metadata/workspaces. Async APIs alone do not overlap CPU/GPU work.
-Captured graphs/fusion and alternative kernels are explicit qualified variants.
+Model families own configuration, parameter interpretation, processors, special tokens,
+operations, continuation semantics and backend execution. Registration is central selection,
+not family branches throughout lifecycle/routing. Prove this boundary with a real dense
+second decoder, then a real VLM/processor; do not wait for all continuation optimizations.
+The surviving `engine-core` bridge is transitional, not the universal model layer.
+Replace hard-coded geometry and obsolete bridge contracts with their actual model/backend
+owners during those integrations, without creating another catch-all crate.
 
-Current separate prefill/decode queues, one in-flight batch and full-reachable reservations
-are prototype policy, not permanent requirements. Compare unified token scheduling only
-when actual resource costs and mixed-arrival evidence exist. Speculation requires real
-accepted/rollback ownership, not an enum label.
+GGUF and SafeTensors expose artifact data. HF package resolution owns source/revision/files,
+not model semantics. Target byte-aware streaming materialization with bounded concurrent
+reads/conversion/upload staging; a shard-count LRU does not bound clones or transient peak
+bytes. Loading and device preparation need failure owners before advertising memory bounds.
+Tokenizer/processor metadata is part of the executable configuration, not frontend guesswork.
 
-Measure load time, host/device peak memory, TTFT, inter-token latency, throughput, tails,
-cancellation and stalled-consumer bounds. Distinguish trivial-executor host cost from
-model/serving performance. Arithmetic-preserving changes require exact checks; reordered
-algorithms need independently justified metrics and tolerances. Baseline error is not an
-optimization budget. [Model qualification](../.agents/skills/model-integration/SKILL.md)
-owns the recurring procedure.
+Raw media and fetching/preprocessing stay above token scheduling. Actual models determine
+staged versus coupled execution; prompt-positioned VLM features may need just-in-time
+encoder/AR preparation. Network types do not expose backend tensors. Outputs carry their
+own representation and bounds. An optional external reference path can aid bring-up and
+numerical comparison, but Python is not a mandatory production runtime.
 
 ## Composition, hardware and later training
 
-Sequential encoder→decoder models can justify separate runtimes and a device-resident
-handoff. Prompt-positioned VLM features may need coupled encoder/AR scheduling instead.
-[Composition experiments](pipeline-composition.md) explain why neither a universal stage
-graph nor one opaque multimodal request handle is established by current fixtures.
+[Composition counterexamples](pipeline-composition.md) do not establish a universal stage
+graph. Concrete pipelines must prove device dependencies and shared-pool downstream
+workspace progress before claiming composition support.
 
-NVIDIA, AMD, Apple/Metal and CPU implementations may use different physical contracts.
-Test a materially different backend before calling lifecycle abstractions general. External
-systems allocate fleet resources; Ribn owns execution within its grant. Collectives,
-sharding, expert/pipeline/context parallelism and disaggregated transfer require real
-implementations and qualification, not topology metadata.
+Physical layouts and kernels remain backend-specific across NVIDIA, AMD, Apple/Metal and
+CPU. A second real backend must prove any portability claim; the design selects no new
+hardware priority. External systems allocate fleet resources; Ribn executes within its
+grant. Collectives, sharding, expert/pipeline/context parallelism and disaggregated transfer
+require implementations and qualification, not topology metadata. Local use needs no
+synthetic distributed layers. Host cache tiers and remote transfer follow measured demand,
+not the assumption that every cache should be hierarchical.
 
-Coherent executable ownership comes before hot updates. An accepted request pins one
-snapshot of weights/adapters/processors/numerical policy. Start drain-and-replace;
-overlapping snapshots need explicit extra memory. Derived caches require semantic and
-physical compatibility; exact snapshot identity is the safe initial policy.
+An accepted request pins one coherent executable snapshot: weights/adapters, processor
+and numerical policy. Start drain-and-replace; overlapping versions need explicit extra
+capacity and derived-state compatibility. Exact snapshot identity is the initial cache
+policy, not a numeric label pretending to own storage.
 
-Training is a later execution system, not an inference mode. Share artifact I/O, logical
-identity, useful storage/completion and collective mechanisms where implementations align.
-Gradients, autograd, activation retention, optimizer scheduling and checkpoint recovery stay
-outside inference. Trainer-to-rollout publication and Python tensor/result interchange are
-initial integration targets. Revisit shared model mathematics only when a real
-forward/backward/update implementation demonstrates useful reuse or damaging duplication.
+Training is a later execution system. Share artifact/device/storage/completion/collective
+mechanisms where real implementations align. Gradients, autograd, activations, optimizer
+scheduling and recovery remain outside inference policy. Trainer-to-rollout publication
+and Python tensor/result interchange precede a real forward/backward/update experiment;
+that experiment decides useful shared mathematics rather than prebuilding a tensor framework.
 
-## Qualification breadth
+## Qualification and current evidence
 
-Expand from current Qwen hybrid and BERT fixtures to a dense second decoder, real VLM,
-encoder-decoder speech, iterative media model, non-AR text where useful and a second device
-stack. Add structured decoding, logprobs, adapters, realtime/full-duplex sessions and wider
-systems through concrete operation contracts. These are product targets, not a closed
-universal list of runtimes or prerequisites for minimal serving.
+Measure throughput within explicit latency objectives, TTFT/ITL/E2E distributions, fairness,
+overload/cancellation, host cost, loading and physical peaks. Count cached versus freshly
+computed input separately. Add multi-turn branching/tool-delay traces and job latency /
+completed jobs per device where appropriate; the client owns agent orchestration. Structural
+synthetic replay is insufficient for speculative acceptance, MoE routing or quality claims.
+Use content-real cases for those risks and common input histories for numerical comparisons.
 
-The roadmap's next gates—not architecture breadth for its own sake—decide current work.
+Arithmetic-preserving changes require exact checks; reordered algorithms need independently
+justified metrics/tolerances. Current long-prompt reference disagreement is a fidelity item,
+not permission to widen optimized-variant gates. Follow [model qualification](../.agents/skills/model-integration/SKILL.md).
+Expand to encoder-decoder speech, iterative/non-AR text/media, structured outputs, logprobs,
+adapters, realtime sessions and wider hardware through concrete operation contracts, not a
+universal execution API. The [roadmap](roadmap.md) defines the next delivery gates.
+
+### Research basis (reviewed 2026-10-11)
+
+These sources justify mechanisms and experiments, not Ribn performance or universal support.
+Development-head features may differ from releases; pin deployed versions for comparisons.
+Refresh this evidence when implementing the corresponding slice or when upstream contracts change.
+
+- [vLLM MRV2 at `3e8e136`](https://github.com/vllm-project/vllm/blob/3e8e1364ff41330fb667b2d76d6645176d61fdd0/docs/design/model_runner_v2.md): persistent rows separate from step ordering, owned async staging and explicit graph lifecycle. The document explicitly remains incomplete and not rigorously qualified.
+- [vLLM hybrid manager at the same revision](https://github.com/vllm-project/vllm/blob/3e8e1364ff41330fb667b2d76d6645176d61fdd0/vllm/v1/core/kv_cache_manager.py): group-valid cache hits, last-token replay, growth/lookahead reservations and progress headroom. One byte authority does not require one page geometry.
+- [SGLang unified cache at `46a97e5`](https://github.com/sgl-project/sglang/blob/46a97e55400d871ba05537f21ed603321801da2d/python/sglang/srt/mem_cache/unified_radix_cache.py): full/sliding/recurrent component validity and transfer owners. Its component framework is not a Ribn requirement.
+- [TensorRT-LLM overlap at `55279c1`](https://github.com/NVIDIA/TensorRT-LLM/blob/55279c109fe6115979dbf3f99102b513711f99f8/docs/source/features/overlap-scheduler.md) and [agentic trace study](https://github.com/NVIDIA/TensorRT-LLM/blob/55279c109fe6115979dbf3f99102b513711f99f8/docs/source/blogs/tech_blog/blog27_Evaluating_Agentic_Serving_with_Trace_Replay_and_Job_Level_Metrics.md): bounded work ahead of CPU result processing and job-level measurement. Reported GPU/workload results do not transfer to Ribn.
+- [FlashInfer v0.7, 2026-09-22](https://flashinfer.ai/2026/09/22/flashinfer-v07.html): native kernel evaluation and execution-mode-aware tuning; neither Rust integration nor GGUF encoding compatibility is established.
+- [Sarathi-Serve, v3](https://arxiv.org/abs/2403.02310v3): chunked prefill and decode batching under latency constraints, not evidence that one policy wins every workload.
+- [Marconi, MLSys 2025](https://arxiv.org/abs/2411.19379v3) and [sparse exact checkpoints, v1](https://arxiv.org/abs/2605.05219v1): reuse-value/memory economics and overlap-aware placement. The latter's layer-group prototype is not full-serving qualification.
+- [SuffixReplay, 2026-09-27 v1](https://arxiv.org/abs/2609.33477v1): approximate state reconstruction with reported quality retention below 100%; an experimental numerical policy, not transparent exact caching.

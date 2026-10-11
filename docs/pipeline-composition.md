@@ -54,9 +54,11 @@ prefill samples output. Impossible indivisible work rejects at admission.
 
 The former completion-time `Blocked` result was removed: it named no readiness source
 and could immediately resubmit unchanged work. Partial completion is evidence of work
-already done, **not preparation**. The current API cannot park an already-admitted row
-at a temporarily unready leading dependency. This requires real pre-submit
-negotiation, not a zero-progress success result or `yield_now` loop.
+already done, **not preparation**. The current AR preparation transaction can shorten
+accepted ranges or park already-admitted rows with registered readiness before launch;
+its host gates cover that control seam. No real VLM encoder dependency or physical
+handoff consumer has qualified it. Do not substitute zero-progress completion or a
+`yield_now` loop for preparation, dependency ownership and device evidence.
 
 The fixture's integer cost units do not define a production resource vector. Raw
 media and processing stay above token scheduling. A real VLM should determine the

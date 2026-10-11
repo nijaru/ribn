@@ -90,7 +90,7 @@ possible later execution system, not inference policy.
   and prove downstream progress; count bounds alone are not byte bounds.
 - Continuation is not necessarily KV. Reusable hybrid prefixes require all necessary
   attention/recurrent/other components to agree at the boundary.
-- Current separate queues, full-context reservation and one in-flight batch are
+- Current separate queues, full-reachable reservation and one in-flight batch are
   prototype mechanics, not permanent architecture. Change them with correctness and
   workload evidence, not merely to imitate another engine.
 
