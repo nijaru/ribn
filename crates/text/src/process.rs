@@ -17,16 +17,20 @@ use ribn::TokenRequest;
 use ribn::driver::RequestPermit;
 
 use crate::error::TextError;
-use crate::input::TextInput;
+use crate::input::{Message, TextInput};
 
-/// Separate byte bounds for text input, rendering and retained decode output.
+/// Separate bounds for input payload, owned allocations, rendering and decode output.
 ///
 /// These are text-layer limits. The token driver keeps its own encoded-input
 /// envelope, and a request must satisfy both.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ProcessorLimits {
-    /// Raw prompt text, or summed message role and content bytes, per request.
+    /// Raw prompt text, summed message role/content, or token payload bytes.
     pub max_input_bytes: usize,
+    /// Owned input and generation-option heap capacity before preprocessing.
+    /// Includes chat-container storage, string/vector spare capacity and stop IDs;
+    /// fixed job objects and allocator overhead are not part of this envelope.
+    pub max_retained_bytes: usize,
     /// Rendered chat-template bytes per request.
     pub max_rendered_bytes: usize,
     /// Encoded prompt tokens per request.
@@ -39,6 +43,7 @@ impl Default for ProcessorLimits {
     fn default() -> Self {
         Self {
             max_input_bytes: 256 * 1024,
+            max_retained_bytes: 512 * 1024,
             max_rendered_bytes: 512 * 1024,
             max_prompt_tokens: 65_536,
             max_decoded_token_bytes: 4 * 1024,
@@ -50,17 +55,43 @@ impl ProcessorLimits {
     #[must_use]
     pub const fn is_valid(self) -> bool {
         self.max_input_bytes > 0
+            && self.max_retained_bytes > 0
             && self.max_rendered_bytes > 0
             && self.max_prompt_tokens > 0
             && self.max_decoded_token_bytes > 0
     }
 
-    /// Bytes one input retains for its request, whatever the variant. Text and
-    /// already-encoded token input are measured separately from rendered output
-    /// and decoded payload.
+    /// Heap capacity retained by an owned input, including chat-container storage.
+    /// This excludes fixed job objects and allocator overhead, not spare capacity.
     #[must_use]
     pub fn retained_bytes(input: &TextInput) -> usize {
         match input {
+            TextInput::Prompt(text) => text.capacity(),
+            TextInput::Chat(messages) => messages.iter().fold(
+                messages.capacity().saturating_mul(size_of::<Message>()),
+                |total, message| {
+                    total
+                        .saturating_add(message.role.capacity())
+                        .saturating_add(message.content.capacity())
+                },
+            ),
+            TextInput::Tokens(tokens) => tokens.capacity().saturating_mul(size_of::<u32>()),
+        }
+    }
+
+    /// Validate payload and owned allocation bounds without copying or shrinking.
+    /// Excess capacity rejects rather than introducing a normalization peak.
+    ///
+    /// # Errors
+    /// Returns a request-local limit error.
+    pub fn check_input(self, input: &TextInput) -> Result<(), TextError> {
+        // Reject container-only overflow before walking arbitrarily many empty
+        // messages. Once this fits, the number of messages inspected is bounded.
+        if let TextInput::Chat(messages) = input {
+            let bytes = messages.capacity().saturating_mul(size_of::<Message>());
+            self.check_retained("retained input bytes", bytes)?;
+        }
+        let bytes = match input {
             TextInput::Prompt(text) => text.len(),
             TextInput::Chat(messages) => messages.iter().fold(0usize, |total, message| {
                 total
@@ -68,21 +99,40 @@ impl ProcessorLimits {
                     .saturating_add(message.content.len())
             }),
             TextInput::Tokens(tokens) => tokens.len().saturating_mul(size_of::<u32>()),
-        }
-    }
-
-    /// Reject an input that exceeds the retained-input bound. This is checked
-    /// before an input is queued, so the aggregate bound is permits times this
-    /// envelope rather than however much callers happen to retain meanwhile.
-    ///
-    /// # Errors
-    /// Returns a request-local limit error.
-    pub fn check_input(self, input: &TextInput) -> Result<(), TextError> {
-        let bytes = Self::retained_bytes(input);
+        };
         if bytes > self.max_input_bytes {
             return Err(TextError::limit("input bytes", self.max_input_bytes, bytes));
         }
+        self.check_retained("retained input bytes", Self::retained_bytes(input))
+    }
+
+    fn check_retained(self, field: &'static str, bytes: usize) -> Result<(), TextError> {
+        if bytes > self.max_retained_bytes {
+            return Err(TextError::limit(field, self.max_retained_bytes, bytes));
+        }
         Ok(())
+    }
+
+    fn check_request(
+        self,
+        input: &TextInput,
+        options: &GenerationOptions,
+    ) -> Result<(), TextError> {
+        self.check_input(input)?;
+        let bytes = Self::retained_bytes(input).checked_add(
+            options
+                .stop_tokens
+                .capacity()
+                .saturating_mul(size_of::<u32>()),
+        );
+        match bytes {
+            Some(bytes) => self.check_retained("retained request bytes", bytes),
+            None => Err(TextError::limit(
+                "retained request bytes",
+                self.max_retained_bytes,
+                usize::MAX,
+            )),
+        }
     }
 }
 
@@ -392,8 +442,8 @@ impl PoolClient {
 
     /// Queue preparation under an existing permit.
     ///
-    /// The input must satisfy the retained-input bound before it is queued, so
-    /// the aggregate queue retention is permits times that envelope. The queue
+    /// Input and options must satisfy their joint retained-allocation envelope
+    /// before queuing; aggregate heap capacity is permits times that envelope. The queue
     /// length cannot exceed the permit pool either, because every queued job owns
     /// one permit.
     pub(crate) fn submit(
@@ -402,7 +452,12 @@ impl PoolClient {
         options: GenerationOptions,
         permit: RequestPermit,
     ) -> Result<Receiver<Result<Prepared, TextError>>, TextError> {
-        self.state.limits.check_input(&input)?;
+        self.state.limits.check_request(&input, &options)?;
+        // Even without prompt tokens, these options must fit the driver's stop
+        // storage plus runtime-copy allowance. Do not queue an impossible job.
+        permit
+            .check_input(0, &options)
+            .map_err(TextError::Admission)?;
         if self.is_closed() {
             return Err(TextError::Closed);
         }
@@ -445,6 +500,11 @@ fn prepare(
             options.stop_tokens.push(stop);
         }
     }
+    // Model-added stop IDs can grow the vector. Validate before retaining a
+    // prepared reply, not only when its consumer eventually submits to the driver.
+    permit
+        .check_input(tokens.len(), &options)
+        .map_err(TextError::Admission)?;
     Ok(Prepared {
         request: TokenRequest::new(tokens, options),
         permit,

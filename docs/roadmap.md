@@ -7,8 +7,8 @@ open implementation choices and acceptance gates. All v0 interfaces may change.
 
 ## Current execution order
 
-**Next: repair owned-input retention, then deliver minimal text serving and a matched
-competitive baseline on the qualified contiguous path.** Develop heterogeneous physical
+**Next: deliver minimal text serving and a matched competitive baseline on the qualified
+contiguous path.** Owned-input retention is repaired and host-qualified. Develop heterogeneous physical
 batching/scheduling and constrained-memory continuation alongside that baseline.
 Prefix-cache benefit, a second decoder/VLM, CUDA Rust migration and distributed execution
 are not prerequisites for the first server. They remain important product work.
@@ -20,7 +20,7 @@ future capability. No redesigned capability is implemented or qualified by this 
 
 | Delivery | Required outcome | Dependency |
 | --- | --- | --- |
-| Owned-input repair | Bound accepted allocations/options, not merely payload lengths | Before claiming bounded text admission or exposing it to untrusted network clients |
+| Owned-input repair — host-qualified | Accepted heap capacity/options checked before preprocessing queue insertion; excess rejects without normalization | Completed prerequisite for bounded text admission; not a process-RSS bound |
 | Minimal text serving (5) | Thin owned-facade adapter, protocol/overload/cancellation gates, matched endpoint measurements | Repaired text retention and current path's applicable lifecycle gates; no paging dependency |
 | Physical execution and scheduling (4d) | Useful heterogeneous lanes, measured scheduling costs/goodput, bounded metadata | Numerical/retirement qualification for each selected lane; can start on contiguous storage |
 | Dynamic continuation (4b/4c) | Paged writes/growth, resident accounting and recomputation progress | Physical retirement, replay history and all-active-pressure proof before partial envelopes |
@@ -38,7 +38,7 @@ and GDN regressions. Do not start gate 3 or build a compiler project around it.
 | Slice | Result and retained evidence |
 | --- | --- |
 | 1. Ownership baseline | Positive partial progress, whole-completion validation, runtime-owned discard and retryable retirement. Completion-time blocking removed. [Runtime evidence](../benchmarks/runtime-contract.md) |
-| 2. Concurrent application access | One token worker, bounded request/event counts, handles/streams, cancellation and shutdown retry; text preprocessing/decoding and ordered offline batching. Allocation-retention gaps remain below. [Contract](resource-protocol.md#owned-ar-driver-contract) |
+| 2. Concurrent application access | One token worker, bounded request/event counts, handles/streams, cancellation and shutdown retry; text preprocessing/decoding and ordered offline batching. Accepted allocation/options retention is now host-qualified; non-AR/physical gaps remain below. [Contract](resource-protocol.md#owned-ar-driver-contract) |
 | 3. Encoder preparation | BERT CUDA fixture through `ribn-batch`, result leases/dependencies and post-enqueue retirement gates. Not a complete encoder application lifecycle or hard physical-memory bound. [Qualification](../benchmarks/encoder-qualification.md) |
 | 4a. Request-reachable continuation | Prompt plus output reach, not maximum context. Three reference-matching requests fit a 500 MiB authority that cannot hold two context-sized charges. [Evidence](../benchmarks/runtime-contract.md) |
 | 4b host preparation | Aggregate accepted ranges, credit refunds, readiness/local rejection and uncertain ownership through the AR engine. Qwen validates/retains a fully reserved backend batch; no physical growth. [Host gate](../benchmarks/runtime-contract.md#ar-pre-submit-preparation-host-gate) |
@@ -58,13 +58,15 @@ Historical timings do not qualify the migrated harness.
 
 Source audit at `093cd28` found gaps that passing current fixtures do not cover:
 
-1. **Text accepted-allocation retention.** `ProcessorLimits::retained_bytes` in
-   `crates/text/src/process.rs` counts lengths, not capacity or chat-container storage.
-   Preprocessing retains unchecked generation options before the driver checks stop-list
-   storage. Validate or normalize all owned input/options before queue insertion, with
-   bounded temporary overlap. Keep semantic payload and allocation envelopes distinct.
-   Gate small strings/vectors with large capacities, many empty messages and oversized
-   stop options behind blocked preprocessing. Preserve permit lifetime and local errors.
+1. **Text accepted-allocation retention — repaired, host-qualified.**
+   `ProcessorLimits::max_retained_bytes` bounds input/options heap capacity separately
+   from payload length. Before queue insertion, reject spare capacity, chat containers,
+   joint input/options overflow and stop storage that cannot fit the driver envelope.
+   No normalization copy/peak is introduced. Validate model-added stops/encoded counts
+   before prepared replies. Real-facade regressions failed on the original spare-capacity
+   and blocked-worker options defects; host gates now cover these, exact joint bounds,
+   runtime stop copies, local errors, permit return and invalid aggregate configuration.
+   This does not qualify allocator overhead, arbitrary processor workspace or process RSS.
 2. **Non-AR application access.** `BatchRuntime` in `crates/batch/src/lib.rs` bounds counts,
    not submitted input bytes, selects FIFO prefixes and lacks local close/shutdown.
    Executor `Blocked(C)` has no general readiness registration. Add retained-input
@@ -80,9 +82,10 @@ Source audit at `093cd28` found gaps that passing current fixtures do not cover:
    that an ordinary path. Gate partial allocation/upload, teardown, failed drain and
    sibling-stream pressure. No hard shared-device peak claim until these owners qualify.
 
-These are implementation defects/limitations, not grounds to weaken the owning contracts.
-The first repair is the next concrete implementation task. Do not relabel existing
-count/payload or post-enqueue tests as allocation-retention/physical-release evidence.
+The remaining defects/limitations do not weaken the owning contracts or block unrelated
+qualified paths. The next concrete delivery is the minimal text server below; non-AR and
+physical-accounting repairs gate their affected paths. Do not relabel count/payload or
+post-enqueue tests as physical-release evidence.
 
 ## 4. Dynamic AR, physical execution and model-local integration
 

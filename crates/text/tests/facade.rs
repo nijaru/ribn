@@ -31,6 +31,7 @@ const EOS: u32 = 0;
 fn limits() -> ProcessorLimits {
     ProcessorLimits {
         max_input_bytes: 4096,
+        max_retained_bytes: 8192,
         max_rendered_bytes: 4096,
         max_prompt_tokens: 64,
         max_decoded_token_bytes: 16,
@@ -118,6 +119,32 @@ impl TextProcessor for PanickingProcessor {
     fn encode(&self, input: TextInput) -> Result<EncodedInput, TextError> {
         if matches!(&input, TextInput::Prompt(text) if text == "panic") {
             panic!("fixture processor panic");
+        }
+        self.inner.encode(input)
+    }
+
+    fn decode_token_into(&self, token: u32, out: &mut Vec<u8>) -> Result<(), TextError> {
+        self.inner.decode_token_into(token, out)
+    }
+}
+
+/// Holds one real preprocessing call so queue-bound checks cannot be mistaken
+/// for validation performed after a worker consumes the request.
+struct BlockingProcessor {
+    inner: Arc<dyn TextProcessor>,
+    entered: flume::Sender<()>,
+    release: flume::Receiver<()>,
+}
+
+impl TextProcessor for BlockingProcessor {
+    fn limits(&self) -> ProcessorLimits {
+        self.inner.limits()
+    }
+
+    fn encode(&self, input: TextInput) -> Result<EncodedInput, TextError> {
+        if matches!(&input, TextInput::Prompt(text) if text == "hold") {
+            self.entered.send(()).unwrap();
+            self.release.recv().unwrap();
         }
         self.inner.encode(input)
     }
@@ -644,6 +671,7 @@ fn input_bounds_reject_before_admission_and_release_the_permit() {
     let harness = Harness::with_events(
         ProcessorLimits {
             max_input_bytes: 8,
+            max_retained_bytes: 128,
             max_rendered_bytes: 8,
             max_prompt_tokens: 2,
             max_decoded_token_bytes: 4,
@@ -711,11 +739,231 @@ fn input_bounds_reject_before_admission_and_release_the_permit() {
     assert_eq!(again.text, "!");
 }
 
+fn oversized_inputs() -> [(&'static str, TextInput); 6] {
+    let mut prompt = String::with_capacity(1 << 20);
+    prompt.push('h');
+    let mut tokens = Vec::with_capacity(1 << 18);
+    tokens.push(u32::from(b'h'));
+    let mut messages = Vec::with_capacity(1 << 16);
+    messages.push(Message::user("h"));
+    let mut content = String::with_capacity(1 << 20);
+    content.push('h');
+    let mut role = String::with_capacity(1 << 20);
+    role.push_str("user");
+    let mut empty_messages = vec![Message::new("", ""); 16_384];
+    empty_messages.push(Message::user("h"));
+
+    [
+        ("prompt capacity", TextInput::Prompt(prompt)),
+        ("token capacity", TextInput::Tokens(tokens)),
+        ("chat capacity", TextInput::Chat(messages)),
+        (
+            "message content capacity",
+            TextInput::chat(vec![Message::user(content)]),
+        ),
+        (
+            "message role capacity",
+            TextInput::chat(vec![Message::new(role, "h")]),
+        ),
+        ("empty message containers", TextInput::Chat(empty_messages)),
+    ]
+}
+
+#[test]
+fn oversized_inputs_and_options_reject_while_preprocessing_is_blocked() {
+    let (entered, observed) = flume::bounded(1);
+    let (release, blocked) = flume::bounded(1);
+    let harness = Harness::with_processor(
+        Arc::new(BlockingProcessor {
+            inner: processor(ProcessorLimits {
+                max_retained_bytes: 512 * 1024,
+                ..limits()
+            }),
+            entered,
+            release: blocked,
+        }),
+        TextConfig {
+            preprocessing_workers: 1,
+            batch_window: 1,
+        },
+        8,
+    );
+    harness.plan.script(b'h', &[u32::from(b'!'), EOS]);
+    let mut cx = Context::from_waker(Waker::noop());
+    let mut held = Box::pin(harness.model.stream(TextInput::prompt("hold"), options()));
+    assert!(held.as_mut().poll(&mut cx).is_pending());
+    observed
+        .recv_timeout(Duration::from_secs(3))
+        .expect("worker holds preprocessing");
+
+    let mut oversized = options();
+    oversized.stop_tokens = Vec::with_capacity(1 << 20);
+    let mut over_driver = options();
+    over_driver.stop_tokens = Vec::with_capacity(70_000);
+    let mut over_copy = options();
+    over_copy.stop_tokens = vec![u32::MAX; 40_000];
+    let inputs = oversized_inputs()
+        .into_iter()
+        .map(|(case, input)| (case, input, options(), false));
+    let option_cases = [
+        (
+            "owned option capacity",
+            TextInput::prompt("h"),
+            oversized,
+            false,
+        ),
+        (
+            "encoded option capacity",
+            TextInput::prompt("h"),
+            over_driver,
+            true,
+        ),
+        (
+            "runtime stop-list copy",
+            TextInput::prompt("h"),
+            over_copy,
+            true,
+        ),
+    ];
+    let mut outcomes = Vec::new();
+    // More rejections than permits: failed checks must return admission capacity.
+    for (case, input, options, encoded) in inputs.chain(option_cases) {
+        let mut rejected = Box::pin(harness.model.stream(input, options));
+        outcomes.push((case, rejected.as_mut().poll(&mut cx), encoded));
+    }
+    // Always unblock the real worker, even when running this on the old defect.
+    release.send(()).unwrap();
+    for (case, outcome, encoded) in outcomes {
+        let error = match outcome {
+            Poll::Ready(result) => expect_stream_err(result, case),
+            Poll::Pending => panic!("{case} was queued behind blocked preprocessing"),
+        };
+        assert!(error.is_request_local(), "{case}: {error:?}");
+        if encoded {
+            assert!(
+                matches!(error, TextError::Admission(DriverError::InputTooLarge)),
+                "{case}: {error:?}"
+            );
+        } else {
+            assert!(
+                matches!(error, TextError::LimitExceeded { .. }),
+                "{case}: {error:?}"
+            );
+        }
+    }
+    let mut stream = run(held).unwrap();
+    assert_eq!(drain(&mut stream).0, "!");
+    assert_eq!(
+        harness
+            .model
+            .generate_blocking(TextInput::prompt("h"), options())
+            .unwrap()
+            .text,
+        "!"
+    );
+}
+
+#[test]
+fn oversized_prepared_replies_release_permits_without_being_consumed() {
+    let (entered, observed) = flume::bounded(1);
+    let (release, blocked) = flume::bounded(1);
+    let harness = Harness::with_processor(
+        Arc::new(BlockingProcessor {
+            inner: processor(ProcessorLimits {
+                max_retained_bytes: 512 * 1024,
+                ..limits()
+            }),
+            entered,
+            release: blocked,
+        }),
+        TextConfig {
+            preprocessing_workers: 1,
+            batch_window: 1,
+        },
+        8, // Exactly two driver permits.
+    );
+    harness.plan.script(b'h', &[u32::from(b'!'), EOS]);
+    let mut oversized = options();
+    oversized.stop_tokens = vec![u32::MAX; 32_768];
+    // With zero prompt tokens, stop capacity plus its runtime copy exactly fits
+    // the default 256 KiB driver envelope. Encoding adds tokens and artifact EOS;
+    // adding EOS to the full vector also grows its capacity.
+    assert_eq!(
+        (oversized.stop_tokens.capacity() + oversized.stop_tokens.len()) * size_of::<u32>(),
+        DriverConfig::default().max_input_bytes
+    );
+    let mut held = Box::pin(harness.model.stream(TextInput::prompt("hold"), oversized));
+    let mut cx = Context::from_waker(Waker::noop());
+    assert!(held.as_mut().poll(&mut cx).is_pending());
+    observed
+        .recv_timeout(Duration::from_secs(3))
+        .expect("worker holds preprocessing");
+    release.send(()).unwrap();
+
+    // A single preprocessing worker must settle the oversized job before this
+    // healthy one. Keep this second stream's permit and the first reply unread.
+    let mut retained = harness
+        .model
+        .stream_blocking(TextInput::prompt("h"), options())
+        .unwrap();
+    let peer = harness
+        .model
+        .generate_blocking(TextInput::prompt("h"), options())
+        .expect("the rejected prepared reply must already have returned its permit");
+    assert_eq!(peer.text, "!");
+    let error = expect_stream_err(run(held), "encoded overflow must reject");
+    assert!(matches!(
+        error,
+        TextError::Admission(DriverError::InputTooLarge)
+    ));
+    assert!(error.is_request_local());
+    assert_eq!(drain(&mut retained).0, "!");
+}
+
+#[test]
+fn input_and_options_share_one_retained_allocation_envelope() {
+    let bound = 128;
+    let harness = Harness::with_events(
+        ProcessorLimits {
+            max_retained_bytes: bound,
+            ..limits()
+        },
+        TextConfig::default(),
+        8,
+    );
+    harness.plan.script(b'h', &[u32::from(b'!'), EOS]);
+    for (capacity, accepted) in [(64, true), (65, false)] {
+        let mut prompt = String::with_capacity(capacity);
+        prompt.push('h');
+        let mut options = options();
+        options.stop_tokens = Vec::with_capacity(16);
+        let retained = prompt.capacity() + options.stop_tokens.capacity() * size_of::<u32>();
+        assert!(
+            prompt.capacity() <= bound
+                && options.stop_tokens.capacity() * size_of::<u32>() <= bound
+        );
+        let result = harness
+            .model
+            .generate_blocking(TextInput::Prompt(prompt), options);
+        if accepted {
+            assert_eq!(retained, bound);
+            assert_eq!(result.unwrap().text, "!");
+        } else {
+            let error =
+                result.expect_err("separately feasible allocations exceed their joint bound");
+            assert!(
+                matches!(error, TextError::LimitExceeded { field: "retained request bytes", allowed, actual } if allowed == bound && actual == retained)
+            );
+        }
+    }
+}
+
 #[test]
 fn prompt_token_bound_is_enforced_after_tokenization() {
     let harness = Harness::start(
         ProcessorLimits {
             max_input_bytes: 4096,
+            max_retained_bytes: 8192,
             max_rendered_bytes: 4096,
             max_prompt_tokens: 2,
             max_decoded_token_bytes: 4,
@@ -901,36 +1149,52 @@ fn owner_shutdown_closes_admission_and_reports_success() {
 
 #[test]
 fn invalid_assembly_settings_are_rejected() {
-    let plan = Arc::new(Plan::default());
-    let engine = Engine::new(
-        Fixture::new(plan),
-        EngineConfig {
-            max_active_requests: 2,
-            max_queued_requests: 2,
-            max_queued_input_tokens: 256,
-            max_buffered_events: 8,
-            max_events_per_request: 4,
-        },
-        SchedulePolicy {
-            max_batch_tokens: 8,
-            ..SchedulePolicy::default()
-        },
-    )
-    .expect("fixture engine");
-    let driver = DriverConfig::for_engine(&engine);
-    let (shutdown, handle) = Driver::spawn(engine, driver).expect("driver spawn");
-    let Err(error) = TextOwner::new(
-        processor(limits()),
-        shutdown,
-        handle,
-        TextConfig {
-            preprocessing_workers: 0,
-            batch_window: 2,
-        },
-    ) else {
-        panic!("zero preprocessing workers must be rejected");
-    };
-    assert!(matches!(error, TextError::InvalidInput(_)));
+    for (limits, config) in [
+        (
+            limits(),
+            TextConfig {
+                preprocessing_workers: 0,
+                ..TextConfig::default()
+            },
+        ),
+        (
+            ProcessorLimits {
+                max_retained_bytes: 0,
+                ..limits()
+            },
+            TextConfig::default(),
+        ),
+        (
+            ProcessorLimits {
+                max_retained_bytes: usize::MAX,
+                ..limits()
+            },
+            TextConfig::default(),
+        ),
+    ] {
+        let plan = Arc::new(Plan::default());
+        let engine = Engine::new(
+            Fixture::new(plan),
+            EngineConfig {
+                max_active_requests: 2,
+                max_queued_requests: 2,
+                max_queued_input_tokens: 256,
+                max_buffered_events: 8,
+                max_events_per_request: 4,
+            },
+            SchedulePolicy {
+                max_batch_tokens: 8,
+                ..SchedulePolicy::default()
+            },
+        )
+        .expect("fixture engine");
+        let driver = DriverConfig::for_engine(&engine);
+        let (shutdown, handle) = Driver::spawn(engine, driver).expect("driver spawn");
+        let Err(error) = TextOwner::new(processor(limits), shutdown, handle, config) else {
+            panic!("invalid text bounds/configuration must be rejected");
+        };
+        assert!(matches!(error, TextError::InvalidInput(_)));
+    }
 }
 
 #[test]

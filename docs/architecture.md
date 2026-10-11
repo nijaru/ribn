@@ -17,10 +17,13 @@ CLI run
 ```
 
 `TextOwner::load` assembles the Qwen GGUF/CUDA path. `TextOwner` owns shutdown;
-cloneable `TextModel` handles share its token worker. Preprocessing uses a count-bounded
-pool, not a second execution loop. Current raw/chat/token checks bound payload lengths,
-not spare allocation capacity or chat-container storage; options are queued before the
-driver checks stop-list retention. These open byte-bound defects gate untrusted serving.
+cloneable `TextModel` handles share its token worker. Preprocessing uses a permit-bounded
+pool, not a second execution loop. Separate payload and retained-heap envelopes reject
+excess string/token capacity, chat-container storage and generation options before queue
+insertion. Stop capacity plus the runtime copy must also fit the driver's encoded envelope;
+model-added stops and actual encoded tokens are checked before publishing a prepared reply.
+Fixed job objects are count-bounded; allocator overhead and processor workspace are not
+included in the retained-input envelope. These host checks are not a process-RSS bound.
 Offline batching consumes a bounded window and
 yields ordered per-item outcomes. A slow head bounds lookahead; decoding failure
 abandons only its request. See [text semantics](resource-protocol.md#text-application-facade).

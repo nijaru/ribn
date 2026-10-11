@@ -3,8 +3,8 @@
 Status: accepted execution contract, revised 2026-10-11. Implemented behavior and
 qualification limits are identified below; targets do not retroactively qualify source.
 AR preparation control is host-qualified. Dynamic Qwen growth, bounded overlap,
-non-AR application lifecycle and snapshot replacement remain unimplemented. Text
-allocation-retention and CUDA physical-accounting gaps remain open. The
+non-AR application lifecycle and snapshot replacement remain unimplemented. Accepted text
+allocation/options retention is host-qualified; CUDA physical-accounting gaps remain open. The
 [roadmap](roadmap.md) owns delivery order and acceptance gates.
 
 ## Current boundary
@@ -544,10 +544,10 @@ No force-kill timeout may release device-visible memory.
 ## Text application facade
 
 Status: implemented; host-qualified, with the CUDA lifecycle, cancellation and
-multi-request determinism gates passing on the RTX 4090. Those gates do not cover
-allocation-capacity retention: current `ProcessorLimits::retained_bytes` counts payload
-lengths, omits chat-container storage, and preprocessing queues options before the driver's
-stop-list envelope check. These are open bounds defects, not qualified byte guarantees.
+multi-request determinism gates passing on the RTX 4090. Retained input/options bounds
+are separately host-qualified: spare capacity, chat-container storage, joint allocations
+and stop-list copies reject before preprocessing queue insertion, even with a blocked
+worker. These heap-capacity checks are not process-RSS or device-memory qualification.
 The one accepted deviation from the first draft is that this layer does **not** own an
 architecture registry or a second worker: it owns text preprocessing, incremental
 decoding and offline batching above the owned token driver. It holds no scheduler,
@@ -590,14 +590,19 @@ above it and must be bounded independently:
   explicit token limit; a caller-supplied token vector is checked before admission.
   Exceeding any limit is a request-local rejection with a typed error; it is never a
   device fault.
-- The retained-allocation bound must be checked **before** queue insertion, including
-  input container/capacity and generation options. Payload validation is separate.
-  Normalize or reject excess capacity with bounded temporary storage; arbitrary numbers
-  of empty messages and oversized stop lists must not bypass retention accounting.
-  This target is not met by the current length-only preprocessing check. Once implemented,
-  aggregate queued retention is bounded by permits times the owned envelope.
-- Encoded tokens plus the runtime's stop-list copy must still fit the permit's
-  encoded-input envelope. The text layer does not enlarge that envelope.
+- `ProcessorLimits::max_retained_bytes` bounds owned input and generation-option heap
+  capacity **before** queue insertion, separately from `max_input_bytes` payload length.
+  Include string/token capacity, `Vec<Message>` capacity and role/content allocations,
+  plus caller stop-vector capacity. Reject excess capacity without copying/shrinking;
+  many empty messages cannot bypass container accounting. Fixed jobs are count-bounded,
+  and allocator overhead is outside this envelope. Assembly rejects aggregate-bound
+  overflow; queued input/options capacity is at most permits times this envelope.
+- Stop capacity plus its future runtime copy must fit the permit's encoded envelope
+  before queuing. After encoding and model-stop merging, check the complete encoded
+  token count and stop storage before publishing a prepared reply. Submission rechecks
+  the same driver rule. The text layer does not enlarge that envelope; rejection is
+  request-local and returns the unused permit. Processor workspace/rendering have their
+  own bounds, not a hard process-RSS guarantee derived from retained input.
 - Preprocessing runs on a fixed, bounded worker pool with a bounded queue. Jobs
   own their permit, so outstanding preprocessing cannot exceed the permit pool
   and the queue is bounded by construction. A dropped submission may let its job

@@ -13,7 +13,7 @@ use ribn::{EngineError, ExecutionError};
 /// flattened string.
 #[derive(Clone, Debug)]
 pub enum TextError {
-    /// A declared text bound rejected the payload before it was retained.
+    /// A declared text payload or allocation bound rejected buffered retention.
     LimitExceeded {
         field: &'static str,
         allowed: usize,
@@ -52,13 +52,14 @@ impl TextError {
     }
 
     /// Whether this request's own content caused the failure, so retrying the
-    /// same input cannot help. Admission and owner failures are excluded: they
-    /// are capacity or lifecycle conditions, not invalid input.
+    /// same input cannot help. Overload and owner failures are excluded; an
+    /// encoded-input envelope violation is request-local, not pool pressure.
     #[must_use]
     pub const fn is_request_local(&self) -> bool {
         matches!(
             self,
             Self::LimitExceeded { .. }
+                | Self::Admission(DriverError::InputTooLarge)
                 | Self::InvalidInput(_)
                 | Self::Processor(_)
                 | Self::Decode { .. }

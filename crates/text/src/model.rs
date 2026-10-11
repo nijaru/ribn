@@ -307,7 +307,7 @@ impl TextOwner {
     /// Assemble the text layer over an already spawned token driver.
     ///
     /// # Errors
-    /// Rejects invalid processor bounds or zero workers/window.
+    /// Rejects invalid/overflowing processor bounds or zero workers/window.
     pub fn new(
         processor: Arc<dyn TextProcessor>,
         driver: DriverOwner,
@@ -317,6 +317,16 @@ impl TextOwner {
         if !processor.limits().is_valid() {
             return Err(TextError::InvalidInput(
                 "text processor bounds must all be nonzero",
+            ));
+        }
+        if processor
+            .limits()
+            .max_retained_bytes
+            .checked_mul(handle.capacity())
+            .is_none()
+        {
+            return Err(TextError::InvalidInput(
+                "aggregate retained text input bound overflows",
             ));
         }
         if !driver.owns(&handle) {

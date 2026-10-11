@@ -25,7 +25,7 @@ use std::time::Duration;
 
 use flume::{Receiver, Sender};
 
-use crate::{Engine, EngineError, Event, RequestId, TokenRequest};
+use crate::{Engine, EngineError, Event, GenerationOptions, RequestId, TokenRequest};
 
 #[cfg(test)]
 mod tests;
@@ -487,17 +487,31 @@ pub struct RequestPermit {
 type PendingStream = (GenerationStream, Receiver<Result<RequestId, DriverError>>);
 
 impl RequestPermit {
-    fn start(self, input: TokenRequest) -> Result<PendingStream, DriverError> {
-        self.handle.shared.check_open()?;
-        let size = input
-            .tokens
-            .len()
-            .checked_add(input.options.stop_tokens.capacity())
-            .and_then(|n| n.checked_add(input.options.stop_tokens.len()))
+    /// Check encoded tokens and retained stop storage, including the runtime copy,
+    /// against this permit's input envelope without submitting work. Preprocessing
+    /// can use zero tokens to reject impossible options before queue insertion, then
+    /// check the complete encoded count before retaining its prepared result.
+    ///
+    /// # Errors
+    /// Returns [`DriverError::InputTooLarge`] for an oversized or overflowing envelope.
+    pub fn check_input(
+        &self,
+        token_count: usize,
+        options: &GenerationOptions,
+    ) -> Result<(), DriverError> {
+        let size = token_count
+            .checked_add(options.stop_tokens.capacity())
+            .and_then(|n| n.checked_add(options.stop_tokens.len()))
             .and_then(|n| n.checked_mul(size_of::<u32>()));
         if size.is_none_or(|size| size > self.handle.config.max_input_bytes) {
             return Err(DriverError::InputTooLarge);
         }
+        Ok(())
+    }
+
+    fn start(self, input: TokenRequest) -> Result<PendingStream, DriverError> {
+        self.handle.shared.check_open()?;
+        self.check_input(input.tokens.len(), &input.options)?;
         let (events, rx) = flume::bounded(self.handle.config.events_per_request);
         let (accepted, ack) = flume::bounded(1);
         let interest = Arc::new(Interest {
