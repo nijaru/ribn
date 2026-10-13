@@ -31,6 +31,7 @@ POST JSON to `/v1/completions` or `/v1/chat/completions`.
 | `stream_options` | Only `{"include_usage":true/false}`, with `stream:true` |
 | `temperature`, `top_p`, `n` | Only 0, 1 and 1 respectively; decoding is greedy |
 | `repetition_penalty`, `logprobs` | Only 1 and null respectively; neutral defaults, no penalty or logprob output |
+| `ignore_eos` | Only false; artifact and chat control-token stops remain enabled |
 
 Unknown fields, query parameters, content encodings and request trailers reject.
 Arrays of prompts, token-ID prompts, multimodal content, tools, stop strings, logprob output,

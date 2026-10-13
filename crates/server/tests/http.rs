@@ -95,6 +95,7 @@ async fn malformed_unsupported_and_oversized_bodies_do_not_poison_peers() {
         r#"{"model":"ribn","prompt":"a","max_tokens":0}"#,
         r#"{"model":"ribn","prompt":"a","repetition_penalty":1.1}"#,
         r#"{"model":"ribn","prompt":"a","logprobs":0}"#,
+        r#"{"model":"ribn","prompt":"a","ignore_eos":true}"#,
         r#"{"model":"ribn","prompt":"a","stream":false,"stream_options":{"include_usage":true}}"#,
     ] {
         assert_eq!(
@@ -123,7 +124,7 @@ async fn malformed_unsupported_and_oversized_bodies_do_not_poison_peers() {
         400
     );
     assert_eq!(
-        running.post("/v1/completions", r#"{"model":"ribn","prompt":"a","max_tokens":1,"repetition_penalty":1,"logprobs":null}"#).await.status,
+        running.post("/v1/completions", r#"{"model":"ribn","prompt":"a","max_tokens":1,"repetition_penalty":1,"logprobs":null,"ignore_eos":false}"#).await.status,
         200
     );
     assert!(running.stop().await.1.is_ok());

@@ -29,6 +29,7 @@ pub(crate) struct Request {
     n: Option<u32>,
     repetition_penalty: Option<f32>,
     logprobs: Option<u32>,
+    ignore_eos: Option<bool>,
     stream_options: Option<StreamOptions>,
 }
 
@@ -86,6 +87,11 @@ impl Request {
         {
             return Err(ApiError::bad(
                 "only greedy temperature=0, top_p=1, n=1, repetition_penalty=1 and logprobs=null are supported",
+            ));
+        }
+        if self.ignore_eos == Some(true) {
+            return Err(ApiError::bad(
+                "ignore_eos=true is unsupported; model stops remain enabled",
             ));
         }
         if self.stream_options.is_some() && !self.stream {
