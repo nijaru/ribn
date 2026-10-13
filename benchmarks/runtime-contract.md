@@ -525,6 +525,68 @@ The duplicate `local` command is retired. Compare token fixtures rather than raw
 `run` streams without an added newline. A token limit cutting a UTF-8 code point ends
 with one replacement character when the facade flushes its terminal.
 
+## Initial text HTTP qualification (2026-10-13)
+
+The [loopback text adapter](../docs/serving.md) at `5451cff`, with neutral request-default
+validation completed at `efbffdb`, retains the existing contiguous/full-reachable Qwen
+path. Host TCP tests pass on macOS and Fedora: real HTTP parsing, tokenizer, facade and
+driver, with only device execution substituted. The trailing-byte disconnect test failed
+before the post-body EOF observer; ordinary Hyper disconnect coverage alone missed it.
+A separate invalid-reach regression failed with 503 before the text error classifier
+recognized permanent enqueue rejection; it now returns 400 with peer/capacity recovery.
+
+The CUDA HTTP gate passed **1/1, exit 0** on an idle RTX 4090, driver 615.71.09,
+Rust 1.98.0 and the pinned `Qwen3.8-27B-UD-Q4_K_M.gguf`, SHA-256
+`322e194ff79741c7baa497c240f677f54b201b0efab44ca8e50f122b39123482`:
+
+```sh
+ENGINE_QWEN_GGUF=/absolute/path/Qwen3.8-27B-UD-Q4_K_M.gguf \
+  cargo test --release -p ribn-server --features cuda --test cuda_http --locked \
+  -- --ignored --exact http_matches_direct_text_and_preserves_disconnect_peer_progress \
+  --test-threads=1
+```
+
+It uses a 512-token context and two sequences. Raw completion and templated chat text/usage
+match direct facade generation over the same eight-token histories. An abandoned
+64-token stream with trailing input preserves a healthy eight-token peer, later stream
+capacity and explicit shutdown. This is transport/ownership parity, not an independent
+numerical reference, broad context qualification or a device peak-memory measurement.
+The initial release build exited 101 because Cargo reused obsolete NVIDIA dependency
+metadata after the checkout rename; rebuilding `engine-nvidia` resolved it without a
+source change. The successful gate took 24.19 seconds including model loading.
+
+The actual CLI also passed readiness, chat SSE terminal/usage and SIGTERM shutdown
+(exit 0), using:
+
+```sh
+ribn serve /absolute/path/model.gguf --bind 127.0.0.1:18000 --model-name ribn \
+  --context-length 512 --max-sequences 2 --max-requests 2
+```
+
+Two **client compatibility smokes**, not matched performance comparisons, then passed:
+
+| Client | Conditions | Observed outcome |
+| --- | --- | --- |
+| AIPerf 0.13.0 at `5451cff` | Completion SSE, concurrency 1, four measured requests, one warmup, seed 42, 16→8 tokens, server usage | 4/4 completed; 64 input / 32 output tokens |
+| vLLM 0.31.0 `bench serve` at `efbffdb` | OpenAI completion SSE, random target 16→8, two measured requests, no execution warmup, concurrency 1, Poisson 1 RPS, seed 42 | 2/2 completed, zero failures; 31 input / 16 output tokens |
+
+Both use cached `Qwen/Qwen3.8-27B` tokenizer revision
+`1d4bf0f2ff6012fd82039f2fa52739d0dd7c60c0`, greedy decoding and enabled model stops.
+AIPerf's `--use-server-token-count` exercises usage-only frames. With
+`HF_HUB_OFFLINE=1`, its local-directory argument initially failed before requests;
+`--tokenizer Qwen/Qwen3.8-27B --tokenizer-revision <revision>` resolved the cached snapshot.
+The vLLM random dataset forces EOS suppression: use
+`--extra-body '{"temperature":0,"ignore_eos":false}'` to preserve Ribn's supported policy.
+Earlier native attempts exited 0 despite **zero successes and two HTTP 400 failures**;
+verify exported success/failure counts, not just the client's process exit. Non-neutral
+penalties, requested logprobs and EOS bypass remain explicit rejections.
+
+Commands, exports and logs are retained outside Git by source revision. No incumbent
+engine was measured in these smokes; there is no representative mixed-load, SLO-goodput,
+quality-matched competitive or RSS/device-peak result. Those remain the
+[serving acceptance matrix](../docs/roadmap.md#first-competitive-acceptance-matrix).
+The desktop's four untracked SIMT artifacts retained their content fingerprints.
+
 ## Legacy-runtime retirement: device re-execution passed
 
 The duplicate core serving scheduler/runtime is removed. Its wrapper-only host tests

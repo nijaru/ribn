@@ -36,7 +36,9 @@ hide disconnect from Hyper. Closure abandons transport interest before retryable
 shutdown; pending loading remains owned across cancelled run/cleanup futures.
 Owner availability is observable without reserving a permit. Host TCP fixtures exercise
 protocol, disconnect/saturation, stalled-peer progress, deadlines, failure and cleanup
-retry. See [serving](serving.md) for external semantics and qualification limits.
+retry. A bounded CUDA HTTP parity/cancellation gate and actual CLI shutdown also
+passed; client compatibility smokes do not establish competitive performance.
+See [serving](serving.md) for external semantics and qualification limits.
 
 The token driver provides fail-fast application preparation permits, encoded-input bounds,
 nonblocking bounded delivery, cancellation intent and retryable shutdown. Permits

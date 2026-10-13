@@ -665,6 +665,10 @@ an execution fault.
 
 ## Text HTTP adapter
 
+Status: implemented; host TCP gates and a bounded CUDA HTTP gate passed.
+[Qualification](../benchmarks/runtime-contract.md#initial-text-http-qualification-2026-10-13)
+scopes the evidence; matched competitive and physical-peak measurement remain open.
+
 The initial server is a thin adapter over `TextModel` and `TextOwner`, with no scheduler
 or device state of its own. Its public protocol subset is documented in
 [serving](serving.md). Only loopback binding is accepted; authentication, TLS and

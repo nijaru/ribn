@@ -126,7 +126,10 @@ faulted state until shutdown.
 ## Qualification
 
 Host TCP tests exercise the real HTTP entry point, tokenizer, text facade and driver
-with only the device substituted. CUDA-feature compilation does not qualify device
-serving, performance or broader model support. Device qualification and matched
-endpoint measurements follow the [roadmap](roadmap.md#5-minimal-serving-then-wider-systems)
-and [benchmark methodology](../benchmarks/README.md).
+with only the device substituted. The bounded CUDA HTTP gate and actual CLI streaming/
+SIGTERM shutdown passed, along with AIPerf and native vLLM client compatibility smokes.
+See [qualification](../benchmarks/runtime-contract.md#initial-text-http-qualification-2026-10-13)
+for revisions, artifact, conditions and limitations. These are not matched competitive
+measurements, broad-context numerical qualification or peak-memory evidence. The
+[roadmap](roadmap.md#5-minimal-serving-then-wider-systems) and
+[benchmark methodology](../benchmarks/README.md) own those remaining gates.

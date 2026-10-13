@@ -7,9 +7,10 @@ open implementation choices and acceptance gates. All v0 interfaces may change.
 
 ## Current execution order
 
-**Next: qualify the HTTP path on device and establish a matched competitive baseline on
-the qualified contiguous path.** The loopback text adapter and owned-input retention
-are implemented and host-qualified. Develop heterogeneous physical
+**Next: establish a matched competitive endpoint baseline on the qualified contiguous
+path.** The loopback text adapter is host-qualified, with a bounded CUDA HTTP gate and
+neutral/native client compatibility smokes passed. Owned-input retention is
+host-qualified. Develop heterogeneous physical
 batching/scheduling and constrained-memory continuation alongside that baseline.
 Prefix-cache benefit, a second decoder/VLM, CUDA Rust migration and distributed execution
 are not prerequisites for the first server. They remain important product work.
@@ -84,7 +85,7 @@ Source audit at `093cd28` found gaps that passing current fixtures do not cover:
    sibling-stream pressure. No hard shared-device peak claim until these owners qualify.
 
 The remaining defects/limitations do not weaken the owning contracts or block unrelated
-qualified paths. The next concrete delivery is device HTTP qualification and matched measurement below; non-AR and
+qualified paths. The next concrete delivery is matched endpoint measurement below; non-AR and
 physical-accounting repairs gate their affected paths. Do not relabel count/payload or
 post-enqueue tests as physical-release evidence.
 
@@ -209,7 +210,11 @@ malformed/oversized/unsupported input, message and encoded envelopes, stalled-pe
 progress, connection/body deadlines, response and atomic terminal/usage limits,
 loading/faulted readiness, metrics and retryable/cancelled-load shutdown.
 The trailing-byte disconnect regression failed before its EOF observer was added.
-These gates do not establish GPU serving behavior or competitive measurements.
+These host gates do not establish GPU serving behavior. The separate short-context
+CUDA HTTP gate, actual CLI shutdown and AIPerf/native-client protocol smokes passed;
+see [HTTP qualification](../benchmarks/runtime-contract.md#initial-text-http-qualification-2026-10-13).
+No matched competitive measurement or physical-peak claim follows. The remaining
+work is the representative acceptance matrix below, not another execution-loop adapter.
 
 Deliver a documented text protocol subset over `TextModel`/`TextOwner`, preserving the
 existing execution owner. Start with conventional completion/chat streaming semantics;

@@ -203,6 +203,41 @@ versus chunk-size 2/4/8 timing matrix for the RTX 4090. The qualified scope and 
 need their own device gates. CPU CI and CUDA-feature compilation are not performance
 or numerical evidence.
 
+## Ribn endpoint client configuration
+
+The initial [protocol subset](../docs/serving.md) has no model-list endpoint or EOS
+bypass. Use AIPerf inference readiness, request terminal usage, and keep model stops
+enabled. These commands reproduced the small [compatibility smokes](runtime-contract.md#initial-text-http-qualification-2026-10-13);
+increase workload scope and add repeats/SLOs for a representative comparison.
+
+```sh
+# The pinned tokenizer snapshot must already be cached for offline operation.
+HF_HUB_OFFLINE=1 aiperf profile \
+  --model ribn --tokenizer Qwen/Qwen3.8-27B \
+  --tokenizer-revision 1d4bf0f2ff6012fd82039f2fa52739d0dd7c60c0 \
+  --endpoint-type completions --endpoint /v1/completions --streaming \
+  --url http://127.0.0.1:18000 --isl 16 --isl-stddev 0 --osl 8 --osl-stddev 0 \
+  --concurrency 1 --request-count 4 --num-prompts 4 --warmup-request-count 1 \
+  --random-seed 42 --use-server-token-count --extra-inputs '{"temperature":0}' \
+  --connection-reuse-strategy never --wait-for-model-mode inference \
+  --wait-for-model-timeout 30 --output-artifact-dir /tmp/ribn-aiperf-smoke \
+  --no-auto-plot --ui none --export-http-trace
+
+# TOKENIZER_PATH is that pinned local snapshot. The random dataset otherwise
+# forces ignore_eos=true; explicitly override it to match the server's policy.
+HF_HUB_OFFLINE=1 vllm bench serve \
+  --backend openai --base-url http://127.0.0.1:18000 --endpoint /v1/completions \
+  --model ribn --tokenizer "$TOKENIZER_PATH" --dataset-name random \
+  --random-input-len 16 --random-output-len 8 --num-prompts 2 \
+  --max-concurrency 1 --request-rate 1 --seed 42 \
+  --extra-body '{"temperature":0,"ignore_eos":false}' --disable-tqdm \
+  --save-result --result-dir /tmp/ribn-vllm-client-smoke
+```
+
+A native client exit of zero can still mean every request failed. Check exported
+completion/failure counts before using timing fields. These commands measure Ribn
+through two clients, not a vLLM engine or a matched incumbent result.
+
 ## Baseline run shape
 
 For an OpenAI-compatible completion endpoint, a current AIPerf synthetic example is conceptually:
