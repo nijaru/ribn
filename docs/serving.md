@@ -30,9 +30,10 @@ POST JSON to `/v1/completions` or `/v1/chat/completions`.
 | `stream` | Boolean, default false |
 | `stream_options` | Only `{"include_usage":true/false}`, with `stream:true` |
 | `temperature`, `top_p`, `n` | Only 0, 1 and 1 respectively; decoding is greedy |
+| `repetition_penalty`, `logprobs` | Only 1 and null respectively; neutral defaults, no penalty or logprob output |
 
 Unknown fields, query parameters, content encodings and request trailers reject.
-Arrays of prompts, token-ID prompts, multimodal content, tools, stop strings, logprobs,
+Arrays of prompts, token-ID prompts, multimodal content, tools, stop strings, logprob output,
 structured output, stochastic sampling and alternate operations are unsupported.
 Artifact EOS and rendered chat control-token stops remain model-owned; this subset
 does not override them.

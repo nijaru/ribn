@@ -27,6 +27,8 @@ pub(crate) struct Request {
     temperature: Option<f32>,
     top_p: Option<f32>,
     n: Option<u32>,
+    repetition_penalty: Option<f32>,
+    logprobs: Option<u32>,
     stream_options: Option<StreamOptions>,
 }
 
@@ -77,9 +79,13 @@ impl Request {
         if self.temperature.is_some_and(|n| n != 0.0)
             || self.top_p.is_some_and(|n| n.to_bits() != 1.0_f32.to_bits())
             || self.n.is_some_and(|n| n != 1)
+            || self
+                .repetition_penalty
+                .is_some_and(|n| n.to_bits() != 1.0_f32.to_bits())
+            || self.logprobs.is_some()
         {
             return Err(ApiError::bad(
-                "only greedy temperature=0, top_p=1 and n=1 are supported",
+                "only greedy temperature=0, top_p=1, n=1, repetition_penalty=1 and logprobs=null are supported",
             ));
         }
         if self.stream_options.is_some() && !self.stream {
