@@ -22,7 +22,7 @@ resolver = "2"
 edition = "2024"
 rust-version = "1.98"
 license = "Apache-2.0"
-repository = "https://github.com/nijaru/engine"
+repository = "https://github.com/nijaru/ribn"
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

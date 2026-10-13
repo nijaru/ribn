@@ -7,12 +7,12 @@ license.workspace = true
 publish.workspace = true
 
 [dependencies]
-# The Rust CUDA stack Engine is migrating to. cuda-core and cuda-bindings are
+# The Rust CUDA stack Ribn is migrating to. cuda-core and cuda-bindings are
 # published from NVlabs/cutile-rs and shared by cuda-oxide.
 cuda-core = "0.3.1"
 
-# The stack Engine uses today. Features mirror crates/nvidia/Cargo.toml, plus
-# `driver`: Engine gets that module through `cublas`, which the probe does not
+# The stack Ribn uses today. Features mirror crates/nvidia/Cargo.toml, plus
+# `driver`: Ribn gets that module through `cublas`, which the probe does not
 # need, and cudarc gates `cudarc::driver` behind the feature directly.
 cudarc = { version = "0.19", default-features = false, features = [
     "std",

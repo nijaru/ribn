@@ -2,7 +2,7 @@
 
 Hardware-gated probes for the NVIDIA backend migration described in
 [`docs/cuda-rust-migration.md`](../docs/cuda-rust-migration.md). They answer gate 1: reproducible build and
-resource interoperability between Engine's current `cudarc`-based CUDA resources and the Rust CUDA stack
+resource interoperability between Ribn's current `cudarc`-based CUDA resources and the Rust CUDA stack
 (`cuda-core` / `cuda-bindings` / `cuda-async`, published from NVlabs/cutile-rs) that cuTile and cuda-oxide
 build on.
 
@@ -23,7 +23,7 @@ The gate-1 ownership proof: two libraries operating over one context, one stream
 with exactly one deallocation owner and no host round trip between the operations.
 
 - **Case A — `cuda-core` owns.** Context, stream, and buffer come from `cuda-core`. `cudarc`'s raw driver
-  bindings, which is what Engine uses today, write directly into that allocation on that stream. `cudarc`
+  bindings, which is what Ribn uses today, write directly into that allocation on that stream. `cudarc`
   allocates nothing and frees nothing.
 - **Case B — `cudarc` owns.** The reverse direction, which is what a staged migration looks like:
   `cudarc` creates the context, stream, and buffer, and `cuda-core` adopts all three through its
@@ -55,7 +55,7 @@ cargo run -p tile
 ## `simt`
 
 The SIMT-track kernel proof, and the migration's target ownership shape: `cuda-core` owns the context, the
-stream, and every buffer, and an Engine-authored cuda-oxide kernel borrows them. No second allocator, no
+stream, and every buffer, and an Ribn-authored cuda-oxide kernel borrows them. No second allocator, no
 second runtime.
 
 This member is **its own workspace** because cuda-oxide authors kernels through a rustc codegen backend on a

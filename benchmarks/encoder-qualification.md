@@ -54,7 +54,7 @@ Run serially on an idle GPU, one model process at a time:
 
 ```sh
 ssh desktop
-cd ~/github/nijaru/engine
+cd ~/github/nijaru/ribn
 nvidia-smi --query-gpu=utilization.gpu,memory.used --format=csv,noheader
 cargo test --release -p engine-bert --features cuda --offline \
   -- --ignored --test-threads=1 --nocapture

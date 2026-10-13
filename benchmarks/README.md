@@ -1,6 +1,6 @@
-# Engine benchmark methodology
+# Ribn benchmark methodology
 
-Benchmarking is part of the architecture, not a release-time exercise. Headline Engine claims must be reproducible against current incumbents on matched hardware, model, precision, workload, and endpoint semantics.
+Benchmarking is part of the architecture, not a release-time exercise. Headline Ribn claims must be reproducible against current incumbents on matched hardware, model, precision, workload, and endpoint semantics.
 
 ## Load generators
 
@@ -22,7 +22,7 @@ Current references:
 
 Every recorded run must capture at least:
 
-- Engine/incumbent name, version, and commit/container digest;
+- Ribn/incumbent name, version, and commit/container digest;
 - exact model and revision;
 - tokenizer and revision;
 - dtype/quantization and any model transformation;
@@ -54,7 +54,7 @@ Minimum online serving metrics:
 - error/cancellation rate;
 - server CPU utilization and RSS;
 - GPU utilization, memory use, and relevant device telemetry;
-- scheduler/host overhead when Engine instrumentation can separate it;
+- scheduler/host overhead when Ribn instrumentation can separate it;
 - cold and warm startup time for startup comparisons.
 
 Throughput without latency/SLO context is not sufficient for a serving claim.
@@ -269,6 +269,6 @@ results/
 
 ## First success criterion
 
-Before adding broad Engine features, establish a repeatable baseline suite that can answer:
+Before adding broad Ribn features, establish a repeatable baseline suite that can answer:
 
-> On one model and one RTX 4090, where do current vLLM and SGLang spend time and host resources, and what performance envelope must Engine match or beat to be credible?
+> On one model and one RTX 4090, where do current vLLM and SGLang spend time and host resources, and what performance envelope must Ribn match or beat to be credible?
