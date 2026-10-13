@@ -68,7 +68,9 @@ impl TextError {
         matches!(
             self,
             Self::LimitExceeded { .. }
-                | Self::Admission(DriverError::InputTooLarge)
+                | Self::Admission(
+                    DriverError::InputTooLarge | DriverError::Enqueue(EngineError::InvalidRequest),
+                )
                 | Self::InvalidInput(_)
                 | Self::Processor(_)
                 | Self::Decode { .. }

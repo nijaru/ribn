@@ -30,7 +30,7 @@ impl ApiError {
         Self {
             status: StatusCode::PAYLOAD_TOO_LARGE,
             code: "limit_exceeded",
-            message: "HTTP byte limit exceeded",
+            message: "request storage or response byte limit exceeded",
         }
     }
     pub(crate) const fn unavailable() -> Self {
@@ -51,7 +51,7 @@ impl ApiError {
         if error.is_size_limit() {
             Self::large()
         } else if error.is_request_local() {
-            Self::bad("request rejected by text processor")
+            Self::bad("request rejected by text model")
         } else {
             Self::unavailable()
         }

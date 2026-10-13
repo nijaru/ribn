@@ -358,6 +358,7 @@ async fn facade_byte_and_message_limits_reject_locally_with_capacity_recovery() 
     let running = Running::start(
         ServerConfig {
             max_body_bytes: 512 * 1024,
+            max_output_tokens: 8192,
             ..ServerConfig::default()
         },
         Arc::new(Plan::default()),
@@ -370,6 +371,15 @@ async fn facade_byte_and_message_limits_reject_locally_with_capacity_recovery() 
         let body = json!({"model":"ribn", "prompt":"a".repeat(length), "max_tokens":1}).to_string();
         assert_eq!(running.post("/v1/completions", &body).await.status, 413);
     }
+    // The transport permits this output budget, but prompt plus generation
+    // cannot fit the model context. This is permanent request rejection, not 503.
+    assert_eq!(
+        running
+            .post("/v1/completions", &prompt(false, 8192))
+            .await
+            .status,
+        400
+    );
     for (count, status) in [(128, 200), (129, 400)] {
         let messages = vec![json!({"role":"user", "content":"a"}); count];
         let body = json!({"model":"ribn", "messages":messages,"max_tokens":1}).to_string();
