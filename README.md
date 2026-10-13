@@ -6,7 +6,8 @@ Ribn targets competitive throughput, latency, memory efficiency and serving reli
 with broad support for common models and hardware. The current implementation is an
 experimental Qwen GGUF/CUDA autoregressive path and a reference-qualified BERT encoder
 fixture. Those are qualification workloads, not the product boundary. There is no
-HTTP server, general model loader or claim of state-of-the-art performance yet.
+general model loader or claim of state-of-the-art performance yet. The initial HTTP
+adapter exposes a bounded loopback completion/chat subset.
 
 ## Usage
 
@@ -34,6 +35,15 @@ Oversized input rejects rather than truncates; file/stdin reads use a one-byte o
 probe. Interactive terminal chat is not implemented. The obsolete `local` command is
 removed; `run` is the shared text entry point.
 
+The same owned text path also serves a loopback HTTP endpoint:
+
+```sh
+cargo run -p ribn-cli --features cuda -- serve /path/model.gguf
+```
+
+See [serving](docs/serving.md) for the supported protocol, greedy decoding, limits,
+health/metrics and shutdown. Non-local exposure is unsupported.
+
 ## Rust interfaces
 
 - `ribn` is the low-level AR token runtime. Direct `Engine` use is channel-free;
@@ -42,6 +52,8 @@ removed; `run` is the shared text entry point.
 - `ribn-text` adds raw/chat/token input, bounded preprocessing, incremental UTF-8
   decoding and ordered bounded-window offline batching. `TextModel` is cloneable;
   `TextOwner` owns shutdown. CUDA assembly still selects Qwen GGUF.
+- `ribn-server` is the bounded HTTP adapter over the text facade; it owns transport
+  tasks and retains the text shutdown owner for cleanup retry, not a second scheduler.
 - `ribn-batch` is the non-AR batching runtime used by the BERT encoder. Its results
   retain owning byte leases and completion dependencies, not fake token sequences.
 - `ribn-hf` and `ribn-safetensors` resolve local packages and validated artifact views;

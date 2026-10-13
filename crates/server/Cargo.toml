@@ -1,0 +1,31 @@
+[package]
+name = "ribn-server"
+version = "0.0.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[features]
+default = []
+cuda = ["ribn-text/cuda"]
+
+[dependencies]
+ribn-text = { path = "../text" }
+async-stream = "0.3"
+bytes = "1"
+http-body-util = "0.1"
+hyper = { version = "1", features = ["http1", "server"] }
+hyper-util = { version = "0.1", features = ["tokio"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["macros", "net", "rt-multi-thread", "signal", "sync", "time", "io-util"] }
+
+[dev-dependencies]
+ribn = { path = "../runtime" }
+engine-gguf = { path = "../gguf" }
+tokio = { version = "1", features = ["io-util"] }
+
+[lints]
+workspace = true

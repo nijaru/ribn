@@ -7,7 +7,7 @@ owns direction; [resource protocol](resource-protocol.md) owns execution contrac
 ## Text generation
 
 ```text
-CLI run
+CLI run / HTTP (CLI serve → ribn-server)
   → ribn-text: bounded preprocessing, chat/tokenization, incremental decoding
   → ribn::driver: one worker, request permits, owned streams, shutdown
   → ribn::Engine: AR lifecycle, scheduling, bounded output mailboxes
@@ -27,6 +27,16 @@ included in the retained-input envelope. These host checks are not a process-RSS
 Offline batching consumes a bounded window and
 yields ordered per-item outcomes. A slow head bounds lookahead; decoding failure
 abandons only its request. See [text semantics](resource-protocol.md#text-application-facade).
+
+`ribn-server` uses Hyper HTTP/1 and Tokio for a loopback-only completion/chat subset.
+It bounds connection tasks, body parsing, HTTP admission and response collection/frames;
+streaming pulls directly from owned text delivery. Each connection serves one request.
+A post-body EOF observer drains unused trailing bytes without retention, so they cannot
+hide disconnect from Hyper. Closure abandons transport interest before retryable text
+shutdown; pending loading remains owned across cancelled run/cleanup futures.
+Owner availability is observable without reserving a permit. Host TCP fixtures exercise
+protocol, disconnect/saturation, stalled-peer progress, deadlines, failure and cleanup
+retry. See [serving](serving.md) for external semantics and qualification limits.
 
 The token driver provides fail-fast application preparation permits, encoded-input bounds,
 nonblocking bounded delivery, cancellation intent and retryable shutdown. Permits
@@ -108,7 +118,8 @@ Shared CUDA physical retirement and downstream-workspace progress remain unprove
 | `crates/hf` / `ribn-hf` | Local HF-style config/shard resolution and residency |
 | `crates/foundation` / `ribn-foundation` | Byte accounting, readiness and consumed version/scalar types |
 | `crates/batch` / `ribn-batch` | Non-AR batching, leased results and cancellation |
-| `crates/cli` / `ribn-cli` | `inspect` and experimental `run` |
+| `crates/server` / `ribn-server` | Bounded loopback text HTTP transport, health/metrics and lifecycle adapter |
+| `crates/cli` / `ribn-cli` | `inspect`, experimental `run` and `serve` |
 
 `tools/check-boundaries.py` checks production dependency direction and retired-path
 resurrection. It does not freeze transitional crates against an accepted migration.
@@ -127,6 +138,6 @@ GDN chunk scan remains opt-in while its full-model numerical gate fails.
 [Foundation evidence](execution-foundation.md) and [composition counterexamples](pipeline-composition.md)
 retain useful limitations. They do not qualify a universal execution API.
 
-Not implemented: HTTP serving, general architecture/source resolution, remote HF
+Not implemented: non-local/authenticated serving, general architecture/source resolution, remote HF
 loading, real media processors, dynamic hybrid continuation, executable snapshot
 replacement, a second hardware backend or distributed execution.

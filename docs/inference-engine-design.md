@@ -78,8 +78,9 @@ is not a mandatory task-default ceremony.
 - Use operation-appropriate protocols. Chat, embeddings, reranking, audio and media
   generation are not interchangeable payloads. Reject unsupported operations/options.
 
-These are targets; current source has no HTTP server or general loader. Start the
-server as a thin adapter over the owned text facade, not a second execution loop.
+The initial HTTP adapter now serves the documented loopback text subset; wider
+operations and general loading remain targets. Keep serving a thin adapter over the
+owned text facade, not a second execution loop.
 Bound connections, request-body bytes, retained input/options, preprocessing, application
 requests and buffered responses separately. Payload lengths do not bound spare capacity,
 message containers or stop lists. Acquire admission before expensive processing and

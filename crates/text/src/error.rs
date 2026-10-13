@@ -51,6 +51,15 @@ impl TextError {
         }
     }
 
+    /// Whether an input/output byte or encoded-storage envelope rejected this request.
+    #[must_use]
+    pub const fn is_size_limit(&self) -> bool {
+        matches!(
+            self,
+            Self::LimitExceeded { .. } | Self::Admission(DriverError::InputTooLarge)
+        )
+    }
+
     /// Whether this request's own content caused the failure, so retrying the
     /// same input cannot help. Overload and owner failures are excluded; an
     /// encoded-input envelope violation is request-local, not pool pressure.

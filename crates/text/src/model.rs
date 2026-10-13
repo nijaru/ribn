@@ -66,6 +66,18 @@ pub struct TextModel {
 }
 
 impl TextModel {
+    /// Observe preprocessing and execution availability without a request permit.
+    ///
+    /// # Errors
+    /// Returns the closed/faulted owner's diagnostic. Admission still rechecks.
+    pub fn check_open(&self) -> Result<(), TextError> {
+        self.handle.check_open().map_err(TextError::Owner)?;
+        if self.pool.is_closed() {
+            return Err(TextError::Closed);
+        }
+        Ok(())
+    }
+
     #[must_use]
     pub fn limits(&self) -> ProcessorLimits {
         self.processor.limits()

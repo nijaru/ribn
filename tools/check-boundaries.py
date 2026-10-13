@@ -61,7 +61,11 @@ FORBIDDEN = {
     "gguf": {"engine-nvidia", "engine-qwen", "ribn", "ribn-text", "ribn-cli"},
     "qwen": {"ribn-text", "ribn-cli"},
     "cli": {"engine-core", "engine-nvidia", "engine-qwen"},
+    "server": {"engine-core", "engine-nvidia", "engine-qwen", "engine-gguf", "ribn-cli"},
 }
+for crate, forbidden in FORBIDDEN.items():
+    if crate not in {"cli", "server"}:
+        forbidden.add("ribn-server")
 
 
 def dependency_names(manifest: dict) -> set[str]:

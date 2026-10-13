@@ -663,6 +663,41 @@ cancelled shutdown leaves the same worker available and reports the earlier faul
 through the handle. Successful shutdown reports cleanup success, not recovery from
 an execution fault.
 
+## Text HTTP adapter
+
+The initial server is a thin adapter over `TextModel` and `TextOwner`, with no scheduler
+or device state of its own. Its public protocol subset is documented in
+[serving](serving.md). Only loopback binding is accepted; authentication, TLS and
+non-local exposure remain unsupported rather than silently insecure defaults.
+
+Bound accepted connections before spawning tasks, and reserve a separate fail-fast
+HTTP request slot before reading generation bodies. Health/readiness and metrics do
+not consume generation slots. Bound header bytes/count, body bytes, message count,
+output tokens and response bytes. Parsing allocations are bounded by the body and
+message limits; accepted text allocations also pass the facade's retained-capacity
+checks before preprocessing. These envelopes exclude allocator overhead, kernel socket
+buffers, immutable weights and processor workspace; they are not process-RSS bounds.
+
+Use one HTTP/1 request per connection initially. A finite absolute connection deadline
+covers slow headers/bodies, preparation, generation and stalled writes. This deliberately
+limits long generations too; it is not an idle timeout or proof of device completion.
+Streaming pulls one bounded SSE frame at a time directly from the owned text stream;
+there is no producer task or unbounded response channel. Disconnect, deadline and server
+closure drop request interest, leaving retirement with the execution owner. Non-streaming
+collection has a separate byte limit, not the unbounded facade collect helper.
+
+Normal streaming delivers ordered deltas, one finish chunk and `[DONE]`. A failure after
+headers yields one error frame then `[DONE]`, never fabricated successful usage. Before
+headers, malformed/unsupported input is 400, oversize is 413 and temporary overload is
+503. Owner failure is server-scoped and makes readiness faulted; request-local failure
+leaves peers serving. Readiness distinguishes loading, serving, closing and faulted.
+Metrics use fixed names and no request/model label cardinality.
+
+Shutdown closes transport admission and abandons connections before invoking text
+shutdown. A pending load must settle into an owner before cleanup, not be detached by
+cancelling a blocking load. Failed cleanup retains that same `TextOwner` for explicit
+retry; a network deadline never releases device-visible ownership.
+
 ## Cross-runtime device ownership
 
 A device-resident result needs its representation, model identity, pool charge and

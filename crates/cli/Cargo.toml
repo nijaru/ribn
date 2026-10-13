@@ -9,9 +9,11 @@ publish = false
 
 [features]
 default = []
-cuda = ["dep:ribn-text", "ribn-text/cuda"]
+cuda = ["dep:ribn-text", "ribn-text/cuda", "dep:ribn-server", "dep:tokio"]
 
 [dependencies]
+ribn-server = { path = "../server", optional = true }
+tokio = { version = "1", features = ["rt-multi-thread", "signal"], optional = true }
 ribn-text = { path = "../text", optional = true }
 engine-gguf = { path = "../gguf" }
 

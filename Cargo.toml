@@ -8,6 +8,7 @@ members = [
     "crates/core",
     "crates/runtime",
     "crates/text",
+    "crates/server",
     "crates/qwen",
     "crates/gguf",
     "crates/nvidia",

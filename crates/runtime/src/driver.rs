@@ -438,6 +438,15 @@ pub struct GenerationHandle {
 }
 
 impl GenerationHandle {
+    /// Observe owner availability without reserving request capacity.
+    ///
+    /// # Errors
+    /// Returns the owner's closed/faulted diagnostic. This is a snapshot, not an
+    /// admission guarantee; submission rechecks it.
+    pub fn check_open(&self) -> Result<(), DriverError> {
+        self.shared.check_open()
+    }
+
     /// Request permits this handle can hold at once. A frontend uses it to bound
     /// its own admission window and preprocessing queue.
     #[must_use]
