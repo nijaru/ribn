@@ -249,9 +249,43 @@ smoke traces do not satisfy this matrix. Report unsupported scope and competitor
 failures explicitly rather than interpreting them as a Ribn win. No SOTA claim until matched
 representative results establish it.
 
+Complement open-loop sweeps with qualified closed-loop agent cohorts. Preserve
+inter-turn delays, shared versus unique prefixes, output-length skew and
+branching while recording which input tokens were actually computed versus
+reused. Report both session progress and per-replica interactivity/throughput;
+prerecorded future turns do not demonstrate agent task success. See
+[agent-session methodology](../benchmarks/README.md#agent-session-workload-qualification).
+This expands evidence, not the dependencies for the first matched endpoint baseline.
+
 A materially different backend, real collectives/sharding and disaggregated transfer have
 independent gates. External systems own fleet allocation. Do not make single-device use
 traverse serialization or distributed-worker layers.
+
+### Conditional multi-replica placement
+
+This is **not** on the current serving, paging or single-device optimization
+critical path. Revisit once matched single-replica measurements and a real
+multi-replica demand expose routing/cache losses. External infrastructure owns
+resource leases and fleet scaling; Ribn's optional inference-aware deployment
+layer can own model-specific placement.
+
+1. Establish backend/replica-local cache validity, exact snapshot/tenant isolation,
+   bounded load/cache telemetry, fault and stale-report behavior. Advisory client
+   session IDs never authorize reuse; actual valid prefix coverage decides hits.
+2. On fixed multi-replica hardware compare random, load-only, fixed affinity and
+   cache-plus-load policies under identical closed-loop and open-loop traces.
+   Include long/short context skew, hot/concurrently branched sessions, cache
+   pressure, cold replicas, scale-out and restart. Distinguish recomputation
+   avoidance from queue-induced tail regression and relocation cost.
+3. Qualify placement by p95/p99 TTFT/ITL/E2E, session and replica fairness,
+   completed jobs/device-time, memory/transfer overhead, overload recovery and
+   consistent correctness on cache misses/evictions/restarts. Keep stale metadata
+   advisory, not authoritative for continuation. Show repeated net gain beyond
+   run variability and no extra local-path dependency before promotion.
+
+No router API, multi-node KV transfer, global cache index or general scheduler
+framework is selected before this evidence. Consult the
+[inference placement boundary](inference-engine-design.md#multi-replica-inference-placement-conditional).
 
 ## 6. Training integration, then execution
 
@@ -279,14 +313,22 @@ and distributed training need separate qualification. Training is not an AR sche
   semantics. Outside initial production work; any experiment needs explicit policy/cache
   identity and independent task-level acceptance, not an exact-cache label.
 - **Speculation:** select a concrete draft/verify backend only after target commitment,
-  hybrid rollback, output/usage and sampling-state contracts qualify. Measure whole-round
-  net goodput with draft weights/state/scratch charged; allow drafting to be disabled.
+  hybrid rollback, output/usage and sampling-state contracts qualify. Compare
+  target-conditioned, learned and simpler drafters on content-real cohorts before
+  selecting a training strategy. Measure whole-round net goodput with weights,
+  intermediate/state/scratch charged; allow drafting to be disabled. Exact token-ID
+  training traces require explicit content authority and snapshot/processor provenance.
+- **Lossy state and host tiers:** try FP8/other supported continuation encodings only
+  after exact-cache and physical accounting gates, with independently qualified
+  full-model quality. CPU/remote cache tiers are optional, evaluated against
+  recompute/retention for tail benefit under pressure including transfer/retirement
+  overhead; no universal cache hierarchy is required.
 - **Text access:** thinking controls, thread-affine construction and offline-window throughput
   remain conditional. They do not justify replacing the owned facade or raising buffers
   without boundedness/progress evidence.
 - **Research/reference backend:** evaluate when a concrete integration needs it, not as a
   parallel universal implementation backlog. Research sources/limits live in the
-  [target design](inference-engine-design.md#research-basis-reviewed-2026-10-11).
+  [target design](inference-engine-design.md#research-basis-reviewed-2026-10-13).
 
 ## Required checks
 
