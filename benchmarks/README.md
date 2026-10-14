@@ -98,6 +98,50 @@ Add modality-, MoE-, speculation- and distribution-specific cases when the corre
 capability exists. Client-side text trace replay does not require an engine stage graph,
 agent runtime or prefix cache; with reuse disabled it establishes the no-cache baseline.
 
+### Agent-session workload qualification
+
+Keep open-loop arrivals for saturation/fairness and add independent **closed-loop**
+replays for agent progress. A sequential session's next request follows the prior
+terminal response plus the recorded tool/user delay; preserve planned arrivals
+rather than hiding generator lag. Include concurrent sibling/subagent branches,
+cache-unfriendly prompt edits or compaction, cancellation, restart and failures.
+Shared session identity does not imply equal prompts or serialized requests.
+
+Use at least two cohorts: long, growing-context coding (state capacity and
+tool-delay retention) and shared-system-prompt workflows (cross-session reuse).
+The ~100k input/~500 output token Modal Kimi workload is a vendor example, not
+a Ribn default or a reason to exceed the qualified model context. Scale controlled
+traces to available hardware and add real long-context traces only after device
+qualification. Treat MLPerf Agentic Inference as a version-pinned methodology
+reference, not an automatic certification of current results.
+
+A replay manifest should pin model/processor/tokenizer/adapter snapshot,
+sampling/stop behavior, optional session/parent IDs, request dependencies and
+timing, length distributions, prefix identity/isolation and whether future turns
+come from recorded text or actual prior model output. Where justified and
+authorized, retain exact output token IDs for speculation studies; decoded and
+re-tokenized strings are not equivalent. Do not collect private prompts,
+responses or token IDs by default. Content-free hashed/structural replay may
+test scheduling and cache patterns but cannot establish speculative acceptance,
+model quality, or actual agent task success.
+
+Report both:
+
+- **Request/replica:** TTFT/ITL/E2E tails, interactive decode rate, computed
+  versus valid reused prompt tokens by tier, admission/queue delay, physical
+  device/host peak and residency, transfer/replay costs, rejections/cancellation.
+- **Session/deployment:** inference wait separately from tool idle, completed
+  job latency and jobs/device-time, per-session fairness, interactivity versus
+  aggregate SLO goodput, cache-miss penalties and restart/scale-out tails.
+
+When distributed serving exists, compare random, load-only, session-affinity
+and cache-plus-load routing on identical inputs/hardware. Include overlapping
+requests sharing a session hint, skewed context sizes, cache churn, scale-up and
+stale/unavailable cache metadata. Require task-level quality checks for lossy
+state or draft changes; trace-level replay alone is not an accuracy gate.
+See the [conditional target](../docs/inference-engine-design.md#multi-replica-inference-placement-conditional)
+and [delivery criteria](../docs/roadmap.md#conditional-multi-replica-placement).
+
 ## Native Qwen serving sweep
 
 The Qwen-owned `qwen_serving_bench` example exercises the production AR engine with
