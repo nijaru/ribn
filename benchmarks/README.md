@@ -64,7 +64,7 @@ device and job-latency distributions under declared objectives. Keep tool delays
 prefix identity, compaction and branch/join structure in client-side replay; the engine
 is not an agent orchestrator. Structural synthetic replay does not establish speculative
 acceptance, MoE routing or output quality; use content-real cases for those comparisons.
-The [target design's research basis](../docs/inference-engine-design.md#research-basis-reviewed-2026-10-11)
+The [target design's research basis](../docs/inference-engine-design.md#research-basis-reviewed-2026-10-13)
 records the primary sources and their scope.
 
 ## Qualification evidence
