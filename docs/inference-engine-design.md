@@ -162,6 +162,14 @@ drafting; optimize committed tokens per complete round and SLO goodput, not acce
 rate alone. Deterministic token replay and distribution-preserving sampling are distinct
 contracts. No drafter or algorithm is selected by this design.
 
+Learned target-conditioned drafters and workload-specific fine-tuning are candidate
+experiments, not the default. Preserve exact generated token IDs (rather than
+decoded/re-tokenized text), tokenizer/template identity and the target snapshot
+in *authorized* training/evaluation traces. Compare full-round latency and net SLO
+goodput on real workload cohorts with draft weights, intermediate buffers,
+tentative state and verification charged. Draft quantization may reduce cost,
+but correct target verification and full-state settlement remain mandatory.
+
 ## Continuation resources and prefix reuse
 
 Dynamic storage, pressure progress and prefix-cache policy are separate deliveries.
@@ -191,6 +199,15 @@ Full-reachable reservation remains the current qualified Qwen fallback, not the 
   selected completed boundaries, not periodic snapshots everywhere. Compare no reuse,
   simple bounded retention and overlap-aware placement. Cache eviction reclaims safe
   occupancy; it does not refund resident arena bytes or preempt a live sequence.
+
+Treat transient device-memory waste, state encoding and host cache tiers as
+separate candidate optimizations. Measure intermediate/copy/repacking peaks and
+physical backing, not just nominal bytes per cached token. Lossy KV or recurrent
+state quantization needs independent full-model numerical and task-quality gates,
+with its numerical policy represented in cache compatibility. Host restoration
+must beat recomputation or improve overload tails after transfer, memory and
+retirement costs. Neither a CPU tier nor compressed state is a prerequisite
+for the first qualified serving path.
 
 The pinned hybrid's 149.6 MiB recurrent state per sequence versus 16.8 MiB KV at
 257-token reach makes dense checkpoints unattractive. It does not prove that hybrid
@@ -244,6 +261,32 @@ and numerical policy. Start drain-and-replace; overlapping versions need explici
 capacity and derived-state compatibility. Exact snapshot identity is the initial cache
 policy, not a numeric label pretending to own storage.
 
+### Multi-replica inference placement (conditional)
+
+Model-aware request placement is a deployment concern distinct from fleet/GPU
+allocation and a single replica's AR scheduler. When real multi-replica workload
+justifies it, an optional inference router can balance **valid reusable-prefix
+coverage** against projected uncached prefill, decode/queue work, cache pressure
+and replica health. Keep useful affinity for sequential turns, spread highly
+concurrent branches or hot sessions when queueing overwhelms reuse, and prefer
+new sessions on newly started replicas rather than needlessly relocating warm
+sessions. Compare random, load-only, fixed-affinity and combined routing instead
+of assuming a fixed scoring formula wins.
+
+Client session/parent identifiers are advisory locality hints, not proof of equal
+content or authorization. Reuse requires exact compatible tokenized prefix,
+processor/model/adapter/numerical snapshot, all required hybrid components and
+tenant/trust namespace. Replica cache reports are bounded and eventually stale;
+verify residency before use, expire state on eviction/restart/replacement and
+fall back to safe recomputation on a miss. Do not retain raw prompts just to route.
+
+Replicas remain authorities for admission, continuation, cache validity,
+cancellation and retirement. An optional deployment router owns its placement,
+retries and bounded queues; external infrastructure, possibly Archon, owns
+provisioning and resource leases. No distributed coordinator, global event bus
+or IPC is mandatory for the single-model local fast path. Cross-replica cache
+transfer and placement protocols need independent workloads and qualification.
+
 Training is a later execution system. Share artifact/device/storage/completion/collective
 mechanisms where real implementations align. Gradients, autograd, activations, optimizer
 scheduling and recovery remain outside inference policy. Trainer-to-rollout publication
@@ -258,6 +301,13 @@ computed input separately. Add multi-turn branching/tool-delay traces and job la
 completed jobs per device where appropriate; the client owns agent orchestration. Structural
 synthetic replay is insufficient for speculative acceptance, MoE routing or quality claims.
 Use content-real cases for those risks and common input histories for numerical comparisons.
+For agentic workloads distinguish per-request latency from closed-loop session
+progress, actual compute from cache hits, and individual interactivity from
+aggregate throughput. Compare deep growing-context coding and shared-prompt
+workflow traces with tool delays, branches, modified prefixes and bursty arrivals.
+Prerecorded future-turn replay measures serving, not autonomous task success.
+Use real content and independent outcome checks when evaluating model quality;
+do not extrapolate a vendor's 100k-token profile to an unqualified device/context.
 
 Arithmetic-preserving changes require exact checks; reordered algorithms need independently
 justified metrics/tolerances. Current long-prompt reference disagreement is a fidelity item,
@@ -266,7 +316,7 @@ Expand to encoder-decoder speech, iterative/non-AR text/media, structured output
 adapters, realtime sessions and wider hardware through concrete operation contracts, not a
 universal execution API. The [roadmap](roadmap.md) defines the next delivery gates.
 
-### Research basis (reviewed 2026-10-11)
+### Research basis (reviewed 2026-10-13)
 
 These sources justify mechanisms and experiments, not Ribn performance or universal support.
 Development-head features may differ from releases; pin deployed versions for comparisons.
@@ -280,3 +330,7 @@ Refresh this evidence when implementing the corresponding slice or when upstream
 - [Sarathi-Serve, v3](https://arxiv.org/abs/2403.02310v3): chunked prefill and decode batching under latency constraints, not evidence that one policy wins every workload.
 - [Marconi, MLSys 2025](https://arxiv.org/abs/2411.19379v3) and [sparse exact checkpoints, v1](https://arxiv.org/abs/2605.05219v1): reuse-value/memory economics and overlap-aware placement. The latter's layer-group prototype is not full-serving qualification.
 - [SuffixReplay, 2026-09-27 v1](https://arxiv.org/abs/2609.33477v1): approximate state reconstruction with reported quality retention below 100%; an experimental numerical policy, not transparent exact caching.
+- [Modal, 2026-09-23](https://modal.com/blog/trillion-tokens-trillion-parameters): long-prefix coding-agent traffic; reducing temporary HBM, draft and KV quantization, host overflow caching, speculation and load-aware placement. Its Kimi/Blackwell results are workload-specific evidence, not default policies or transferable Ribn speedups.
+- [NVIDIA Dynamo KV-aware router, v1.5.1](https://docs.dynamo.nvidia.com/dynamo/v1.5.1/knowledge-base/concepts/system-architecture/kv-aware-routing) and [session-aware inference, 2026-10-08](https://pytorch.org/blog/session-aware-agentic-inference-with-nvidia-dynamo/): cache overlap plus projected load; agent IDs inform locality, but do not establish resident state. A shared event bus is not automatically required.
+- [MLPerf Agentic Inference, 2026-07-08](https://mlcommons.org/2026/07/agentic-inference-for-mlperf-inference/): closed-loop multi-turn pacing, coding and shared-prompt cohorts, interactivity/throughput frontiers and accuracy gates. Pin actual reference rules and version before comparison.
+- [vLLM prefix-caching design](https://github.com/vllm-project/vllm/blob/main/docs/design/prefix_caching.md): prefix hashes include model-dependent extras and tenant salts; this evolving design informs identity/isolation, not a substitute for Ribn's hybrid continuation proof.
