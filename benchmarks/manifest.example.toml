@@ -43,7 +43,7 @@ arrival_pattern = "poisson"
 
 [sampling]
 temperature = 0.0
-ignore_eos = true
+ignore_eos = false
 
 [slo]
 ttft_ms = 0.0

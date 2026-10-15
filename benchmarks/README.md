@@ -11,6 +11,9 @@ Use three complementary surfaces:
 3. **SGLang `sglang.benchmark.serving`** as an incumbent-native cross-check for SGLang and OpenAI-compatible serving behavior.
 
 Do not rely on one benchmark client for all conclusions. If the neutral and incumbent-native tools materially disagree, investigate before publishing a comparison.
+Include [mistral.rs](https://github.com/EricLBuehler/mistral.rs) when evaluating the
+Rust-native engine proposition; it is an existing engine/server, not merely a tensor
+framework. Confirm support and pin its deployed configuration like other incumbents.
 
 Current references:
 
@@ -75,6 +78,25 @@ records the primary sources and their scope.
 - [Qwen prefill qualification](qwen-prefill-qualification.md) — chunked same-sequence prefill.
 - [Runtime alignment](runtime-alignment/README.md) — host and CUDA frontend overhead.
 - [Loader memory](loader-memory/README.md) — sharded BERT host-loading peak and bit preservation.
+
+## Unqualified historical tools
+
+Do not use `incumbent-serving-bench.py` or the custom `incumbent-qwen38/*stream_bench.py`
+clients for new competitive claims. They can count requested tokens or content events
+rather than authoritative generated tokens, and do not consistently reject incomplete
+or error-only streams. Their historical outputs are not retroactively validated by a
+successful process exit. Use the neutral/native clients above and inspect terminal
+outcomes and actual usage.
+
+`run-qwen-serving-sweep.sh` currently hardcodes the default Cargo executable path after
+building. It must resolve the actual build artifact before use with `CARGO_TARGET_DIR`;
+otherwise it can run a stale executable. Native diagnostics remain separate from matched
+HTTP/EOS-enabled comparisons.
+
+**Do not run `quality-probes/probe.py` on an ordinary host.** It evaluates/executes
+model-produced Python without isolation; subprocess timeouts are not a sandbox. Its
+marker-based code checks are not an independent task-quality gate. It is retained as
+historical experiment source, not a qualified evaluation tool.
 
 ## Initial workload matrix
 

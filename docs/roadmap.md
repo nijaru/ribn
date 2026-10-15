@@ -58,7 +58,7 @@ Historical timings do not qualify the migrated harness.
 
 ## Immediate bounds and lifecycle repairs
 
-Source audit at `093cd28` found gaps that passing current fixtures do not cover:
+Source audits at `093cd28` and `70e5586` found gaps that passing fixtures do not cover:
 
 1. **Text accepted-allocation retention — repaired, host-qualified.**
    `ProcessorLimits::max_retained_bytes` bounds input/options heap capacity separately
@@ -73,7 +73,10 @@ Source audit at `093cd28` found gaps that passing current fixtures do not cover:
    not submitted input bytes, selects FIFO prefixes and lacks local close/shutdown.
    Executor `Blocked(C)` has no general readiness registration. Add retained-input
    admission, bounded feasible-peer selection/aging, cancellation settlement behind a
-   blocked head and local retryable shutdown without closing sibling pools. Preserve
+   blocked head and local retryable shutdown without closing sibling pools. Preparation
+   must reject actual backend limits locally: BERT's model-position check currently
+   permits sequences above the CUDA attention kernel's 4096-token limit, allowing a
+   permanently infeasible request to fail accepted peers during execution. Preserve
    request identity/result ownership. This gates encoder application exposure, not the
    text-only server. See the [non-AR contract](resource-protocol.md#non-ar-application-lifecycle).
 3. **Physical release/accounting.** BERT partial construction and normal result/quarantine
@@ -81,8 +84,24 @@ Source audit at `093cd28` found gaps that passing current fixtures do not cover:
    cudarc 0.19.9 can lose an allocation pointer if tracking-event creation fails; a drain
    cannot release an unreachable pointer. NVIDIA's deferred-release acknowledgement and
    Qwen's following logical refund must be reconciled before overlapping submissions make
-   that an ordinary path. Gate partial allocation/upload, teardown, failed drain and
-   sibling-stream pressure. No hard shared-device peak claim until these owners qualify.
+   that an ordinary path. Pinned allocation construction also needs an owner before
+   fallible tracking-event creation. BERT's default quarantine/result teardown can refund
+   charges without a successful drain; an explicit retry method alone does not make Drop
+   safe. Gate partial allocation/upload, teardown, failed drain and sibling-stream
+   pressure. No hard shared-device peak claim until these owners qualify.
+
+The 2026-10-15 audit repaired preprocessing insertion racing final-worker exit,
+removed the unused charge-dropping `Completed::into_outcome` extraction, validated all
+mutable BERT host parameters before CUDA initialization, and added the missing Qwen
+quarantine settlement after a successful shutdown drain. Host regressions and bounded
+CUDA success-path requalification passed; real failed-drain device injection and the
+physical-accounting repairs above remain open. See [audit qualification](../benchmarks/runtime-contract.md#audit-boundary-repairs-2026-10-15).
+
+Loading still needs coherent executable semantics: Qwen geometry/template/weights are
+not resolved from one immutable source owner, and same-shaped artifacts with different
+normalization/RoPE metadata are not fully validated against the pinned backend. F16
+sources materialized as F32 must be charged at materialized size, not encoded size.
+Resolve those boundaries before expanding artifact support or claiming loader bounds.
 
 The remaining defects/limitations do not weaken the owning contracts or block unrelated
 qualified paths. The next concrete delivery is matched endpoint measurement below; non-AR and

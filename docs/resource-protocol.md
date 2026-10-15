@@ -152,8 +152,11 @@ surviving dequeue) except for one criterion whose precondition does not exist ye
 downstream workspace headroom needs a real downstream stage sharing the pool; it
 is not established by the separate AR/encoder fixtures. Two limits are recorded:
 a request's whole envelope remains with its result rather than releasing temporary
-storage early; retirement that no drain can prove retains storage and charge. These
-are logical lease rules, not proof that result Drop completes queued device frees.
+storage early; an explicit failed retirement attempt retains storage and charge for
+retry. Default result/quarantine Drop is not a completion-safe retirement protocol:
+it can refund the charge without proving physical reuse/release. The unused extraction
+that silently discarded a result's lease is removed; explicit transfers still must move
+storage and lease together. These logical lease rules do not prove queued frees completed.
 Partial allocation/upload failure during submission construction is an additional
 source-traced gap: already-created buffers can drop into stream-ordered frees while
 no retained submission carries their charge. Post-enqueue qualification does not
@@ -166,7 +169,9 @@ events in `CudaStream::alloc`. If event creation fails, it returns without a `Cu
 owner for the pointer. A stream drain alone cannot free that unreachable allocation;
 allocation failure cannot uniformly be classified as a clean refusal. Resolve the
 allocator failure owner as well as stream-ordered free completion before claiming a
-hard shared CUDA bound.
+hard shared CUDA bound. The pinned-host allocator has the same allocate-before-event
+failure gap; it is used for Qwen output slots. Failed pinned-event synchronization must
+not authorize host-buffer reclamation while a device copy can still access it.
 
 1. **One authority, owning byte leases.** The first concrete authority is a shared byte
    pool that grants an owning, non-duplicable lease per reservation. Moving a lease

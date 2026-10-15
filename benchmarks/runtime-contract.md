@@ -587,6 +587,49 @@ quality-matched competitive or RSS/device-peak result. Those remain the
 [serving acceptance matrix](../docs/roadmap.md#first-competitive-acceptance-matrix).
 The desktop's four untracked SIMT artifacts retained their content fingerprints.
 
+## Audit boundary repairs (2026-10-15)
+
+Production checkpoint `f8c69c3` repairs four boundaries without changing model arithmetic:
+
+- Preprocessing queue insertion and final-worker closure/drain share one authority.
+  The deterministic real-pool regression failed on the original interleaving (exit 101)
+  and passes after repair; replies and permits cannot remain in an unserviceable queue.
+- `Completed::into_outcome` is removed: it returned output while silently dropping its
+  lease. Existing explicit handoffs retain storage and charge through `into_parts`.
+- BERT validates all mutable host parameter buffers, projection dimensions and layer
+  counts before CUDA initialization. Checked shape products reject overflow. On the
+  original source, the malformed-query regression reached invalid-device initialization
+  instead of rejecting its parameters (exit 101); repaired CUDA-feature execution passes.
+- Qwen shutdown asks the dispatcher to synchronize and settle fault quarantine, rather
+  than synchronizing a separate stream handle without clearing the undrained state.
+  Host state-machine tests cover failed drain followed by successful settlement,
+  exactly-once retirement, preserved poison and untouched healthy pending outcomes.
+
+All five repository gates passed on this production source, exit 0 each. On the idle
+RTX 4090, driver 615.71.09 and Rust 1.98.0, these serialized checks also exited 0:
+
+```sh
+cargo test -p engine-bert --locked --features cuda --test host_validation
+cargo test -p engine-nvidia --locked --features cuda --lib submissions::tests
+cargo test --release -p engine-bert --locked --features cuda --test device_reference \
+  -- --ignored --test-threads=1
+ENGINE_QWEN_GGUF=/absolute/path/Qwen3.8-27B-UD-Q4_K_M.gguf \
+  cargo test --release -p ribn-server --features cuda --test cuda_http --locked \
+  -- --ignored --exact http_matches_direct_text_and_preserves_disconnect_peer_progress \
+  --test-threads=1
+```
+
+Results: host validation 1/1, quarantine bookkeeping 4/4, independent tiny-BERT CUDA
+reference/lifecycle cases 3/3 (0.32 seconds), Qwen HTTP parity/cancellation/shutdown 1/1
+(24.13 seconds), excluding build times. The Qwen artifact and short-context scope are
+unchanged from [initial HTTP qualification](#initial-text-http-qualification-2026-10-13).
+No real device fault/failed synchronization was injected: the quarantine transition is
+host-tested, and the CUDA gate requalifies the healthy/cancellation/shutdown path only.
+Physical free completion, allocator-failure ownership, BERT final quarantine Drop and
+hard shared-memory peaks remain unqualified. This is not competitive measurement.
+Raw desktop evidence is retained under `~/ribn-qualification/f8c69c3-audit/`; all four
+untracked SIMT artifacts retain their fingerprints.
+
 ## Legacy-runtime retirement: device re-execution passed
 
 The duplicate core serving scheduler/runtime is removed. Its wrapper-only host tests
