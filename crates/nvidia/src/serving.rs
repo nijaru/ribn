@@ -400,6 +400,21 @@ impl CudaQwen35ServingDispatcher {
         }
     }
 
+    /// Establish completion and settle failed-drain quarantine for shutdown.
+    /// Healthy pending outcomes remain available to poll; a faulted dispatcher
+    /// stays closed to execution even when its resources become safe to retire.
+    ///
+    /// # Errors
+    /// A failed barrier retains quarantine and prohibits physical release.
+    pub fn synchronize(&mut self) -> Result<(), BackendError> {
+        self.stream
+            .synchronize()
+            .map_err(|error| BackendError::ExecutionFailed(error.to_string()))?;
+        let retired = self.submissions.retire_after_barrier();
+        self.retire_submissions(retired);
+        Ok(())
+    }
+
     /// A driver fault ends normal polling, but not necessarily device access.
     /// Drain before retiring leases; quarantine them if completion is uncertain.
     fn fail_device(&mut self, error: BackendError) -> BackendError {
@@ -407,16 +422,20 @@ impl CudaQwen35ServingDispatcher {
         let retired = self.submissions.fail(error.to_string(), flush.is_ok());
         if let Err(flush_error) = flush {
             return BackendError::ExecutionFailed(format!(
-                "{error}; CUDA drain failed: {flush_error}; resources quarantined until teardown"
+                "{error}; CUDA drain failed: {flush_error}; resources quarantined until a successful drain"
             ));
         }
+        self.retire_submissions(retired);
+        error
+    }
+
+    fn retire_submissions(&mut self, retired: Vec<PendingSubmission>) {
         for record in retired {
             for lease in record.outputs.into_iter().flatten() {
                 self.recycle_output(lease);
             }
         }
         self.drain_deferred_releases();
-        error
     }
 
     fn lease_output(&mut self) -> Result<PinnedSlotLease, BackendError> {
@@ -1018,7 +1037,7 @@ impl NvidiaDispatcher for CudaQwen35ServingDispatcher {
     fn release_inference_state(&mut self, state: &InferenceStateSet) -> Result<(), BackendError> {
         if !self.submissions.release_is_safe() {
             return Err(BackendError::ExecutionFailed(
-                "CUDA resource release awaits teardown of the faulted dispatcher".to_owned(),
+                "CUDA resource release awaits a successful dispatcher drain".to_owned(),
             ));
         }
         // Physical release while queued device work still accesses this

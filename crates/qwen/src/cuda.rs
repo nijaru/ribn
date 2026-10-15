@@ -5,8 +5,8 @@ use ribn::{
     StepCompletion, SubmissionId, TokenRequest,
 };
 
-use crate::execution::model_error;
-use crate::loading::{self, MemoryReport, QwenLoadOptions, Resources};
+use crate::execution::{QwenExecution, model_error};
+use crate::loading::{self, Backend, MemoryReport, QwenLoadOptions};
 
 /// Experimental prepared Qwen GGUF/CUDA text implementation.
 ///
@@ -16,7 +16,7 @@ use crate::loading::{self, MemoryReport, QwenLoadOptions, Resources};
 pub struct QwenCuda {
     info: ExecutorInfo,
     memory: MemoryReport,
-    resources: Option<Resources>,
+    execution: Option<QwenExecution<Backend>>,
 }
 
 impl QwenCuda {
@@ -29,10 +29,10 @@ impl QwenCuda {
         path: impl Into<PathBuf>,
         options: QwenLoadOptions,
     ) -> Result<Self, ExecutionError> {
-        let (resources, memory) = loading::load(path.into(), options)?;
+        let (execution, memory) = loading::load(path.into(), options)?;
         Ok(Self {
-            info: resources.execution.info().clone(),
-            resources: Some(resources),
+            info: execution.info().clone(),
+            execution: Some(execution),
             memory,
         })
     }
@@ -42,8 +42,8 @@ impl QwenCuda {
         self.memory
     }
 
-    fn resources(&mut self) -> Result<&mut Resources, ExecutionError> {
-        self.resources
+    fn execution(&mut self) -> Result<&mut QwenExecution<Backend>, ExecutionError> {
+        self.execution
             .as_mut()
             .ok_or_else(|| ExecutionError::new("Qwen device owner is unavailable"))
     }
@@ -59,40 +59,46 @@ impl GenerationExecutor for QwenCuda {
         id: SequenceId,
         request: &TokenRequest,
     ) -> Result<Admission, ExecutionError> {
-        self.resources()?.execution.admit(id, request)
+        self.execution()?.admit(id, request)
     }
     fn prepare(&mut self, batch: &[BatchItem]) -> Result<ribn::BatchPreparation, ExecutionError> {
-        self.resources()?.execution.prepare(batch)
+        self.execution()?.prepare(batch)
     }
     fn abandon_preparation(&mut self) -> Result<(), ExecutionError> {
-        self.resources()?.execution.abandon_preparation();
+        self.execution()?.abandon_preparation();
         Ok(())
     }
     fn submit(&mut self, batch: &[BatchItem]) -> Result<SubmissionId, ExecutionError> {
-        self.resources()?.execution.submit(batch)
+        self.execution()?.submit(batch)
     }
     fn poll(&mut self, id: SubmissionId) -> Result<Option<Vec<StepCompletion>>, ExecutionError> {
-        self.resources()?.execution.poll(id)
+        self.execution()?.poll(id)
     }
     fn release(&mut self, id: SequenceId) -> Result<(), ExecutionError> {
-        self.resources()?.execution.release(id)
+        self.execution()?.release(id)
     }
     fn synchronize(&mut self) -> Result<(), ExecutionError> {
-        let resources = self.resources()?;
-        resources.stream.synchronize().map_err(model_error)?;
-        resources.execution.drain_after_barrier()
+        let execution = self.execution()?;
+        // The dispatcher owns both the stream barrier and quarantine settlement.
+        // Synchronizing its stream alone cannot authorize failed-drain release.
+        execution
+            .backend
+            .dispatcher_mut()
+            .synchronize()
+            .map_err(model_error)?;
+        execution.drain_after_barrier()
     }
 }
 
 impl Drop for QwenCuda {
     fn drop(&mut self) {
-        if self.resources.is_some()
+        if self.execution.is_some()
             && self.synchronize().is_err()
-            && let Some(resources) = self.resources.take()
+            && let Some(execution) = self.execution.take()
         {
             // No barrier proof: retain the single owner instead of releasing
             // allocations, pinned output, or streams still visible to the GPU.
-            std::mem::forget(resources);
+            std::mem::forget(execution);
         }
     }
 }

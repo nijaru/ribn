@@ -83,16 +83,10 @@ pub struct MemoryReport {
 
 pub(crate) type Backend = NvidiaBackend<CudaQwen35ServingDispatcher>;
 
-/// Keep the device owner separate so uncertain teardown can retain it whole.
-pub(crate) struct Resources {
-    pub(crate) execution: QwenExecution<Backend>,
-    pub(crate) stream: Arc<CudaStream>,
-}
-
 pub(crate) fn load(
     path: PathBuf,
     options: QwenLoadOptions,
-) -> Result<(Resources, MemoryReport), ExecutionError> {
+) -> Result<(QwenExecution<Backend>, MemoryReport), ExecutionError> {
     if options.context_tokens == 0 || options.max_sequences == 0 {
         return Err(ExecutionError::new(
             "Qwen context and sequence limits must be nonzero",
@@ -181,7 +175,7 @@ pub(crate) fn load(
         vocabulary_size,
     );
     Ok((
-        Resources { execution, stream },
+        execution,
         MemoryReport {
             free_before_preparation_bytes,
             weight_budget_bytes,

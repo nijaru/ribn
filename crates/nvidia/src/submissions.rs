@@ -39,10 +39,18 @@ impl<T> Submissions<T> {
         self.quarantined
             .extend(self.pending.drain().map(|(_, value)| value));
         if drained {
-            std::mem::take(&mut self.quarantined)
+            self.retire_after_barrier()
         } else {
             Vec::new()
         }
+    }
+
+    /// The stream owner must establish a successful barrier before calling.
+    /// Normal pending submissions retain their outcomes; only fault quarantine
+    /// retires here. Cleanup never reopens a faulted dispatcher.
+    pub(crate) fn retire_after_barrier(&mut self) -> Vec<T> {
+        self.undrained = false;
+        std::mem::take(&mut self.quarantined)
     }
 }
 
@@ -80,6 +88,42 @@ mod tests {
         assert_eq!(dropped.load(Ordering::SeqCst), 0);
         drop(submissions);
         assert_eq!(dropped.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn later_barrier_retires_failed_drain_quarantine_exactly_once() {
+        let dropped = Arc::new(AtomicUsize::new(0));
+        let mut submissions = Submissions::default();
+        submissions.pending.insert(
+            BackendSubmissionId::new(1).unwrap(),
+            Resource(dropped.clone()),
+        );
+        submissions.quarantine(Resource(dropped.clone()));
+        assert!(
+            submissions
+                .fail("event query failed".into(), false)
+                .is_empty()
+        );
+        assert!(submissions.fail("retry failed".into(), false).is_empty());
+        assert_eq!(dropped.load(Ordering::SeqCst), 0);
+        assert!(!submissions.release_is_safe());
+        drop(submissions.retire_after_barrier());
+        assert_eq!(dropped.load(Ordering::SeqCst), 2);
+        assert!(submissions.release_is_safe());
+        assert_eq!(submissions.fault(), Some("retry failed"));
+        assert!(submissions.retire_after_barrier().is_empty());
+        drop(submissions);
+        assert_eq!(dropped.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn shutdown_barrier_preserves_healthy_pending_outcomes() {
+        let mut submissions = Submissions::default();
+        let id = BackendSubmissionId::new(1).unwrap();
+        submissions.pending.insert(id, 7);
+        assert!(submissions.retire_after_barrier().is_empty());
+        assert_eq!(submissions.pending.remove(&id), Some(7));
+        assert!(submissions.fault().is_none());
     }
 
     #[test]
