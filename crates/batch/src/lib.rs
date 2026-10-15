@@ -288,11 +288,6 @@ impl<O, C> Completed<O, C> {
         &self.outcome
     }
 
-    #[must_use]
-    pub fn into_outcome(self) -> Terminal<O, C> {
-        self.outcome
-    }
-
     /// Split into the terminal outcome and the charge covering its storage.
     ///
     /// Handing the result to another owner means handing over the lease too:
