@@ -8,7 +8,7 @@ use std::fmt;
 
 use ribn_hf::{LocalModelPackage, LocalWeightSet, PackageError};
 
-use crate::config::BertConfig;
+use crate::config::{BertConfig, ConfigError};
 
 /// One dense projection: `weight` is `[output, input]` in row-major order, matching
 /// the checkpoint's `torch.nn.Linear` layout, and `bias` has one value per output.
@@ -62,6 +62,7 @@ impl HostWeights {
     /// Returns [`WeightError`] for a missing parameter, a wrong shape or dtype, or
     /// a package resolution failure.
     pub fn load(package: &LocalModelPackage, config: &BertConfig) -> Result<Self, WeightError> {
+        config.validate()?;
         let hidden = config.hidden_size;
         let mut reader = Reader::new(package)?;
         let weights = Self {
@@ -136,11 +137,116 @@ impl HostWeights {
                 .collect::<Result<Vec<_>, WeightError>>()?,
             pooler: reader.dense("pooler.dense", hidden, hidden)?,
         };
+        weights.validate(config)?;
         Ok(weights)
+    }
+
+    /// Check all parameter geometry before backend materialization.
+    ///
+    /// Host parameters are mutable, so artifact-time validation alone cannot
+    /// justify unchecked device reads when a caller supplies them directly.
+    ///
+    /// # Errors
+    /// Rejects invalid configuration, dimensions, layer counts or buffer lengths.
+    pub fn validate(&self, config: &BertConfig) -> Result<(), WeightError> {
+        config.validate()?;
+        let hidden = config.hidden_size;
+        validate_length(
+            "embeddings.word_embeddings.weight",
+            &self.word_embeddings,
+            &[config.vocab_size, hidden],
+        )?;
+        validate_length(
+            "embeddings.position_embeddings.weight",
+            &self.position_embeddings,
+            &[config.max_position_embeddings, hidden],
+        )?;
+        validate_length(
+            "embeddings.token_type_embeddings.weight",
+            &self.token_type_embeddings,
+            &[config.type_vocab_size, hidden],
+        )?;
+        self.embedding_norm
+            .validate("embeddings.LayerNorm", hidden)?;
+        if self.layers.len() != config.num_hidden_layers {
+            return Err(WeightError::Length {
+                parameter: "encoder.layers".to_owned(),
+                expected: config.num_hidden_layers,
+                found: self.layers.len(),
+            });
+        }
+        for (index, layer) in self.layers.iter().enumerate() {
+            let prefix = format!("encoder.layer.{index}");
+            for (name, dense) in [
+                ("attention.self.query", &layer.query),
+                ("attention.self.key", &layer.key),
+                ("attention.self.value", &layer.value),
+                ("attention.output.dense", &layer.attention_output),
+            ] {
+                dense.validate(&format!("{prefix}.{name}"), hidden, hidden)?;
+            }
+            layer
+                .attention_norm
+                .validate(&format!("{prefix}.attention.output.LayerNorm"), hidden)?;
+            layer.intermediate.validate(
+                &format!("{prefix}.intermediate.dense"),
+                hidden,
+                config.intermediate_size,
+            )?;
+            layer.output.validate(
+                &format!("{prefix}.output.dense"),
+                config.intermediate_size,
+                hidden,
+            )?;
+            layer
+                .output_norm
+                .validate(&format!("{prefix}.output.LayerNorm"), hidden)?;
+        }
+        self.pooler.validate("pooler.dense", hidden, hidden)
+    }
+}
+
+fn element_count(parameter: &str, shape: &[usize]) -> Result<usize, WeightError> {
+    shape
+        .iter()
+        .try_fold(1_usize, |count, &dimension| count.checked_mul(dimension))
+        .ok_or_else(|| WeightError::SizeOverflow {
+            parameter: parameter.to_owned(),
+        })
+}
+
+fn validate_length(parameter: &str, values: &[f32], shape: &[usize]) -> Result<(), WeightError> {
+    let expected = element_count(parameter, shape)?;
+    if values.len() != expected {
+        return Err(WeightError::Length {
+            parameter: parameter.to_owned(),
+            expected,
+            found: values.len(),
+        });
+    }
+    Ok(())
+}
+
+impl LayerNorm {
+    fn validate(&self, prefix: &str, hidden: usize) -> Result<(), WeightError> {
+        validate_length(&format!("{prefix}.weight"), &self.weight, &[hidden])?;
+        validate_length(&format!("{prefix}.bias"), &self.bias, &[hidden])
     }
 }
 
 impl Dense {
+    fn validate(&self, prefix: &str, input: usize, output: usize) -> Result<(), WeightError> {
+        if self.input != input || self.output != output {
+            return Err(WeightError::Shape {
+                parameter: format!("{prefix}.weight"),
+                expected: vec![output, input],
+                found: vec![self.output, self.input],
+            });
+        }
+        validate_length(&format!("{prefix}.weight"), &self.weight, &[output, input])?;
+        validate_length(&format!("{prefix}.bias"), &self.bias, &[output])
+    }
+
     /// Flattened row-major offset of `weight[row][column]`.
     #[must_use]
     pub const fn offset(&self, row: usize, column: usize) -> usize {
@@ -151,7 +257,11 @@ impl Dense {
 /// Why a checkpoint cannot supply this encoder's parameters.
 #[derive(Debug)]
 pub enum WeightError {
+    Config(ConfigError),
     Package(PackageError),
+    SizeOverflow {
+        parameter: String,
+    },
     Missing(String),
     Shape {
         parameter: String,
@@ -171,7 +281,12 @@ pub enum WeightError {
 impl fmt::Display for WeightError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::Config(error) => write!(f, "invalid parameter geometry: {error}"),
             Self::Package(error) => write!(f, "package resolution failed: {error}"),
+            Self::SizeOverflow { parameter } => write!(
+                f,
+                "parameter {parameter} dimensions overflow the address space"
+            ),
             Self::Missing(parameter) => {
                 write!(f, "checkpoint is missing required parameter {parameter}")
             }
@@ -202,9 +317,16 @@ impl fmt::Display for WeightError {
 impl std::error::Error for WeightError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
+            Self::Config(error) => Some(error),
             Self::Package(error) => Some(error),
             _ => None,
         }
+    }
+}
+
+impl From<ConfigError> for WeightError {
+    fn from(error: ConfigError) -> Self {
+        Self::Config(error)
     }
 }
 
@@ -263,13 +385,7 @@ impl<'a> Reader<'a> {
             .iter()
             .map(|chunk| f32::from_le_bytes(*chunk))
             .collect::<Vec<f32>>();
-        if values.len() != expected.iter().product::<usize>() {
-            return Err(WeightError::Length {
-                parameter: parameter.to_owned(),
-                expected: expected.iter().product(),
-                found: values.len(),
-            });
-        }
+        validate_length(parameter, &values, expected)?;
         Ok(values)
     }
 }

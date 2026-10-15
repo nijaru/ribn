@@ -144,7 +144,7 @@ impl CudaBertEncoder {
         host: &HostWeights,
         device_index: usize,
     ) -> Result<Self, EncoderError> {
-        config.validate()?;
+        host.validate(&config)?;
         let ops = CudaEncoderOps::new(device_index).map_err(EncoderError::Kernels)?;
         let stream = Arc::clone(ops.stream());
         let blas = CudaBlas::new(Arc::clone(&stream))

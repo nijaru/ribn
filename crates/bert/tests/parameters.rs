@@ -2,7 +2,7 @@
 
 use std::path::PathBuf;
 
-use engine_bert::{BertConfig, ConfigError, HostWeights};
+use engine_bert::{BertConfig, ConfigError, HostWeights, WeightError};
 use ribn_hf::LocalModelPackage;
 
 fn fixture() -> PathBuf {
@@ -30,6 +30,85 @@ fn fixture_package_supplies_every_parameter() {
         assert_eq!(layer.output.output, 12);
     }
     assert!(weights.word_embeddings.iter().any(|value| *value != 0.0));
+}
+
+#[test]
+fn mutable_host_parameters_must_match_the_complete_model_geometry() {
+    type Mutation = fn(&mut HostWeights);
+
+    let package = LocalModelPackage::open(fixture()).unwrap();
+    let config = BertConfig::from_json(package.config()).unwrap();
+    let weights = HostWeights::load(&package, &config).unwrap();
+    weights.validate(&config).unwrap();
+
+    let mutations: &[(&str, Mutation)] = &[
+        ("word embeddings", |w| {
+            w.word_embeddings.pop();
+        }),
+        ("position embeddings", |w| {
+            w.position_embeddings.pop();
+        }),
+        ("type embeddings", |w| {
+            w.token_type_embeddings.pop();
+        }),
+        ("embedding norm", |w| {
+            w.embedding_norm.bias.pop();
+        }),
+        ("layer count", |w| {
+            w.layers.pop();
+        }),
+        ("projection buffer", |w| {
+            w.layers[0].query.weight.truncate(1);
+        }),
+        ("projection dimensions", |w| {
+            w.layers[0].key.input += 1;
+        }),
+        ("projection bias", |w| {
+            w.layers[0].value.bias.pop();
+        }),
+        ("attention output", |w| {
+            w.layers[0].attention_output.output += 1;
+        }),
+        ("attention norm", |w| {
+            w.layers[0].attention_norm.weight.pop();
+        }),
+        ("intermediate", |w| {
+            w.layers[0].intermediate.input += 1;
+        }),
+        ("layer output", |w| {
+            w.layers[0].output.weight.pop();
+        }),
+        ("output norm", |w| {
+            w.layers[0].output_norm.bias.pop();
+        }),
+        ("pooler", |w| {
+            w.pooler.output += 1;
+        }),
+    ];
+    for (name, mutate) in mutations {
+        let mut invalid = weights.clone();
+        mutate(&mut invalid);
+        assert!(
+            invalid.validate(&config).is_err(),
+            "accepted invalid {name}"
+        );
+    }
+    let overflow = BertConfig {
+        vocab_size: usize::MAX,
+        ..config
+    };
+    assert!(matches!(
+        weights.validate(&overflow),
+        Err(WeightError::SizeOverflow { .. })
+    ));
+    let invalid = BertConfig {
+        hidden_size: 0,
+        ..config
+    };
+    assert!(matches!(
+        weights.validate(&invalid),
+        Err(WeightError::Config(_))
+    ));
 }
 
 #[test]
