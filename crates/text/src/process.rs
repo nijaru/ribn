@@ -6,8 +6,7 @@
 //! cannot outgrow the permit pool or occupy an async executor thread.
 
 use std::io;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
 use std::thread;
 
 use engine_gguf::{ChatMessage, ChatTemplateOptions, GgufTokenizer};
@@ -343,10 +342,18 @@ struct Job {
     reply: Sender<Result<Prepared, TextError>>,
 }
 
+/// Serializes queue insertion with closure and the final worker's drain.
+struct Serviceability {
+    closed: bool,
+    live: usize,
+}
+
 struct PoolState {
     jobs: Sender<Job>,
-    closed: Arc<AtomicBool>,
+    serviceability: Arc<Mutex<Serviceability>>,
     limits: ProcessorLimits,
+    #[cfg(test)]
+    hooks: Arc<tests::Hooks>,
 }
 
 /// Owner of the preprocessing workers. Workers exit once every client and this
@@ -366,19 +373,28 @@ pub(crate) struct PoolClient {
 /// jobs, so no caller waits on a queue nothing will serve.
 struct Worker<'a> {
     jobs: &'a Receiver<Job>,
-    closed: &'a AtomicBool,
-    live: &'a AtomicUsize,
+    serviceability: &'a Mutex<Serviceability>,
+    #[cfg(test)]
+    hooks: &'a tests::Hooks,
 }
 
 impl Drop for Worker<'_> {
     fn drop(&mut self) {
-        if self.live.fetch_sub(1, Ordering::SeqCst) != 1 {
+        let mut serviceability = self
+            .serviceability
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        serviceability.live -= 1;
+        if serviceability.live != 0 {
             return;
         }
-        self.closed.store(true, Ordering::SeqCst);
-        // Dropping a queued job drops its reply sender, which reports a closed
-        // pool to its caller and returns that permit.
+        serviceability.closed = true;
+        // Closure excludes insertion even after releasing this lock. Dropping
+        // replies can invoke caller wakers, so never drain under the state lock.
+        drop(serviceability);
         while self.jobs.try_recv().is_ok() {}
+        #[cfg(test)]
+        tests::pause(&self.hooks.after_drain);
     }
 }
 
@@ -386,30 +402,37 @@ impl Pool {
     /// Start `workers` preprocessing threads with a queue bounded by `queue`.
     pub(crate) fn start(processor: &Arc<dyn TextProcessor>, workers: usize, queue: usize) -> Self {
         let (jobs, receiver) = flume::bounded(queue);
-        let closed = Arc::new(AtomicBool::new(false));
-        let live = Arc::new(AtomicUsize::new(workers));
+        let serviceability = Arc::new(Mutex::new(Serviceability {
+            closed: false,
+            live: workers,
+        }));
+        #[cfg(test)]
+        let hooks = Arc::new(tests::Hooks::default());
         for index in 0..workers {
             let processor = Arc::clone(processor);
             let worker_jobs = receiver.clone();
-            let worker_closed = closed.clone();
-            let worker_live = live.clone();
+            let worker_serviceability = serviceability.clone();
+            #[cfg(test)]
+            let worker_hooks = hooks.clone();
             let started = thread::Builder::new()
                 .name(format!("ribn-preprocess-{index}"))
                 .spawn(move || {
                     let _worker = Worker {
                         jobs: &worker_jobs,
-                        closed: &worker_closed,
-                        live: &worker_live,
+                        serviceability: &worker_serviceability,
+                        #[cfg(test)]
+                        hooks: &worker_hooks,
                     };
-                    run_worker(&*processor, &worker_jobs, &worker_closed);
+                    run_worker(&*processor, &worker_jobs, &worker_serviceability);
                 });
             if started.is_err() {
                 // A worker that never starts must still be accounted, or a lost
                 // thread would keep the pool looking alive forever.
                 drop(Worker {
                     jobs: &receiver,
-                    closed: &closed,
-                    live: &live,
+                    serviceability: &serviceability,
+                    #[cfg(test)]
+                    hooks: &hooks,
                 });
             }
         }
@@ -417,8 +440,10 @@ impl Pool {
         Self {
             state: Arc::new(PoolState {
                 jobs,
-                closed,
+                serviceability,
                 limits: processor.limits(),
+                #[cfg(test)]
+                hooks,
             }),
         }
     }
@@ -431,13 +456,21 @@ impl Pool {
 
     /// Reject new preprocessing; in-flight jobs finish and return their permits.
     pub(crate) fn close(&self) {
-        self.state.closed.store(true, Ordering::SeqCst);
+        self.state
+            .serviceability
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .closed = true;
     }
 }
 
 impl PoolClient {
     pub(crate) fn is_closed(&self) -> bool {
-        self.state.closed.load(Ordering::SeqCst)
+        self.state
+            .serviceability
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .closed
     }
 
     /// Queue preparation under an existing permit.
@@ -458,7 +491,14 @@ impl PoolClient {
         permit
             .check_input(0, &options)
             .map_err(TextError::Admission)?;
-        if self.is_closed() {
+        #[cfg(test)]
+        tests::pause(&self.state.hooks.before_submit);
+        let serviceability = self
+            .state
+            .serviceability
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if serviceability.closed {
             return Err(TextError::Closed);
         }
         let (reply, receiver) = flume::bounded(1);
@@ -475,9 +515,17 @@ impl PoolClient {
     }
 }
 
-fn run_worker(processor: &dyn TextProcessor, jobs: &Receiver<Job>, closed: &AtomicBool) {
+fn run_worker(
+    processor: &dyn TextProcessor,
+    jobs: &Receiver<Job>,
+    serviceability: &Mutex<Serviceability>,
+) {
     while let Ok(job) = jobs.recv() {
-        if closed.load(Ordering::SeqCst) {
+        if serviceability
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .closed
+        {
             // Shutdown or pool failure already began. Do not start queued work:
             // dropping the job reports a closed pool and returns its permit.
             continue;
@@ -509,4 +557,202 @@ fn prepare(
         request: TokenRequest::new(tokens, options),
         permit,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Mutex;
+    use std::time::Duration;
+
+    use ribn::driver::{Driver, DriverConfig};
+    use ribn::{
+        Admission, BatchItem, BatchPreparation, Engine, EngineConfig, ExecutionError, ExecutorInfo,
+        GenerationExecutor, GenerationLimits, RequestId, SchedulePolicy, SequenceId,
+        StepCompletion, SubmissionId,
+    };
+
+    use super::*;
+
+    const TIMEOUT: Duration = Duration::from_secs(5);
+    type Pause = Mutex<Option<(Sender<()>, Receiver<()>)>>;
+
+    #[derive(Default)]
+    pub(super) struct Hooks {
+        pub(super) before_submit: Pause,
+        pub(super) after_drain: Pause,
+    }
+
+    pub(super) fn pause(hook: &Pause) {
+        let gate = hook.lock().unwrap().take();
+        if let Some((entered, resume)) = gate {
+            // A failed test drops its endpoints. Never panic during worker unwind.
+            let _ = entered.send(());
+            let _ = resume.recv();
+        }
+    }
+
+    fn gate(hook: &Pause) -> (Receiver<()>, Sender<()>) {
+        let (entered, observed) = flume::bounded(1);
+        let (release, resume) = flume::bounded(1);
+        *hook.lock().unwrap() = Some((entered, resume));
+        (observed, release)
+    }
+
+    struct PanickingProcessor {
+        entered: Sender<()>,
+        release: Receiver<()>,
+    }
+
+    impl TextProcessor for PanickingProcessor {
+        fn limits(&self) -> ProcessorLimits {
+            ProcessorLimits::default()
+        }
+
+        fn encode(&self, _: TextInput) -> Result<EncodedInput, TextError> {
+            self.entered.send(()).unwrap();
+            self.release.recv().unwrap();
+            panic!("fixture processor panic");
+        }
+
+        fn decode_token_into(&self, _: u32, _: &mut Vec<u8>) -> Result<(), TextError> {
+            unreachable!("preprocessing never decodes")
+        }
+    }
+
+    /// Supplies real admission permits; no request reaches token execution.
+    struct IdleExecutor(ExecutorInfo);
+
+    impl GenerationExecutor for IdleExecutor {
+        fn info(&self) -> &ExecutorInfo {
+            &self.0
+        }
+
+        fn admit(
+            &mut self,
+            _: RequestId,
+            _: SequenceId,
+            _: &TokenRequest,
+        ) -> Result<Admission, ExecutionError> {
+            unreachable!("no token request submitted")
+        }
+
+        fn prepare(&mut self, _: &[BatchItem]) -> Result<BatchPreparation, ExecutionError> {
+            unreachable!("no token request submitted")
+        }
+
+        fn abandon_preparation(&mut self) -> Result<(), ExecutionError> {
+            Ok(())
+        }
+
+        fn submit(&mut self, _: &[BatchItem]) -> Result<SubmissionId, ExecutionError> {
+            unreachable!("no token request submitted")
+        }
+
+        fn poll(&mut self, _: SubmissionId) -> Result<Option<Vec<StepCompletion>>, ExecutionError> {
+            unreachable!("no token request submitted")
+        }
+
+        fn release(&mut self, _: SequenceId) -> Result<(), ExecutionError> {
+            unreachable!("no token request submitted")
+        }
+
+        fn synchronize(&mut self) -> Result<(), ExecutionError> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn final_worker_drain_cannot_strand_a_racing_submission() {
+        let engine = Engine::new(
+            IdleExecutor(ExecutorInfo {
+                name: "permit fixture".into(),
+                limits: GenerationLimits {
+                    context_tokens: 4096,
+                    max_sequences: 8,
+                    max_batch_tokens: 128,
+                    max_decode_tokens: 1,
+                },
+            }),
+            EngineConfig::default(),
+            SchedulePolicy::default(),
+        )
+        .unwrap();
+        let (mut owner, handle) = Driver::spawn(
+            engine,
+            DriverConfig {
+                max_requests: 3,
+                ..DriverConfig::default()
+            },
+        )
+        .unwrap();
+        let (entered, encoding) = flume::bounded(1);
+        let (release, resume) = flume::bounded(1);
+        let processor: Arc<dyn TextProcessor> = Arc::new(PanickingProcessor {
+            entered,
+            release: resume,
+        });
+        let pool = Pool::start(&processor, 1, 3);
+        let client = pool.client();
+        let submit = |client: &PoolClient| {
+            client.submit(
+                TextInput::prompt("input"),
+                GenerationOptions::default(),
+                handle.try_reserve().unwrap(),
+            )
+        };
+        let panicking = submit(&client).unwrap();
+        encoding.recv_timeout(TIMEOUT).unwrap();
+        let queued = submit(&client).unwrap();
+        let (submitting, send) = gate(&pool.state.hooks.before_submit);
+        let (drained, exit) = gate(&pool.state.hooks.after_drain);
+        let peer = client.clone();
+        let permit = handle.try_reserve().unwrap();
+        let racing = thread::spawn(move || {
+            peer.submit(
+                TextInput::prompt("racing"),
+                GenerationOptions::default(),
+                permit,
+            )
+        });
+        submitting.recv_timeout(TIMEOUT).unwrap();
+
+        // Finish the last worker's drain while retaining its receiver. A stale
+        // open check used to allow insertion in this exact window.
+        release.send(()).unwrap();
+        drained.recv_timeout(TIMEOUT).unwrap();
+        assert!(client.is_closed());
+        assert!(matches!(
+            panicking.recv_timeout(TIMEOUT),
+            Err(flume::RecvTimeoutError::Disconnected)
+        ));
+        assert!(matches!(
+            queued.recv_timeout(TIMEOUT),
+            Err(flume::RecvTimeoutError::Disconnected)
+        ));
+        send.send(()).unwrap();
+        let result = racing.join().unwrap();
+        exit.send(()).unwrap();
+        match result {
+            Err(TextError::Closed) => {}
+            Ok(reply) => assert!(
+                matches!(
+                    reply.recv_timeout(TIMEOUT),
+                    Err(flume::RecvTimeoutError::Disconnected)
+                ),
+                "submission after final drain stranded its reply and permit"
+            ),
+            Err(error) => panic!("unexpected submission error: {error:?}"),
+        }
+        // Keep clients alive: dropping senders must not be necessary for permits
+        // to return. Together these reservations exhaust the original bound.
+        assert!(matches!(submit(&client), Err(TextError::Closed)));
+        let _permits = (0..3)
+            .map(|_| {
+                handle
+                    .try_reserve()
+                    .expect("preprocessing returned its permit")
+            })
+            .collect::<Vec<_>>();
+        owner.shutdown().unwrap();
+    }
 }
