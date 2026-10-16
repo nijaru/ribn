@@ -85,11 +85,40 @@ than an independently substituted literal.
 Host gates pass. A temporary exhaustive check compared the closed-form IMRoPE text
 predicate with the pinned selector for 82,880 small configurations; committed boundary
 cases protect holes, unused fourth sections and overflow. These are parser/preflight
-results, not GPU arithmetic or broad model qualification. The actual pinned artifact's
-header has not been inspected in this gate, and device re-execution remains pending.
-Recheck its normalized metadata and run the existing numerical/lifecycle gates when
-hardware returns; investigate any rejection rather than bypassing the preflight.
-This does not resolve the separate long-prompt divergence or lazy-source/loading peaks.
+results, not GPU arithmetic or broad model qualification. Subsequent device
+re-execution is recorded below; neither gate resolves the separate long-prompt
+divergence or lazy-source/loading peaks.
+
+### Device re-execution (2026-10-16, `dc4aed0`)
+
+The pinned artifact SHA-256 `322e194ff79741c7baa497c240f677f54b201b0efab44ca8e50f122b39123482`
+was verified on the RTX 4090 (driver 615.71.09, reported CUDA 13.4, Rust 1.98.0).
+Its actual header declares epsilon `1e-6` as F32, rotary dimensions 64, frequency
+base `1e7`, sections `[11,11,10,0]` and interval 4, with no overriding recurrent
+catalog or scaling declaration. The normalized profile is accepted without a bypass.
+
+Serialized with no competing compute process, all commands exited 0:
+
+```sh
+export RIBN_MODEL=/absolute/path/Qwen3.8-27B-UD-Q4_K_M.gguf
+export ENGINE_QWEN_GGUF="$RIBN_MODEL"
+export RIBN_REFERENCE=$(pwd)/crates/qwen/tests/fixtures/qwen38-code-fill4096-257.tokens
+cargo test --release -p engine-qwen --features cuda --test cuda_runtime --locked \
+  -- --ignored --test-threads=1
+cargo test --release -p ribn-server --features cuda --test cuda_http --locked \
+  -- --ignored --test-threads=1
+cargo test --release -p engine-bert --features cuda --test device_reference --locked \
+  -- --ignored --test-threads=1
+```
+
+Qwen passed **5/5** (554.41 s test time; 559 s including build): independent reference,
+all widths 1–9, cancellation, mixed/nonadjacent reaches and histories, owned-driver
+stalled/abandoned peers and constrained continuation. The reference remains the bounded
+257-token prompt / eighteen-token agreed prefix, not broad context or distributional
+acceptance. HTTP passed **1/1** (25 s including build); BERT passed **3/3** (0.27 s test
+time). No competing compute process or residual compute allocation remained after teardown.
+Raw logs/header/environment are retained outside Git at
+`desktop:~/ribn-qualification/dc4aed0-device/`.
 
 ## AR pre-submit preparation host gate
 
@@ -188,11 +217,63 @@ failing-before device regression. The benchmark flag stays off by default and do
 not select grouped decode or change prefill policy. CI runs both host gates.
 
 The observer owns fixed-size data only; enqueue publication follows the existing
-completion-event/pending-record transaction. No new device completion, retirement,
-physical-memory, counter-mapping or performance qualification is claimed. A device
-run must reconcile known lane/row histories and measure enabled/disabled overhead
-before relying on this instrumentation for attribution. Device timelines, queue age
-and memory attribution remain open. See [usage and counter scope](README.md#mixed-arrival-native-traces).
+completion-event/pending-record transaction. Host tests alone establish no CUDA mapping,
+retirement, physical-memory or performance qualification.
+See [usage and counter scope](README.md#mixed-arrival-native-traces).
+
+#### Bounded device mapping and trace (2026-10-16, `dc4aed0`)
+
+[Structured evidence](qwen-trace/2026-10-16-dispatch-profile.json) retains nine native
+probes and a separate Nsight Systems trace on the same idle RTX 4090/pinned artifact.
+Eight generated tokens per member produced exactly eight successful submissions:
+
+| Members / prompt | Prefill rows / tokens | Decode model-step calls |
+| --- | --- | --- |
+| 1 / 5 tokens, serial | 1 / 5 | 7 scalar |
+| 4 / 5 tokens, serial | 4 / 20 | 7 width-four groups, not 28 groups |
+| 9 / 5 tokens, serial | 9 / 45 | 63 scalar; row-limit fallback |
+| 4 / 13 tokens, chunk size eight | 4 / 52 | 7 width-four groups; four eight-token prefill chunks |
+
+All attempts enqueued successfully; offered tokens equal prefill tokens plus decode
+calls times width. The thirteen-token case executes one eight-token chunk and a
+five-token serial tail per member, including the sampling token. Its three alternating
+off/on pairs preserved the common-history token outputs and routing counts. Observed
+throughput ranges were 31.00–31.14 tok/s off and 31.11–31.18 on. These cold, eight-token
+runs have no execution warmup and millisecond-rounded elapsed reports: they establish
+no detectable regression in this sample, **not** zero overhead or an all-shape bound.
+Failed enqueue/drain device injection and broader observation scope remain unqualified.
+
+The separate existing eight-request native mixed-arrival workload used four active/four
+queued slots, 500 MiB continuation grant and production prefill chunks. It is not the
+endpoint cohort below, and native requests do not apply text EOS filtering. Nsight
+Systems 2026.3.2.476 captured CUDA activity without privileged counters or CPU sampling:
+
+```sh
+nsys profile --trace=cuda --sample=none --cpuctxsw=none --cuda-memory-usage=false \
+  --output=/tmp/ribn-mixed \
+  target/release/examples/qwen_serving_bench --model=/path/model.gguf \
+  --workload=benchmarks/workloads/qwen-mixed-arrivals.json \
+  --concurrency=4 --queue-capacity=4 --continuation-capacity-bytes=524288000 \
+  --ttft-slo-ms=5000 --itl-slo-ms=200 --e2e-slo-ms=10000 \
+  --dispatch-diagnostics --result-json=/tmp/ribn-mixed.json
+nsys stats --report cuda_gpu_kern_sum,cuda_api_sum --format csv /tmp/ribn-mixed.nsys-rep
+```
+
+All 95 submissions succeeded. The snapshot counted 832 prefill tokens (816 in 102
+same-sequence chunks), 128 scalar decode calls, **zero whole-decode groups** and 44
+nonuniform-KV fallbacks. `_batch` kernel names here therefore do not prove cross-request
+decode batching. The trace contains 375,822 kernels on one stream: 9.610 s summed kernel
+duration over a 9.999 s first-to-last-kernel span. That 96.1% is an interval calculation,
+not occupancy or an unprofiled utilization counter. Quantized warp GEMV kernels account
+for 70.2% of summed kernel time; `gdn_state_update` for 11.7% and `attn_score_gqa` for 6.8%.
+The first kernel is embedding, after preparation. Profiler overhead is not quantified;
+do not use this run's latency as a competitive measurement.
+
+This supports investigating physical projection/prefill throughput and heterogeneous
+decode lanes before a scheduler-only rewrite or a speculative host-gap fix. It does not
+select a kernel implementation or explain endpoint phase costs by itself. Queue age,
+physical-memory attribution and endpoint-level dispatch exposure remain open. Raw
+reports are retained at `desktop:~/ribn-qualification/dc4aed0-{dispatch,profile}/`.
 
 ## AR reservation authority host gate
 
@@ -671,6 +752,79 @@ engine was measured in these smokes; there is no representative mixed-load, SLO-
 quality-matched competitive or RSS/device-peak result. Those remain the
 [serving acceptance matrix](../docs/roadmap.md#first-competitive-acceptance-matrix).
 The desktop's four untracked SIMT artifacts retained their content fingerprints.
+
+## First equal-artifact endpoint diagnostic (2026-10-16)
+
+Ribn `dc4aed0` and llama.cpp `4e416ee7308dd6b581796f1a6241276cd5982691`
+(`0.4.1-dev`, build 11138) served the exact pinned GGUF on the RTX 4090. The host was
+an i9-13900KF, 33,377,128,448 bytes RAM, Fedora kernel 7.2.10-200.fc44.x86_64,
+driver 615.71.09 (CUDA UMD 13.4 reported). The default installed nvcc is 13.3.73;
+this does not assert which compiler built either binary.
+[Structured evidence](qwen-trace/2026-10-16-endpoint-diagnostic.json) contains the base
+manifest, exact server commands, per-run results, input-order checks and visible-output
+comparisons. Raw manifests, exports, logs, environment and independent audit script are
+retained outside Git at `desktop:~/ribn-qualification/dc4aed0-baseline/`.
+
+Both servers used eight sequence slots, 512 tokens per slot, F16 KV and loopback
+`/v1/completions` under alias `ribn`. Ribn retained its default execution policy;
+llama used full GPU offload and disabled prompt reuse, RAM cache, recurrent checkpoints
+and context shift (`--no-cache-prompt --cache-reuse 0 --cache-ram 0 --ctx-checkpoints 0
+--no-context-shift`). Its ordinary startup warmup remained enabled; startup is outside
+the comparison. Client settings: AIPerf 0.13.0 on Python 3.12.12 (frozen packages in
+structured evidence), cached tokenizer revision
+`Qwen/Qwen3.8-27B@1d4bf0f2ff6012fd82039f2fa52739d0dd7c60c0`, seed 42, greedy,
+EOS enabled, 16 profiling requests and two warmups per run, output cap 32, connection
+reuse disabled, GPU telemetry enabled. Three repeats alternated engine order A/B, B/A,
+A/B. These are concurrency-limited cohorts, not open-loop Poisson arrivals.
+
+All **18 protocol/accounting audits passed**: 288 measured and 36 warmup requests,
+zero failures, and all measured replies reached 32 tokens. Input lengths/counts and
+phase-separated prompt multisets matched. Concurrent request-start order did not always
+match; a fixed seed is not a fixed arrival trace. The ordinary prompts contain no special
+marker spellings. The artifact declares no BOS/EOS insertion flags; this llama BPE
+reader defaults both off, matching Ribn raw input. Vocabulary-derived versus declared
+stop-set equivalence remains unqualified; no early EOS occurred in this cohort.
+
+An independent check recomputed all 324 requests' first-visible-content TTFT,
+last-visible-content E2E and average TPOT from raw monotonic timestamps and usage,
+matching native metrics within 1e-6 ms absolute / 1e-9 relative tolerance. Terminal
+`[DONE]` latency was recorded separately. Active-window throughput uses actual reported
+output tokens over first profiling request start to last request end, excluding warmup
+and startup; it differs from native throughput by at most 0.064%. This checks named
+metrics for these runs, not the runner's general `performance_metrics_audited: false`
+contract. Average TPOT is not a maximum token/chunk gap or device time.
+
+Medians of the three **run-level** values (not pooled population-tail estimates):
+
+| Cohort, input distribution → output cap | Engine | Output tok/s | TTFT p95 ms | Average TPOT p95 ms | Illustrative SLO passes/run |
+| --- | --- | ---: | ---: | ---: | ---: |
+| c1, 16 fixed → 32 | Ribn | 28.17 | 272.99 | 27.87 | 16/16 |
+| c1, 16 fixed → 32 | llama.cpp | 48.36 | 33.54 | 20.29 | 16/16 |
+| c4, mean 64/stddev 32 → 32 | Ribn | 21.94 | 2351.65 | 153.03 | 16/16 |
+| c4, mean 64/stddev 32 → 32 | llama.cpp | 97.11 | 200.83 | 50.48 | 16/16 |
+| c8, same mixed cohort → 32 | Ribn | 21.95 | 5009.53 | 295.49 | 1/16 |
+| c8, same mixed cohort → 32 | llama.cpp | 186.57 | 373.05 | 40.47 | 16/16 |
+
+Actual mixed inputs ranged 22–119 tokens. Objectives were chosen before execution:
+TTFT <= 5000 ms, **average TPOT** <= 200 ms and content E2E <= 10000 ms. These are
+illustrative diagnostic thresholds, not approved product SLOs. Ribn's c8 active-window
+goodput was about 0.043 requests/s versus llama's 5.83; the small finite cohort is not a
+steady-state saturation, fairness, physical-peak or robust-tail qualification.
+
+**Quality-equivalent competitive acceptance remains open.** Visible text plus core
+usage matched 7/16 short requests, 3/16 c4 requests and 4–8/16 c8 requests. Ribn's
+visible texts repeated across all three runs and c4/c8 for the same mixed inputs;
+llama's mixed outputs varied across repeats and concurrency. This is not proof that
+either implementation is numerically correct or incorrect. Text is not invertible to
+token IDs, and diverged histories cannot be used for distributional error comparisons.
+Classify differences on common histories and independently qualified numerical/task
+criteria; do not change tolerances or treat one engine's greedy continuation as universal
+truth. The existing eighteen-token reference gate remains bounded.
+
+The measured performance deficit is large and repeatable, but not a quality-equivalent
+speed ratio. Next, pair that fidelity investigation with physical lane/phase attribution
+and one bounded measured execution experiment. Keep logical policy as the control;
+this evidence does not justify prefix caching, a language migration or a scheduler rewrite.
 
 ## Audit boundary repairs (2026-10-15)
 

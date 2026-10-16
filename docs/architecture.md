@@ -59,7 +59,8 @@ Qwen's GGUF adapter normalizes required normalization epsilon, reference RoPE de
 identity scaling, text-equivalent MRoPE sections and supported regular layer catalogs.
 Model configuration owns the resulting numerical semantics. Loading rejects disagreement
 with the CUDA executor's fixed geometry/numerical profile before tokenizer or device
-access; these host checks do not establish actual-artifact acceptance or new GPU support.
+access. The pinned artifact's real header and existing bounded CUDA gates passed
+re-execution; this does not establish broader artifact or context support.
 See [metadata preflight evidence](../benchmarks/runtime-contract.md#qwen-model-metadata-preflight-host-gate).
 
 Qwen reserves continuation for prompt plus output reach at admission. Deferred

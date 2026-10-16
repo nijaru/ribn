@@ -1,0 +1,568 @@
+{
+  "schema_version": 1,
+  "date": "2026-10-16",
+  "ribn_commit": "dc4aed00fdf8224168a3de829917df9a74b30589",
+  "artifact_sha256": "322e194ff79741c7baa497c240f677f54b201b0efab44ca8e50f122b39123482",
+  "native_counter_probes": [
+    {
+      "index": 0,
+      "width": 1,
+      "chunk": false,
+      "observed": true,
+      "elapsed_seconds_rounded": 0.325,
+      "output_toks_per_s": 24.61,
+      "tokens": "11751 13 198 760 6511 314 9564 369",
+      "snapshot": {
+        "attempts": 8,
+        "decode_lane_calls_by_width": [
+          0,
+          7,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "enqueue_failures": 0,
+        "enqueued_submissions": 8,
+        "grouped_policy_submissions": 0,
+        "host_submit_nanos": 149923908,
+        "offered_rows": 8,
+        "offered_tokens": 12,
+        "prefill_chunk_calls": 0,
+        "prefill_chunk_tokens": 0,
+        "prefill_rows": 1,
+        "prefill_tokens": 5,
+        "row_wise_fallbacks": {
+          "decode_shape": 0,
+          "missing_position": 0,
+          "non_decode_phase": 0,
+          "nonuniform_kv": 0,
+          "row_limit": 0,
+          "single_row": 8
+        },
+        "timing_scope": "host_route_enqueue_and_event_including_failed_cleanup",
+        "whole_decode_submissions": 0,
+        "work_scope": "fully_enqueued_submissions_only"
+      }
+    },
+    {
+      "index": 1,
+      "width": 4,
+      "chunk": false,
+      "observed": true,
+      "elapsed_seconds_rounded": 0.807,
+      "output_toks_per_s": 39.64,
+      "tokens": "11751 13 198 760 6511 314 9564 369",
+      "snapshot": {
+        "attempts": 8,
+        "decode_lane_calls_by_width": [
+          0,
+          0,
+          0,
+          0,
+          7,
+          0,
+          0,
+          0,
+          0
+        ],
+        "enqueue_failures": 0,
+        "enqueued_submissions": 8,
+        "grouped_policy_submissions": 0,
+        "host_submit_nanos": 645697785,
+        "offered_rows": 32,
+        "offered_tokens": 48,
+        "prefill_chunk_calls": 0,
+        "prefill_chunk_tokens": 0,
+        "prefill_rows": 4,
+        "prefill_tokens": 20,
+        "row_wise_fallbacks": {
+          "decode_shape": 0,
+          "missing_position": 0,
+          "non_decode_phase": 1,
+          "nonuniform_kv": 0,
+          "row_limit": 0,
+          "single_row": 0
+        },
+        "timing_scope": "host_route_enqueue_and_event_including_failed_cleanup",
+        "whole_decode_submissions": 7,
+        "work_scope": "fully_enqueued_submissions_only"
+      }
+    },
+    {
+      "index": 2,
+      "width": 9,
+      "chunk": false,
+      "observed": true,
+      "elapsed_seconds_rounded": 2.9,
+      "output_toks_per_s": 24.83,
+      "tokens": "11751 13 198 760 6511 314 9564 369",
+      "snapshot": {
+        "attempts": 8,
+        "decode_lane_calls_by_width": [
+          0,
+          63,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "enqueue_failures": 0,
+        "enqueued_submissions": 8,
+        "grouped_policy_submissions": 0,
+        "host_submit_nanos": 2724418264,
+        "offered_rows": 72,
+        "offered_tokens": 108,
+        "prefill_chunk_calls": 0,
+        "prefill_chunk_tokens": 0,
+        "prefill_rows": 9,
+        "prefill_tokens": 45,
+        "row_wise_fallbacks": {
+          "decode_shape": 0,
+          "missing_position": 0,
+          "non_decode_phase": 0,
+          "nonuniform_kv": 0,
+          "row_limit": 8,
+          "single_row": 0
+        },
+        "timing_scope": "host_route_enqueue_and_event_including_failed_cleanup",
+        "whole_decode_submissions": 0,
+        "work_scope": "fully_enqueued_submissions_only"
+      }
+    },
+    {
+      "index": 3,
+      "width": 4,
+      "chunk": true,
+      "observed": false,
+      "elapsed_seconds_rounded": 1.028,
+      "output_toks_per_s": 31.14,
+      "tokens": "9338 369 760 6511 314 9338 369 760",
+      "snapshot": null
+    },
+    {
+      "index": 4,
+      "width": 4,
+      "chunk": true,
+      "observed": true,
+      "elapsed_seconds_rounded": 1.026,
+      "output_toks_per_s": 31.18,
+      "tokens": "9338 369 760 6511 314 9338 369 760",
+      "snapshot": {
+        "attempts": 8,
+        "decode_lane_calls_by_width": [
+          0,
+          0,
+          0,
+          0,
+          7,
+          0,
+          0,
+          0,
+          0
+        ],
+        "enqueue_failures": 0,
+        "enqueued_submissions": 8,
+        "grouped_policy_submissions": 0,
+        "host_submit_nanos": 861992092,
+        "offered_rows": 32,
+        "offered_tokens": 80,
+        "prefill_chunk_calls": 4,
+        "prefill_chunk_tokens": 32,
+        "prefill_rows": 4,
+        "prefill_tokens": 52,
+        "row_wise_fallbacks": {
+          "decode_shape": 0,
+          "missing_position": 0,
+          "non_decode_phase": 1,
+          "nonuniform_kv": 0,
+          "row_limit": 0,
+          "single_row": 0
+        },
+        "timing_scope": "host_route_enqueue_and_event_including_failed_cleanup",
+        "whole_decode_submissions": 7,
+        "work_scope": "fully_enqueued_submissions_only"
+      }
+    },
+    {
+      "index": 5,
+      "width": 4,
+      "chunk": true,
+      "observed": true,
+      "elapsed_seconds_rounded": 1.028,
+      "output_toks_per_s": 31.14,
+      "tokens": "9338 369 760 6511 314 9338 369 760",
+      "snapshot": {
+        "attempts": 8,
+        "decode_lane_calls_by_width": [
+          0,
+          0,
+          0,
+          0,
+          7,
+          0,
+          0,
+          0,
+          0
+        ],
+        "enqueue_failures": 0,
+        "enqueued_submissions": 8,
+        "grouped_policy_submissions": 0,
+        "host_submit_nanos": 863305256,
+        "offered_rows": 32,
+        "offered_tokens": 80,
+        "prefill_chunk_calls": 4,
+        "prefill_chunk_tokens": 32,
+        "prefill_rows": 4,
+        "prefill_tokens": 52,
+        "row_wise_fallbacks": {
+          "decode_shape": 0,
+          "missing_position": 0,
+          "non_decode_phase": 1,
+          "nonuniform_kv": 0,
+          "row_limit": 0,
+          "single_row": 0
+        },
+        "timing_scope": "host_route_enqueue_and_event_including_failed_cleanup",
+        "whole_decode_submissions": 7,
+        "work_scope": "fully_enqueued_submissions_only"
+      }
+    },
+    {
+      "index": 6,
+      "width": 4,
+      "chunk": true,
+      "observed": false,
+      "elapsed_seconds_rounded": 1.029,
+      "output_toks_per_s": 31.1,
+      "tokens": "9338 369 760 6511 314 9338 369 760",
+      "snapshot": null
+    },
+    {
+      "index": 7,
+      "width": 4,
+      "chunk": true,
+      "observed": false,
+      "elapsed_seconds_rounded": 1.032,
+      "output_toks_per_s": 31.0,
+      "tokens": "9338 369 760 6511 314 9338 369 760",
+      "snapshot": null
+    },
+    {
+      "index": 8,
+      "width": 4,
+      "chunk": true,
+      "observed": true,
+      "elapsed_seconds_rounded": 1.029,
+      "output_toks_per_s": 31.11,
+      "tokens": "9338 369 760 6511 314 9338 369 760",
+      "snapshot": {
+        "attempts": 8,
+        "decode_lane_calls_by_width": [
+          0,
+          0,
+          0,
+          0,
+          7,
+          0,
+          0,
+          0,
+          0
+        ],
+        "enqueue_failures": 0,
+        "enqueued_submissions": 8,
+        "grouped_policy_submissions": 0,
+        "host_submit_nanos": 864374457,
+        "offered_rows": 32,
+        "offered_tokens": 80,
+        "prefill_chunk_calls": 4,
+        "prefill_chunk_tokens": 32,
+        "prefill_rows": 4,
+        "prefill_tokens": 52,
+        "row_wise_fallbacks": {
+          "decode_shape": 0,
+          "missing_position": 0,
+          "non_decode_phase": 1,
+          "nonuniform_kv": 0,
+          "row_limit": 0,
+          "single_row": 0
+        },
+        "timing_scope": "host_route_enqueue_and_event_including_failed_cleanup",
+        "whole_decode_submissions": 7,
+        "work_scope": "fully_enqueued_submissions_only"
+      }
+    }
+  ],
+  "probe_scope": "Eight generated tokens per member. Serial prefills use five repeated-fixture tokens; chunked probes use thirteen, with one eight-token chunk/member and a five-token serial tail. No execution warmup; load is outside timing. Three alternate-order off/on chunked pairs are cold short-run overhead observations, not an overhead bound. Outputs agree within each common history.",
+  "profile": {
+    "tool": "Nsight Systems 2026.3.2.476",
+    "flags": [
+      "--trace=cuda",
+      "--sample=none",
+      "--cpuctxsw=none",
+      "--cuda-memory-usage=false"
+    ],
+    "workload": "benchmarks/workloads/qwen-mixed-arrivals.json",
+    "max_active_requests": 4,
+    "max_queued_requests": 4,
+    "continuation_capacity_bytes": 524288000,
+    "dispatch_snapshot": {
+      "attempts": 95,
+      "decode_lane_calls_by_width": [
+        0,
+        128,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "enqueue_failures": 0,
+      "enqueued_submissions": 95,
+      "grouped_policy_submissions": 0,
+      "host_submit_nanos": 7875188858,
+      "offered_rows": 187,
+      "offered_tokens": 960,
+      "prefill_chunk_calls": 102,
+      "prefill_chunk_tokens": 816,
+      "prefill_rows": 59,
+      "prefill_tokens": 832,
+      "row_wise_fallbacks": {
+        "decode_shape": 0,
+        "missing_position": 0,
+        "non_decode_phase": 9,
+        "nonuniform_kv": 44,
+        "row_limit": 0,
+        "single_row": 42
+      },
+      "timing_scope": "host_route_enqueue_and_event_including_failed_cleanup",
+      "whole_decode_submissions": 0,
+      "work_scope": "fully_enqueued_submissions_only"
+    },
+    "kernel_summary": {
+      "kernel_count": 375822,
+      "first_kernel_name": "q4_k_embedding_batch",
+      "kernel_total_ns": 9609989180,
+      "first_kernel_ns": 20876603872,
+      "last_kernel_ns": 30875634413,
+      "kernel_time_fraction_of_span": 0.9610920919378358,
+      "quantized_gemv_time_fraction": 0.7020301740860024,
+      "streams": [
+        [
+          7,
+          1
+        ]
+      ],
+      "kernels": [
+        {
+          "name": "iq4_xs_gemv_warp_batch",
+          "calls": 11934,
+          "total_ns": 1163170872
+        },
+        {
+          "name": "gdn_state_update",
+          "calls": 46080,
+          "total_ns": 1123611836
+        },
+        {
+          "name": "q5_k_gemv_warp_batch",
+          "calls": 13362,
+          "total_ns": 1049123475
+        },
+        {
+          "name": "iq4_xs_gemv_warp",
+          "calls": 16848,
+          "total_ns": 876243304
+        },
+        {
+          "name": "q5_k_gemv_warp",
+          "calls": 18864,
+          "total_ns": 865294155
+        },
+        {
+          "name": "q4_k_gemv_warp_batch",
+          "calls": 10506,
+          "total_ns": 813565319
+        },
+        {
+          "name": "attn_score_gqa",
+          "calls": 3936,
+          "total_ns": 653329383
+        },
+        {
+          "name": "q4_k_gemv_warp",
+          "calls": 14832,
+          "total_ns": 632424937
+        },
+        {
+          "name": "q8_0_gemv_warp_batch",
+          "calls": 10608,
+          "total_ns": 362352569
+        },
+        {
+          "name": "q6_k_gemv_warp",
+          "calls": 3448,
+          "total_ns": 251952873
+        },
+        {
+          "name": "q8_0_gemv_warp",
+          "calls": 14976,
+          "total_ns": 186571886
+        },
+        {
+          "name": "gdn_gated_norm",
+          "calls": 6912,
+          "total_ns": 171619252
+        },
+        {
+          "name": "l2_norm_heads_batch",
+          "calls": 9792,
+          "total_ns": 132285300
+        },
+        {
+          "name": "gdn_gated_norm_batch",
+          "calls": 4896,
+          "total_ns": 128038140
+        },
+        {
+          "name": "rms_norm",
+          "calls": 18568,
+          "total_ns": 127172690
+        },
+        {
+          "name": "q6_k_gemv_warp_batch",
+          "calls": 2346,
+          "total_ns": 119359806
+        },
+        {
+          "name": "iq4_nl_gemv_warp_batch",
+          "calls": 714,
+          "total_ns": 99178882
+        },
+        {
+          "name": "q3_k_gemv_warp_batch",
+          "calls": 714,
+          "total_ns": 90777073
+        },
+        {
+          "name": "iq4_nl_gemv_warp",
+          "calls": 1008,
+          "total_ns": 90420382
+        },
+        {
+          "name": "rms_norm_batch",
+          "calls": 13056,
+          "total_ns": 85734690
+        },
+        {
+          "name": "l2_norm_heads",
+          "calls": 13824,
+          "total_ns": 78002661
+        },
+        {
+          "name": "q_gate_norm",
+          "calls": 2304,
+          "total_ns": 59247765
+        },
+        {
+          "name": "gdn_conv_silu",
+          "calls": 46080,
+          "total_ns": 55492303
+        },
+        {
+          "name": "q3_k_gemv_warp",
+          "calls": 1008,
+          "total_ns": 54643674
+        },
+        {
+          "name": "iq3_s_gemv_warp_batch",
+          "calls": 408,
+          "total_ns": 54008306
+        },
+        {
+          "name": "q_gate_norm_batch",
+          "calls": 1632,
+          "total_ns": 53023656
+        },
+        {
+          "name": "strided_rms_norm_batch",
+          "calls": 1632,
+          "total_ns": 50658974
+        },
+        {
+          "name": "iq3_s_gemv_warp",
+          "calls": 576,
+          "total_ns": 37414864
+        },
+        {
+          "name": "strided_rms_norm",
+          "calls": 2304,
+          "total_ns": 37361265
+        },
+        {
+          "name": "residual_add",
+          "calls": 31488,
+          "total_ns": 36017676
+        },
+        {
+          "name": "silu_mul",
+          "calls": 15744,
+          "total_ns": 23438153
+        },
+        {
+          "name": "kv_append_f16",
+          "calls": 15360,
+          "total_ns": 18821204
+        },
+        {
+          "name": "gdn_scalar_gate",
+          "calls": 6912,
+          "total_ns": 9125598
+        },
+        {
+          "name": "gdn_scalar_gate_batch",
+          "calls": 4896,
+          "total_ns": 6517303
+        },
+        {
+          "name": "rope_neox",
+          "calls": 4608,
+          "total_ns": 6243175
+        },
+        {
+          "name": "rope_neox_batch",
+          "calls": 3264,
+          "total_ns": 5098817
+        },
+        {
+          "name": "argmax",
+          "calls": 136,
+          "total_ns": 2277424
+        },
+        {
+          "name": "q4_k_embedding",
+          "calls": 144,
+          "total_ns": 195905
+        },
+        {
+          "name": "q4_k_embedding_batch",
+          "calls": 102,
+          "total_ns": 173633
+        }
+      ]
+    },
+    "scope": "One instrumented native eight-request workload, not the endpoint cohort. First kernel is embedding, after load; kernel interval sum / first-to-last kernel span on one stream is not occupancy or an unprofiled GPU utilization counter."
+  },
+  "raw_artifacts": [
+    "desktop:~/ribn-qualification/dc4aed0-dispatch/",
+    "desktop:~/ribn-qualification/dc4aed0-profile/"
+  ]
+}

@@ -7,11 +7,16 @@ open implementation choices and acceptance gates. All v0 interfaces may change.
 
 ## Current execution order
 
-**Next: establish a matched competitive endpoint baseline on the qualified contiguous
-path.** The loopback text adapter is host-qualified, with a bounded CUDA HTTP gate and
-neutral/native client compatibility smokes passed. Owned-input retention is
-host-qualified. Prove model-local integration with a real dense second decoder alongside
-baseline work; do not postpone it until hybrid caching or scheduling is complete.
+**Next: qualify the numerical comparison and select one measured physical-execution
+experiment on the contiguous path.** The [first repeated equal-artifact endpoint diagnostic](../benchmarks/runtime-contract.md#first-equal-artifact-endpoint-diagnostic-2026-10-16)
+is complete: Ribn achieved about 28 tok/s at short c1 and 22 tok/s at mixed c4/c8,
+versus llama.cpp's 48/97/187. Output histories differ and the incumbent's mixed-batch
+outputs vary, so this is not quality-equivalent competitive acceptance. Classify those
+differences on common histories rather than chasing greedy equality; attribute the
+performance gap with the same logical policy before selecting an optimization.
+The bounded CUDA HTTP/reference gates and host input-retention gates passed.
+Prove model-local integration with a real dense second decoder alongside this work;
+do not postpone it until hybrid caching or scheduling is complete.
 Choose physical execution and constrained-memory experiments from the measured deficit.
 Prefix-cache benefit, a second decoder/VLM, CUDA Rust migration and distributed execution
 are not prerequisites for the first baseline. They remain important product work.
@@ -138,8 +143,9 @@ physical-accounting repairs above remain open. See [audit qualification](../benc
 
 Qwen now normalizes model-owned numerical metadata and rejects fixed CUDA-profile
 mismatches before tokenizer/device access; [host preflight evidence](../benchmarks/runtime-contract.md#qwen-model-metadata-preflight-host-gate)
-covers normalization/RoPE and same-width head decompositions. Actual pinned-artifact
-header acceptance and device re-execution remain pending, not inherited qualification.
+covers normalization/RoPE and same-width head decompositions. The actual pinned header
+and affected Qwen/HTTP/BERT device gates [passed at `dc4aed0`](../benchmarks/runtime-contract.md#device-re-execution-2026-10-16-dc4aed0),
+within their existing bounded reference scope—not broad-context qualification.
 Loading still needs one immutable geometry/template/weight source owner. F16 sources
 materialized as F32 must be charged at materialized size, not encoded size. Resolve those
 remaining boundaries before expanding artifact support or claiming loader bounds.
@@ -151,9 +157,10 @@ within an explicitly qualified scope can proceed; broader performance comparison
 that scope independently justified.
 
 The remaining defects/limitations do not weaken the owning contracts or block unrelated
-qualified paths. The next concrete delivery is matched endpoint measurement below; non-AR and
-physical-accounting repairs gate their affected paths. Do not relabel count/payload or
-post-enqueue tests as physical-release evidence.
+qualified paths. The initial endpoint diagnostic now exposes the performance deficit;
+quality-qualified comparison and a measured execution improvement remain open. Non-AR
+and physical-accounting repairs gate their affected paths. Do not relabel count/payload
+or post-enqueue tests as physical-release evidence.
 
 ## 4. Dynamic AR, physical execution and model-local integration
 
@@ -224,13 +231,17 @@ This work starts alongside serving and paging, not after prefix reuse.
 1. **Observe actual execution.** Record phase costs, physically batched rows/tokens,
    fallback frequency, host/device gaps, queue age and allocated/resident/occupied bytes.
    Keep instrumentation bounded; kernel timelines establish hypotheses before expensive
-   profiler-counter work. Current 13.74 tok/s / zero-goodput smoke evidence does not isolate
-   a bottleneck. Historical traces and same-prompt sweeps are not matched endpoint baselines.
-   The native benchmark now has an opt-in bounded dispatch snapshot: submitted backend
-   rows/tokens, fully enqueued decode lane widths, separate prefill chunks, fallback
-   reasons and explicitly host-only submit timing. [Host gates](../benchmarks/runtime-contract.md#native-dispatch-diagnostics-host-gate)
-   cover selection/accounting, not actual CUDA counter mapping or overhead. Device
-   timelines, queue age, memory attribution and endpoint exposure remain open.
+   profiler-counter work. The historical 13.74 tok/s / zero-goodput smoke is not a matched
+   baseline. The new endpoint cohort exposes flat mixed c4/c8 throughput and rising latency.
+   [Bounded device probes and a native CUDA timeline](../benchmarks/runtime-contract.md#bounded-device-mapping-and-trace-2026-10-16-dc4aed0)
+   map the opt-in snapshot to actual one/four/nine-row and prefill-chunk work. The mixed
+   native trace has 128 scalar decode calls and no whole-decode groups; quantized warp
+   GEMV takes 70.2% of summed kernel time and kernels occupy 96.1% of its single-stream
+   first-to-last-kernel span. These are instrumented native-workload observations, not
+   endpoint phase attribution, occupancy or an overhead bound. Investigate physical
+   projection/prefill throughput and heterogeneous decode before a scheduler-only rewrite;
+   compare qualified native/vendor options as well as custom kernels. Queue age, physical
+   memory attribution, endpoint exposure and broad diagnostics overhead remain open.
 2. **Qualify useful physical lanes.** Compare packed/ragged heterogeneous-capacity work,
    scalable prefill GEMM and tiled attention against qualified small-row kernels and native
    vendor options. Preserve independent nonadjacent histories/completion mapping. Do not
@@ -287,8 +298,10 @@ The trailing-byte disconnect regression failed before its EOF observer was added
 These host gates do not establish GPU serving behavior. The separate short-context
 CUDA HTTP gate, actual CLI shutdown and AIPerf/native-client protocol smokes passed;
 see [HTTP qualification](../benchmarks/runtime-contract.md#initial-text-http-qualification-2026-10-13).
-No matched competitive measurement or physical-peak claim follows. The remaining
-work is the representative acceptance matrix below, not another execution-loop adapter.
+Those smokes alone establish no competitive measurement or physical-peak claim. The
+[first equal-artifact diagnostic](../benchmarks/runtime-contract.md#first-equal-artifact-endpoint-diagnostic-2026-10-16)
+adds measured deficits but leaves numerical equivalence and the representative acceptance
+matrix below open—not another execution-loop adapter.
 
 Deliver a documented text protocol subset over `TextModel`/`TextOwner`, preserving the
 existing execution owner. Start with conventional completion/chat streaming semantics;
