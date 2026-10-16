@@ -131,6 +131,29 @@ cargo test --release -p engine-qwen --features cuda --test cuda_runtime --locked
   -- --ignored --exact --test-threads=1
 ```
 
+### Native dispatch diagnostics host gate
+
+```sh
+cargo test -p engine-nvidia --features cuda --lib --locked
+cargo test -p engine-qwen --features cuda --example qwen_serving_bench --locked
+```
+
+Host tests cover the actual whole-decode eligibility predicate at one/eight/nine
+rows, unequal KV capacities, mixed phases, unsupported decode shape and missing
+positions; subgroup order/compatibility coverage remains. Accounting tests separate
+backend offers from fully enqueued work, merge each group once, distinguish prefill
+chunks from decode lanes, retain failed-attempt counts and saturate host durations.
+These are classifier/accounting tests, not injected real CUDA launches or a
+failing-before device regression. The benchmark flag stays off by default and does
+not select grouped decode or change prefill policy. CI runs both host gates.
+
+The observer owns fixed-size data only; enqueue publication follows the existing
+completion-event/pending-record transaction. No new device completion, retirement,
+physical-memory, counter-mapping or performance qualification is claimed. A device
+run must reconcile known lane/row histories and measure enabled/disabled overhead
+before relying on this instrumentation for attribution. Device timelines, queue age
+and memory attribution remain open. See [usage and counter scope](README.md#mixed-arrival-native-traces).
+
 ## AR reservation authority host gate
 
 AR's logical state manager now grants from supplied `BytePool` authorities.

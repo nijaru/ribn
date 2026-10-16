@@ -15,6 +15,7 @@ pub(super) struct Options {
     pub fixture_prompt: bool,
     pub gemv_mode: GemvMode,
     pub grouped_decode: bool,
+    pub dispatch_diagnostics: bool,
     pub prefill_chunk: Option<usize>,
     pub print_tokens: bool,
     pub divergence_probe: bool,
@@ -105,6 +106,9 @@ impl Options {
             grouped_decode: arguments
                 .iter()
                 .any(|argument| argument == "--grouped-decode"),
+            dispatch_diagnostics: arguments
+                .iter()
+                .any(|argument| argument == "--dispatch-diagnostics"),
             prefill_chunk,
             print_tokens,
             divergence_probe: input.divergence,
@@ -150,9 +154,14 @@ fn validate_arguments(arguments: &[String]) -> Result<(), String> {
             .find(|prefix| argument.starts_with(**prefix))
             .copied()
             .or_else(|| {
-                ["--print-tokens", "--divergence-probe", "--grouped-decode"]
-                    .into_iter()
-                    .find(|flag| argument == flag)
+                [
+                    "--print-tokens",
+                    "--divergence-probe",
+                    "--grouped-decode",
+                    "--dispatch-diagnostics",
+                ]
+                .into_iter()
+                .find(|flag| argument == flag)
             })
             .ok_or_else(|| format!("unknown option {argument}"))?;
         if !seen.insert(key) {

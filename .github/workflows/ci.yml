@@ -38,6 +38,8 @@ jobs:
       - run: cargo clippy -p ribn-text --features cuda --all-targets --locked -- -D warnings
       - run: cargo clippy -p ribn-cli --features cuda --all-targets --locked -- -D warnings
       - run: cargo clippy -p engine-qwen --features cuda --all-targets --locked -- -D warnings
+      - run: cargo test -p engine-nvidia --features cuda --lib --locked
       - run: cargo test -p engine-qwen --features cuda --locked
+      - run: cargo test -p engine-qwen --features cuda --example qwen_serving_bench --locked
       - run: cargo test -p ribn-text --features cuda --locked
       - run: cargo test -p ribn-cli --features cuda --locked

@@ -179,6 +179,11 @@ This work starts alongside serving and paging, not after prefix reuse.
    Keep instrumentation bounded; kernel timelines establish hypotheses before expensive
    profiler-counter work. Current 13.74 tok/s / zero-goodput smoke evidence does not isolate
    a bottleneck. Historical traces and same-prompt sweeps are not matched endpoint baselines.
+   The native benchmark now has an opt-in bounded dispatch snapshot: submitted backend
+   rows/tokens, fully enqueued decode lane widths, separate prefill chunks, fallback
+   reasons and explicitly host-only submit timing. [Host gates](../benchmarks/runtime-contract.md#native-dispatch-diagnostics-host-gate)
+   cover selection/accounting, not actual CUDA counter mapping or overhead. Device
+   timelines, queue age, memory attribution and endpoint exposure remain open.
 2. **Qualify useful physical lanes.** Compare packed/ragged heterogeneous-capacity work,
    scalable prefill GEMM and tiled attention against qualified small-row kernels and native
    vendor options. Preserve independent nonadjacent histories/completion mapping. Do not

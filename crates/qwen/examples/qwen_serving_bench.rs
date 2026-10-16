@@ -50,6 +50,13 @@ enum RunMeasurements {
     Trace(trace::Measurements),
 }
 
+struct PreparationReport {
+    artifact: String,
+    load_elapsed: Duration,
+    memory: engine_qwen::MemoryReport,
+    policy: SchedulePolicy,
+}
+
 fn main() {
     if let Err(error) = run() {
         eprintln!("qwen_serving_bench: {error}");
@@ -57,14 +64,7 @@ fn main() {
     }
 }
 
-fn run() -> Result<(), String> {
-    let arguments = std::env::args().skip(1).collect::<Vec<_>>();
-    let options = Options::parse(&arguments)?;
-    let model_path = arguments
-        .iter()
-        .find_map(|argument| argument.strip_prefix("--model=").map(str::to_owned))
-        .or_else(|| std::env::var("ENGINE_QWEN_GGUF").ok())
-        .ok_or_else(|| "set ENGINE_QWEN_GGUF or pass --model=/path/to/model.gguf".to_owned())?;
+fn runtime_settings(options: &Options) -> Result<(EngineConfig, SchedulePolicy), String> {
     let max_prompt_tokens = options.workload.as_ref().map_or_else(
         || options.context_tokens - options.output_tokens,
         |workload| workload.max_prompt_tokens,
@@ -85,9 +85,34 @@ fn run() -> Result<(), String> {
         .ok()
         .and_then(|count| count.checked_mul(PREFILL_CHUNK_TOKENS))
         .ok_or_else(|| "batch token budget overflowed".to_owned())?;
+    Ok((
+        EngineConfig {
+            max_active_requests: options.concurrency,
+            max_queued_requests: options.queue_capacity,
+            max_queued_input_tokens: input_budget,
+            max_buffered_events: event_budget,
+            max_events_per_request: 2,
+        },
+        SchedulePolicy {
+            max_batch_tokens: batch_tokens,
+            prefill_chunk_tokens: PREFILL_CHUNK_TOKENS,
+            ..SchedulePolicy::default()
+        },
+    ))
+}
+
+fn run() -> Result<(), String> {
+    let arguments = std::env::args().skip(1).collect::<Vec<_>>();
+    let options = Options::parse(&arguments)?;
+    let model_path = arguments
+        .iter()
+        .find_map(|argument| argument.strip_prefix("--model=").map(str::to_owned))
+        .or_else(|| std::env::var("ENGINE_QWEN_GGUF").ok())
+        .ok_or_else(|| "set ENGINE_QWEN_GGUF or pass --model=/path/to/model.gguf".to_owned())?;
+    let (config, mut policy) = runtime_settings(&options)?;
 
     let load_started = Instant::now();
-    let prepared = QwenCuda::load_gguf(
+    let mut prepared = QwenCuda::load_gguf(
         &model_path,
         QwenLoadOptions {
             context_tokens: options.context_tokens,
@@ -106,23 +131,21 @@ fn run() -> Result<(), String> {
     let load_elapsed = load_started.elapsed();
     let memory = prepared.memory_report();
     let artifact = prepared.info().name.clone();
-    let policy = SchedulePolicy {
-        max_batch_tokens: batch_tokens.min(prepared.info().limits.max_batch_tokens),
-        prefill_chunk_tokens: PREFILL_CHUNK_TOKENS,
-        ..SchedulePolicy::default()
-    };
-    let mut engine = Engine::new(
-        prepared,
-        EngineConfig {
-            max_active_requests: options.concurrency,
-            max_queued_requests: options.queue_capacity,
-            max_queued_input_tokens: input_budget,
-            max_buffered_events: event_budget,
-            max_events_per_request: 2,
-        },
+    policy.max_batch_tokens = policy
+        .max_batch_tokens
+        .min(prepared.info().limits.max_batch_tokens);
+    let dispatch_observer = options
+        .dispatch_diagnostics
+        .then(|| prepared.observe_dispatch())
+        .transpose()
+        .map_err(|error| error.to_string())?;
+    let preparation = PreparationReport {
+        artifact,
+        load_elapsed,
+        memory,
         policy,
-    )
-    .map_err(|error| error.to_string())?;
+    };
+    let mut engine = Engine::new(prepared, config, policy).map_err(|error| error.to_string())?;
     // Include enqueue errors in the explicit shutdown path. A failed shutdown
     // leaves Engine owning retirement; its defensive Drop retains uncertain work.
     let measured = match &options.workload {
@@ -138,6 +161,12 @@ fn run() -> Result<(), String> {
     let shutdown = engine
         .shutdown()
         .map_err(|error| format!("shutdown: {error}"));
+    let dispatch_diagnostics = dispatch_observer
+        .as_ref()
+        .map(|observer| dispatch_report(observer.snapshot()));
+    if let Some(diagnostics) = &dispatch_diagnostics {
+        eprintln!("dispatch diagnostics (enqueue only; not device time): {diagnostics}");
+    }
     let measured = match (measured, shutdown) {
         (Ok(measured), Ok(())) => measured,
         (Err(error), Ok(())) | (Ok(_), Err(error)) => return Err(error),
@@ -155,10 +184,8 @@ fn run() -> Result<(), String> {
             &options,
             &measured,
             &model_path,
-            &artifact,
-            load_elapsed,
-            memory,
-            policy,
+            &preparation,
+            dispatch_diagnostics.as_ref(),
         )?,
     }
     Ok(())
@@ -168,11 +195,15 @@ fn report_trace(
     options: &Options,
     measured: &trace::Measurements,
     model_path: &str,
-    artifact: &str,
-    load_elapsed: Duration,
-    memory: engine_qwen::MemoryReport,
-    policy: SchedulePolicy,
+    preparation: &PreparationReport,
+    dispatch_diagnostics: Option<&serde_json::Value>,
 ) -> Result<(), String> {
+    let PreparationReport {
+        artifact,
+        load_elapsed,
+        memory,
+        policy,
+    } = preparation;
     measured.print();
     println!(
         "  continuation capacity: {} bytes (reservation bound, not measured peak)",
@@ -207,9 +238,40 @@ fn report_trace(
             "objectives": options.objectives,
             "workload": options.workload.as_ref().expect("trace measurements").inputs,
             "measurements": measured,
+            "dispatch_diagnostics": dispatch_diagnostics,
         })).map_err(|error| format!("write {}: {error}", path.display()))?;
     }
     Ok(())
+}
+
+fn dispatch_report(snapshot: engine_nvidia::DispatchSnapshot) -> serde_json::Value {
+    let fallbacks = engine_nvidia::DecodeFallback::ALL
+        .into_iter()
+        .map(|reason| {
+            (
+                reason.as_str().to_owned(),
+                serde_json::json!(snapshot.row_wise_fallbacks[reason as usize]),
+            )
+        })
+        .collect::<serde_json::Map<_, _>>();
+    serde_json::json!({
+        "work_scope": "fully_enqueued_submissions_only",
+        "timing_scope": "host_route_enqueue_and_event_including_failed_cleanup",
+        "attempts": snapshot.attempts,
+        "offered_rows": snapshot.offered_rows,
+        "offered_tokens": snapshot.offered_tokens,
+        "enqueued_submissions": snapshot.enqueued_submissions,
+        "enqueue_failures": snapshot.enqueue_failures,
+        "whole_decode_submissions": snapshot.whole_decode_submissions,
+        "grouped_policy_submissions": snapshot.grouped_policy_submissions,
+        "row_wise_fallbacks": fallbacks,
+        "prefill_rows": snapshot.work.prefill_rows,
+        "prefill_tokens": snapshot.work.prefill_tokens,
+        "prefill_chunk_calls": snapshot.work.prefill_chunk_calls,
+        "prefill_chunk_tokens": snapshot.work.prefill_chunk_tokens,
+        "decode_lane_calls_by_width": snapshot.work.decode_lane_calls,
+        "host_submit_nanos": snapshot.host_submit_nanos,
+    })
 }
 
 struct Measurements {
@@ -494,6 +556,11 @@ mod tests {
         assert_eq!(defaults.context_tokens, 37);
         assert_eq!(defaults.prefill_chunk, None);
         assert!(!defaults.grouped_decode);
+        assert!(!defaults.dispatch_diagnostics);
+        let observed = options(&["--dispatch-diagnostics"]).unwrap();
+        assert!(observed.dispatch_diagnostics);
+        assert!(!observed.grouped_decode);
+        assert_eq!(observed.prefill_chunk, defaults.prefill_chunk);
         assert!(!QwenLoadOptions::default().grouped_decode);
         assert!(options(&["--grouped-decode"]).unwrap().grouped_decode);
         assert_eq!(defaults.gemv_mode, GemvMode::Warp);

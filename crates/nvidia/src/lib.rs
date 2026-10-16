@@ -14,6 +14,8 @@ mod cuda;
 #[cfg(feature = "cuda")]
 mod decode;
 #[cfg(feature = "cuda")]
+mod dispatch_diagnostics;
+#[cfg(feature = "cuda")]
 mod encoder_ops;
 #[cfg(feature = "cuda")]
 mod model_ops;
@@ -21,6 +23,8 @@ mod model_ops;
 mod quantized;
 #[cfg(feature = "cuda")]
 mod serving;
+#[cfg(feature = "cuda")]
+pub use dispatch_diagnostics::{DecodeFallback, DispatchObserver, DispatchSnapshot, DispatchWork};
 #[cfg(feature = "cuda")]
 mod staging;
 #[cfg(feature = "cuda")]

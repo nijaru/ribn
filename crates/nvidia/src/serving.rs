@@ -3,6 +3,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use crate::NvidiaDispatcher;
+use crate::dispatch_diagnostics::{DecodeFallback, DispatchObserver, DispatchRoute, DispatchWork};
 use cudarc::driver::{CudaContext, CudaEvent, CudaStream, PinnedHostSlice};
 use engine_core::{
     BackendError, BackendSubmissionId, ExecutionBatch, ExecutionMetrics, ExecutionOutcome,
@@ -27,7 +28,8 @@ struct PendingSubmission {
     /// request sampling hold `None`, keeping row order aligned with batch
     /// order.
     outputs: Vec<Option<PinnedSlotLease>>,
-    /// Per-row execution wall time captured at submit.
+    /// Per-row host enqueue time; a decode group repeats its time for each row.
+    /// These values must not be summed as device time.
     elapsed_nanos: Vec<u64>,
     /// Logical state keys whose physical registry entries this submission's
     /// queued work still accesses. Retained until completion so an early
@@ -103,6 +105,7 @@ pub struct CudaQwen35ServingDispatcher {
     prefill_lane: Option<CudaQwen35BatchDecode>,
     /// Unqualified subgroup selection is opt-in; defaults retain whole-batch selection.
     grouped_decode: bool,
+    diagnostics: Option<DispatchObserver>,
 }
 
 /// How many leading tokens of one prefill segment can run through a
@@ -176,14 +179,16 @@ fn run_prefill_chunks(
 /// pinned slot and return `None`. All other prefill tokens run through the
 /// output-free `prefill_step`.
 ///
-/// Returns the row's sampled token when the step produced one, plus the
-/// wall-clock time spent queueing the row.
+/// Returns the row's sampled token and host wall-clock enqueue interval.
+/// Optional work accounting stays submission-local until the entire enqueue and
+/// completion-event recording succeed.
 fn run_row(
     executor: &mut CudaQwen35Decode,
     prefill_lane: Option<&mut CudaQwen35BatchDecode>,
     registry: &mut CudaStateRegistry,
     segment: &ExecutionSegment,
     state: &InferenceStateSet,
+    work: Option<&mut DispatchWork>,
     mut step: impl FnMut(
         &mut CudaQwen35Decode,
         &mut CudaHybridState,
@@ -217,9 +222,12 @@ fn run_row(
                 })?;
             // Whole leading chunks run through the same-sequence lane; the
             // remainder, and the sampling token, stay on the serial path.
-            let chunked = match prefill_lane {
-                Some(lane) => run_prefill_chunks(lane, physical, segment, tokens)?,
-                None => 0,
+            let (chunked, members) = match prefill_lane {
+                Some(lane) => (
+                    run_prefill_chunks(lane, physical, segment, tokens)?,
+                    Some(lane.members()),
+                ),
+                None => (0, None),
             };
             for (offset, &token) in tokens.iter().enumerate().skip(chunked) {
                 let offset = u32::try_from(offset).map_err(|_| {
@@ -247,6 +255,9 @@ fn run_row(
                     .advance_to(next)
                     .map_err(|error| BackendError::ExecutionFailed(error.to_string()))?;
             }
+            if let Some(work) = work {
+                work.merge(DispatchWork::prefill(tokens.len(), chunked, members));
+            }
         }
         ExecutionPhase::Decode => {
             let token = segment
@@ -264,6 +275,9 @@ fn run_row(
             physical
                 .advance_to(next)
                 .map_err(|error| BackendError::ExecutionFailed(error.to_string()))?;
+            if let Some(work) = work {
+                work.merge(DispatchWork::decode(1));
+            }
         }
         ExecutionPhase::SpecDraft
         | ExecutionPhase::SpecVerify
@@ -332,7 +346,17 @@ impl CudaQwen35ServingDispatcher {
             batched,
             prefill_lane: None,
             grouped_decode: false,
+            diagnostics: None,
         })
+    }
+
+    /// Enable bounded observation of future asynchronous submit attempts. Repeated
+    /// calls share the same lifetime counters. Does not enable another execution lane.
+    #[must_use]
+    pub fn observe_dispatch(&mut self) -> DispatchObserver {
+        self.diagnostics
+            .get_or_insert_with(DispatchObserver::new)
+            .clone()
     }
 
     /// Opt into experimental decode subgroups within heterogeneous/mixed offers.
@@ -486,6 +510,7 @@ impl CudaQwen35ServingDispatcher {
             registry,
             segment,
             state,
+            None,
             |executor, physical, token, position| {
                 executor
                     .decode_step(physical, token, position)
@@ -504,33 +529,45 @@ impl CudaQwen35ServingDispatcher {
         })
     }
 
-    /// Whether every row of `batch` is a single-token greedy decode segment.
-    ///
-    /// Only multi-row batches run through the batched executor: its one
-    /// launch per (layer, op) amortizes weight reads across members, which
-    /// only pays off with more than one row. Single-row decodes stay on the
-    /// batch-1 executor - the hardware-replayed greedy oracle - and mixed
-    /// prefill/decode batches and unsampled rows fall back to the per-row
-    /// path, which handles all of those.
-    fn batch_is_batchable(batch: &ExecutionBatch, states: &[InferenceStateSet]) -> bool {
-        if batch.len() <= 1 || batch.len() > crate::quantized::MAX_BATCH_MEMBERS {
-            return false;
+    /// First failed whole-batch decode selection condition. Single rows retain
+    /// the batch-1 oracle; mixed phases, unsupported decode shapes and unequal
+    /// concrete KV layouts retain the row-wise path. Sampling values and other
+    /// model/device validation still belong to enqueue.
+    fn whole_decode_ineligibility(
+        batch: &ExecutionBatch,
+        states: &[InferenceStateSet],
+    ) -> Option<DecodeFallback> {
+        if batch.len() == 1 {
+            return Some(DecodeFallback::SingleRow);
+        }
+        if batch.len() > crate::quantized::MAX_BATCH_MEMBERS {
+            return Some(DecodeFallback::RowLimit);
         }
         let kv_spec = states
             .first()
             .and_then(InferenceStateSet::kv)
             .map(engine_core::KvState::spec);
-        batch.segments().iter().zip(states).all(|(segment, state)| {
-            segment.phase() == ExecutionPhase::Decode
-                && segment.token_count() == 1
-                && segment.requests_sampling()
-                && segment
+        for (segment, state) in batch.segments().iter().zip(states) {
+            if segment.phase() != ExecutionPhase::Decode {
+                return Some(DecodeFallback::NonDecodePhase);
+            }
+            if segment.token_count() != 1
+                || !segment.requests_sampling()
+                || segment
                     .token_input()
                     .and_then(engine_core::ExecutionTokenInput::decode_token)
-                    .is_some()
-                && state.token_position().is_some()
-                && state.kv().map(engine_core::KvState::spec) == kv_spec
-        })
+                    .is_none()
+            {
+                return Some(DecodeFallback::DecodeShape);
+            }
+            if state.token_position().is_none() {
+                return Some(DecodeFallback::MissingPosition);
+            }
+            if state.kv().map(engine_core::KvState::spec) != kv_spec {
+                return Some(DecodeFallback::NonuniformKv);
+            }
+        }
+        None
     }
 
     /// Gather compatible decode rows in stable scheduler order. Requests have
@@ -593,6 +630,7 @@ impl CudaQwen35ServingDispatcher {
         &mut self,
         segments: &[&ExecutionSegment],
         states: &[&InferenceStateSet],
+        work: Option<&mut DispatchWork>,
     ) -> Result<QueuedRows, BackendError> {
         let row_count = segments.len();
         let started = Instant::now();
@@ -703,11 +741,16 @@ impl CudaQwen35ServingDispatcher {
         }
 
         match result {
-            Ok(()) => Ok(QueuedRows {
-                outputs: leased,
-                elapsed_nanos,
-                state_keys,
-            }),
+            Ok(()) => {
+                if let Some(work) = work {
+                    work.merge(DispatchWork::decode(row_count));
+                }
+                Ok(QueuedRows {
+                    outputs: leased,
+                    elapsed_nanos,
+                    state_keys,
+                })
+            }
             Err(error) => {
                 if let Err(sync_error) = self.stream.synchronize() {
                     return Err(self.fail_device(BackendError::ExecutionFailed(format!(
@@ -732,6 +775,7 @@ impl CudaQwen35ServingDispatcher {
         &mut self,
         batch: &ExecutionBatch,
         states: &mut [InferenceStateSet],
+        mut work: Option<&mut DispatchWork>,
     ) -> Result<QueuedRows, BackendError> {
         let row_count = batch.len();
         let segments = batch.segments();
@@ -759,7 +803,11 @@ impl CudaQwen35ServingDispatcher {
                         .iter()
                         .map(|&index| &states[index])
                         .collect::<Vec<_>>();
-                    let queued = self.enqueue_batched_decode(&group_segments, &group_states)?;
+                    let queued = self.enqueue_batched_decode(
+                        &group_segments,
+                        &group_states,
+                        work.as_deref_mut(),
+                    )?;
                     queued_rows.scatter_group(&group, queued);
                     for index in group {
                         scheduled[index] = true;
@@ -801,6 +849,7 @@ impl CudaQwen35ServingDispatcher {
                     registry,
                     segment,
                     state,
+                    work.as_deref_mut(),
                     |executor, physical, token, position| {
                         let result = match &mut pinned {
                             Some(pinned) => {
@@ -835,6 +884,51 @@ impl CudaQwen35ServingDispatcher {
         }
 
         Ok(queued_rows)
+    }
+
+    fn enqueue_submission(
+        &mut self,
+        submission: BackendSubmissionId,
+        batch: &ExecutionBatch,
+        states: &mut [InferenceStateSet],
+        route: DispatchRoute,
+        work: Option<&mut DispatchWork>,
+    ) -> Result<(), BackendError> {
+        let rows = if matches!(route, DispatchRoute::WholeDecode) {
+            let segments = batch.segments().iter().collect::<Vec<_>>();
+            let states = states.iter().collect::<Vec<_>>();
+            self.enqueue_batched_decode(&segments, &states, work)?
+        } else {
+            self.enqueue_batch(batch, states, work)?
+        };
+        // Every kernel and pinned copy precedes this event in stream order.
+        let completion = match self.executor.record_completion_event() {
+            Ok(event) => event,
+            Err(error) => {
+                let flush = self.stream.synchronize().map_err(|sync_error| {
+                    BackendError::ExecutionFailed(format!(
+                        "event recording failed: {error}; CUDA flush also failed: {sync_error}"
+                    ))
+                });
+                if let Err(error) = flush {
+                    return Err(self.fail_device(error));
+                }
+                for lease in rows.outputs.iter().filter_map(|lease| *lease) {
+                    self.recycle_output(lease);
+                }
+                return Err(BackendError::ExecutionFailed(error.to_string()));
+            }
+        };
+        self.submissions.pending.insert(
+            submission,
+            PendingSubmission {
+                completion,
+                outputs: rows.outputs,
+                elapsed_nanos: rows.elapsed_nanos,
+                state_keys: rows.state_keys,
+            },
+        );
+        Ok(())
     }
 
     /// Read one leased pinned output slot. Safe only after the owning
@@ -934,46 +1028,24 @@ impl NvidiaDispatcher for CudaQwen35ServingDispatcher {
             )));
         }
 
-        let rows = if !self.grouped_decode && Self::batch_is_batchable(batch, states) {
-            let segments = batch.segments().iter().collect::<Vec<_>>();
-            let states = states.iter().collect::<Vec<_>>();
-            self.enqueue_batched_decode(&segments, &states)?
+        let started = self.diagnostics.as_ref().map(|_| Instant::now());
+        let route = if self.grouped_decode {
+            DispatchRoute::Grouped
         } else {
-            self.enqueue_batch(batch, states)?
+            Self::whole_decode_ineligibility(batch, states)
+                .map_or(DispatchRoute::WholeDecode, DispatchRoute::RowWise)
         };
-
-        // One completion event for the whole submission: every kernel and
-        // pinned copy enqueued above precedes it in stream order.
-        let completion = match self.executor.record_completion_event() {
-            Ok(event) => event,
-            Err(error) => {
-                // The queued work cannot be orphaned behind a failed event:
-                // flush and recycle before reporting the enqueue failure.
-                let flush = self.stream.synchronize().map_err(|sync_error| {
-                    BackendError::ExecutionFailed(format!(
-                        "event recording failed: {error}; CUDA flush also failed: {sync_error}"
-                    ))
-                });
-                if let Err(error) = flush {
-                    return Err(self.fail_device(error));
-                }
-                for lease in rows.outputs.iter().filter_map(|lease| *lease) {
-                    self.recycle_output(lease);
-                }
-                return Err(BackendError::ExecutionFailed(error.to_string()));
-            }
-        };
-
-        self.submissions.pending.insert(
-            submission,
-            PendingSubmission {
-                completion,
-                outputs: rows.outputs,
-                elapsed_nanos: rows.elapsed_nanos,
-                state_keys: rows.state_keys,
-            },
-        );
-        Ok(None)
+        let mut work = self.diagnostics.as_ref().map(|_| DispatchWork::default());
+        let result = self.enqueue_submission(submission, batch, states, route, work.as_mut());
+        if let (Some(observer), Some(started)) = (&self.diagnostics, started) {
+            observer.record(
+                batch,
+                route,
+                result.as_ref().ok().and(work),
+                u64::try_from(started.elapsed().as_nanos()).unwrap_or(u64::MAX),
+            );
+        }
+        result.map(|()| None)
     }
 
     fn poll_batch(
@@ -1091,6 +1163,46 @@ mod tests {
 
     #[test]
     fn decode_groups_preserve_order_and_concrete_kv_compatibility() {
+        use super::DecodeFallback;
+        for (capacities, prefill, expected, fallback) in [
+            (vec![4], None, vec![0], Some(DecodeFallback::SingleRow)),
+            (vec![4, 4], None, vec![0, 1], None),
+            (
+                vec![4, 5],
+                None,
+                vec![0],
+                Some(DecodeFallback::NonuniformKv),
+            ),
+            (
+                vec![4, 5, 4],
+                None,
+                vec![0, 2],
+                Some(DecodeFallback::NonuniformKv),
+            ),
+            (
+                vec![4, 4, 4],
+                Some(1),
+                vec![0, 2],
+                Some(DecodeFallback::NonDecodePhase),
+            ),
+            (vec![4; 8], None, (0..8).collect(), None),
+            (
+                vec![4; 9],
+                None,
+                (0..8).collect(),
+                Some(DecodeFallback::RowLimit),
+            ),
+        ] {
+            assert_decode_selection(capacities, prefill, &expected, fallback);
+        }
+    }
+
+    fn assert_decode_selection(
+        capacities: Vec<u32>,
+        prefill: Option<usize>,
+        expected: &[usize],
+        fallback: Option<super::DecodeFallback>,
+    ) {
         use engine_core::{
             DataType, DeviceId, ExecutionBatch, ExecutionPhase, ExecutionSegment,
             ExecutionTokenInput, KvStateSpec, LogicalStateManager, RequestId, SamplingParams,
@@ -1103,76 +1215,121 @@ mod tests {
             ribn_foundation::BytePool::new(1024).shared(),
             ribn_foundation::BytePool::new(0).shared(),
         );
-        for (capacities, prefill, expected) in [
-            (vec![4, 4], None, vec![0, 1]),
-            (vec![4, 5], None, vec![0]),
-            (vec![4, 5, 4], None, vec![0, 2]),
-            (vec![4, 4, 4], Some(1), vec![0, 2]),
-            (vec![4; 9], None, (0..8).collect()),
-        ] {
-            let mut states = capacities
-                .into_iter()
-                .map(|capacity| {
-                    manager
-                        .allocate_set(
-                            &[StateRequirement::FullAttentionKv(
-                                KvStateSpec::new(1, 1, 2, capacity, DataType::F16).unwrap(),
-                            )],
-                            location,
-                        )
-                        .unwrap()
-                })
-                .collect::<Vec<_>>();
-            let positions = vec![1; states.len()];
-            manager.commit_batch(&mut states, &positions).unwrap();
-            let segments = states
-                .iter()
-                .enumerate()
-                .map(|(index, state)| {
-                    ExecutionSegment::new(
-                        RequestId::new(u64::try_from(index + 1).unwrap()).unwrap(),
-                        if Some(index) == prefill {
-                            ExecutionPhase::Prefill
-                        } else {
-                            ExecutionPhase::Decode
-                        },
-                        1,
-                        1,
-                        1,
-                        state.requirements(),
+
+        let mut states = capacities
+            .into_iter()
+            .map(|capacity| {
+                manager
+                    .allocate_set(
+                        &[StateRequirement::FullAttentionKv(
+                            KvStateSpec::new(1, 1, 2, capacity, DataType::F16).unwrap(),
+                        )],
+                        location,
                     )
                     .unwrap()
-                    .with_token_input(if Some(index) == prefill {
-                        ExecutionTokenInput::prompt(Arc::from([7, 7]), 1, 1).unwrap()
+            })
+            .collect::<Vec<_>>();
+        let positions = vec![1; states.len()];
+        manager.commit_batch(&mut states, &positions).unwrap();
+        let segments = states
+            .iter()
+            .enumerate()
+            .map(|(index, state)| {
+                ExecutionSegment::new(
+                    RequestId::new(u64::try_from(index + 1).unwrap()).unwrap(),
+                    if Some(index) == prefill {
+                        ExecutionPhase::Prefill
                     } else {
-                        ExecutionTokenInput::Decode { token: 7 }
-                    })
-                    .unwrap()
-                    .with_sampling(SamplingParams::greedy(None))
+                        ExecutionPhase::Decode
+                    },
+                    1,
+                    1,
+                    1,
+                    state.requirements(),
+                )
+                .unwrap()
+                .with_token_input(if Some(index) == prefill {
+                    ExecutionTokenInput::prompt(Arc::from([7, 7]), 1, 1).unwrap()
+                } else {
+                    ExecutionTokenInput::Decode { token: 7 }
                 })
-                .collect();
-            let batch = ExecutionBatch::new(segments).unwrap();
-            let mut scheduled = vec![false; states.len()];
-            assert_eq!(
-                CudaQwen35ServingDispatcher::decode_group(batch.segments(), &states, &scheduled, 0),
-                expected
+                .unwrap()
+                .with_sampling(SamplingParams::greedy(None))
+            })
+            .collect();
+        let batch = ExecutionBatch::new(segments).unwrap();
+        assert_eq!(
+            CudaQwen35ServingDispatcher::whole_decode_ineligibility(&batch, &states),
+            fallback
+        );
+        let mut scheduled = vec![false; states.len()];
+        assert_eq!(
+            CudaQwen35ServingDispatcher::decode_group(batch.segments(), &states, &scheduled, 0),
+            expected
+        );
+        for &index in expected {
+            scheduled[index] = true;
+        }
+        if let Some(first) = scheduled.iter().position(|&done| !done) {
+            let group = CudaQwen35ServingDispatcher::decode_group(
+                batch.segments(),
+                &states,
+                &scheduled,
+                first,
             );
-            for &index in &expected {
-                scheduled[index] = true;
-            }
-            if let Some(first) = scheduled.iter().position(|&done| !done) {
-                let group = CudaQwen35ServingDispatcher::decode_group(
-                    batch.segments(),
-                    &states,
-                    &scheduled,
-                    first,
-                );
-                assert!(group.iter().all(|&index| !scheduled[index]));
-                assert_eq!(group[0], first);
-            }
-            for state in &states {
-                manager.release_set(state).unwrap();
-            }
+            assert!(group.iter().all(|&index| !scheduled[index]));
+            assert_eq!(group[0], first);
+        }
+        for state in &states {
+            manager.release_set(state).unwrap();
+        }
+    }
+
+    #[test]
+    fn decode_fallback_distinguishes_unsupported_rows_from_missing_state() {
+        use super::DecodeFallback;
+        use engine_core::{
+            ExecutionBatch, ExecutionPhase, ExecutionSegment, ExecutionTokenInput,
+            InferenceStateSet, RequestId, SamplingParams,
+        };
+        for (sample, input, tokens, expected) in [
+            (false, true, 1, DecodeFallback::DecodeShape),
+            (true, false, 1, DecodeFallback::DecodeShape),
+            (true, false, 2, DecodeFallback::DecodeShape),
+            (true, true, 1, DecodeFallback::MissingPosition),
+        ] {
+            let batch = ExecutionBatch::new(
+                (1..=2)
+                    .map(|id| {
+                        let mut segment = ExecutionSegment::new(
+                            RequestId::new(id).unwrap(),
+                            ExecutionPhase::Decode,
+                            1,
+                            tokens,
+                            0,
+                            vec![],
+                        )
+                        .unwrap();
+                        if sample {
+                            segment = segment.with_sampling(SamplingParams::greedy(None));
+                        }
+                        if input {
+                            segment = segment
+                                .with_token_input(ExecutionTokenInput::Decode { token: 7 })
+                                .unwrap();
+                        }
+                        segment
+                    })
+                    .collect(),
+            )
+            .unwrap();
+            let states = (0..2)
+                .map(|_| InferenceStateSet::new(vec![]).unwrap())
+                .collect::<Vec<_>>();
+            assert_eq!(
+                CudaQwen35ServingDispatcher::whole_decode_ineligibility(&batch, &states),
+                Some(expected)
+            );
         }
     }
 

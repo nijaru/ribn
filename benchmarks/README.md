@@ -239,6 +239,28 @@ Inputs are preloaded; model load and client-bookkeeping initialization are outsi
 arrival timeline. There is no execution warmup. Reservation capacity and device-free
 snapshots are **not** a measured physical peak.
 
+Direct example invocation also accepts `--dispatch-diagnostics` (off by default).
+It prints a bounded snapshot to stderr, including on measurement/shutdown failure;
+trace JSON includes it under `dispatch_diagnostics`, or `null` when disabled. Rust
+callers can enable the same observer with `QwenCuda::observe_dispatch()` before
+moving the executor into an engine. The observer retains counters, not device state.
+
+The snapshot separates submitted backend rows/tokens from fully enqueued model-step
+work: decode lane calls by width (index 1 is scalar decode), same-sequence prefill
+chunks and row-wise fallback reasons. Grouped-policy selection does not imply a
+physical group was formed. Work/route totals exclude failed submissions, which may
+have launched partial work; `enqueue_failures` preserves that limitation. Successful
+enqueue is not device completion, logical output usage or numerical acceptance.
+
+`host_submit_nanos` covers routing, enqueue and completion-event recording, including
+failed cleanup, but excludes initial validation and diagnostic publication. It is
+not device time, host/device idle time or a sum of per-row durations. Counters saturate;
+publication uses one fixed-size snapshot per observed attempt, with no per-step log.
+Instrumentation overhead and real-device counter mapping remain unqualified. Keep
+observation settings matched across performance comparisons. Device phase costs,
+queue age and physical-memory peaks still need separate instrumentation/qualification;
+these native diagnostics are not exposed by the HTTP endpoint.
+
 The checked-in eight-request trace is a heterogeneous smoke workload, not steady-state
 traffic or competitive evidence. It excludes HTTP and tokenization. Use matched endpoint
 load generators above for serving comparisons. Its initial device evidence and the

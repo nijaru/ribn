@@ -42,6 +42,19 @@ impl QwenCuda {
         self.memory
     }
 
+    /// Observe future CUDA serving enqueue decisions without retaining the device
+    /// owner. Opt-in; counters are not device timings or logical output usage.
+    ///
+    /// # Errors
+    /// Returns an error if the device owner is unavailable.
+    pub fn observe_dispatch(&mut self) -> Result<engine_nvidia::DispatchObserver, ExecutionError> {
+        Ok(self
+            .execution()?
+            .backend
+            .dispatcher_mut()
+            .observe_dispatch())
+    }
+
     fn execution(&mut self) -> Result<&mut QwenExecution<Backend>, ExecutionError> {
         self.execution
             .as_mut()

@@ -490,6 +490,8 @@ impl ExecutionMetrics {
         }
     }
 
+    /// Backend-defined interval, not necessarily device time. Per-row events may
+    /// repeat one batch-wide interval; do not sum without the backend's contract.
     #[must_use]
     pub const fn elapsed_nanos(self) -> u64 {
         self.elapsed_nanos

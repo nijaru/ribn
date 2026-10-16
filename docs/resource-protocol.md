@@ -77,6 +77,20 @@ Keep prepared ownership concrete to the model/backend. Add shared types only whe
 real consumers demonstrate the same lifetime and settlement contract; no public
 universal claim/lease interface follows from these states.
 
+## Execution observation
+
+Diagnostics do not grant resources, commit progress or authorize retirement. Keep
+aggregate dispatch observation opt-in and bounded: one execution owner publishes fixed-size
+snapshots without retaining requests, device owners, callbacks or per-step traces.
+Counters saturate rather than wrap. Reading a snapshot must not expose its write lock.
+
+Distinguish offered work, fully enqueued work and completed work. Count each physical
+model-step group once, not once per member; same-sequence prefill chunks are not
+cross-request decode batches. A failed enqueue can launch partial work: record the
+failure and identify any work excluded from the counters. State clock boundaries;
+host routing/enqueue/event-recording time is not GPU execution time. Per-row backend
+metrics may repeat a group-wide interval and are not implicitly additive.
+
 ## Feasible batches and waiting
 
 Preparation considers aggregate submission resources, including shared encoder work,
