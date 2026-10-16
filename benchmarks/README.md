@@ -268,6 +268,82 @@ versus chunk-size 2/4/8 timing matrix for the RTX 4090. The qualified scope and 
 need their own device gates. CPU CI and CUDA-feature compilation are not performance
 or numerical evidence.
 
+## Audited endpoint runner
+
+`endpoint.py` runs **AIPerf 0.13.0** against an already running
+`/v1/completions` endpoint, then audits its native aggregate, per-request and raw
+exports. It supports synthetic fixed nominal prompt lengths/output caps, greedy sampling
+with EOS enabled, concurrency-limited traffic and constant/Poisson rate control.
+Output caps are not expected generated-token counts. Mixed-length/trace datasets
+and chat are not implemented in this runner yet.
+
+The runner needs Python 3.11+. AIPerf 0.13.0 needs Python 3.11–3.13; use a separate
+environment rather than installing it into an unsupported interpreter:
+
+```sh
+uv venv /tmp/ribn-aiperf --python 3.13
+uv pip install --python /tmp/ribn-aiperf/bin/python 'aiperf==0.13.0'
+cp benchmarks/manifest.example.toml /tmp/ribn-baseline.toml
+# Fill in the manifest, including model/tokenizer revisions, artifact SHA-256,
+# server provenance, quality scope and independently chosen objectives.
+python3 benchmarks/endpoint.py run /tmp/ribn-baseline.toml \
+  --aiperf /tmp/ribn-aiperf/bin/aiperf \
+  --output benchmarks/results/my-baseline
+uv pip freeze --python /tmp/ribn-aiperf/bin/python \
+  > benchmarks/results/my-baseline/client-environment.txt
+
+# Re-audit the preserved evidence without contacting a server:
+python3 benchmarks/endpoint.py validate benchmarks/results/my-baseline
+```
+
+The output directory must be new; existing evidence is never replaced by `run`.
+It retains the manifest/hash, exact client command, process exit code, log, raw
+exports and, when auditing completes, `validation.json`. Early failures may leave
+only partial evidence; a missing validation report never counts as success.
+Enable `run.gpu_telemetry` on the measured device
+host when collecting GPU telemetry; sampled memory is not a physical-peak proof.
+Server command, engine/model revisions, artifact hash and hardware are caller
+assertions, not discovered or verified against the remote server. Preserve server
+logs/configuration independently. The runner does not launch or stop the server.
+
+Validation reconciles the effective client configuration, record identities,
+profiling/warmup counts and usage totals. A successful stream must have a finish
+reason, coherent integer usage and `[DONE]`, without late errors or extra data.
+Cleanly truncated streams can pass AIPerf itself, so ordinary summaries and HTTP
+trace metadata alone are insufficient. Failed requests remain in offered-work
+accounting; warmup errors are separate and invalidate the audit. Missing exports,
+nonzero client exit, incomplete runs and zero validated successes cannot pass.
+AIPerf treats replies without visible content, including immediate EOS, as errors;
+the audit preserves that classification rather than silently changing it.
+
+`protocol_valid` validates protocol/accounting only. Performance metrics are
+explicitly marked unaudited: it is not numerical acceptance, a matched comparison,
+a SOTA result or proof of physical-memory bounds. Server usage remains a server
+assertion; normalized raw SSE exports are not byte-exact wire captures. Readiness
+probes are explicitly disabled to avoid unrecorded inference; start with a ready
+endpoint. Zero warmup requests does not establish cold execution.
+
+Optional `[slo]` values must be positive; omit unset objectives. AIPerf's
+`inter_token_latency` is per-request average TPOT, not an individual-gap tail.
+Inspect `inter_chunk_latency` separately; chunks may contain multiple tokens.
+See the pinned [metrics definitions](https://docs.nvidia.com/aiperf/v0.13.0/reference/ai-perf-metrics-reference).
+
+**Raw exports contain prompts and responses.** Use public/synthetic data, keep
+artifacts outside version control, and do not enable private-content collection
+merely to obtain a benchmark.
+
+Host verification:
+
+```sh
+PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s benchmarks -p 'test_*.py'
+# Explicit integration gate: real AIPerf plus a CPU-only HTTP fixture, no model/GPU.
+PYTHONDONTWRITEBYTECODE=1 /tmp/ribn-aiperf/bin/python benchmarks/endpoint_integration.py
+```
+
+The integration gate exercises early EOS, silent truncation, late JSON errors,
+missing usage and rate-controlled partial overload through the actual client and
+CLI. It does not establish device qualification or load-generator capacity.
+
 ## Ribn endpoint client configuration
 
 The initial [protocol subset](../docs/serving.md) has no model-list endpoint or EOS

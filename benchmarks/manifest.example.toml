@@ -2,56 +2,63 @@ schema_version = 1
 
 [run]
 name = "4090-single-gpu-baseline"
-engine = "vllm"
+engine = "ribn"
 engine_version = "REPLACE_ME"
 engine_commit = "REPLACE_ME"
-benchmark_client = "aiperf"
-benchmark_client_version = "REPLACE_ME"
-seed = 0
+benchmark_client_version = "0.13.0"
+seed = 42
+# Describe the independently qualified numerical scope; protocol validation is not quality.
+quality_scope = "REPLACE_ME"
+# Enable on the measured GPU host. False also permits CPU-only protocol smokes.
+gpu_telemetry = false
 
 [model]
-id = "REPLACE_ME"
+# The model identifier accepted by the endpoint, not necessarily its upstream name.
+id = "ribn"
 revision = "REPLACE_ME"
+artifact_sha256 = "REPLACE_ME"
 tokenizer = "REPLACE_ME"
 tokenizer_revision = "REPLACE_ME"
 dtype = "REPLACE_ME"
-quantization = "none"
+quantization = "REPLACE_ME"
 
 [hardware]
 device = "NVIDIA GeForce RTX 4090"
 vram_bytes = 25757220864
 driver = "REPLACE_ME"
 cuda = "REPLACE_ME"
-power_limit_watts = 0
 
 [server]
 endpoint_type = "completions"
-base_url = "http://127.0.0.1:8000"
+endpoint = "/v1/completions"
+base_url = "http://127.0.0.1:18000"
 streaming = true
+# Provenance only: the runner does not start, stop or inspect the server.
 command = "REPLACE_ME"
 
 [workload]
 kind = "synthetic"
-input_tokens_mean = 1024
+input_tokens_mean = 256
 input_tokens_stddev = 0
-output_tokens_mean = 256
+# Maximum generation length, not an expected token count. EOS remains enabled.
+output_tokens_mean = 128
 output_tokens_stddev = 0
-request_count = 1000
+request_count = 100
+warmup_requests = 2
+max_concurrency = 1
+# Zero means concurrency-limited, as-fast-as-possible traffic, not an open-loop rate.
 request_rate = 0.0
-max_concurrency = 0
 arrival_pattern = "poisson"
+request_timeout_seconds = 120
 
 [sampling]
 temperature = 0.0
 ignore_eos = false
 
-[slo]
-ttft_ms = 0.0
-itl_ms = 0.0
-e2e_ms = 0.0
-
-[artifacts]
-raw_client_results = "client/"
-server_logs = "server/"
-telemetry = "telemetry/"
-summary = "summary.json"
+# Optional SLOs; omit unset objectives rather than using zero. These are examples,
+# not approved Ribn acceptance thresholds. AIPerf ITL is per-request average TPOT,
+# NOT a bound on every individual streaming gap.
+# [slo]
+# ttft_ms = 5000.0
+# itl_ms = 200.0
+# e2e_ms = 10000.0
