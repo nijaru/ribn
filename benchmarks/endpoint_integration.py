@@ -25,12 +25,18 @@ class EndpointFixture(BaseHTTPRequestHandler):
         pass
 
     def do_POST(self):
-        json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+        payload = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+        prompt_tokens = len(self.server.tokenizer.encode(payload["prompt"]).ids)
+        self.server.prompt_lengths.append(prompt_tokens)
         self.server.requests += 1
         if self.server.mode == "overload" and self.server.requests == 2:
             self.send_error(429, "fixture overload")
             return
-        usage = {"prompt_tokens": 16, "completion_tokens": 2, "total_tokens": 18}
+        usage = {
+            "prompt_tokens": prompt_tokens,
+            "completion_tokens": 2,
+            "total_tokens": prompt_tokens + 2,
+        }
         messages = [
             {
                 "object": "text_completion",
@@ -56,7 +62,7 @@ class EndpointFixture(BaseHTTPRequestHandler):
 
 
 class RealClientTests(unittest.TestCase):
-    def exercise(self, mode, rate=0, arrival="constant"):
+    def exercise(self, mode, rate=0, arrival="constant", input_stddev=0, requests=2):
         with tempfile.TemporaryDirectory(prefix="ribn endpoint ") as tmp:
             directory = Path(tmp)
             tokenizer_dir = directory / "tokenizer"
@@ -78,6 +84,8 @@ class RealClientTests(unittest.TestCase):
             with ThreadingHTTPServer(("127.0.0.1", 0), EndpointFixture) as server:
                 server.mode = mode
                 server.requests = 0
+                server.tokenizer = tokenizer
+                server.prompt_lengths = []
                 thread = threading.Thread(target=server.serve_forever)
                 thread.start()
                 try:
@@ -91,6 +99,11 @@ class RealClientTests(unittest.TestCase):
                             f"http://127.0.0.1:{server.server_port}",
                         )
                         .replace("warmup_requests = 0", "warmup_requests = 1")
+                        .replace("request_count = 2", f"request_count = {requests}")
+                        .replace(
+                            "input_tokens_stddev = 0",
+                            f"input_tokens_stddev = {input_stddev}",
+                        )
                         .replace("request_rate = 0.0", f"request_rate = {rate}")
                         .replace(
                             'arrival_pattern = "poisson"',
@@ -125,9 +138,9 @@ class RealClientTests(unittest.TestCase):
                         result.stdout + result.stderr + log[-3000:],
                     )
                     report = json.loads((output / "validation.json").read_text())
-                    # Readiness probes are disabled: precisely one warmup + two profiling requests.
-                    self.assertEqual(server.requests, 3)
-                    return report
+                    # Readiness probes are disabled: one warmup plus profiling.
+                    self.assertEqual(server.requests, requests + 1)
+                    return report, server.prompt_lengths[1:]
                 finally:
                     server.shutdown()
                     thread.join()
@@ -135,7 +148,7 @@ class RealClientTests(unittest.TestCase):
     def test_real_exports_accept_early_eos_and_reject_false_client_successes(self):
         for mode in ("valid", "truncated", "late-error", "no-usage"):
             with self.subTest(mode=mode):
-                report = self.exercise(mode)
+                report, _ = self.exercise(mode)
                 if mode == "valid":
                     self.assertTrue(report["protocol_valid"])
                     self.assertEqual(report["completion_tokens"], 4)
@@ -144,10 +157,19 @@ class RealClientTests(unittest.TestCase):
                     self.assertEqual(len(report["invalid_requests"]), 2)
                     self.assertEqual(len(report["warmup_errors"]), 1)
 
+    def test_variable_inputs_reach_the_endpoint_and_preserve_actual_usage(self):
+        report, prompt_lengths = self.exercise("valid", input_stddev=8, requests=16)
+        self.assertTrue(report["protocol_valid"])
+        self.assertEqual(report["offered_requests"], 16)
+        self.assertEqual(report["successful_requests"], 16)
+        self.assertGreater(len(set(prompt_lengths)), 1, prompt_lengths)
+        self.assertEqual(report["prompt_tokens"], sum(prompt_lengths))
+        self.assertEqual(report["completion_tokens"], 32)
+
     def test_rate_control_preserves_partial_overload(self):
         for arrival in ("constant", "poisson"):
             with self.subTest(arrival=arrival):
-                report = self.exercise("overload", rate=2, arrival=arrival)
+                report, _ = self.exercise("overload", rate=2, arrival=arrival)
                 self.assertTrue(report["protocol_valid"])
                 self.assertEqual(
                     (

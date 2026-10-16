@@ -39,6 +39,9 @@ command = "REPLACE_ME"
 [workload]
 kind = "synthetic"
 input_tokens_mean = 256
+# Zero keeps fixed nominal inputs. A positive integer uses AIPerf's seeded
+# positive-normal length distribution; e.g. 128 produces variable input lengths.
+# Mean/stddev are not a context ceiling or a guarantee of exact tokenizer counts.
 input_tokens_stddev = 0
 # Maximum generation length, not an expected token count. EOS remains enabled.
 output_tokens_mean = 128

@@ -112,11 +112,15 @@ def parse_manifest(contents):
             count(workload.get(field)) and workload[field] > 0,
             f"{field} must be positive",
         )
-    for field in ("input_tokens_stddev", "output_tokens_stddev"):
-        require(
-            workload.get(field) == 0,
-            f"{field} must be zero for fixed-length inputs/caps",
-        )
+    require(
+        count(workload.get("input_tokens_stddev")),
+        "input_tokens_stddev must be a nonnegative integer",
+    )
+    require(
+        count(workload.get("output_tokens_stddev"))
+        and workload["output_tokens_stddev"] == 0,
+        "output_tokens_stddev must be zero for fixed output caps",
+    )
     require(
         count(workload.get("warmup_requests")), "warmup_requests must be nonnegative"
     )
@@ -176,7 +180,10 @@ def check_config(actual, manifest):
                 "entries": workload["request_count"],
                 "random_seed": manifest["run"]["seed"],
                 "prompts": {
-                    "isl": {"mean": workload["input_tokens_mean"], "stddev": 0},
+                    "isl": {
+                        "mean": workload["input_tokens_mean"],
+                        "stddev": workload["input_tokens_stddev"],
+                    },
                     "osl": {"mean": workload["output_tokens_mean"], "stddev": 0},
                 },
             }
@@ -242,7 +249,7 @@ def command(manifest, executable, output):
         "--isl",
         str(workload["input_tokens_mean"]),
         "--isl-stddev",
-        "0",
+        str(workload["input_tokens_stddev"]),
         "--osl",
         str(workload["output_tokens_mean"]),
         "--osl-stddev",

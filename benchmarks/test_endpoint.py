@@ -10,6 +10,7 @@ import unittest
 from pathlib import Path
 
 from aiperf_results import validate
+from endpoint_config import check_config, parse_manifest
 
 ROOT = Path(__file__).resolve().parent
 MANIFEST = """schema_version = 1
@@ -316,6 +317,27 @@ class EndpointTests(unittest.TestCase):
                 else:
                     with self.assertRaises(ValueError):
                         validate(directory)
+
+    def test_variable_input_lengths_are_validated_and_bound_to_client_config(self):
+        mixed = MANIFEST.replace("input_tokens_stddev = 0", "input_tokens_stddev = 8")
+        manifest = parse_manifest(mixed.encode())
+        with tempfile.TemporaryDirectory() as tmp:
+            _, _, summary = fixture(Path(tmp))
+            actual = summary["input_config"]
+            with self.assertRaisesRegex(ValueError, "effective datasets differs"):
+                check_config(actual, manifest)
+            actual["datasets"][0]["prompts"]["isl"]["stddev"] = 8
+            check_config(actual, manifest)
+
+        for field, values in (
+            ("input_tokens_stddev", ("-1", "false", "0.5", '"8"')),
+            ("output_tokens_stddev", ("1", "false")),
+        ):
+            for value in values:
+                with self.subTest(field=field, value=value):
+                    invalid = MANIFEST.replace(f"{field} = 0", f"{field} = {value}")
+                    with self.assertRaises(ValueError):
+                        parse_manifest(invalid.encode())
 
     def test_rejects_effective_config_drift(self):
         for field in ("concurrency", "tokenizer", "SLO", "arrival"):

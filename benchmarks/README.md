@@ -294,10 +294,20 @@ or numerical evidence.
 
 `endpoint.py` runs **AIPerf 0.13.0** against an already running
 `/v1/completions` endpoint, then audits its native aggregate, per-request and raw
-exports. It supports synthetic fixed nominal prompt lengths/output caps, greedy sampling
-with EOS enabled, concurrency-limited traffic and constant/Poisson rate control.
-Output caps are not expected generated-token counts. Mixed-length/trace datasets
-and chat are not implemented in this runner yet.
+exports. It supports synthetic fixed or variable nominal prompt lengths with fixed
+output caps, greedy sampling with EOS enabled, concurrency-limited traffic and
+constant/Poisson rate control. Output caps are not expected generated-token counts.
+Variable output caps, explicit trace datasets and chat are not implemented here.
+
+Set `workload.input_tokens_stddev` to a nonnegative integer: zero keeps the fixed
+nominal length; positive values use AIPerf's seeded positive-normal length generator.
+For example, mean 256 and standard deviation 128 exercise heterogeneous input reaches
+without changing generation caps. These are distribution parameters, not a context
+ceiling or exact token-count promise: inspect the generated prompts and server usage,
+and stay within the independently qualified context scope. The manifest seed, pinned
+client/tokenizer and exported effective distribution preserve the run configuration;
+they do not establish identical wall-clock arrivals or a representative production mix.
+`output_tokens_stddev` must remain integer zero.
 
 The runner needs Python 3.11+. AIPerf 0.13.0 needs Python 3.11–3.13; use a separate
 environment rather than installing it into an unsupported interpreter:
@@ -364,7 +374,10 @@ PYTHONDONTWRITEBYTECODE=1 /tmp/ribn-aiperf/bin/python benchmarks/endpoint_integr
 
 The integration gate exercises early EOS, silent truncation, late JSON errors,
 missing usage and rate-controlled partial overload through the actual client and
-CLI. It does not establish device qualification or load-generator capacity.
+CLI. A seeded variable-input case verifies that different tokenized prompt lengths
+reach the endpoint and that actual usage excludes warmup rather than substituting
+nominal lengths or output caps. It does not establish device qualification,
+performance-metric accuracy or load-generator capacity.
 
 ## Ribn endpoint client configuration
 
