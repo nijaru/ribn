@@ -122,6 +122,32 @@ be awaited before reading, charge surviving dequeue, a stalled consumer beside a
 healthy peer) is in `crates/batch/tests/{capacity_readiness,device_result_handoff}.rs`,
 which exercise the real `BatchRuntime` and `BytePool` against a fixture device.
 
+## Host sequence-limit repair
+
+```sh
+cargo test -p engine-bert --features cuda --locked
+```
+
+`EncoderPreparation` replaces the unbound shape/selection helpers. It owns a validated
+model-config snapshot and the intersection of model positions with a positive backend
+sequence limit. CUDA construction uses `CudaEncoderOps::MAX_ATTENTION_SEQUENCE`, the
+same 4096-token bound enforced by the attention launch. Selection, byte-envelope
+calculation and enqueue consume that preparation. Model position tables are not
+truncated: a larger table remains valid for requests within the backend limit.
+
+A host regression reproduced the old selection accepting both a 4097-token request
+and its healthy peer (exit 101 against the expected local rejection). The fixed gate
+passes, accepts the 4096 boundary and keeps the original 4097 model-position capacity.
+A separate profile-backed `BatchRuntime` test substitutes only execution and proves
+that an infeasible request between healthy peers is rejected under its own identity,
+reserves nothing, never reaches execution and leaves both peers progressing.
+Existing envelope and request-validation coverage now exercises the prepared interface.
+
+These are host preparation/runtime results, not new CUDA numerical, long-context,
+physical-memory or failed-drain qualification. Device kernels are unchanged; device
+re-execution remains pending. Broader non-AR input bounds, readiness and local shutdown
+are still required before encoder application exposure.
+
 ## Limits
 
 - One tiny fixture geometry. A production-size encoder must be re-qualified at its

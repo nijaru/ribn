@@ -73,12 +73,13 @@ Source audits at `093cd28` and `70e5586` found gaps that passing fixtures do not
    not submitted input bytes, selects FIFO prefixes and lacks local close/shutdown.
    Executor `Blocked(C)` has no general readiness registration. Add retained-input
    admission, bounded feasible-peer selection/aging, cancellation settlement behind a
-   blocked head and local retryable shutdown without closing sibling pools. Preparation
-   must reject actual backend limits locally: BERT's model-position check currently
-   permits sequences above the CUDA attention kernel's 4096-token limit, allowing a
-   permanently infeasible request to fail accepted peers during execution. Preserve
-   request identity/result ownership. This gates encoder application exposure, not the
-   text-only server. See the [non-AR contract](resource-protocol.md#non-ar-application-lifecycle).
+   blocked head and local retryable shutdown without closing sibling pools. The BERT
+   sequence-limit preparation defect is repaired and [host-qualified](../benchmarks/encoder-qualification.md#host-sequence-limit-repair):
+   one immutable preparation binds model geometry to the backend-owned 4096-token
+   attention limit, rejecting oversized requests locally before accepting a range.
+   Larger model position tables remain valid for shorter requests. Other non-AR
+   bounds/readiness/shutdown work above remains open; preserve request identity/result
+   ownership. This gates encoder application exposure, not the text-only server. See the [non-AR contract](resource-protocol.md#non-ar-application-lifecycle).
 3. **Physical release/accounting.** BERT partial construction and normal result/quarantine
    teardown need charge ownership until safe allocator reuse or backing release. Locked
    cudarc 0.19.9 can lose an allocation pointer if tracking-event creation fails; a drain

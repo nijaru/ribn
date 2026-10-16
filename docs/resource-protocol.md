@@ -200,6 +200,13 @@ not authorize host-buffer reclamation while a device copy can still access it.
    head cannot strand feasible peers. Selection order is not caller-visible result order;
    retain request identity and reserve bounded delivery/reorder storage. Aggregate
    resources are budgeted across the whole accepted work, never reset per row.
+   BERT host preparation binds an immutable model configuration to the backend's
+   sequence limit. The usable range is their intersection; a larger position table
+   remains valid for shorter requests rather than being rewritten or rejected.
+   Shape/envelope validation and batch selection must apply this same prepared
+   limit before reservation or enqueue. The CUDA attention backend owns its current
+   4096-token limit; exceeding it is request-local rejection, not a peer-wide launch
+   failure.
 3. **Waiting versus rejection.** Waiting names both a condition and a readiness source.
    Byte-pool and AR capacity waits share `ReadinessWait`: register before checking,
    then arm the caller's wake transport before parking. Arming rechecks the

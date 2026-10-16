@@ -23,7 +23,7 @@ use ribn_batch::{
 use ribn_foundation::{ParameterVersion, PoolLease};
 
 use crate::cuda::{CudaBertEncoder, EncoderError, EncoderOutput, EncoderSubmission};
-use crate::request::{self, EncoderConstraint, EncoderRequest};
+use crate::request::{EncoderConstraint, EncoderRequest};
 
 /// Prepared weights never change while one encoder is loaded, so its parameter
 /// version is constant. Replacing them constructs a new prepared encoder.
@@ -49,7 +49,7 @@ impl BatchExecutor for CudaBertEncoder {
     /// then reserves each accepted request's real envelope from the shared pool and
     /// shrinks the range further to the largest prefix the pool can cover.
     fn select_batch(&self, candidates: &[&Self::Input]) -> BatchSelection<Self::Constraint> {
-        request::select(self.config(), candidates)
+        self.preparation().select(candidates)
     }
 
     /// The real device envelope of one request, or zero when its shape is

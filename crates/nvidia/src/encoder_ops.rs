@@ -12,6 +12,7 @@
 //! module to elementwise and per-row reductions.
 
 use std::fmt;
+use std::num::NonZeroUsize;
 use std::sync::Arc;
 
 use cudarc::driver::{
@@ -69,8 +70,6 @@ impl std::error::Error for CudaEncoderKernelError {}
 /// Threads per block for row-wise kernels; also the attention block size when the
 /// head width is smaller, since the score loop is distributed over the block.
 const ROW_THREADS: u32 = 256;
-/// Largest sequence length one attention block can hold in shared memory.
-const MAX_ATTENTION_SEQUENCE: usize = 4096;
 /// Bytes in one `f32`, for shared-memory sizing without importing a trait.
 const F32_BYTES: u32 = 4;
 
@@ -297,6 +296,10 @@ pub struct CudaEncoderOps {
 }
 
 impl CudaEncoderOps {
+    /// Largest sequence length supported by the current attention kernel.
+    /// Available before device initialization so preparation can reject locally.
+    pub const MAX_ATTENTION_SEQUENCE: NonZeroUsize = NonZeroUsize::new(4096).unwrap();
+
     /// Compile and load the encoder primitives on a new context.
     ///
     /// # Errors
@@ -639,7 +642,7 @@ impl CudaEncoderOps {
     ) -> Result<(), CudaEncoderKernelError> {
         self.check_contexts(query, key)?;
         let sequence = mask.len();
-        if sequence == 0 || sequence > MAX_ATTENTION_SEQUENCE {
+        if sequence == 0 || sequence > Self::MAX_ATTENTION_SEQUENCE.get() {
             return Err(CudaEncoderKernelError::InvalidSequence);
         }
         if hidden == 0 || !hidden.is_multiple_of(heads) {

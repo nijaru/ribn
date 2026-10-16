@@ -7,9 +7,11 @@
 //! re-deriving them, so the accepted range and the byte envelope the shared pool is
 //! asked to cover come from one concrete shape rather than two independent budgets.
 
+use std::num::NonZeroUsize;
+
 use ribn_batch::BatchSelection;
 
-use crate::config::BertConfig;
+use crate::config::{BertConfig, ConfigError};
 
 /// One encoder request: token ids, their segment ids and a per-position key mask.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -52,6 +54,11 @@ pub enum EncoderConstraint {
         sequence: usize,
         max_position_embeddings: usize,
     },
+    /// The model permits the length, but this backend cannot execute it.
+    BackendSequenceLimit {
+        sequence: usize,
+        max_sequence: usize,
+    },
     /// Token, token-type and mask lengths do not agree.
     LengthMismatch {
         tokens: usize,
@@ -77,6 +84,13 @@ impl std::fmt::Display for EncoderConstraint {
                 f,
                 "sequence length {sequence} exceeds the model's {max_position_embeddings} \
                  position embeddings"
+            ),
+            Self::BackendSequenceLimit {
+                sequence,
+                max_sequence,
+            } => write!(
+                f,
+                "sequence length {sequence} exceeds the backend's {max_sequence}-token limit"
             ),
             Self::LengthMismatch {
                 tokens,
@@ -163,151 +177,150 @@ impl EncoderShape {
     }
 }
 
-/// Enumerate the constraints that make `request` permanently infeasible.
-///
-/// # Errors
-/// Returns the first [`EncoderConstraint`] this request violates.
-pub fn validate(config: &BertConfig, request: &EncoderRequest) -> Result<(), EncoderConstraint> {
-    if request.token_ids.is_empty() {
-        return Err(EncoderConstraint::EmptySequence);
-    }
-    if request.token_ids.len() > config.max_position_embeddings {
-        return Err(EncoderConstraint::SequenceTooLong {
-            sequence: request.token_ids.len(),
-            max_position_embeddings: config.max_position_embeddings,
-        });
-    }
-    if request.token_type_ids.len() != request.token_ids.len()
-        || request.attention_mask.len() != request.token_ids.len()
-    {
-        return Err(EncoderConstraint::LengthMismatch {
-            tokens: request.token_ids.len(),
-            token_types: request.token_type_ids.len(),
-            mask: request.attention_mask.len(),
-        });
-    }
-    for token in &request.token_ids {
-        if usize::try_from(*token).map_or(true, |token| token >= config.vocab_size) {
-            return Err(EncoderConstraint::UnknownToken {
-                token: *token,
-                vocabulary: config.vocab_size,
-            });
-        }
-    }
-    for kind in &request.token_type_ids {
-        if usize::try_from(*kind).map_or(true, |kind| kind >= config.type_vocab_size) {
-            return Err(EncoderConstraint::UnknownTokenType {
-                kind: *kind,
-                type_vocabulary: config.type_vocab_size,
-            });
-        }
-    }
-    Ok(())
+/// Host-prepared request geometry bound to one backend's sequence limit.
+/// The model configuration remains unchanged; every accepted shape uses the same
+/// immutable intersection of model and backend limits.
+#[derive(Clone, Debug, PartialEq)]
+pub struct EncoderPreparation {
+    config: BertConfig,
+    max_sequence: usize,
 }
 
-/// The concrete device shape of a sequence this model can execute.
-///
-/// # Errors
-/// Returns [`EncoderConstraint`] for a sequence the model cannot execute at all.
-pub fn shape(config: &BertConfig, sequence: usize) -> Result<EncoderShape, EncoderConstraint> {
-    if sequence == 0 {
-        return Err(EncoderConstraint::EmptySequence);
+impl EncoderPreparation {
+    /// Bind validated model geometry to a positive backend execution limit.
+    ///
+    /// # Errors
+    /// Returns [`ConfigError`] for invalid model geometry or numerical policy.
+    pub fn new(
+        config: BertConfig,
+        backend_max_sequence: NonZeroUsize,
+    ) -> Result<Self, ConfigError> {
+        config.validate()?;
+        Ok(Self {
+            max_sequence: config
+                .max_position_embeddings
+                .min(backend_max_sequence.get()),
+            config,
+        })
     }
-    if sequence > config.max_position_embeddings {
-        return Err(EncoderConstraint::SequenceTooLong {
+
+    #[must_use]
+    pub const fn config(&self) -> &BertConfig {
+        &self.config
+    }
+
+    /// Effective executable sequence limit, not a rewritten model position table.
+    #[must_use]
+    pub const fn max_sequence(&self) -> usize {
+        self.max_sequence
+    }
+
+    /// Concrete storage shape; rejects model/backend limits before byte arithmetic.
+    ///
+    /// # Errors
+    /// Returns a permanent request-local constraint for an unsupported sequence.
+    pub fn shape(&self, sequence: usize) -> Result<EncoderShape, EncoderConstraint> {
+        if sequence == 0 {
+            return Err(EncoderConstraint::EmptySequence);
+        }
+        if sequence > self.config.max_position_embeddings {
+            return Err(EncoderConstraint::SequenceTooLong {
+                sequence,
+                max_position_embeddings: self.config.max_position_embeddings,
+            });
+        }
+        if sequence > self.max_sequence {
+            return Err(EncoderConstraint::BackendSequenceLimit {
+                sequence,
+                max_sequence: self.max_sequence,
+            });
+        }
+        let hidden_values = sequence.checked_mul(self.config.hidden_size);
+        let intermediate_values = sequence.checked_mul(self.config.intermediate_size);
+        let (Some(hidden_values), Some(intermediate_values)) = (hidden_values, intermediate_values)
+        else {
+            return Err(EncoderConstraint::ShapeOverflow { sequence });
+        };
+        // Staging plus every activation the forward pass keeps alive: three id vectors,
+        // six `[sequence, hidden]` float buffers, the `[sequence, intermediate]`
+        // feed-forward buffer, and the two `[hidden]` outputs.
+        let device_bytes = (|| {
+            let float_values = hidden_values
+                .checked_mul(6)?
+                .checked_add(intermediate_values)?
+                .checked_add(self.config.hidden_size.checked_mul(2)?)?;
+            let elements = float_values.checked_add(sequence.checked_mul(3)?)?;
+            u64::try_from(elements.checked_mul(size_of::<f32>())?).ok()
+        })();
+        let Some(device_bytes) = device_bytes else {
+            return Err(EncoderConstraint::ShapeOverflow { sequence });
+        };
+        Ok(EncoderShape {
             sequence,
-            max_position_embeddings: config.max_position_embeddings,
-        });
+            hidden: self.config.hidden_size,
+            heads: self.config.num_attention_heads,
+            hidden_values,
+            intermediate_values,
+            device_bytes,
+        })
     }
-    let hidden_values = sequence.checked_mul(config.hidden_size);
-    let intermediate_values = sequence.checked_mul(config.intermediate_size);
-    let (Some(hidden_values), Some(intermediate_values)) = (hidden_values, intermediate_values)
-    else {
-        return Err(EncoderConstraint::ShapeOverflow { sequence });
-    };
-    // Staging plus every activation the forward pass keeps alive: three id vectors,
-    // six `[sequence, hidden]` float buffers, the `[sequence, intermediate]`
-    // feed-forward buffer, and the two `[hidden]` outputs.
-    let device_bytes = (|| {
-        let float_values = hidden_values
-            .checked_mul(6)?
-            .checked_add(intermediate_values)?
-            .checked_add(config.hidden_size.checked_mul(2)?)?;
-        let elements = float_values.checked_add(sequence.checked_mul(3)?)?;
-        u64::try_from(elements.checked_mul(size_of::<f32>())?).ok()
-    })();
-    let Some(device_bytes) = device_bytes else {
-        return Err(EncoderConstraint::ShapeOverflow { sequence });
-    };
-    Ok(EncoderShape {
-        sequence,
-        hidden: config.hidden_size,
-        heads: config.num_attention_heads,
-        hidden_values,
-        intermediate_values,
-        device_bytes,
-    })
-}
 
-/// The concrete device shape of one request, after its contents are validated.
-///
-/// # Errors
-/// Returns [`EncoderConstraint`] for a request this model cannot execute.
-pub fn shape_of(
-    config: &BertConfig,
-    request: &EncoderRequest,
-) -> Result<EncoderShape, EncoderConstraint> {
-    validate(config, request)?;
-    shape(config, request.sequence())
-}
-
-/// Bytes one request holds on the device from submission until release.
-///
-/// This is exactly [`EncoderShape::device_bytes`] for the request's positions.
-/// A caller that only needs the envelope (a capacity check, say) does not have to
-/// build a shape.
-///
-/// # Errors
-/// Returns [`EncoderConstraint`] for a request this model cannot execute, or for a
-/// sequence whose envelope is not representable.
-pub fn envelope(config: &BertConfig, request: &EncoderRequest) -> Result<u64, EncoderConstraint> {
-    shape_of(config, request).map(EncoderShape::device_bytes)
-}
-
-/// Accept the executable prefix of `candidates`, or reject the head.
-///
-/// The accepted range comes from concrete shapes rather than a per-row budget: a
-/// candidate is admitted when this encoder can execute its shape at all, and the
-/// runtime budget is the aggregate of the admitted requests' real envelopes. A
-/// defect in the head is permanent and is reported as
-/// [`BatchSelection::Rejected`]; the same defect deeper in the candidate set only
-/// stops the accepted range, because FIFO order makes that request the head once
-/// earlier work drains.
-///
-/// `candidates` follows the runtime's contract: it is the queue prefix, in order,
-/// never empty. An empty slice is answered with an empty selection, which the
-/// runtime never asks for.
-#[must_use]
-pub fn select(
-    config: &BertConfig,
-    candidates: &[&EncoderRequest],
-) -> BatchSelection<EncoderConstraint> {
-    let mut items = 0_usize;
-    let mut defect = None;
-    for candidate in candidates {
-        match validate(config, candidate) {
-            Ok(()) => items += 1,
-            Err(constraint) => {
-                defect = Some(constraint);
-                break;
+    /// Validate contents and compute the same shape used by selection and enqueue.
+    ///
+    /// # Errors
+    /// Returns the first shape or input constraint this request violates.
+    pub fn shape_of(&self, request: &EncoderRequest) -> Result<EncoderShape, EncoderConstraint> {
+        let shape = self.shape(request.sequence())?;
+        if request.token_type_ids.len() != request.token_ids.len()
+            || request.attention_mask.len() != request.token_ids.len()
+        {
+            return Err(EncoderConstraint::LengthMismatch {
+                tokens: request.token_ids.len(),
+                token_types: request.token_type_ids.len(),
+                mask: request.attention_mask.len(),
+            });
+        }
+        for token in &request.token_ids {
+            if usize::try_from(*token).map_or(true, |token| token >= self.config.vocab_size) {
+                return Err(EncoderConstraint::UnknownToken {
+                    token: *token,
+                    vocabulary: self.config.vocab_size,
+                });
             }
         }
+        for kind in &request.token_type_ids {
+            if usize::try_from(*kind).map_or(true, |kind| kind >= self.config.type_vocab_size) {
+                return Err(EncoderConstraint::UnknownTokenType {
+                    kind: *kind,
+                    type_vocabulary: self.config.type_vocab_size,
+                });
+            }
+        }
+        Ok(shape)
     }
-    // A defect in the head is permanent and reported now; the same defect further
-    // along the candidate set only stops the accepted range.
-    match defect {
-        Some(constraint) if items == 0 => BatchSelection::Rejected(constraint),
-        _ => BatchSelection::Ready { items },
+
+    /// Select the executable FIFO prefix, or reject an infeasible head locally.
+    /// A defect behind a healthy prefix stops selection until it becomes the head.
+    /// Empty input selects zero; the batching runtime supplies nonempty candidates.
+    #[must_use]
+    pub fn select(&self, candidates: &[&EncoderRequest]) -> BatchSelection<EncoderConstraint> {
+        let mut items = 0_usize;
+        let mut defect = None;
+        for candidate in candidates {
+            match self.shape_of(candidate) {
+                Ok(_) => items += 1,
+                Err(constraint) => {
+                    defect = Some(constraint);
+                    break;
+                }
+            }
+        }
+        // A defect in the head is permanent and reported now; the same defect further
+        // along the candidate set only stops the accepted range.
+        match defect {
+            Some(constraint) if items == 0 => BatchSelection::Rejected(constraint),
+            _ => BatchSelection::Ready { items },
+        }
     }
 }
 
@@ -328,10 +341,41 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "cuda")]
+    #[test]
+    fn backend_sequence_limit_rejects_before_accepting_a_healthy_peer() {
+        let limit = engine_nvidia::CudaEncoderOps::MAX_ATTENTION_SEQUENCE.get();
+        let config = BertConfig {
+            max_position_embeddings: limit + 1,
+            ..config()
+        };
+        let preparation = EncoderPreparation::new(
+            config,
+            engine_nvidia::CudaEncoderOps::MAX_ATTENTION_SEQUENCE,
+        )
+        .unwrap();
+        assert_eq!(preparation.config().max_position_embeddings, limit + 1);
+        assert_eq!(preparation.max_sequence(), limit);
+        let oversized = EncoderRequest::single_segment(vec![1; limit + 1]);
+        let healthy = EncoderRequest::single_segment(vec![1; limit]);
+        assert_eq!(
+            preparation.select(&[&oversized, &healthy]),
+            BatchSelection::Rejected(EncoderConstraint::BackendSequenceLimit {
+                sequence: limit + 1,
+                max_sequence: limit,
+            })
+        );
+        assert_eq!(
+            preparation.select(&[&healthy, &oversized]),
+            BatchSelection::Ready { items: 1 }
+        );
+        assert!(preparation.shape(limit).is_ok());
+    }
+
     #[test]
     fn envelope_covers_every_buffer_the_request_keeps() {
-        let config = config();
-        let shape = shape(&config, 4).expect("shape");
+        let preparation = EncoderPreparation::new(config(), NonZeroUsize::MAX).unwrap();
+        let shape = preparation.shape(4).expect("shape");
         assert_eq!(shape.hidden_values(), 48);
         assert_eq!(shape.intermediate_values(), 80);
         // six activation row buffers plus the feed-forward buffer plus two outputs,
@@ -339,16 +383,25 @@ mod tests {
         let expected = (6 * 48 + 80 + 2 * 12 + 3 * 4) * size_of::<f32>();
         assert_eq!(shape.device_bytes(), u64::try_from(expected).unwrap());
         assert_eq!(
-            envelope(&config, &EncoderRequest::single_segment(vec![1, 2, 3, 4])).expect("envelope"),
+            preparation
+                .shape_of(&EncoderRequest::single_segment(vec![1, 2, 3, 4]))
+                .expect("envelope")
+                .device_bytes(),
             shape.device_bytes()
         );
     }
 
     #[test]
     fn the_envelope_grows_with_the_sequence_and_not_with_the_batch() {
-        let config = config();
-        let short = envelope(&config, &EncoderRequest::single_segment(vec![1])).expect("short");
-        let long = envelope(&config, &EncoderRequest::single_segment(vec![1; 8])).expect("long");
+        let preparation = EncoderPreparation::new(config(), NonZeroUsize::MAX).unwrap();
+        let short = preparation
+            .shape_of(&EncoderRequest::single_segment(vec![1]))
+            .expect("short")
+            .device_bytes();
+        let long = preparation
+            .shape_of(&EncoderRequest::single_segment(vec![1; 8]))
+            .expect("long")
+            .device_bytes();
         assert!(short < long);
         // A concrete shape, not a per-row constant.
         assert_eq!(
@@ -359,20 +412,20 @@ mod tests {
 
     #[test]
     fn a_request_defect_is_reported_as_a_permanent_constraint() {
-        let config = config();
+        let preparation = EncoderPreparation::new(config(), NonZeroUsize::MAX).unwrap();
         assert_eq!(
-            envelope(&config, &EncoderRequest::single_segment(Vec::new())),
+            preparation.shape_of(&EncoderRequest::single_segment(Vec::new())),
             Err(EncoderConstraint::EmptySequence)
         );
         assert_eq!(
-            envelope(&config, &EncoderRequest::single_segment(vec![1; 17])),
+            preparation.shape_of(&EncoderRequest::single_segment(vec![1; 17])),
             Err(EncoderConstraint::SequenceTooLong {
                 sequence: 17,
                 max_position_embeddings: 16
             })
         );
         assert_eq!(
-            envelope(&config, &EncoderRequest::single_segment(vec![99])),
+            preparation.shape_of(&EncoderRequest::single_segment(vec![99])),
             Err(EncoderConstraint::UnknownToken {
                 token: 99,
                 vocabulary: 8
@@ -384,7 +437,7 @@ mod tests {
             attention_mask: vec![1, 1],
         };
         assert_eq!(
-            envelope(&config, &mismatched),
+            preparation.shape_of(&mismatched),
             Err(EncoderConstraint::LengthMismatch {
                 tokens: 2,
                 token_types: 1,
@@ -395,19 +448,19 @@ mod tests {
 
     #[test]
     fn selection_accepts_the_executable_prefix_and_rejects_a_defective_head() {
-        let config = config();
+        let preparation = EncoderPreparation::new(config(), NonZeroUsize::MAX).unwrap();
         let healthy = [EncoderRequest::single_segment(vec![1, 2, 3])];
         let candidates = healthy.iter().collect::<Vec<_>>();
         assert_eq!(
-            select(&config, &candidates),
+            preparation.select(&candidates),
             BatchSelection::Ready { items: 1 }
         );
-        assert_eq!(select(&config, &[]), BatchSelection::Ready { items: 0 });
+        assert_eq!(preparation.select(&[]), BatchSelection::Ready { items: 0 });
 
         let long = EncoderRequest::single_segment(vec![1; 17]);
         let candidates = vec![&long];
         assert_eq!(
-            select(&config, &candidates),
+            preparation.select(&candidates),
             BatchSelection::Rejected(EncoderConstraint::SequenceTooLong {
                 sequence: 17,
                 max_position_embeddings: 16
@@ -416,7 +469,7 @@ mod tests {
         let unknown = EncoderRequest::single_segment(vec![99]);
         let candidates = vec![&unknown];
         assert_eq!(
-            select(&config, &candidates),
+            preparation.select(&candidates),
             BatchSelection::Rejected(EncoderConstraint::UnknownToken {
                 token: 99,
                 vocabulary: 8
@@ -428,7 +481,7 @@ mod tests {
         let short = EncoderRequest::single_segment(vec![1]);
         let candidates = vec![&short, &long, &unknown];
         assert_eq!(
-            select(&config, &candidates),
+            preparation.select(&candidates),
             BatchSelection::Ready { items: 1 }
         );
     }

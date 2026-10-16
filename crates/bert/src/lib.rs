@@ -21,9 +21,7 @@ mod request;
 mod weights;
 
 pub use config::{BertConfig, ConfigError};
-pub use request::{
-    EncoderConstraint, EncoderRequest, EncoderShape, envelope, select, shape, shape_of, validate,
-};
+pub use request::{EncoderConstraint, EncoderPreparation, EncoderRequest, EncoderShape};
 pub use weights::{HostWeights, WeightError};
 
 #[cfg(feature = "cuda")]

@@ -26,7 +26,7 @@ use ribn_foundation::PoolLease;
 use ribn_hf::LocalModelPackage;
 
 use crate::config::{BertConfig, ConfigError};
-use crate::request::{EncoderConstraint, EncoderRequest, EncoderShape};
+use crate::request::{EncoderConstraint, EncoderPreparation, EncoderRequest, EncoderShape};
 use crate::weights::{Dense as HostDense, HostWeights, LayerNorm as HostLayerNorm, WeightError};
 
 /// Requests one accepted range may contain when the deployment does not say.
@@ -114,7 +114,7 @@ impl From<EncoderConstraint> for EncoderError {
 
 /// A prepared BERT encoder on one CUDA device.
 pub struct CudaBertEncoder {
-    config: BertConfig,
+    requests: EncoderPreparation,
     max_batch_items: usize,
     prepared: Arc<Prepared>,
     retirement: Mutex<Retirement>,
@@ -145,6 +145,7 @@ impl CudaBertEncoder {
         device_index: usize,
     ) -> Result<Self, EncoderError> {
         host.validate(&config)?;
+        let requests = EncoderPreparation::new(config, CudaEncoderOps::MAX_ATTENTION_SEQUENCE)?;
         let ops = CudaEncoderOps::new(device_index).map_err(EncoderError::Kernels)?;
         let stream = Arc::clone(ops.stream());
         let blas = CudaBlas::new(Arc::clone(&stream))
@@ -192,7 +193,7 @@ impl CudaBertEncoder {
             pooler: upload_dense(&host.pooler)?,
         };
         Ok(Self {
-            config,
+            requests,
             max_batch_items: DEFAULT_MAX_BATCH_ITEMS,
             prepared: Arc::new(Prepared { ops, blas, weights }),
             retirement: Mutex::new(Retirement::default()),
@@ -211,7 +212,13 @@ impl CudaBertEncoder {
 
     #[must_use]
     pub const fn config(&self) -> &BertConfig {
-        &self.config
+        self.requests.config()
+    }
+
+    /// Host-prepared shapes and the effective model/backend sequence limit.
+    #[must_use]
+    pub const fn preparation(&self) -> &EncoderPreparation {
+        &self.requests
     }
 
     /// Requests one accepted range may contain.
@@ -236,7 +243,7 @@ impl CudaBertEncoder {
     /// # Errors
     /// Returns [`EncoderError`] for a sequence this encoder cannot execute.
     pub fn request_bytes(&self, sequence: usize) -> Result<u64, EncoderError> {
-        Ok(crate::request::shape(&self.config, sequence)?.device_bytes())
+        Ok(self.requests.shape(sequence)?.device_bytes())
     }
 
     /// Enqueue one request and return its owned device state.
@@ -274,7 +281,7 @@ impl CudaBertEncoder {
         if let Some(fault) = self.fault() {
             return Err(EnqueueFailure::refused(EncoderError::Faulted(fault)));
         }
-        let shape = crate::request::shape_of(&self.config, request).map_err(|constraint| {
+        let shape = self.requests.shape_of(request).map_err(|constraint| {
             EnqueueFailure::refused(EncoderError::InvalidRequest(constraint))
         })?;
         let stream = self.stream();
@@ -289,7 +296,7 @@ impl CudaBertEncoder {
         };
         let mask: Vec<i32> = request.attention_mask.clone();
         let mut submission = EncoderSubmission {
-            layer_norm_eps: self.config.layer_norm_eps,
+            layer_norm_eps: self.config().layer_norm_eps,
             prepared: Arc::clone(&self.prepared),
             shape,
             tokens: upload_tokens(&request.token_ids)?,
