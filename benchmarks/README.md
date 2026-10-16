@@ -88,10 +88,9 @@ or error-only streams. Their historical outputs are not retroactively validated 
 successful process exit. Use the neutral/native clients above and inspect terminal
 outcomes and actual usage.
 
-`run-qwen-serving-sweep.sh` currently hardcodes the default Cargo executable path after
-building. It must resolve the actual build artifact before use with `CARGO_TARGET_DIR`;
-otherwise it can run a stale executable. Native diagnostics remain separate from matched
-HTTP/EOS-enabled comparisons.
+`run-qwen-serving-sweep.sh` resolves the executable from Cargo's build messages,
+including custom `CARGO_TARGET_DIR` and target configuration. Build failure prevents
+execution. Native diagnostics remain separate from matched HTTP/EOS-enabled comparisons.
 
 **Do not run `quality-probes/probe.py` on an ordinary host.** It evaluates/executes
 model-produced Python without isolation; subprocess timeouts are not a sandbox. Its

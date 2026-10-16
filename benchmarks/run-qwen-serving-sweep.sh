@@ -55,8 +55,25 @@ benchmarks/collect-env.sh "$out_dir/env" >/dev/null
   echo "started_utc=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 } > "$out_dir/sweep.txt"
 
-cargo build --release -p engine-qwen --features cuda --example qwen_serving_bench
-bench="target/release/examples/qwen_serving_bench"
+# Cargo owns artifact placement (CARGO_TARGET_DIR and --target may change it).
+# pipefail preserves build failure even if Cargo emitted an executable beforehand.
+bench="$(cargo build --release -p engine-qwen --features cuda \
+  --example qwen_serving_bench --message-format=json-render-diagnostics | python3 -c '
+import json
+import sys
+
+executables = {
+    message["executable"]
+    for line in sys.stdin
+    if (message := json.loads(line)).get("reason") == "compiler-artifact"
+    and message.get("target", {}).get("name") == "qwen_serving_bench"
+    and "example" in message["target"].get("kind", [])
+    and message.get("executable")
+}
+if len(executables) != 1:
+    sys.exit(f"expected one qwen_serving_bench executable, got {len(executables)}")
+print(executables.pop())
+')"
 
 for concurrency in $concurrencies; do
   log="$out_dir/runs/concurrency-${concurrency}.log"
