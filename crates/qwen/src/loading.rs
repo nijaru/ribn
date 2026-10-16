@@ -94,6 +94,7 @@ pub(crate) fn load(
     }
     let provider =
         QwenGguf::open_with_kv_block_tokens(path, options.context_tokens).map_err(model_error)?;
+    validate_cuda_profile(provider.config())?;
     if u64::from(options.context_tokens) > provider.config().context_length() {
         return Err(ExecutionError::new(
             "requested context exceeds the Qwen artifact limit",
@@ -132,8 +133,14 @@ pub(crate) fn load(
         weight_budget_bytes,
     )?);
     let layer_kinds = layer_kinds(&provider)?;
-    let mut executor = CudaQwen35Decode::new(&context, stream.clone(), staged, layer_kinds, 1.0e-6)
-        .map_err(model_error)?;
+    let mut executor = CudaQwen35Decode::new(
+        &context,
+        stream.clone(),
+        staged,
+        layer_kinds,
+        provider.config().rms_norm_epsilon,
+    )
+    .map_err(model_error)?;
     executor.set_gemv_mode(options.gemv_mode);
     let dispatcher =
         CudaQwen35ServingDispatcher::new(&context, executor, stream.clone(), options.max_sequences)
@@ -251,6 +258,50 @@ fn prepare_execution(
     Ok((backend, plan))
 }
 
+/// The current physical executor has fixed projection/head geometry and `RoPE`.
+/// Reject mismatches before CUDA access; valid model metadata is not backend support.
+fn validate_cuda_profile(config: &crate::QwenConfig) -> Result<(), ExecutionError> {
+    use engine_nvidia::{
+        ATTN_HEAD_DIM, ATTN_KV_HEADS, ATTN_Q_HEADS, ATTN_ROPE_BASE, ATTN_ROT_DIMS, GDN_D_CONV,
+        GDN_HEAD_DIM, GDN_INNER, GDN_K_HEADS, GDN_V_HEADS, N_EMBD, N_FF,
+    };
+    for (field, actual, expected) in [
+        ("embedding_length", config.embedding_length, N_EMBD),
+        ("feed_forward_length", config.feed_forward_length, N_FF),
+        ("attention_heads", config.attention_heads, ATTN_Q_HEADS),
+        ("kv_heads", config.kv_heads, ATTN_KV_HEADS),
+        ("key_length", config.key_length, ATTN_HEAD_DIM),
+        ("value_length", config.value_length, ATTN_HEAD_DIM),
+        ("rope_dimensions", config.rope_dimensions, ATTN_ROT_DIMS),
+        ("ssm_group_count", config.ssm_group_count, GDN_K_HEADS),
+        ("ssm_inner_size", config.ssm_inner_size, GDN_INNER),
+        ("ssm_state_size", config.ssm_state_size, GDN_HEAD_DIM),
+        ("ssm_time_step_rank", config.ssm_time_step_rank, GDN_V_HEADS),
+        ("ssm_conv_kernel", config.ssm_conv_kernel, GDN_D_CONV),
+    ] {
+        if usize::try_from(actual).ok() != Some(expected) {
+            return Err(ExecutionError::new(format!(
+                "CUDA Qwen does not support {field} {actual}; requires {expected}"
+            )));
+        }
+    }
+    for (field, actual, expected) in [
+        ("rms_norm_epsilon", config.rms_norm_epsilon, 1.0e-6_f32),
+        (
+            "rope_frequency_base",
+            config.rope_frequency_base,
+            ATTN_ROPE_BASE,
+        ),
+    ] {
+        if actual.to_bits() != expected.to_bits() {
+            return Err(ExecutionError::new(format!(
+                "CUDA Qwen does not support {field} {actual}; requires {expected}"
+            )));
+        }
+    }
+    Ok(())
+}
+
 fn stage_weights(
     provider: &QwenGguf,
     device: DeviceId,
@@ -323,4 +374,75 @@ fn layer_kinds(provider: &QwenGguf) -> Result<Vec<QwenLayerKind>, ExecutionError
                 .map_err(model_error)
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::QwenCuda;
+    use crate::gguf::config::tests::{encode, metadata};
+    use engine_gguf::MetadataValue;
+
+    #[test]
+    fn incompatible_model_semantics_reject_before_tokenizer_or_device_access() {
+        let path =
+            std::env::temp_dir().join(format!("ribn-qwen-profile-{}.gguf", std::process::id()));
+        let baseline = metadata();
+        std::fs::write(&path, encode(&baseline)).unwrap();
+        let model = QwenGguf::open(&path).unwrap();
+        validate_cuda_profile(model.config()).unwrap();
+        drop(model);
+        for (changes, diagnostic) in [
+            (
+                vec![(
+                    "qwen35.attention.layer_norm_rms_epsilon",
+                    MetadataValue::F32(1.0e-5),
+                )],
+                "rms_norm_epsilon",
+            ),
+            (
+                vec![("qwen35.rope.freq_base", MetadataValue::F32(10_000.0))],
+                "rope_frequency_base",
+            ),
+            (
+                vec![("qwen35.rope.dimension_count", MetadataValue::U64(128))],
+                "rope_dimensions",
+            ),
+            // Identical aggregate Q/K/V projection widths, different head semantics.
+            (
+                vec![
+                    ("qwen35.attention.head_count", MetadataValue::U64(48)),
+                    ("qwen35.attention.head_count_kv", MetadataValue::U64(8)),
+                    ("qwen35.attention.key_length", MetadataValue::U64(128)),
+                    ("qwen35.attention.value_length", MetadataValue::U64(128)),
+                ],
+                "attention_heads",
+            ),
+            (
+                vec![("qwen35.ssm.group_count", MetadataValue::U64(8))],
+                "ssm_group_count",
+            ),
+        ] {
+            let mut values = baseline.clone();
+            for (key, value) in changes {
+                values.insert(key.to_owned(), value);
+            }
+            std::fs::write(&path, encode(&values)).unwrap();
+            let result = QwenCuda::load_gguf(
+                &path,
+                QwenLoadOptions {
+                    device: u16::MAX,
+                    ..QwenLoadOptions::default()
+                },
+            );
+            let Err(error) = result else {
+                panic!("accepted unsupported {diagnostic}")
+            };
+            assert!(
+                error.to_string().contains(diagnostic),
+                "{diagnostic}: {error}"
+            );
+        }
+        std::fs::remove_file(path).unwrap();
+    }
 }

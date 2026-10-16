@@ -11,50 +11,8 @@ use std::fs::File;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 
-fn config_from_gguf(file: &GgufFile) -> Result<QwenConfig, GgufError> {
-    let architecture = file
-        .metadata("general.architecture")
-        .and_then(MetadataValue::as_str)
-        .ok_or_else(|| GgufError::MissingMetadata("general.architecture".to_owned()))?;
-    if architecture != "qwen35" {
-        return Err(GgufError::UnsupportedArchitecture(architecture.to_owned()));
-    }
-    let config = QwenConfig {
-        context_length: required_u64(file, "qwen35.context_length")?,
-        embedding_length: required_u32(file, "qwen35.embedding_length")?,
-        feed_forward_length: required_u32(file, "qwen35.feed_forward_length")?,
-        block_count: required_u32(file, "qwen35.block_count")?,
-        attention_heads: required_u32(file, "qwen35.attention.head_count")?,
-        kv_heads: required_u32(file, "qwen35.attention.head_count_kv")?,
-        key_length: required_u32(file, "qwen35.attention.key_length")?,
-        value_length: required_u32(file, "qwen35.attention.value_length")?,
-        full_attention_interval: required_u32(file, "qwen35.full_attention_interval")?,
-        ssm_group_count: required_u32(file, "qwen35.ssm.group_count")?,
-        ssm_inner_size: required_u32(file, "qwen35.ssm.inner_size")?,
-        ssm_state_size: required_u32(file, "qwen35.ssm.state_size")?,
-        ssm_time_step_rank: required_u32(file, "qwen35.ssm.time_step_rank")?,
-        ssm_conv_kernel: required_u32(file, "qwen35.ssm.conv_kernel")?,
-        nextn_predict_layers: required_u32(file, "qwen35.nextn_predict_layers")?,
-    };
-    config
-        .validate()
-        .map_err(|error| GgufError::InvalidModelConfiguration(error.reason()))?;
-    Ok(config)
-}
-
-fn required_u64(file: &GgufFile, key: &str) -> Result<u64, GgufError> {
-    file.metadata(key)
-        .ok_or_else(|| GgufError::MissingMetadata(key.to_owned()))?
-        .as_u64()
-        .ok_or_else(|| GgufError::MetadataTypeMismatch {
-            key: key.to_owned(),
-        })
-}
-fn required_u32(file: &GgufFile, key: &str) -> Result<u32, GgufError> {
-    u32::try_from(required_u64(file, key)?).map_err(|_| GgufError::MetadataTypeMismatch {
-        key: key.to_owned(),
-    })
-}
+pub(crate) mod config;
+use config::read as config_from_gguf;
 
 fn qwen35_model_description(
     config: &QwenConfig,
@@ -433,6 +391,9 @@ mod tests {
             kv_heads: 4,
             key_length: 256,
             value_length: 256,
+            rms_norm_epsilon: 1.0e-6,
+            rope_dimensions: 64,
+            rope_frequency_base: 1.0e7,
             full_attention_interval: 4,
             ssm_group_count: 16,
             ssm_inner_size: 6144,
@@ -484,8 +445,12 @@ mod tests {
                 .max_draft_tokens(),
             1
         );
-        // The group product fits u32, but doubling it must fail without panic.
-        config.ssm_group_count = 1 << 24;
+        // Valid head geometry fits the state representation, but doubling the
+        // group product for convolution channels must fail without panic.
+        config.ssm_group_count = u32::from(u16::MAX);
+        config.ssm_time_step_rank = u32::from(u16::MAX);
+        config.ssm_state_size = u32::from(u16::MAX);
+        config.ssm_inner_size = u32::from(u16::MAX).pow(2);
         config.validate().unwrap();
         assert!(matches!(
             qwen35_model_description(
@@ -498,58 +463,5 @@ mod tests {
                 "recurrent convolution dimensions overflow"
             ))
         ));
-    }
-}
-
-#[cfg(test)]
-mod decoding_tests {
-    use super::*;
-
-    fn string(bytes: &mut Vec<u8>, value: &str) {
-        bytes.extend((value.len() as u64).to_le_bytes());
-        bytes.extend(value.as_bytes());
-    }
-
-    #[test]
-    fn gguf_keys_normalize_into_the_model_definition() {
-        let mut bytes = b"GGUF".to_vec();
-        bytes.extend(3_u32.to_le_bytes());
-        bytes.extend(0_u64.to_le_bytes());
-        bytes.extend(17_u64.to_le_bytes());
-        string(&mut bytes, "general.architecture");
-        bytes.extend(8_u32.to_le_bytes());
-        string(&mut bytes, "qwen35");
-        for (key, value) in [
-            ("context_length", 262_144_u64),
-            ("embedding_length", 5120),
-            ("feed_forward_length", 17_408),
-            ("block_count", 65),
-            ("attention.head_count", 24),
-            ("attention.head_count_kv", 4),
-            ("attention.key_length", 256),
-            ("attention.value_length", 256),
-            ("full_attention_interval", 4),
-            ("ssm.group_count", 16),
-            ("ssm.inner_size", 6144),
-            ("ssm.state_size", 128),
-            ("ssm.time_step_rank", 48),
-            ("ssm.conv_kernel", 4),
-            ("nextn_predict_layers", 1),
-            ("unused_field", 0),
-        ] {
-            string(&mut bytes, &format!("qwen35.{key}"));
-            bytes.extend(10_u32.to_le_bytes());
-            bytes.extend(value.to_le_bytes());
-        }
-        bytes.resize(bytes.len().next_multiple_of(32), 0);
-        let path =
-            std::env::temp_dir().join(format!("ribn-qwen-config-{}.gguf", std::process::id()));
-        std::fs::write(&path, bytes).unwrap();
-        let file = GgufFile::open(&path).unwrap();
-        let config = config_from_gguf(&file).unwrap();
-        assert_eq!(config.embedding_length, 5120);
-        assert_eq!(config.context_length, 262_144);
-        assert_eq!(config.layer_kind(3), Ok(QwenLayerKind::FullAttention));
-        std::fs::remove_file(path).unwrap();
     }
 }

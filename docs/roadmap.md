@@ -136,11 +136,13 @@ quarantine settlement after a successful shutdown drain. Host regressions and bo
 CUDA success-path requalification passed; real failed-drain device injection and the
 physical-accounting repairs above remain open. See [audit qualification](../benchmarks/runtime-contract.md#audit-boundary-repairs-2026-10-15).
 
-Loading still needs coherent executable semantics: Qwen geometry/template/weights are
-not resolved from one immutable source owner, and same-shaped artifacts with different
-normalization/RoPE metadata are not fully validated against the pinned backend. F16
-sources materialized as F32 must be charged at materialized size, not encoded size.
-Resolve those boundaries before expanding artifact support or claiming loader bounds.
+Qwen now normalizes model-owned numerical metadata and rejects fixed CUDA-profile
+mismatches before tokenizer/device access; [host preflight evidence](../benchmarks/runtime-contract.md#qwen-model-metadata-preflight-host-gate)
+covers normalization/RoPE and same-width head decompositions. Actual pinned-artifact
+header acceptance and device re-execution remain pending, not inherited qualification.
+Loading still needs one immutable geometry/template/weight source owner. F16 sources
+materialized as F32 must be charged at materialized size, not encoded size. Resolve those
+remaining boundaries before expanding artifact support or claiming loader bounds.
 The known long-prompt reference divergence after the eighteen-token agreed prefix is an
 active baseline fidelity question, not indefinite conditional work. Classify it with
 common-history distributions/state and independent task-quality evidence; do not infer

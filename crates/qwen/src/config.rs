@@ -1,11 +1,12 @@
-//! Artifact-independent Qwen hybrid model dimensions.
+//! Artifact-independent Qwen hybrid model geometry and numerical semantics.
 //!
-//! Checkpoint adapters normalize into this structure. Validation establishes
-//! model geometry, not support by any particular device executor.
+//! Checkpoint adapters normalize into this text-only structure: regular hybrid
+//! layer groups and unscaled rotary pairs using the ordinary text position.
+//! Validation establishes model semantics, not support by a device executor.
 
 use std::fmt;
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct QwenConfig {
     pub context_length: u64,
     pub embedding_length: u32,
@@ -15,6 +16,9 @@ pub struct QwenConfig {
     pub kv_heads: u32,
     pub key_length: u32,
     pub value_length: u32,
+    pub rms_norm_epsilon: f32,
+    pub rope_dimensions: u32,
+    pub rope_frequency_base: f32,
     pub full_attention_interval: u32,
     pub ssm_group_count: u32,
     pub ssm_inner_size: u32,
@@ -141,6 +145,7 @@ impl QwenConfig {
             u64::from(self.kv_heads),
             u64::from(self.key_length),
             u64::from(self.value_length),
+            u64::from(self.rope_dimensions),
             u64::from(self.full_attention_interval),
             u64::from(self.ssm_group_count),
             u64::from(self.ssm_inner_size),
@@ -151,12 +156,29 @@ impl QwenConfig {
         if dimensions.contains(&0) {
             return Err(ConfigError("Qwen3.8 dimensions must be non-zero"));
         }
+        if !self.rms_norm_epsilon.is_finite() || self.rms_norm_epsilon <= 0.0 {
+            return Err(ConfigError(
+                "Qwen RMSNorm epsilon must be positive and finite",
+            ));
+        }
+        if !self.rope_frequency_base.is_finite() || self.rope_frequency_base <= 0.0 {
+            return Err(ConfigError(
+                "Qwen RoPE frequency base must be positive and finite",
+            ));
+        }
+        if !self.rope_dimensions.is_multiple_of(2) || self.rope_dimensions > self.key_length {
+            return Err(ConfigError(
+                "Qwen rotary dimensions must be even and fit a key head",
+            ));
+        }
         let language_layers = self
             .language_layer_count()
             .ok_or(ConfigError("MTP layer count exceeds total block count"))?;
         if self.full_attention_interval > language_layers
             || language_layers % self.full_attention_interval != 0
             || !self.attention_heads.is_multiple_of(self.kv_heads)
+            || self.key_length != self.value_length
+            || !self.ssm_time_step_rank.is_multiple_of(self.ssm_group_count)
             || self.ssm_time_step_rank.checked_mul(self.ssm_state_size) != Some(self.ssm_inner_size)
         {
             return Err(ConfigError("Qwen3.8 hybrid dimensions are inconsistent"));

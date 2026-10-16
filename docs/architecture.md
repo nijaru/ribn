@@ -55,6 +55,13 @@ Cancellation is intent, not completion. Executor uncertainty faults the owner an
 retains retirement ownership. Mailboxes can outlive execution slots; runtime-owned
 discard works across that boundary, without frontend orphan queues.
 
+Qwen's GGUF adapter normalizes required normalization epsilon, reference RoPE defaults,
+identity scaling, text-equivalent MRoPE sections and supported regular layer catalogs.
+Model configuration owns the resulting numerical semantics. Loading rejects disagreement
+with the CUDA executor's fixed geometry/numerical profile before tokenizer or device
+access; these host checks do not establish actual-artifact acceptance or new GPU support.
+See [metadata preflight evidence](../benchmarks/runtime-contract.md#qwen-model-metadata-preflight-host-gate).
+
 Qwen reserves continuation for prompt plus output reach at admission. Deferred
 admission retains no allocation and retries only after authority publication. It
 checks whole-bundle capacity before allocation so a rolled-back partial attempt does

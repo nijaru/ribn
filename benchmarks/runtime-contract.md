@@ -51,6 +51,46 @@ pin reservation retention, ready-list unlinking and discarded terminal publicati
 when a peer holds all buffer capacity. Request-scoped callers use `pop_event_for`;
 the aggregate drain intentionally includes other clients' events.
 
+## Qwen model-metadata preflight host gate
+
+```sh
+cargo test -p engine-qwen --no-default-features --test model_config --locked
+cargo test -p engine-qwen --features cuda --locked
+```
+
+The model definition now owns normalization epsilon and rotary dimensions/frequency.
+GGUF normalization follows the independent llama.cpp reference pin
+[`b81c99b`](https://github.com/ggml-org/llama.cpp/tree/b81c99b479d4c24e5eeca10de99032ebd343ef8f):
+normalization epsilon is required, missing RoPE frequency defaults to 10000, and missing
+rotary dimensions default to the key head width—not the pinned CUDA values. Identity
+linear scaling honors modern/legacy factor precedence and the zero sentinel; `none`
+overrides inactive frequency factors, but not attention magnitude. IMRoPE sections must
+map every rotated text pair to a text position, not the fourth zero-position channel.
+A nonzero fourth section alone does not imply incompatibility, and zero fourth alone
+does not establish equivalence. Section arithmetic must fit the reference selector.
+Explicit Boolean/UINT32/INT32 recurrent catalogs override the interval and normalize only
+when they describe the regular layer groups and nonrecurrent MTP tail this model supports.
+Other scaling modes, nonidentity transforms and nonperiodic catalogs reject explicitly.
+
+CUDA loading compares normalized metadata with the executor's actual geometry constants
+and current numerical profile before tokenizer/device access. The real public load
+entrypoint regression first failed with missing tokenizer metadata instead of rejecting
+an unsupported epsilon (exit 101). It now rejects incompatible epsilon, rotary settings,
+SSM groups and a different Q/K/V head decomposition with identical aggregate projection
+widths. Metadata-only GGUF fixtures and an invalid device ordinal make this host-testable;
+matching profile validation does not initialize CUDA. Device execution, lease settlement
+and kernels are unchanged. The constructor receives the validated model epsilon rather
+than an independently substituted literal.
+
+Host gates pass. A temporary exhaustive check compared the closed-form IMRoPE text
+predicate with the pinned selector for 82,880 small configurations; committed boundary
+cases protect holes, unused fourth sections and overflow. These are parser/preflight
+results, not GPU arithmetic or broad model qualification. The actual pinned artifact's
+header has not been inspected in this gate, and device re-execution remains pending.
+Recheck its normalized metadata and run the existing numerical/lifecycle gates when
+hardware returns; investigate any rejection rather than bypassing the preflight.
+This does not resolve the separate long-prompt divergence or lazy-source/loading peaks.
+
 ## AR pre-submit preparation host gate
 
 The real `Engine` now negotiates aggregate work before submission through required
