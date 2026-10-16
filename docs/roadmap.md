@@ -10,10 +10,11 @@ open implementation choices and acceptance gates. All v0 interfaces may change.
 **Next: establish a matched competitive endpoint baseline on the qualified contiguous
 path.** The loopback text adapter is host-qualified, with a bounded CUDA HTTP gate and
 neutral/native client compatibility smokes passed. Owned-input retention is
-host-qualified. Develop heterogeneous physical
-batching/scheduling and constrained-memory continuation alongside that baseline.
+host-qualified. Prove model-local integration with a real dense second decoder alongside
+baseline work; do not postpone it until hybrid caching or scheduling is complete.
+Choose physical execution and constrained-memory experiments from the measured deficit.
 Prefix-cache benefit, a second decoder/VLM, CUDA Rust migration and distributed execution
-are not prerequisites for the first server. They remain important product work.
+are not prerequisites for the first baseline. They remain important product work.
 
 This replaces the serial 4b/4c → 4d → 5 dependency. The historical slice identifiers below
 still locate evidence; they no longer require finishing prefix reuse before serving or
@@ -27,13 +28,50 @@ future capability. No redesigned capability is implemented or qualified by this 
 | Physical execution and scheduling (4d) | Useful heterogeneous lanes, measured scheduling costs/goodput, bounded metadata | Numerical/retirement qualification for each selected lane; can start on contiguous storage |
 | Dynamic continuation (4b/4c) | Paged writes/growth, resident accounting and recomputation progress | Physical retirement, replay history and all-active-pressure proof before partial envelopes |
 | Exact prefix reuse (4b reuse) | Valid hybrid restoration with measured net workload benefit | Qualified dynamic storage and bounded checkpoint ownership; not a serving prerequisite |
-| Model-local breadth (4e) | Real second decoder, then VLM, proving integration and loading boundaries | Relevant operation/backend contracts, not every runtime optimization |
+| Model-local breadth (4e) — alongside baseline | Real dense second decoder through ordinary package loading, then VLM, proving integration and loading boundaries | Relevant operation/backend contracts, not every runtime optimization; not a prerequisite for measuring current Qwen |
 
 Desktop unavailability permits host implementation and CUDA-feature compilation, not
 device qualification. Preserve contiguous/full-reachable Qwen and qualified small-row
 kernels until their replacements pass. The [CUDA Rust gate-2 candidate](cuda-rust-migration.md#gate-2-candidate-deferred-2026-09-22)
 remains deferred: arithmetic/sanitizer results do not offset its single-row projection
 and GDN regressions. Do not start gate 3 or build a compiler project around it.
+
+## Decision milestones
+
+Work should produce evidence that changes the next engineering decision, or remove a
+concrete prerequisite for that evidence. Fix correctness/security failures on affected
+paths; do not turn every unfinished subsystem into a dependency of text measurement.
+
+1. **First competitive baseline.** Establish low-concurrency latency, saturation and SLO
+   goodput, heterogeneous arrivals, and capacity/recovery under a tight grant. Start with
+   the smallest credible matched suite, not the entire eventual acceptance matrix below.
+   Compare identical artifacts where supported; keep independently quality-qualified
+   different-artifact comparisons separate. Cross-check client timing/token semantics and
+   preserve failed offered work. Protocol validation alone is not a performance result.
+2. **First measured improvement.** Identify the dominant loss, select one bounded
+   experiment and demonstrate repeatable end-to-end benefit without hiding quality,
+   memory, fairness or latency regressions. Scalable prefill, heterogeneous physical
+   batching, persistent metadata/graphs, overlap and paging are candidates, not a fixed
+   implementation staircase. Compare logical-policy changes with the same physical lanes.
+3. **Decoder generality.** Deliver the real second decoder early enough to change the
+   boundaries. Measure integration effort and cross-cutting edits as well as numerical
+   correctness and loading peaks. A registry entry or host-only parameter mapping does
+   not establish executable support. A real VLM follows this test.
+4. **Broader qualification.** Select subsequent model/workload and hardware targets from
+   observed gaps. Another NVIDIA GPU class tests performance portability; a materially
+   different backend tests backend portability. Neither follows from the other.
+
+Choose workload objectives before the baseline; choose the incumbent gap to address,
+acceptance criteria and an effort budget before the optimization experiment. None is
+numerically selected by this roadmap. Record the
+result and whether it warrants promotion, another experiment or redesign in the existing
+benchmark evidence. Do not count a completed abstraction as a competitive milestone.
+
+While device access is unavailable, close specific host-testable baseline gaps or prepare
+independent references and real integration boundaries for the second decoder. Do not
+build a general benchmarking framework, fill time with unrelated repairs, or accumulate
+untested GPU kernels. Physical accounting gates apply before enabling their dependent
+features; they do not require completing the entire non-AR lifecycle before text timing.
 
 ## Completed foundations
 
@@ -103,6 +141,12 @@ not resolved from one immutable source owner, and same-shaped artifacts with dif
 normalization/RoPE metadata are not fully validated against the pinned backend. F16
 sources materialized as F32 must be charged at materialized size, not encoded size.
 Resolve those boundaries before expanding artifact support or claiming loader bounds.
+The known long-prompt reference divergence after the eighteen-token agreed prefix is an
+active baseline fidelity question, not indefinite conditional work. Classify it with
+common-history distributions/state and independent task-quality evidence; do not infer
+broad quality from short token equality or widen tolerances to hide disagreement. Timing
+within an explicitly qualified scope can proceed; broader performance comparisons need
+that scope independently justified.
 
 The remaining defects/limitations do not weaken the owning contracts or block unrelated
 qualified paths. The next concrete delivery is matched endpoint measurement below; non-AR and
@@ -208,8 +252,11 @@ losing cases. Dependent work ahead of host commitment and speculation need their
 
 ### 4e. Model-local integration and composition
 
-Integrate a real dense second decoder through model/processor/backend, central registration
-and tests, then a real VLM/processor. Use these to replace hard-coded geometry and the
+Integrate a real dense second decoder through ordinary package/SafeTensors loading,
+model/processor/backend, central registration and tests alongside baseline work, then a
+real VLM/processor. Pin a concrete checkpoint and independent reference before coding;
+exercise another configuration/checkpoint without another architectural rewrite. Use
+these to replace hard-coded geometry and the
 transitional core bridge where appropriate, not to add family branches in lifecycle/routing
 or create a universal operator layer. Start after applicable baseline contracts; it need
 not wait for prefix-cache or overlap promotion. Pin independent numerical references and
@@ -326,9 +373,6 @@ and distributed training need separate qualification. Training is not an AR sche
 
 - **GDN scan:** opt-in while full-model error `1.10e-2` exceeds `5.0e-3`. Compare captured
   common-history state against higher precision; no tolerance widening from baseline error.
-- **Long-prompt fidelity:** the reference divergence after the agreed eighteen-token prefix
-  remains unresolved. Assess common-history distributions/state and task-level effect;
-  short token-equality gates do not qualify broad long-context quality.
 - **Decode subgroups:** bounded device cases passed, but matched mixed traces showed no
   benefit and zero SLO goodput. Promotion also needs failed-drain evidence: no uncertain
   pinned-slot reuse and exactly-once recycling after proven drain. See [qualification](../benchmarks/runtime-contract.md#compatible-decode-subgroup-candidate).

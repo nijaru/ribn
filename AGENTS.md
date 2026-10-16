@@ -20,6 +20,10 @@ possible later execution system, not inference policy.
 - Follow `docs/inference-engine-design.md#scope-and-success-criterion` for success
   criteria and `docs/roadmap.md` for sequencing. Do not invent a new competitive niche,
   kernel strategy or hardware priority from the prototype's limitations.
+- Select work by `docs/roadmap.md#decision-milestones`, not by whichever host-only
+  repair is easiest to finish. When device access is unavailable, advance concrete
+  baseline or real-model integration prerequisites; do not accumulate unqualified
+  device changes or substitute unrelated subsystem completion for competitive evidence.
 
 ## Authority and working reference
 
