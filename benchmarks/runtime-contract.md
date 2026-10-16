@@ -349,6 +349,28 @@ behavior: identical requests stayed deterministic across indices, and the same p
 request index 0 and request index 6 produced identical coherent output. An earlier read
 of this as index-dependent corruption was wrong. The stop policy below replaces it.
 
+### Text load capacity host gate
+
+```sh
+cargo test -p ribn-text --features cuda --locked cuda::tests
+```
+
+The CUDA text assembly's production configuration/engine helpers run on the host
+with a pending device-executor substitute. Requested sequence limits 1, 8, 9, 16,
+17 and 32 admit that many live sequences, keep one excess request queued, respect
+the executor's three-token batch limit and retain enough driver permits for all
+active slots. The original `Engine::with_defaults` assembly behavior failed at
+requested 9 versus actual 8 (exit 101); the corrected gate passes (exit 0).
+The 17/32 cases also protect against the default event grant imposing a separate
+sixteen-permit cap. Zero and overflowing request/event envelopes reject through
+`TextOwner::load` before accessing the nonexistent fixture artifact or a device.
+
+`TextModel::request_capacity()` is exercised alongside the facade's real
+stalled-stream overload test. It describes total permits, not free capacity or
+physical batching. No CUDA device requalification accompanies this change;
+higher text concurrency, numerical behavior and memory pressure remain device
+qualification work. The physical lanes and depth-one execution policy are unchanged.
+
 ### Chat stop policy (2026-09-14)
 
 Decision: **the artifact defines the stop set, never a model-name list.**

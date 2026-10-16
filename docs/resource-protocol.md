@@ -566,6 +566,16 @@ another served requests. `TextConfig` carries preprocessing worker count and bat
 window; `ProcessorLimits` carries the text byte bounds. CUDA/GGUF assembly is
 `TextOwner::load`, and it is the only part that needs a device.
 
+For CUDA text loading, `LoadOptions::max_sequences` selects both prepared sequence
+capacity and the AR active-sequence limit; assembly must not silently apply the
+runtime's default eight-request cap. Keep at least the existing default global
+event grant, increasing it when necessary to cover the requested active sequences'
+per-request mailboxes. Validate the active-plus-queued count and this global event
+grant's arithmetic before device preparation.
+Application request permits and HTTP slots remain separate bounded admission limits;
+report them separately. None of these counts claims a physical kernel batch size or
+proves requests feasible within a continuation-memory grant.
+
 Stop IDs come from the artifact, never from a model-name list. Every request carries
 the artifact's declared EOS IDs, and a chat request also carries each control token its
 **own** rendered prompt used: those are the delimiters that conversation's template

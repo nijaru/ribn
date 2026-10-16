@@ -5,14 +5,16 @@
 
 #[cfg(test)]
 mod overhead;
+#[cfg(test)]
+mod tests;
 
 use std::path::PathBuf;
 use std::sync::Arc;
 
 use engine_gguf::{GgufError, GgufFile, MetadataValue};
 use engine_qwen::{QwenCuda, QwenLoadOptions};
-use ribn::Engine;
 use ribn::driver::{Driver, DriverConfig};
+use ribn::{Engine, EngineConfig, GenerationExecutor, SchedulePolicy};
 
 use crate::error::TextError;
 use crate::model::{TextConfig, TextOwner};
@@ -25,6 +27,8 @@ pub use engine_qwen::MemoryReport;
 pub struct LoadOptions {
     pub device: u16,
     pub context_tokens: u32,
+    /// Prepared sequence capacity and the token runtime's active-sequence limit.
+    /// Application permits, HTTP slots and physical kernel batching are separate.
     pub max_sequences: usize,
     /// Same-sequence prefill chunk size, or `None` for the serial prefill path.
     pub prefill_chunk_members: Option<usize>,
@@ -73,6 +77,39 @@ impl From<LoadOptions> for QwenLoadOptions {
     }
 }
 
+// Validate the frontend's count/credit envelope before allocating model resources.
+fn engine_config(max_sequences: usize) -> Result<EngineConfig, TextError> {
+    let defaults = EngineConfig::default();
+    if max_sequences == 0 {
+        return Err(TextError::InvalidInput("sequence limit must be nonzero"));
+    }
+    max_sequences
+        .checked_add(defaults.max_queued_requests)
+        .ok_or(TextError::InvalidInput("text request count overflows"))?;
+    // The driver's full-mailbox admission rule must not undercut active capacity.
+    let active_events = max_sequences
+        .checked_mul(defaults.max_events_per_request)
+        .ok_or(TextError::InvalidInput("text event credit count overflows"))?;
+    Ok(EngineConfig {
+        max_active_requests: max_sequences,
+        max_buffered_events: defaults.max_buffered_events.max(active_events),
+        ..defaults
+    })
+}
+
+fn configured_engine(
+    executor: impl GenerationExecutor + 'static,
+    config: EngineConfig,
+) -> Result<Engine, TextError> {
+    let policy = SchedulePolicy {
+        max_batch_tokens: SchedulePolicy::default()
+            .max_batch_tokens
+            .min(executor.info().limits.max_batch_tokens),
+        ..SchedulePolicy::default()
+    };
+    Engine::new(executor, config, policy).map_err(TextError::Engine)
+}
+
 impl TextOwner {
     /// Load a supported local GGUF model and prepare its CUDA executor.
     ///
@@ -85,6 +122,7 @@ impl TextOwner {
         path: impl Into<PathBuf>,
         options: LoadOptions,
     ) -> Result<(Self, MemoryReport), TextError> {
+        let config = engine_config(options.max_sequences)?;
         let path = path.into();
         let file = GgufFile::open(&path).map_err(TextError::Processor)?;
         let architecture = file
@@ -117,7 +155,7 @@ impl TextOwner {
         let processor = Arc::new(GgufProcessor::new(tokenizer, limits));
         let executor = QwenCuda::load_gguf(path, options.into()).map_err(TextError::Execution)?;
         let memory = executor.memory_report();
-        let engine = Engine::with_defaults(executor).map_err(TextError::Engine)?;
+        let engine = configured_engine(executor, config)?;
         let driver = DriverConfig::for_engine(&engine);
         let (shutdown, handle) = Driver::spawn(engine, driver).map_err(TextError::Owner)?;
         let owner = Self::new(processor, shutdown, handle, options.text)?;

@@ -83,6 +83,14 @@ impl TextModel {
         self.processor.limits()
     }
 
+    /// Total application request permits, including preprocessing, queued work and
+    /// retained delivery/retirement. Not the active sequence or physical batch count,
+    /// and not a snapshot of currently available permits.
+    #[must_use]
+    pub const fn request_capacity(&self) -> usize {
+        self.handle.capacity()
+    }
+
     /// Offline batch admission window, bounded by the driver's request permits.
     #[must_use]
     pub const fn batch_window(&self) -> usize {

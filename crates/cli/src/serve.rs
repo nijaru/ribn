@@ -48,16 +48,19 @@ pub(crate) fn run(arguments: &[String]) -> Result<(), String> {
         // Register signal handlers before loading so shutdown during a blocking
         // CUDA load settles that load into an owner and then cleans it up.
         let shutdown = shutdown_signal()?;
+        let http_slots = config.max_requests;
         let mut server = Server::bind(config).await.map_err(|e| e.to_string())?;
         eprintln!(
-            "listening on http://{}; loading model (experimental Qwen/CUDA)",
+            "listening on http://{}; HTTP request slots={http_slots}; loading model (experimental Qwen/CUDA)",
             server.local_addr()
         );
         let loading = async move {
             tokio::task::spawn_blocking(move || {
                 let (owner, memory) = TextOwner::load(options.model, load)?;
                 eprintln!(
-                    "ready: {} bytes reserved for sequence state",
+                    "ready: active sequence limit={}; application request capacity={}; sequence state reservation={} bytes",
+                    load.max_sequences,
+                    owner.model().request_capacity(),
                     memory.reserved_sequence_bytes
                 );
                 Ok(owner)

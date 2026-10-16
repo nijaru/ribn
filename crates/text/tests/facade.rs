@@ -1235,6 +1235,7 @@ fn shared_handle_overload_is_reported_per_item() {
     harness.plan.script(b'A', &[u32::from(b'a'); 40]);
     harness.plan.script(b'B', &[u32::from(b'k'), EOS]);
 
+    assert_eq!(harness.model.request_capacity(), 2);
     // Two stalled consumers retain both permits: their output is never read, so
     // neither request can reach a terminal.
     let held = [

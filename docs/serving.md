@@ -55,6 +55,22 @@ violations 413, unavailable/loading/faulted or overloaded admission 503 with
 `Retry-After: 1`, and generation failure 500. Protocol-parser errors may use Hyper's
 HTTP error response instead. Unsupported routes return 404.
 
+## Execution capacity
+
+`--max-sequences` selects prepared sequence capacity and the AR active-sequence
+limit (default 1). It is not capped by the runtime's conservative eight-request
+constructor default. Assembly keeps the default global event grant or increases
+it enough to cover every requested active sequence's mailbox. Overflow in the
+active-plus-queued count or global event grant rejects before model/device access.
+
+`--max-requests` separately limits HTTP generation slots. Application request
+permits cover preprocessing, queued work, execution and retained output/retirement;
+`TextModel::request_capacity()` reports this fixed bound, not currently free permits.
+Startup reports HTTP slots, the active-sequence limit and application capacity
+separately. Other admission/memory bounds can prevent all execution slots being used.
+Increasing sequence capacity can increase state reservation and accepted host/output
+storage; it does not increase the physical kernel batch limit or prove a memory peak.
+
 ## Bounds and transport
 
 Each HTTP/1 connection serves **one** request and closes. Keep-alive, HTTP/2 and
@@ -128,6 +144,9 @@ faulted state until shutdown.
 Host TCP tests exercise the real HTTP entry point, tokenizer, text facade and driver
 with only the device substituted. The bounded CUDA HTTP gate and actual CLI streaming/
 SIGTERM shutdown passed, along with AIPerf and native vLLM client compatibility smokes.
+The [load-capacity host gate](../benchmarks/runtime-contract.md#text-load-capacity-host-gate)
+covers configured active limits beyond eight; higher-concurrency device
+requalification remains pending and physical batching is unchanged.
 See [qualification](../benchmarks/runtime-contract.md#initial-text-http-qualification-2026-10-13)
 for revisions, artifact, conditions and limitations. These are not matched competitive
 measurements, broad-context numerical qualification or peak-memory evidence. The
