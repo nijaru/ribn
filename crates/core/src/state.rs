@@ -28,12 +28,6 @@ impl StateId {
 }
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-pub enum StateLocation {
-    Device(DeviceId),
-    Host,
-}
-
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub struct KvStateSpec {
     layer_count: u16,
     kv_heads: u16,
@@ -322,7 +316,7 @@ impl StateRequirement {
 pub struct StateHandle {
     id: StateId,
     requirement: StateRequirement,
-    location: StateLocation,
+    device: DeviceId,
     token_position: u32,
 }
 
@@ -331,13 +325,13 @@ impl StateHandle {
     pub(crate) const fn new(
         id: StateId,
         requirement: StateRequirement,
-        location: StateLocation,
+        device: DeviceId,
         token_position: u32,
     ) -> Self {
         Self {
             id,
             requirement,
-            location,
+            device,
             token_position,
         }
     }
@@ -353,8 +347,8 @@ impl StateHandle {
     }
 
     #[must_use]
-    pub const fn location(&self) -> StateLocation {
-        self.location
+    pub const fn device(&self) -> DeviceId {
+        self.device
     }
 
     #[must_use]
@@ -477,18 +471,18 @@ pub struct InferenceStateSet {
 impl InferenceStateSet {
     /// # Errors
     ///
-    /// Returns a state error when states disagree on token position or location,
-    /// or when the same state requirement appears more than once.
+    /// Returns a state error when states disagree on token position or device, or
+    /// when the same state requirement appears more than once.
     pub fn new(states: Vec<InferenceState>) -> Result<Self, StateError> {
         if let Some(first) = states.first() {
             let position = first.handle().token_position();
-            let location = first.handle().location();
+            let device = first.handle().device();
             for (index, state) in states.iter().enumerate() {
                 if state.handle().token_position() != position {
                     return Err(StateError::PositionMismatch);
                 }
-                if state.handle().location() != location {
-                    return Err(StateError::LocationMismatch);
+                if state.handle().device() != device {
+                    return Err(StateError::DeviceMismatch);
                 }
                 if states[..index]
                     .iter()
@@ -550,8 +544,8 @@ impl InferenceStateSet {
     }
 
     #[must_use]
-    pub fn location(&self) -> Option<StateLocation> {
-        self.states.first().map(|state| state.handle().location())
+    pub fn device(&self) -> Option<DeviceId> {
+        self.states.first().map(|state| state.handle().device())
     }
 
     #[must_use]
@@ -589,7 +583,6 @@ impl std::error::Error for StateSpecError {}
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum StateError {
     UnsupportedRequirement,
-    UnsupportedLocation,
     PoolClosed,
     CapacityExceeded {
         requested_bytes: u64,
@@ -599,7 +592,7 @@ pub enum StateError {
     InvalidHandle,
     DuplicateRequirement,
     PositionMismatch,
-    LocationMismatch,
+    DeviceMismatch,
     PositionRegression,
 }
 
@@ -607,9 +600,6 @@ impl fmt::Display for StateError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::UnsupportedRequirement => f.write_str("state requirement is unsupported"),
-            Self::UnsupportedLocation => {
-                f.write_str("state location is unsupported by this manager")
-            }
             Self::PoolClosed => f.write_str("state reservation pool is closed"),
             Self::CapacityExceeded {
                 requested_bytes,
@@ -622,7 +612,7 @@ impl fmt::Display for StateError {
             Self::InvalidHandle => f.write_str("state handle is invalid or already released"),
             Self::DuplicateRequirement => f.write_str("state requirement appears more than once"),
             Self::PositionMismatch => f.write_str("state families have different token positions"),
-            Self::LocationMismatch => f.write_str("state families have different placements"),
+            Self::DeviceMismatch => f.write_str("state families are resident on different devices"),
             Self::PositionRegression => f.write_str("state token position cannot move backwards"),
         }
     }
@@ -636,15 +626,14 @@ impl std::error::Error for StateError {}
 #[derive(Debug)]
 pub struct LogicalStateManager {
     device: DeviceId,
-    device_pool: Arc<BytePool>,
-    host_pool: Arc<BytePool>,
+    pool: Arc<BytePool>,
     allocations: HashMap<StateId, AllocationRecord>,
 }
 
 #[derive(Debug)]
 struct AllocationRecord {
     requirement: StateRequirement,
-    location: StateLocation,
+    device: DeviceId,
     token_position: u32,
     // One aggregate grant shared by the bundle's records, never charged twice.
     reservation: Arc<PoolLease>,
@@ -652,11 +641,10 @@ struct AllocationRecord {
 
 impl LogicalStateManager {
     #[must_use]
-    pub fn new(device: DeviceId, device_pool: Arc<BytePool>, host_pool: Arc<BytePool>) -> Self {
+    pub fn new(device: DeviceId, pool: Arc<BytePool>) -> Self {
         Self {
             device,
-            device_pool,
-            host_pool,
+            pool,
             allocations: HashMap::new(),
         }
     }
@@ -666,47 +654,36 @@ impl LogicalStateManager {
         self.device
     }
 
-    fn pool(&self, location: StateLocation) -> Option<&Arc<BytePool>> {
-        match location {
-            StateLocation::Device(device) if device == self.device => Some(&self.device_pool),
-            StateLocation::Host => Some(&self.host_pool),
-            StateLocation::Device(_) => None,
-        }
-    }
-
     #[must_use]
-    pub fn capacity_bytes(&self, location: StateLocation) -> Option<u64> {
-        self.pool(location).map(|pool| pool.capacity())
+    pub fn capacity_bytes(&self) -> u64 {
+        self.pool.capacity()
     }
 
     /// Register before allocation. Returning a grant and closing its authority
     /// publish; commit and unsuccessful allocation/release do not. Siblings share
     /// the source.
     #[must_use]
-    pub fn capacity_wait(&self, location: StateLocation) -> Option<ribn_foundation::ReadinessWait> {
-        self.pool(location).map(|pool| pool.capacity_wait())
+    pub fn capacity_wait(&self) -> ribn_foundation::ReadinessWait {
+        self.pool.capacity_wait()
     }
 
     /// Total grants from this authority, including sibling owners.
     #[must_use]
-    pub fn used_bytes(&self, location: StateLocation) -> Option<u64> {
-        self.pool(location).map(|pool| pool.granted())
+    pub fn used_bytes(&self) -> u64 {
+        self.pool.granted()
     }
 
-    fn new_handle(
-        requirement: StateRequirement,
-        location: StateLocation,
-    ) -> Result<StateHandle, StateError> {
+    fn new_handle(&self, requirement: StateRequirement) -> Result<StateHandle, StateError> {
         // Backend allocation keys must not alias across managers sharing a pool.
         let raw_id = NEXT_STATE_ID
             .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |id| id.checked_add(1))
             .map_err(|_| StateError::InvalidHandle)?;
         let id = StateId::new(raw_id).ok_or(StateError::InvalidHandle)?;
-        Ok(StateHandle::new(id, requirement, location, 0))
+        Ok(StateHandle::new(id, requirement, self.device, 0))
     }
 
-    fn grant(&self, bytes: u64, location: StateLocation) -> Result<Arc<PoolLease>, StateError> {
-        let pool = self.pool(location).ok_or(StateError::UnsupportedLocation)?;
+    fn grant(&self, bytes: u64) -> Result<Arc<PoolLease>, StateError> {
+        let pool = &self.pool;
         let lease = pool.reserve(bytes).map_err(|error| match error {
             ReserveError::Exhausted {
                 requested,
@@ -729,21 +706,17 @@ impl LogicalStateManager {
             handle.id(),
             AllocationRecord {
                 requirement: handle.requirement(),
-                location: handle.location(),
+                device: handle.device(),
                 token_position: handle.token_position(),
                 reservation,
             },
         );
     }
 
-    fn reserve(
-        &mut self,
-        requirement: StateRequirement,
-        location: StateLocation,
-    ) -> Result<StateHandle, StateError> {
+    fn reserve(&mut self, requirement: StateRequirement) -> Result<StateHandle, StateError> {
         let bytes = requirement.byte_size().ok_or(StateError::SizeOverflow)?;
-        let handle = Self::new_handle(requirement, location)?;
-        let reservation = self.grant(bytes, location)?;
+        let handle = self.new_handle(requirement)?;
+        let reservation = self.grant(bytes)?;
         self.insert(&handle, reservation);
         Ok(handle)
     }
@@ -753,7 +726,7 @@ impl LogicalStateManager {
             return Err(StateError::InvalidHandle);
         };
         if record.requirement != handle.requirement()
-            || record.location != handle.location()
+            || record.device != handle.device()
             || record.token_position != handle.token_position()
         {
             return Err(StateError::InvalidHandle);
@@ -776,7 +749,6 @@ impl StateManager for LogicalStateManager {
     fn allocate_set(
         &mut self,
         requirements: &[StateRequirement],
-        location: StateLocation,
     ) -> Result<InferenceStateSet, StateError> {
         let mut bytes = 0_u64;
         let mut states = Vec::with_capacity(requirements.len());
@@ -784,7 +756,7 @@ impl StateManager for LogicalStateManager {
             bytes = bytes
                 .checked_add(requirement.byte_size().ok_or(StateError::SizeOverflow)?)
                 .ok_or(StateError::SizeOverflow)?;
-            let handle = Self::new_handle(requirement, location)?;
+            let handle = self.new_handle(requirement)?;
             states.push(match requirement {
                 StateRequirement::FullAttentionKv(spec) => {
                     InferenceState::Kv(KvState { handle, spec })
@@ -797,7 +769,7 @@ impl StateManager for LogicalStateManager {
         // Shape/duplicate validation precedes the one atomic authority grant.
         // Failure therefore cannot publish a partial rollback that wakes itself.
         let state = InferenceStateSet::new(states)?;
-        let reservation = self.grant(bytes, location)?;
+        let reservation = self.grant(bytes)?;
         for value in state.states() {
             self.insert(value.handle(), Arc::clone(&reservation));
         }
@@ -811,21 +783,16 @@ impl StateManager for LogicalStateManager {
         Ok(())
     }
 
-    fn allocate_kv(
-        &mut self,
-        spec: KvStateSpec,
-        location: StateLocation,
-    ) -> Result<KvState, StateError> {
-        let handle = self.reserve(StateRequirement::FullAttentionKv(spec), location)?;
+    fn allocate_kv(&mut self, spec: KvStateSpec) -> Result<KvState, StateError> {
+        let handle = self.reserve(StateRequirement::FullAttentionKv(spec))?;
         KvState::new(handle, spec).ok_or(StateError::UnsupportedRequirement)
     }
 
     fn allocate_recurrent(
         &mut self,
         spec: RecurrentStateSpec,
-        location: StateLocation,
     ) -> Result<RecurrentState, StateError> {
-        let handle = self.reserve(StateRequirement::Recurrent(spec), location)?;
+        let handle = self.reserve(StateRequirement::Recurrent(spec))?;
         RecurrentState::new(handle, spec).ok_or(StateError::UnsupportedRequirement)
     }
 
@@ -885,7 +852,6 @@ pub trait StateManager: Send {
     fn allocate_set(
         &mut self,
         requirements: &[StateRequirement],
-        location: StateLocation,
     ) -> Result<InferenceStateSet, StateError>;
 
     /// Validate allocation provenance and the current logical prefix.
@@ -898,11 +864,7 @@ pub trait StateManager: Send {
     /// # Errors
     ///
     /// Returns [`StateError`] when storage cannot satisfy the KV allocation.
-    fn allocate_kv(
-        &mut self,
-        spec: KvStateSpec,
-        location: StateLocation,
-    ) -> Result<KvState, StateError>;
+    fn allocate_kv(&mut self, spec: KvStateSpec) -> Result<KvState, StateError>;
 
     /// # Errors
     ///
@@ -910,7 +872,6 @@ pub trait StateManager: Send {
     fn allocate_recurrent(
         &mut self,
         spec: RecurrentStateSpec,
-        location: StateLocation,
     ) -> Result<RecurrentState, StateError>;
 
     /// Commit a batch atomically. On error, both manager records and all
@@ -958,9 +919,7 @@ mod tests {
 
     fn allocate(manager: &mut LogicalStateManager) -> InferenceStateSet {
         let spec = KvStateSpec::new(1, 1, 2, 4, DataType::F16).expect("spec");
-        let kv = manager
-            .allocate_kv(spec, StateLocation::Device(DeviceId::new(0)))
-            .expect("allocation");
+        let kv = manager.allocate_kv(spec).expect("allocation");
         InferenceStateSet::try_new(Some(kv), None).expect("set")
     }
 
@@ -1011,24 +970,19 @@ mod tests {
 
     #[test]
     fn bundle_reservation_is_atomic_and_failure_publishes_nothing() {
-        let location = StateLocation::Device(DeviceId::new(0));
         let kv =
             StateRequirement::FullAttentionKv(KvStateSpec::new(1, 1, 2, 4, DataType::F16).unwrap());
         let recurrent = recurrent_requirement();
         let total = kv.byte_size().unwrap() + recurrent.byte_size().unwrap();
         let pool = BytePool::new(total - 1).shared();
-        let mut manager = LogicalStateManager::new(
-            DeviceId::new(0),
-            Arc::clone(&pool),
-            BytePool::new(0).shared(),
-        );
+        let mut manager = LogicalStateManager::new(DeviceId::new(0), Arc::clone(&pool));
         let wait = pool.capacity_wait();
         assert!(matches!(
-            manager.allocate_set(&[kv, recurrent], location),
+            manager.allocate_set(&[kv, recurrent]),
             Err(StateError::CapacityExceeded { .. })
         ));
         assert_eq!(
-            manager.allocate_set(&[kv, kv], location).unwrap_err(),
+            manager.allocate_set(&[kv, kv]).unwrap_err(),
             StateError::DuplicateRequirement
         );
         assert_eq!(pool.granted(), 0);
@@ -1036,26 +990,21 @@ mod tests {
             !wait.changed(),
             "neither aggregate refusal nor validation rolls back a partial grant"
         );
-        let state = manager.allocate_set(&[kv], location).unwrap();
+        let state = manager.allocate_set(&[kv]).unwrap();
         manager.release_set(&state).unwrap();
         assert_eq!(pool.granted(), 0);
     }
 
     #[test]
     fn bundle_charge_survives_partial_component_release_and_invalid_set_release() {
-        let location = StateLocation::Device(DeviceId::new(0));
         let requirements = [
             StateRequirement::FullAttentionKv(KvStateSpec::new(1, 1, 2, 4, DataType::F16).unwrap()),
             recurrent_requirement(),
         ];
         let total = requirements.iter().map(|r| r.byte_size().unwrap()).sum();
         let pool = BytePool::new(total).shared();
-        let mut manager = LogicalStateManager::new(
-            DeviceId::new(0),
-            Arc::clone(&pool),
-            BytePool::new(0).shared(),
-        );
-        let state = manager.allocate_set(&requirements, location).unwrap();
+        let mut manager = LogicalStateManager::new(DeviceId::new(0), Arc::clone(&pool));
+        let state = manager.allocate_set(&requirements).unwrap();
         let wait = pool.capacity_wait();
         manager
             .release(state.kv().unwrap().handle().clone())
@@ -1078,35 +1027,32 @@ mod tests {
     #[test]
     fn supplied_authority_counts_siblings_and_closes_without_refunding_live_state() {
         let device = DeviceId::new(0);
-        let location = StateLocation::Device(device);
         let pool = BytePool::new(64).shared();
-        let host = BytePool::new(0).shared();
-        let mut first = LogicalStateManager::new(device, Arc::clone(&pool), Arc::clone(&host));
-        let mut peer = LogicalStateManager::new(device, Arc::clone(&pool), host);
+        let mut first = LogicalStateManager::new(device, Arc::clone(&pool));
+        let mut peer = LogicalStateManager::new(device, Arc::clone(&pool));
         let state = allocate(&mut first);
         let sibling = pool.reserve(32).unwrap();
-        assert_eq!(first.used_bytes(location), Some(64));
-        assert_eq!(peer.used_bytes(location), Some(64));
-        let wait = peer.capacity_wait(location).unwrap();
+        assert_eq!(first.used_bytes(), 64);
+        assert_eq!(peer.used_bytes(), 64);
+        let wait = peer.capacity_wait();
         assert!(matches!(
-            peer.allocate_set(&state.requirements(), location),
+            peer.allocate_set(&state.requirements()),
             Err(StateError::CapacityExceeded { .. })
         ));
         assert!(!wait.changed());
         drop(sibling);
         assert!(wait.changed());
-        let peer_state = peer.allocate_set(&state.requirements(), location).unwrap();
+        let peer_state = peer.allocate_set(&state.requirements()).unwrap();
         assert_ne!(
             peer_state.kv().unwrap().handle().id(),
             state.kv().unwrap().handle().id()
         );
-        let wait = peer.capacity_wait(location).unwrap();
+        let wait = peer.capacity_wait();
         pool.close();
         assert!(wait.changed());
         assert_eq!(pool.granted(), 64);
         assert_eq!(
-            peer.allocate_set(&state.requirements(), location)
-                .unwrap_err(),
+            peer.allocate_set(&state.requirements()).unwrap_err(),
             StateError::PoolClosed
         );
         assert_eq!(peer.release_set(&state), Err(StateError::InvalidHandle));
@@ -1119,8 +1065,7 @@ mod tests {
     fn dropping_an_unretired_logical_owner_does_not_refund_its_shared_charge() {
         let device = DeviceId::new(0);
         let pool = BytePool::new(32).shared();
-        let mut manager =
-            LogicalStateManager::new(device, Arc::clone(&pool), BytePool::new(0).shared());
+        let mut manager = LogicalStateManager::new(device, Arc::clone(&pool));
         let state = allocate(&mut manager);
         drop(state);
         drop(manager);
@@ -1140,12 +1085,10 @@ mod tests {
         let mut first = LogicalStateManager::new(
             DeviceId::new(0),
             ribn_foundation::BytePool::new(1024).shared(),
-            ribn_foundation::BytePool::new(0).shared(),
         );
         let mut second = LogicalStateManager::new(
             DeviceId::new(0),
             ribn_foundation::BytePool::new(1024).shared(),
-            ribn_foundation::BytePool::new(0).shared(),
         );
         let mut first_state = allocate(&mut first);
         let second_state = allocate(&mut second);
@@ -1176,7 +1119,6 @@ mod tests {
         let mut manager = LogicalStateManager::new(
             DeviceId::new(0),
             ribn_foundation::BytePool::new(1024).shared(),
-            ribn_foundation::BytePool::new(0).shared(),
         );
         let first = allocate(&mut manager);
         let mut second = allocate(&mut manager);

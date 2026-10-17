@@ -286,8 +286,7 @@ mod tests {
     use engine_core::execution::ExecutionPhase;
     use engine_core::request::{RequestId, SamplingParams};
     use engine_core::state::{
-        InferenceStateSet, KvStateSpec, LogicalStateManager, StateLocation, StateManager,
-        StateRequirement,
+        InferenceStateSet, KvStateSpec, LogicalStateManager, StateManager, StateRequirement,
     };
     use engine_core::tensor::DataType;
     use std::collections::HashSet;
@@ -471,14 +470,9 @@ mod tests {
             StateRequirement::FullAttentionKv(spec) => spec,
             StateRequirement::Recurrent(_) => unreachable!(),
         };
-        let mut manager = LogicalStateManager::new(
-            device,
-            ribn_foundation::BytePool::new(1024).shared(),
-            ribn_foundation::BytePool::new(0).shared(),
-        );
-        let kv = manager
-            .allocate_kv(spec, StateLocation::Device(device))
-            .expect("state allocation");
+        let mut manager =
+            LogicalStateManager::new(device, ribn_foundation::BytePool::new(1024).shared());
+        let kv = manager.allocate_kv(spec).expect("state allocation");
         let state = InferenceStateSet::try_new(Some(kv), None).expect("state set");
         let submission = backend.submit(&batch, &mut [state]).expect("submit");
         let _ = backend.wait(submission).expect("completion");

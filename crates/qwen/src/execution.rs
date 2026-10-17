@@ -4,7 +4,7 @@ use std::sync::Arc;
 use engine_core::{
     BackendSubmissionId, ComputeBackend, ExecutionBatch, ExecutionBatchEvent, ExecutionPhase,
     ExecutionSegment, ExecutionTokenInput, InferenceStateSet, LogicalStateManager, RequestId,
-    SamplingParams, StateError, StateLocation, StateManager, StateRequirement,
+    SamplingParams, StateError, StateManager, StateRequirement,
 };
 use ribn::{
     Admission, BatchItem, BatchPreparation, ExecutionError, ExecutorInfo, SequenceId,
@@ -119,10 +119,7 @@ impl<B: ComputeBackend> QwenExecution<B> {
             request.options.sampling.top_k,
         )
         .map_err(model_error)?;
-        let wait = self
-            .manager
-            .capacity_wait(StateLocation::Device(self.manager.device()))
-            .ok_or_else(|| ExecutionError::new("Qwen continuation has no device authority"))?;
+        let wait = self.manager.capacity_wait();
         if self.sequences.len() >= self.info.limits.max_sequences {
             return Ok(Admission::Deferred(wait));
         }
@@ -165,10 +162,7 @@ impl<B: ComputeBackend> QwenExecution<B> {
             .collect::<Result<Vec<_>, ExecutionError>>()?;
         let required = state::capacity(&requirements, 1)
             .ok_or_else(|| ExecutionError::new("Qwen continuation demand overflows"))?;
-        let capacity = self
-            .manager
-            .capacity_bytes(StateLocation::Device(self.manager.device()))
-            .ok_or_else(|| ExecutionError::new("Qwen continuation has no device authority"))?;
+        let capacity = self.manager.capacity_bytes();
         if required > capacity {
             return Err(ExecutionError::new(format!(
                 "Qwen needs {required} continuation bytes, above the {capacity}-byte authority"
@@ -176,10 +170,7 @@ impl<B: ComputeBackend> QwenExecution<B> {
         }
         // The authority grants the whole bundle atomically, including when a
         // sibling draws from this pool concurrently. A refused grant publishes nothing.
-        match self
-            .manager
-            .allocate_set(&requirements, StateLocation::Device(self.manager.device()))
-        {
+        match self.manager.allocate_set(&requirements) {
             Ok(state) => Ok(Some((state, Arc::from(requirements)))),
             Err(StateError::CapacityExceeded { .. }) => Ok(None),
             Err(error) => Err(model_error(error)),

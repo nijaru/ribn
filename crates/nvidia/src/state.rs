@@ -5,7 +5,7 @@ use std::sync::Arc;
 use cudarc::driver::{CudaSlice, CudaStream, DeviceRepr};
 use engine_core::{
     DataType, DeviceId, InferenceStateSet, KvState, KvStateSpec, RecurrentState,
-    RecurrentStateSpec, StateId, StateLocation,
+    RecurrentStateSpec, StateId,
 };
 
 /// A typed device allocation for one inference-state family component.
@@ -593,10 +593,7 @@ impl CudaHybridState {
         state: &InferenceStateSet,
     ) -> Result<Self, CudaStateError> {
         validate_fresh_materialization(state)?;
-        if let Some(location) = state.location() {
-            let StateLocation::Device(device) = location else {
-                return Err(CudaStateError::UnsupportedLocation);
-            };
+        if let Some(device) = state.device() {
             let actual = u16::try_from(stream.context().ordinal()).unwrap_or(u16::MAX);
             if device.get() != actual {
                 return Err(CudaStateError::DeviceMismatch {
@@ -903,7 +900,6 @@ fn allocate_buffer(
 
 #[derive(Debug)]
 pub enum CudaStateError {
-    UnsupportedLocation,
     DeviceMismatch {
         requested: DeviceId,
         actual: DeviceId,
@@ -957,9 +953,6 @@ pub enum CudaStateError {
 impl fmt::Display for CudaStateError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::UnsupportedLocation => {
-                f.write_str("CUDA physical state requires a device-resident core state")
-            }
             Self::DeviceMismatch { requested, actual } => write!(
                 f,
                 "state requests {requested}, but CUDA stream belongs to {actual}"
@@ -1016,14 +1009,9 @@ mod tests {
     fn fresh_materialization_rejects_nonzero_logical_prefix() {
         let device = DeviceId::new(0);
         let spec = KvStateSpec::new(1, 1, 2, 8, DataType::F16).expect("KV spec");
-        let mut manager = LogicalStateManager::new(
-            device,
-            ribn_foundation::BytePool::new(1024).shared(),
-            ribn_foundation::BytePool::new(0).shared(),
-        );
-        let kv = manager
-            .allocate_kv(spec, StateLocation::Device(device))
-            .expect("logical KV state");
+        let mut manager =
+            LogicalStateManager::new(device, ribn_foundation::BytePool::new(1024).shared());
+        let kv = manager.allocate_kv(spec).expect("logical KV state");
         let mut zero = InferenceStateSet::try_new(Some(kv), None).expect("state set");
         assert!(validate_fresh_materialization(&zero).is_ok());
 

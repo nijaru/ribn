@@ -22,7 +22,7 @@ pub use request::{RequestId, SamplingError, SamplingParams};
 pub use state::{
     ConvolutionStateShape, InferenceState, InferenceStateSet, KvState, KvStateSpec,
     LogicalStateManager, RecurrentMatrixShape, RecurrentState, RecurrentStateSpec, StateError,
-    StateHandle, StateId, StateLocation, StateManager, StateRequirement, StateSpecError,
+    StateHandle, StateId, StateManager, StateRequirement, StateSpecError,
 };
 pub use tensor::{DataType, Quantization, WeightFormat};
 pub use weights::{
@@ -111,7 +111,7 @@ mod tests {
         let handle = StateHandle::new(
             StateId::new(1).expect("valid state ID"),
             requirement,
-            StateLocation::Device(DeviceId::new(0)),
+            DeviceId::new(0),
             32,
         );
         assert!(KvState::new(handle, spec).is_some());
@@ -125,7 +125,7 @@ mod tests {
         let wrong_family_handle = StateHandle::new(
             StateId::new(2).expect("valid state ID"),
             requirement,
-            StateLocation::Device(DeviceId::new(0)),
+            DeviceId::new(0),
             32,
         );
         assert!(RecurrentState::new(wrong_family_handle, recurrent).is_none());
@@ -136,17 +136,12 @@ mod tests {
         let device = DeviceId::new(0);
         let spec = KvStateSpec::new(1, 1, 2, 4, DataType::F16).expect("KV spec");
         assert_eq!(spec.byte_size(), Some(32));
-        let mut manager = LogicalStateManager::new(
-            device,
-            ribn_foundation::BytePool::new(32).shared(),
-            ribn_foundation::BytePool::new(0).shared(),
-        );
-        let state = manager
-            .allocate_kv(spec, StateLocation::Device(device))
-            .expect("first allocation");
-        assert_eq!(manager.used_bytes(StateLocation::Device(device)), Some(32));
+        let mut manager =
+            LogicalStateManager::new(device, ribn_foundation::BytePool::new(32).shared());
+        let state = manager.allocate_kv(spec).expect("first allocation");
+        assert_eq!(manager.used_bytes(), 32);
         assert!(matches!(
-            manager.allocate_kv(spec, StateLocation::Device(device)),
+            manager.allocate_kv(spec),
             Err(StateError::CapacityExceeded { .. })
         ));
 
@@ -157,6 +152,6 @@ mod tests {
         manager
             .release(committed.kv().expect("KV state").handle().clone())
             .expect("release");
-        assert_eq!(manager.used_bytes(StateLocation::Device(device)), Some(0));
+        assert_eq!(manager.used_bytes(), 0);
     }
 }

@@ -1326,22 +1326,17 @@ mod tests {
     ) {
         use engine_core::{
             DeviceId, ExecutionBatch, ExecutionPhase, ExecutionSegment, ExecutionTokenInput,
-            LogicalStateManager, RequestId, SamplingParams, StateLocation, StateManager,
-            StateRequirement,
+            LogicalStateManager, RequestId, SamplingParams, StateManager, StateRequirement,
         };
         let device = DeviceId::new(0);
-        let location = StateLocation::Device(device);
-        let mut manager = LogicalStateManager::new(
-            device,
-            ribn_foundation::BytePool::new(1024).shared(),
-            ribn_foundation::BytePool::new(0).shared(),
-        );
+        let mut manager =
+            LogicalStateManager::new(device, ribn_foundation::BytePool::new(1024).shared());
 
         let mut states = specs
             .into_iter()
             .map(|spec| {
                 manager
-                    .allocate_set(&[StateRequirement::FullAttentionKv(spec)], location)
+                    .allocate_set(&[StateRequirement::FullAttentionKv(spec)])
                     .unwrap()
             })
             .collect::<Vec<_>>();

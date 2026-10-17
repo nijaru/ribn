@@ -7,7 +7,7 @@
 use std::fmt;
 
 use crate::execution::{BatchError, ExecutionBatch, ExecutionBatchEvent, ExecutionSegment};
-use crate::state::{InferenceStateSet, StateLocation};
+use crate::state::InferenceStateSet;
 
 pub use crate::device::DeviceId;
 
@@ -100,15 +100,13 @@ pub trait ComputeBackend: Send {
                 "state is at a different prefix position",
             ));
         }
-        if state.location() == Some(StateLocation::Device(self.device())) {
-            return Ok(());
-        }
-        if matches!(state.location(), Some(StateLocation::Device(_))) {
-            return Err(BackendError::StateMismatch(
+        match state.device() {
+            Some(device) if device == self.device() => Ok(()),
+            Some(_) => Err(BackendError::StateMismatch(
                 "state is resident on a different device",
-            ));
+            )),
+            None => Ok(()),
         }
-        Ok(())
     }
 
     /// Release backend-owned physical resources associated with one logical

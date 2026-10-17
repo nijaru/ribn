@@ -131,15 +131,14 @@ impl GenerationExecutor for Model {
         let prepared = self.0.prepare(batch)?;
         let probe = std::mem::take(&mut self.0.backend.control.lock().unwrap().probe_preparation);
         if probe {
-            let location = StateLocation::Device(self.0.manager.device());
-            let reserved = self.0.manager.used_bytes(location);
+            let reserved = self.0.manager.used_bytes();
             assert!(self.0.release(batch[0].sequence).is_err());
             let mut changed = batch.to_vec();
             changed[0].token_budget += 1;
             assert!(self.0.submit(&changed).is_err());
             self.0.abandon_preparation();
             self.0.abandon_preparation();
-            assert_eq!(self.0.manager.used_bytes(location), reserved);
+            assert_eq!(self.0.manager.used_bytes(), reserved);
             return self.0.prepare(batch);
         }
         Ok(prepared)
@@ -205,11 +204,7 @@ fn model_with_requirements(
         },
         info,
         Arc::clone(&requirements),
-        engine_core::LogicalStateManager::new(
-            device,
-            pool,
-            ribn_foundation::BytePool::new(0).shared(),
-        ),
+        engine_core::LogicalStateManager::new(device, pool),
         100,
     ))
 }
@@ -536,28 +531,15 @@ fn failed_hybrid_reservation_does_not_publish_its_own_readiness() {
     let first = model
         .0
         .manager
-        .allocate_kv(
-            KvStateSpec::new(1, 1, 2, 14, DataType::F16).unwrap(),
-            StateLocation::Device(DeviceId::new(0)),
-        )
+        .allocate_kv(KvStateSpec::new(1, 1, 2, 14, DataType::F16).unwrap())
         .unwrap();
-    let wait = model
-        .0
-        .manager
-        .capacity_wait(StateLocation::Device(DeviceId::new(0)))
-        .unwrap();
+    let wait = model.0.manager.capacity_wait();
     assert!(model.0.reserve_continuation(6).unwrap().is_none());
     assert!(
         !wait.changed(),
         "failed bundle must not manufacture a release"
     );
-    assert_eq!(
-        model
-            .0
-            .manager
-            .used_bytes(StateLocation::Device(DeviceId::new(0))),
-        Some(112)
-    );
+    assert_eq!(model.0.manager.used_bytes(), 112);
     model.0.manager.release(first.handle().clone()).unwrap();
     assert!(wait.changed());
     let (state, _) = model.0.reserve_continuation(6).unwrap().unwrap();
