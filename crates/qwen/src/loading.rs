@@ -22,9 +22,10 @@ use crate::state;
 /// Same-sequence prefill chunk size this backend uses when a caller enables
 /// prefill chunking without naming a size.
 ///
-/// Eight is the largest qualified lane (the backend's `MAX_BATCH_MEMBERS` limit
-/// bounds it) and the size the prefill qualification measured, so it is both
-/// the fastest measured choice and the one with parity evidence.
+/// Eight is the largest qualified lane (the backend bounds it by its own declared
+/// capacity) and the size the prefill qualification measured, so it is both the fastest
+/// measured choice and the one with parity evidence. The test below fails if the backend
+/// capacity moves without this measured default being re-decided.
 pub const DEFAULT_PREFILL_CHUNK_MEMBERS: usize = 8;
 
 /// Preparation limits, not live request scheduling policy.
@@ -443,5 +444,20 @@ mod tests {
             );
         }
         std::fs::remove_file(path).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod default_lane_tests {
+    use super::*;
+
+    #[test]
+    fn qualified_prefill_default_equals_the_declared_backend_capacity() {
+        assert_eq!(
+            DEFAULT_PREFILL_CHUNK_MEMBERS,
+            engine_nvidia::MAX_BATCH_MEMBERS,
+            "the qualified prefill chunk default must be re-decided when the backend \
+             lane capacity changes"
+        );
     }
 }

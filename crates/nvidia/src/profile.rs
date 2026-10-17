@@ -1,4 +1,4 @@
-//! Declared execution geometry for the specialized Qwen CUDA path.
+//! Declared execution geometry and lane capacity for the specialized Qwen CUDA path.
 //!
 //! The current kernels are compiled against fixed dimensions, so this profile is the
 //! backend's declaration of the single geometry it can execute. Model loading compares an
@@ -15,6 +15,12 @@ use crate::qwen_reference::{
     ATTN_HEAD_DIM, ATTN_KV_HEADS, ATTN_Q_HEADS, ATTN_ROPE_BASE, ATTN_ROT_DIMS, GDN_D_CONV,
     GDN_HEAD_DIM, GDN_INNER, GDN_K_HEADS, GDN_V_HEADS, N_EMBD, N_FF,
 };
+
+/// Maximum row count the weights-read-once CUDA kernels execute in one step.
+///
+/// This is a compiled capability, not a tuning choice: kernel-side validation and the
+/// model's default lane both derive from it. Moving it requires re-qualifying the lane.
+pub const MAX_BATCH_MEMBERS: usize = 8;
 
 /// Geometry and numerical parameters a Qwen-family artifact declares for CUDA execution.
 #[derive(Clone, Copy, Debug, PartialEq)]

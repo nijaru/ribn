@@ -8,8 +8,9 @@ use cudarc::nvrtc::{Ptx, compile_ptx};
 
 use crate::cuda::CudaQuantizedWeight;
 
-/// Maximum row count supported by the weights-read-once CUDA kernels.
-pub const MAX_BATCH_MEMBERS: usize = 8;
+/// The declared lane capacity lives with the rest of the executable profile so model
+/// loading can bind its defaults to it instead of repeating the number.
+pub use crate::profile::MAX_BATCH_MEMBERS;
 
 /// Weight rows each warp resolves at once in the batched kernels.
 ///

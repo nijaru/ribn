@@ -34,7 +34,7 @@ mod state;
 mod submissions;
 
 mod profile;
-pub use profile::{ProfileMismatch, QwenCudaProfile};
+pub use profile::{MAX_BATCH_MEMBERS, ProfileMismatch, QwenCudaProfile};
 
 mod qwen_reference;
 
