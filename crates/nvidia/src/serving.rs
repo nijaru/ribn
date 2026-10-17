@@ -6,8 +6,8 @@ use crate::NvidiaDispatcher;
 use crate::dispatch_diagnostics::{DecodeFallback, DispatchObserver, DispatchRoute, DispatchWork};
 use cudarc::driver::{CudaContext, CudaEvent, CudaStream, PinnedHostSlice};
 use engine_core::{
-    BackendError, BackendSubmissionId, ExecutionBatch, ExecutionOutcome, ExecutionPhase,
-    ExecutionSegment, InferenceStateSet, WeightBinding,
+    BackendError, BackendSubmissionId, ExecutionBatch, ExecutionPhase, ExecutionSegment,
+    InferenceStateSet, WeightBinding,
 };
 
 use crate::decode::{CudaQwen35BatchDecode, CudaQwen35Decode};
@@ -616,7 +616,7 @@ impl CudaQwen35ServingDispatcher {
         &mut self,
         segment: &ExecutionSegment,
         state: &InferenceStateSet,
-    ) -> Result<ExecutionOutcome, BackendError> {
+    ) -> Result<Option<u32>, BackendError> {
         let Self {
             executor,
             prefill_lane,
@@ -635,12 +635,7 @@ impl CudaQwen35ServingDispatcher {
         if let Err(error) = self.stream.synchronize() {
             return Err(self.fail_device(BackendError::ExecutionFailed(error.to_string())));
         }
-        let output_token = result?;
-        let outcome = ExecutionOutcome::new();
-        Ok(match output_token {
-            Some(token) => outcome.with_output_token(token),
-            None => outcome,
-        })
+        result
     }
 
     /// KV model layout, excluding independently owned token capacities.
@@ -1085,7 +1080,7 @@ impl NvidiaDispatcher for CudaQwen35ServingDispatcher {
         segment: &ExecutionSegment,
         _weights: &WeightBinding,
         state: &mut InferenceStateSet,
-    ) -> Result<ExecutionOutcome, BackendError> {
+    ) -> Result<Option<u32>, BackendError> {
         self.check_health()?;
         self.dispatch_segment_eager(segment, state)
     }
@@ -1095,7 +1090,7 @@ impl NvidiaDispatcher for CudaQwen35ServingDispatcher {
         batch: &ExecutionBatch,
         _weights: &WeightBinding,
         states: &mut [InferenceStateSet],
-    ) -> Result<Vec<ExecutionOutcome>, BackendError> {
+    ) -> Result<Vec<Option<u32>>, BackendError> {
         self.check_health()?;
         if batch.len() != states.len() {
             return Err(BackendError::StateCountMismatch);
@@ -1126,7 +1121,7 @@ impl NvidiaDispatcher for CudaQwen35ServingDispatcher {
         batch: &ExecutionBatch,
         _weights: &WeightBinding,
         states: &mut [InferenceStateSet],
-    ) -> Result<Option<Vec<ExecutionOutcome>>, BackendError> {
+    ) -> Result<Option<Vec<Option<u32>>>, BackendError> {
         self.check_health()?;
         if batch.len() != states.len() {
             return Err(BackendError::StateCountMismatch);
@@ -1160,7 +1155,7 @@ impl NvidiaDispatcher for CudaQwen35ServingDispatcher {
     fn poll_batch(
         &mut self,
         submission: BackendSubmissionId,
-    ) -> Result<Option<Vec<ExecutionOutcome>>, BackendError> {
+    ) -> Result<Option<Vec<Option<u32>>>, BackendError> {
         self.check_health()?;
         let ready = {
             let Some(pending) = self.submissions.pending.get(&submission) else {
@@ -1187,14 +1182,9 @@ impl NvidiaDispatcher for CudaQwen35ServingDispatcher {
         let result = pending
             .outputs
             .iter()
-            .map(|lease| {
-                let outcome = ExecutionOutcome::new();
-                match lease {
-                    Some(lease) => self
-                        .read_pinned_output(*lease)
-                        .map(|token| outcome.with_output_token(token)),
-                    None => Ok(outcome),
-                }
+            .map(|lease| match lease {
+                Some(lease) => self.read_pinned_output(*lease).map(Some),
+                None => Ok(None),
             })
             .collect::<Result<Vec<_>, BackendError>>();
         // Retain the removed record too if a pinned read exposes a driver fault.

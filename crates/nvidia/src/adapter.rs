@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use engine_core::DeviceId;
 use engine_core::backend::{BackendError, BackendSubmissionId, ComputeBackend};
 use engine_core::execution::{
-    ExecutionBatch, ExecutionBatchEvent, ExecutionEvent, ExecutionOutcome, ExecutionSegment,
+    ExecutionBatch, ExecutionBatchEvent, ExecutionEvent, ExecutionSegment,
 };
 use engine_core::state::InferenceStateSet;
 use engine_core::weights::WeightBinding;
@@ -26,7 +26,7 @@ pub trait NvidiaDispatcher: Send {
         segment: &ExecutionSegment,
         weights: &WeightBinding,
         state: &mut InferenceStateSet,
-    ) -> Result<ExecutionOutcome, BackendError>;
+    ) -> Result<Option<u32>, BackendError>;
 
     /// Release dispatcher-owned physical state associated with one logical
     /// inference-state set. Stateless/reference dispatchers use the no-op.
@@ -59,7 +59,7 @@ pub trait NvidiaDispatcher: Send {
         batch: &ExecutionBatch,
         weights: &WeightBinding,
         states: &mut [InferenceStateSet],
-    ) -> Result<Vec<ExecutionOutcome>, BackendError> {
+    ) -> Result<Vec<Option<u32>>, BackendError> {
         if batch.len() != states.len() {
             return Err(BackendError::StateCountMismatch);
         }
@@ -93,7 +93,7 @@ pub trait NvidiaDispatcher: Send {
         batch: &ExecutionBatch,
         weights: &WeightBinding,
         states: &mut [InferenceStateSet],
-    ) -> Result<Option<Vec<ExecutionOutcome>>, BackendError> {
+    ) -> Result<Option<Vec<Option<u32>>>, BackendError> {
         self.dispatch_batch(batch, weights, states).map(Some)
     }
 
@@ -114,7 +114,7 @@ pub trait NvidiaDispatcher: Send {
     fn poll_batch(
         &mut self,
         _submission: BackendSubmissionId,
-    ) -> Result<Option<Vec<ExecutionOutcome>>, BackendError> {
+    ) -> Result<Option<Vec<Option<u32>>>, BackendError> {
         Err(BackendError::Unsupported(
             "asynchronous NVIDIA dispatcher completion",
         ))
@@ -181,7 +181,7 @@ impl<D> NvidiaBackend<D> {
 
 fn completion_event(
     batch: &ExecutionBatch,
-    outcomes: Vec<ExecutionOutcome>,
+    outcomes: Vec<Option<u32>>,
 ) -> Result<ExecutionBatchEvent, BackendError> {
     if outcomes.len() != batch.len() {
         return Err(BackendError::ExecutionFailed(format!(
@@ -196,7 +196,7 @@ fn completion_event(
         .iter()
         .zip(outcomes)
         .map(|(segment, outcome)| {
-            let output_token = outcome.output_token();
+            let output_token = outcome;
             if segment.requests_sampling() != output_token.is_some() {
                 return Err(BackendError::ExecutionFailed(format!(
                     "NVIDIA dispatcher output-token presence did not match sampling for request {}",
@@ -299,8 +299,8 @@ mod tests {
             _segment: &ExecutionSegment,
             _weights: &WeightBinding,
             _state: &mut InferenceStateSet,
-        ) -> Result<ExecutionOutcome, BackendError> {
-            Ok(ExecutionOutcome::new())
+        ) -> Result<Option<u32>, BackendError> {
+            Ok(None)
         }
     }
 
@@ -317,9 +317,9 @@ mod tests {
             _segment: &ExecutionSegment,
             _weights: &WeightBinding,
             _state: &mut InferenceStateSet,
-        ) -> Result<ExecutionOutcome, BackendError> {
+        ) -> Result<Option<u32>, BackendError> {
             self.segments += 1;
-            Ok(ExecutionOutcome::new())
+            Ok(None)
         }
 
         fn dispatch_batch(
@@ -327,12 +327,12 @@ mod tests {
             batch: &ExecutionBatch,
             _weights: &WeightBinding,
             states: &mut [InferenceStateSet],
-        ) -> Result<Vec<ExecutionOutcome>, BackendError> {
+        ) -> Result<Vec<Option<u32>>, BackendError> {
             if batch.len() != states.len() {
                 return Err(BackendError::StateCountMismatch);
             }
             self.batches += 1;
-            Ok((0..batch.len()).map(|_| ExecutionOutcome::new()).collect())
+            Ok(vec![None; batch.len()])
         }
 
         fn release_inference_state(
@@ -357,7 +357,7 @@ mod tests {
             _segment: &ExecutionSegment,
             _weights: &WeightBinding,
             _state: &mut InferenceStateSet,
-        ) -> Result<ExecutionOutcome, BackendError> {
+        ) -> Result<Option<u32>, BackendError> {
             Err(BackendError::ExecutionFailed(
                 "async dispatcher should not use synchronous dispatch".to_owned(),
             ))
@@ -369,7 +369,7 @@ mod tests {
             batch: &ExecutionBatch,
             _weights: &WeightBinding,
             states: &mut [InferenceStateSet],
-        ) -> Result<Option<Vec<ExecutionOutcome>>, BackendError> {
+        ) -> Result<Option<Vec<Option<u32>>>, BackendError> {
             if batch.len() != states.len() {
                 return Err(BackendError::StateCountMismatch);
             }
@@ -381,13 +381,13 @@ mod tests {
         fn poll_batch(
             &mut self,
             submission: BackendSubmissionId,
-        ) -> Result<Option<Vec<ExecutionOutcome>>, BackendError> {
+        ) -> Result<Option<Vec<Option<u32>>>, BackendError> {
             self.polls += 1;
             let count = self
                 .pending
                 .remove(&submission)
                 .ok_or(BackendError::UnknownSubmission(submission))?;
-            Ok(Some((0..count).map(|_| ExecutionOutcome::new()).collect()))
+            Ok(Some(vec![None; count]))
         }
     }
 
@@ -402,7 +402,7 @@ mod tests {
             _segment: &ExecutionSegment,
             _weights: &WeightBinding,
             _state: &mut InferenceStateSet,
-        ) -> Result<ExecutionOutcome, BackendError> {
+        ) -> Result<Option<u32>, BackendError> {
             unreachable!("failing async dispatcher does not synchronously dispatch")
         }
 
@@ -412,7 +412,7 @@ mod tests {
             batch: &ExecutionBatch,
             _weights: &WeightBinding,
             states: &mut [InferenceStateSet],
-        ) -> Result<Option<Vec<ExecutionOutcome>>, BackendError> {
+        ) -> Result<Option<Vec<Option<u32>>>, BackendError> {
             if batch.len() != states.len() {
                 return Err(BackendError::StateCountMismatch);
             }
@@ -423,7 +423,7 @@ mod tests {
         fn poll_batch(
             &mut self,
             submission: BackendSubmissionId,
-        ) -> Result<Option<Vec<ExecutionOutcome>>, BackendError> {
+        ) -> Result<Option<Vec<Option<u32>>>, BackendError> {
             self.pending
                 .remove(&submission)
                 .ok_or(BackendError::UnknownSubmission(submission))?;

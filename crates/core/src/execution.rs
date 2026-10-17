@@ -292,31 +292,6 @@ impl ExecutionBatch {
     }
 }
 
-/// What one dispatched segment produced.
-#[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
-pub struct ExecutionOutcome {
-    output_token: Option<u32>,
-}
-
-impl ExecutionOutcome {
-    #[must_use]
-    pub const fn new() -> Self {
-        Self { output_token: None }
-    }
-
-    /// Attach the one committed sampled token produced by this execution.
-    #[must_use]
-    pub const fn with_output_token(mut self, token: u32) -> Self {
-        self.output_token = Some(token);
-        self
-    }
-
-    #[must_use]
-    pub const fn output_token(self) -> Option<u32> {
-        self.output_token
-    }
-}
-
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub struct ExecutionEvent {
     request: RequestId,

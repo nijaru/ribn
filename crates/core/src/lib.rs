@@ -15,8 +15,8 @@ pub mod weights;
 pub use backend::{BackendError, BackendSubmissionId, ComputeBackend};
 pub use device::DeviceId;
 pub use execution::{
-    BatchError, ExecutionBatch, ExecutionBatchEvent, ExecutionEvent, ExecutionOutcome,
-    ExecutionPhase, ExecutionSegment, ExecutionTokenInput,
+    BatchError, ExecutionBatch, ExecutionBatchEvent, ExecutionEvent, ExecutionPhase,
+    ExecutionSegment, ExecutionTokenInput,
 };
 pub use request::{RequestId, SamplingError, SamplingParams};
 pub use state::{
