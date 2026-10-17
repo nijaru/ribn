@@ -303,9 +303,11 @@ Integrate a real dense second decoder through ordinary package/SafeTensors loadi
 model/processor/backend, central registration and tests alongside baseline work, then a
 real VLM/processor. Pin a concrete checkpoint and independent reference before coding;
 exercise another configuration/checkpoint without another architectural rewrite. Use
-these to replace hard-coded geometry and the
-transitional core bridge where appropriate, not to add family branches in lifecycle/routing
-or create a universal operator layer. Start after applicable baseline contracts; it need
+these to replace hard-coded kernel geometry where the second model needs a different shape,
+not to add family branches in lifecycle/routing or create a universal operator layer. The
+plan/description/capability layer between the model and its backend is gone; what remains
+shared is the prepared batch, continuation state declarations and artifact weight
+descriptions. Start after applicable baseline contracts; it need
 not wait for prefix-cache or overlap promotion. Pin independent numerical references and
 measure integration effort and loading/physical peaks, not just compilation.
 

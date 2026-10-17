@@ -53,7 +53,7 @@ The NVIDIA-specific `NvidiaDispatcher` and adapter now live in `crates/nvidia/sr
 
 Keep these ownership boundaries:
 
-- The AR runtime owns admission, request/sequence identities, scheduling, committed progress, cancellation intent and output. Qwen translates into transitional core contracts; core has no second scheduler.
+- The AR runtime owns admission, request/sequence identities, scheduling, committed progress, cancellation intent and output. Qwen translates into the prepared-batch and continuation-state contracts; core has no second scheduler.
 - The NVIDIA backend owns physical KV and recurrent state, model residency, scratch, device allocations, compilation, streams, launches, and completion observation.
 - The dispatcher retains resources for in-flight submissions. Completion permits logical commitment; requesting cancellation does not establish device completion.
 - Partial enqueue failure must drain successfully before recycling resources. Uncertain completion faults the backend and retains resources rather than reporting successful release.
