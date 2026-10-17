@@ -160,8 +160,8 @@ within an explicitly qualified scope can proceed; broader performance comparison
 that scope independently justified.
 
 The remaining defects/limitations do not weaken the owning contracts or block unrelated
-qualified paths. The initial endpoint diagnostic now exposes the performance deficit;
-quality-qualified comparison and a measured execution improvement remain open. Non-AR
+qualified paths. The first bounded execution improvement is promoted; cross-engine
+numerical qualification and remaining prefill/projection investigation remain open. Non-AR
 and physical-accounting repairs gate their affected paths. Do not relabel count/payload
 or post-enqueue tests as physical-release evidence.
 

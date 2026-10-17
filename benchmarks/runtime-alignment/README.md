@@ -20,7 +20,9 @@ The unchanged full-range path returns `BatchPreparation::Ready` without a row-re
 allocation. The measured differences are within 0.8%, with timer quantization and
 run-order uncertainty. This does **not** establish zero overhead or serving performance:
 there is no model/device work, growth allocation, resource pressure or owned driver in
-these timings. Device requalification remains pending.
+these timings. Subsequent [bounded Qwen/reference and HTTP gates](../runtime-contract.md#device-re-execution-2026-10-16-dc4aed0)
+passed on device. Injected preparation/readiness interleavings remain host evidence,
+and physical growth is not implemented or qualified.
 
 ```sh
 cargo run --release -p ribn --example host_overhead --locked

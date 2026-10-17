@@ -144,9 +144,10 @@ reserves nothing, never reaches execution and leaves both peers progressing.
 Existing envelope and request-validation coverage now exercises the prepared interface.
 
 These are host preparation/runtime results, not new CUDA numerical, long-context,
-physical-memory or failed-drain qualification. Device kernels are unchanged; device
-re-execution remains pending. Broader non-AR input bounds, readiness and local shutdown
-are still required before encoder application exposure.
+physical-memory or failed-drain qualification. Unchanged kernels' existing tiny fixture
+cases were [rerun on device](runtime-contract.md#device-re-execution-2026-10-16-dc4aed0);
+that does not device-qualify the host-tested 4096/4097 boundary. Broader non-AR input
+bounds, readiness and local shutdown are still required before encoder application exposure.
 
 ## Limits
 

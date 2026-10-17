@@ -1,22 +1,24 @@
 # Qwen multi-token prefill qualification
 
-Date: 2026-09-12
-Status: hardware-qualified at `0496f79` on the pinned artifact; production serving still
-runs serial prefill, and the candidate is not selected by serving.
+Initial qualification: 2026-09-12, `0496f79`, pinned artifact. Production Qwen loading
+now selects an eight-token same-sequence prefill lane independently of request concurrency.
+It batches token-independent operations and multi-row causal attention; convolution/GDN
+recurrence remains ordered per token. Serial remainder and the final sampling token stay
+on the batch-1 path. GDN scan remains opt-in while its full-model numerical gate fails.
+See [current source and limits](../docs/architecture.md) and
+[recent device re-execution](runtime-contract.md#device-re-execution-2026-10-16-dc4aed0).
 
-Result: both parity gates pass and chunked prefill is 1.71x-1.79x serial at the
-8-member cap with no decode regression, so the candidate is eligible for
-backend-local serving integration. The measurement is the intermediate path only; it
-is not a chunked GDN or multi-token attention implementation. See the qualification
-result section at the end of this document.
+The dated results below retain their measured implementation and conditions. The initial
+intermediate candidate was 1.71x–1.79x serial at the eight-member cap with no decode
+regression; later sections record its integration and multi-row attention changes.
 
 This gate decides whether Ribn's experimental same-sequence Qwen prefill path is
 safe and useful enough to consider for serving. It is deliberately separate from
 the scheduler: the scheduler already emits prompt chunks, while this work changes
 how the Qwen/CUDA backend executes one chunk.
 
-The current candidate is an intermediate optimization. It batches prompt-token rows
-through token-independent projection, normalization and FFN work, but keeps
+The initial candidate was an intermediate optimization. It batched prompt-token rows
+through token-independent projection, normalization and FFN work, while keeping
 convolution history, Gated DeltaNet recurrent-state updates, KV append and causal
 attention ordered by token. A separate host-only test proves the true chunked GDN
 triangular formulation against the direct recurrent definition; that algebra is the

@@ -146,8 +146,10 @@ cargo test -p engine-qwen --features cuda --lib --locked
 ```
 
 The synthetic [dispatch comparison](runtime-alignment/README.md#ar-preparation-relative-to-71c326f)
-is separately bounded evidence. Re-run real Qwen numerical, lifecycle and serving gates
-when a device is available before qualifying this changed execution path.
+is separately bounded evidence. Subsequent [Qwen/reference and HTTP re-execution](#device-re-execution-2026-10-16-dc4aed0)
+and [capacity-independent decode qualification](#heterogeneous-capacity-decode-2026-10-16)
+cover bounded real-device success/cancellation paths. Injected preparation/readiness
+interleavings remain host evidence; no physical continuation growth follows.
 
 ## Mixed-arrival native Qwen gate
 
@@ -315,8 +317,10 @@ gate below.
 
 `TextResponse.text` and the `generate_batch` collect helper hold caller-collected
 results and are deliberately outside buffered-application accounting. `TextBatch` is
-the bounded incremental interface. CLI file/stdin ingestion is still a whole read and
-is not claimed as bounded.
+the bounded incremental interface. CLI file/stdin ingestion now reads at most the
+payload limit plus one overflow-probe byte before model loading, rejecting oversize or
+invalid UTF-8 without truncation. Caller-provided argument storage and allocator spare
+capacity are not a process-RSS bound.
 
 ### Runtime-owned discard qualification (2026-09-14)
 
@@ -415,8 +419,9 @@ cargo test --release -p engine-qwen --features cuda --test cuda_runtime --locked
 
 Text preprocessing/decoder injection, a bounded concurrent text facade and ordered
 incremental offline batches are now implemented and host-qualified (see the owned text
-facade gate below). Current CUDA text lifecycle evidence still applies to the earlier
-direct path, not to the owned driver or the facade built on it.
+facade gate below). Subsequent bounded CUDA gates now cover the owned driver, facade,
+abandoned/stalled peers and HTTP recovery; see [device re-execution](#device-re-execution-2026-10-16-dc4aed0).
+Those passes do not establish arbitrary concurrency, context or failed-drain behavior.
 
 ### Owned text facade host gate (2026-09-14)
 
@@ -575,8 +580,10 @@ live stream and explicit shutdown against a loaded model. It ran successfully on
 RTX 4090 (four callers, exit 0). It is a usage example and a diagnostic, not a
 qualification gate.
 
-Matched direct-versus-handle frontend overhead on the real GPU path is still unmeasured;
-the only measured host comparison remains the token-driver benchmark above.
+A [matched CUDA direct-versus-handle comparison](runtime-alignment/README.md#owned-text-facade-over-cuda-d61b62c)
+now records five alternating pairs per workload at concurrency one. Higher-concurrency
+and mixed-arrival frontend-overhead comparisons remain unmeasured; endpoint throughput
+measurements do not isolate frontend cost.
 
 
 ## Synthetic CPU benchmark

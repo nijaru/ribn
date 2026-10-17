@@ -145,10 +145,13 @@ Host TCP tests exercise the real HTTP entry point, tokenizer, text facade and dr
 with only the device substituted. The bounded CUDA HTTP gate and actual CLI streaming/
 SIGTERM shutdown passed, along with AIPerf and native vLLM client compatibility smokes.
 The [load-capacity host gate](../benchmarks/runtime-contract.md#text-load-capacity-host-gate)
-covers configured active limits beyond eight; higher-concurrency device
-requalification remains pending and physical batching is unchanged.
-See [qualification](../benchmarks/runtime-contract.md#initial-text-http-qualification-2026-10-13)
-for revisions, artifact, conditions and limitations. These are not matched competitive
-measurements, broad-context numerical qualification or peak-memory evidence. The
+covers configured active limits beyond eight; those larger configured limits remain
+host-qualified only. Whole-decode batches of two through eight rows now accept different
+KV capacities/positions with matching model geometry/dtype. The
+[paired endpoint experiment](../benchmarks/runtime-contract.md#heterogeneous-capacity-decode-2026-10-16)
+measured c1/c4/c8 on the pinned GGUF/RTX 4090, with unchanged visible outputs and core usage.
+See [HTTP qualification](../benchmarks/runtime-contract.md#initial-text-http-qualification-2026-10-13)
+for protocol revisions and conditions. These bounded measurements do not establish
+quality-equivalent competitive performance, broad-context numerics or physical peaks. The
 [roadmap](roadmap.md#5-minimal-serving-then-wider-systems) and
 [benchmark methodology](../benchmarks/README.md) own those remaining gates.
