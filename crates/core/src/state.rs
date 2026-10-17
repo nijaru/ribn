@@ -72,6 +72,9 @@ impl KvStateSpec {
         if layer_count == 0 || kv_heads == 0 || head_dim == 0 || page_tokens == 0 || pages == 0 {
             return Err(StateSpecError::ZeroDimension);
         }
+        if pages.checked_mul(page_tokens).is_none() {
+            return Err(StateSpecError::CapacityOverflow);
+        }
         Ok(Self {
             layer_count,
             kv_heads,
@@ -109,7 +112,7 @@ impl KvStateSpec {
         self.pages
     }
 
-    /// Capacity in tokens: `pages * page_tokens`.
+    /// Capacity in tokens: `pages * page_tokens`, validated at construction.
     #[must_use]
     pub const fn capacity_tokens(self) -> u32 {
         self.pages * self.page_tokens
@@ -625,12 +628,14 @@ impl InferenceStateSet {
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum StateSpecError {
     ZeroDimension,
+    CapacityOverflow,
 }
 
 impl fmt::Display for StateSpecError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::ZeroDimension => f.write_str("state dimensions must be greater than zero"),
+            Self::CapacityOverflow => f.write_str("state page capacity overflows tokens"),
         }
     }
 }
@@ -972,6 +977,10 @@ mod tests {
         assert_eq!(declared.pages_for(17), Some(2));
         assert_eq!(declared.pages_for(64), Some(4));
         assert_eq!(declared.pages_for(0), None);
+        assert!(matches!(
+            KvStateSpec::with_pages(1, 1, 2, 2, u32::MAX, DataType::F16),
+            Err(StateSpecError::CapacityOverflow)
+        ));
 
         let short = declared.for_tokens(16).expect("short reach");
         let long = declared.for_tokens(64).expect("long reach");
