@@ -83,6 +83,31 @@ pub struct StagedTensorSource<'a> {
     pub f32_blocks: Option<Box<dyn F32BlockStream<Error = F32SourceError> + 'a>>,
 }
 
+impl StagedTensorSource<'_> {
+    /// Device bytes this source occupies after staging.
+    ///
+    /// The F32 path always allocates one `f32` per declared element, whatever the
+    /// source encoding was, so its charge comes from the element count rather than
+    /// `encoded_bytes`. An F16 source is therefore charged at its materialized size.
+    /// The quantized path uploads the encoded payload unchanged.
+    fn staged_bytes(&self) -> Option<u64> {
+        if self.f32_blocks.is_some() {
+            let width = u64::try_from(std::mem::size_of::<f32>()).expect("f32 has four bytes");
+            self.spec.element_count().checked_mul(width)
+        } else {
+            Some(self.encoded_bytes)
+        }
+    }
+}
+
+/// Total device bytes a staging set will occupy, or `None` on overflow.
+fn staged_bytes_total(tensors: &[StagedTensorSource<'_>]) -> Option<u64> {
+    tensors
+        .iter()
+        .map(StagedTensorSource::staged_bytes)
+        .try_fold(0_u64, |total, bytes| total.checked_add(bytes?))
+}
+
 /// The per-value-type GEMV kernel entry compiled once during staging.
 ///
 /// Each variant owns context-local functions loaded from shared compiled PTX;
@@ -228,8 +253,8 @@ pub struct CudaQwen35Weights {
 }
 
 impl CudaQwen35Weights {
-    /// Stage the supplied tensors, first checking that their encoded bytes
-    /// fit within `budget_bytes`.
+    /// Stage the supplied tensors, first checking that their device bytes fit
+    /// within `budget_bytes`.
     ///
     /// # Errors
     ///
@@ -241,11 +266,8 @@ impl CudaQwen35Weights {
         budget_bytes: u64,
         tensors: Vec<StagedTensorSource<'_>>,
     ) -> Result<Self, CudaWeightStagingError> {
-        let required_bytes = tensors
-            .iter()
-            .map(|tensor| tensor.encoded_bytes)
-            .try_fold(0_u64, u64::checked_add)
-            .ok_or(CudaWeightStagingError::BudgetExceeded {
+        let required_bytes =
+            staged_bytes_total(&tensors).ok_or(CudaWeightStagingError::BudgetExceeded {
                 required_bytes: u64::MAX,
                 budget_bytes,
             })?;
@@ -378,5 +400,77 @@ impl engine_core::weights::F32BlockStream for DelegatingF32Stream<'_> {
         self.blocks
             .next_block()
             .map_err(|error| CudaWeightError::Source(error.to_string()))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use engine_core::tensor::DataType;
+
+    struct EmptyBlocks(engine_core::WeightTensorSpec);
+
+    impl F32BlockStream for EmptyBlocks {
+        type Error = F32SourceError;
+
+        fn spec(&self) -> &engine_core::WeightTensorSpec {
+            &self.0
+        }
+
+        fn next_block(&mut self) -> Result<Option<Vec<f32>>, Self::Error> {
+            Ok(None)
+        }
+    }
+
+    fn spec(dtype: DataType, elements: u64) -> engine_core::WeightTensorSpec {
+        engine_core::WeightTensorSpec::new("blk.0.weight", vec![elements], dtype)
+            .expect("valid spec")
+    }
+
+    fn source(
+        spec: engine_core::WeightTensorSpec,
+        encoded_bytes: u64,
+    ) -> StagedTensorSource<'static> {
+        StagedTensorSource {
+            f32_blocks: Some(Box::new(EmptyBlocks(spec.clone()))),
+            spec,
+            value_type: 1,
+            encoded_bytes,
+            reader: Box::new(std::io::empty()),
+        }
+    }
+
+    #[test]
+    fn f32_materialization_is_charged_at_materialized_size() {
+        // An F16 source uploads four bytes per element, not its two-byte encoding.
+        let elements = 1_024;
+        let encoded = elements * 2;
+        let source = source(spec(DataType::F16, elements), encoded);
+        assert_eq!(source.staged_bytes(), Some(elements * 4));
+        assert_ne!(source.staged_bytes(), Some(encoded));
+    }
+
+    #[test]
+    fn quantized_sources_are_charged_at_their_encoded_payload() {
+        let mut source = source(spec(DataType::F16, 8), 4_096);
+        source.f32_blocks = None;
+        assert_eq!(source.staged_bytes(), Some(4_096));
+    }
+
+    #[test]
+    fn materialized_size_overflow_is_reported_rather_than_wrapped() {
+        let source = source(spec(DataType::F32, u64::MAX / 2), 0);
+        assert_eq!(source.staged_bytes(), None);
+    }
+
+    #[test]
+    fn staging_set_total_charges_each_source_by_its_own_materialization() {
+        let quantized = {
+            let mut source = source(spec(DataType::F16, 4), 4_096);
+            source.f32_blocks = None;
+            source
+        };
+        let materialized = source(spec(DataType::F16, 512), 1_024);
+        assert_eq!(staged_bytes_total(&[quantized, materialized]), Some(6_144));
     }
 }

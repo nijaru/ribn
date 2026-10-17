@@ -149,9 +149,11 @@ mismatches before tokenizer/device access; [host preflight evidence](../benchmar
 covers normalization/RoPE and same-width head decompositions. The actual pinned header
 and affected Qwen/HTTP/BERT device gates [passed at `dc4aed0`](../benchmarks/runtime-contract.md#device-re-execution-2026-10-16-dc4aed0),
 within their existing bounded reference scope—not broad-context qualification.
-Loading still needs one immutable geometry/template/weight source owner. F16 sources
-materialized as F32 must be charged at materialized size, not encoded size. Resolve those
-remaining boundaries before expanding artifact support or claiming loader bounds.
+Loading still needs one immutable geometry/template/weight source owner. The staging budget
+now charges every F32-materialized source at its four-bytes-per-element device footprint
+instead of its encoded length, with host cases covering the mixed set, quantization and
+overflow; host arithmetic is not device evidence, so no loader byte bound is claimed yet.
+Resolve the remaining source-owner boundary before expanding artifact support.
 The known long-prompt reference divergence after the eighteen-token agreed prefix is an
 active baseline fidelity question, not indefinite conditional work. Classify it with
 common-history distributions/state and independent task-quality evidence; do not infer
