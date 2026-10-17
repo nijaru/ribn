@@ -9,6 +9,13 @@ use std::fs::File;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 
+/// Fixed KV page size every Qwen attention layer uses.
+///
+/// A sequence holds whole pages, so its capacity rounds up to a multiple of this
+/// value and growth adds pages. Pages are the addressing unit the backend
+/// materializes and the unit a prefix cache would retain.
+pub(crate) const KV_PAGE_TOKENS: u32 = 16;
+
 pub(crate) mod config;
 use config::read as config_from_gguf;
 
@@ -27,11 +34,12 @@ fn qwen35_state_requirements(
             ))?;
     let full_layers = language_layers / config.full_attention_interval();
     let recurrent_layers = language_layers - full_layers;
-    let full_spec = KvStateSpec::new(
+    let full_spec = KvStateSpec::with_pages(
         narrow_u16(full_layers, "full-attention layer count")?,
         narrow_u16(config.kv_heads(), "KV head count")?,
         narrow_u16(config.key_length(), "full-attention head dimension")?,
-        kv_block_tokens,
+        KV_PAGE_TOKENS,
+        kv_block_tokens.div_ceil(KV_PAGE_TOKENS),
         DataType::F16,
     )
     .map_err(|_| {
@@ -410,7 +418,7 @@ mod tests {
         assert!(
             requirements
                 .iter()
-                .all(|requirement| requirement.with_capacity(1).is_ok())
+                .all(|requirement| requirement.for_tokens(1).is_ok())
         );
         // Valid head geometry fits the state representation, but doubling the
         // group product for convolution channels must fail without panic.

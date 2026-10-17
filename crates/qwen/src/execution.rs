@@ -158,7 +158,7 @@ impl<B: ComputeBackend> QwenExecution<B> {
         let requirements = self
             .requirements
             .iter()
-            .map(|declaration| declaration.with_capacity(reachable).map_err(model_error))
+            .map(|declaration| declaration.for_tokens(reachable).map_err(model_error))
             .collect::<Result<Vec<_>, ExecutionError>>()?;
         let required = state::capacity(&requirements, 1)
             .ok_or_else(|| ExecutionError::new("Qwen continuation demand overflows"))?;

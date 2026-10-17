@@ -1300,7 +1300,7 @@ mod tests {
             KvStateSpec::new(1, 1, 2, 4, DataType::F32).unwrap(),
         ] {
             assert_decode_selection(
-                vec![base, other, base.with_capacity(8).unwrap()],
+                vec![base, other, base.for_tokens(8).unwrap()],
                 None,
                 &[0, 2],
                 Some(super::DecodeFallback::IncompatibleKv),

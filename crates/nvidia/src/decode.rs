@@ -556,7 +556,9 @@ impl CudaQwen35Decode {
         }
         validate_state(self.stream.context(), &self.layer_kinds, state)?;
         validate_token(token, self.logits.len())?;
-        let capacity = state.kv().map_or(u32::MAX, |kv| kv.spec().block_tokens());
+        let capacity = state
+            .kv()
+            .map_or(u32::MAX, |kv| kv.spec().capacity_tokens());
         if position >= capacity {
             return Err(CudaDecodeError::PositionOverflow { position, capacity });
         }
@@ -2102,7 +2104,9 @@ impl CudaQwen35BatchDecode {
         // capacity before any launch, mirroring the batch-1 executor's guard.
         for (state, &position) in states.iter().zip(positions) {
             validate_state(self.stream.context(), &self.layer_kinds, state)?;
-            let capacity = state.kv().map_or(u32::MAX, |kv| kv.spec().block_tokens());
+            let capacity = state
+                .kv()
+                .map_or(u32::MAX, |kv| kv.spec().capacity_tokens());
             if position >= capacity {
                 return Err(CudaDecodeError::PositionOverflow { position, capacity });
             }
@@ -2112,7 +2116,7 @@ impl CudaQwen35BatchDecode {
         // caches themselves keep their independently granted capacities.
         if let Some(capacity) = states
             .iter()
-            .filter_map(|state| state.kv().map(|kv| kv.spec().block_tokens() as usize))
+            .filter_map(|state| state.kv().map(|kv| kv.spec().capacity_tokens() as usize))
             .max()
         {
             self.ensure_attention_scores(1, capacity)?;
@@ -2265,7 +2269,7 @@ impl CudaQwen35BatchDecode {
         }
 
         if let Some(kv) = state.kv() {
-            let capacity = kv.spec().block_tokens();
+            let capacity = kv.spec().capacity_tokens();
             if let Some(&position) = positions.last()
                 && position >= capacity
             {
@@ -2662,7 +2666,7 @@ impl CudaQwen35BatchDecode {
             ATTN_ROPE_BASE,
         )?;
 
-        let capacity = state.kv().ok_or(missing_kv())?.spec().block_tokens() as usize;
+        let capacity = state.kv().ok_or(missing_kv())?.spec().capacity_tokens() as usize;
         let stride = capacity;
         let slot = self.kv_slot[layer];
         // Append every row's K/V first. The rows are consecutive positions of
@@ -3036,7 +3040,7 @@ impl CudaQwen35BatchDecode {
             // Read the capacity before borrowing the cache mutably.
             let capacity = state
                 .kv()
-                .map_or(usize::MAX, |kv| kv.spec().block_tokens() as usize);
+                .map_or(usize::MAX, |kv| kv.spec().capacity_tokens() as usize);
             let stride = capacity;
             let tokens = position + 1;
             let kv = state.kv_mut().ok_or(missing_kv())?;

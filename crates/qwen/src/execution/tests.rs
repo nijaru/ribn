@@ -51,7 +51,7 @@ impl ComputeBackend for Backend {
         control.kv_capacities.extend(
             states
                 .iter()
-                .filter_map(|state| state.kv().map(|kv| kv.spec().block_tokens())),
+                .filter_map(|state| state.kv().map(|kv| kv.spec().capacity_tokens())),
         );
         control.batches.push(
             batch
@@ -162,12 +162,23 @@ impl GenerationExecutor for Model {
     }
 }
 
-/// The fixture's declared KV bound is 64 tokens (`1 * 1 * 2 * 64 * 2 * 2` bytes).
+/// The fixture declares four-token KV pages and a 64-token bound: sixteen pages,
+/// 32 bytes each, so 512 bytes of declared capacity. A request reaching six tokens
+/// holds two pages (eight tokens, 64 bytes).
 const FIXTURE_CONTEXT_TOKENS: u32 = 64;
+const FIXTURE_PAGE_TOKENS: u32 = 4;
 
 fn fixture_requirements() -> Vec<StateRequirement> {
     vec![StateRequirement::FullAttentionKv(
-        KvStateSpec::new(1, 1, 2, FIXTURE_CONTEXT_TOKENS, DataType::F16).unwrap(),
+        KvStateSpec::with_pages(
+            1,
+            1,
+            2,
+            FIXTURE_PAGE_TOKENS,
+            FIXTURE_CONTEXT_TOKENS / FIXTURE_PAGE_TOKENS,
+            DataType::F16,
+        )
+        .unwrap(),
     )]
 }
 
@@ -445,22 +456,22 @@ fn continuation_state_capacity_follows_the_request_not_the_declared_bound() {
         1
     );
     // The fixture declares a 64-token bound; a 3-token prompt with a 3-token budget
-    // can only reach 6, so every row the backend ran worked on that capacity.
+    // can only reach 6, which is two four-token pages rather than the whole bound.
     let capacities = control.lock().unwrap().kv_capacities.clone();
-    assert!(!capacities.is_empty() && capacities.iter().all(|&tokens| tokens == 6));
+    assert!(!capacities.is_empty() && capacities.iter().all(|&tokens| tokens == 8));
 }
 
 #[test]
 fn insufficient_continuation_capacity_waits_for_a_release_instead_of_failing() {
     let control = Arc::new(Mutex::new(Control::default()));
-    // `1 * 1 * 2 * 6 * 2 * 2` bytes: exactly one six-token sequence fits, so the
-    // peer waits for its release rather than being refused.
-    let mut engine = engine_with_capacity(control.clone(), 48);
+    // Two four-token pages are 64 bytes: exactly one sequence fits, so the peer
+    // waits for its release rather than being refused.
+    let mut engine = engine_with_capacity(control.clone(), 64);
     engine.enqueue(request(vec![1, 2, 3])).unwrap();
     engine.enqueue(request(vec![4, 5, 6])).unwrap();
     engine.step().unwrap();
     assert_eq!(engine.status().active_sequences, 1);
-    assert_eq!(control.lock().unwrap().kv_capacities, vec![6]);
+    assert_eq!(control.lock().unwrap().kv_capacities, vec![8]);
     // Releasing the first sequence's continuation admits the peer, which then
     // completes normally: backpressure, not request-local rejection.
     let events = drive(&mut engine);
@@ -473,7 +484,7 @@ fn insufficient_continuation_capacity_waits_for_a_release_instead_of_failing() {
     );
     let control = control.lock().unwrap();
     assert!(!control.kv_capacities.is_empty());
-    assert!(control.kv_capacities.iter().all(|&tokens| tokens == 6));
+    assert!(control.kv_capacities.iter().all(|&tokens| tokens == 8));
     // One admission for the first request, one failed capacity attempt for the
     // peer, and one retry after release. Decode progress is not capacity readiness.
     let attempts = control.admissions.len();
@@ -484,13 +495,13 @@ fn insufficient_continuation_capacity_waits_for_a_release_instead_of_failing() {
 #[test]
 fn closed_continuation_authority_rejects_a_waiter_without_losing_its_live_peer() {
     let control = Arc::new(Mutex::new(Control::default()));
-    let pool = ribn_foundation::BytePool::new(48).shared();
+    let pool = ribn_foundation::BytePool::new(64).shared();
     let model = model_with_requirements(control.clone(), Arc::clone(&pool), fixture_requirements());
     let mut engine = engine_with_model(model);
     let live = engine.enqueue(request(vec![1, 2, 3])).unwrap();
     let waiter = engine.enqueue(request(vec![4, 5, 6])).unwrap();
     engine.step().unwrap();
-    assert_eq!(pool.granted(), 48);
+    assert_eq!(pool.granted(), 64);
     assert_eq!(control.lock().unwrap().admissions.len(), 2);
     pool.close();
     let events = drive(&mut engine);
@@ -511,8 +522,8 @@ fn failed_hybrid_reservation_does_not_publish_its_own_readiness() {
     use engine_core::{ConvolutionStateShape, RecurrentMatrixShape, RecurrentStateSpec};
     let control = Arc::new(Mutex::new(Control::default()));
     let mut requirements = fixture_requirements();
-    // 64 recurrent bytes plus 48 KV bytes per request. A 176-byte pool
-    // leaves 64 bytes: enough for the peer's KV but not its recurrent state.
+    // 64 recurrent bytes plus two 32-byte KV pages per request. A 192-byte pool
+    // leaves 64 bytes after the manual allocation: not enough for a peer bundle.
     requirements.push(StateRequirement::Recurrent(
         RecurrentStateSpec::new(
             1,
@@ -525,13 +536,15 @@ fn failed_hybrid_reservation_does_not_publish_its_own_readiness() {
     ));
     let mut model = model_with_requirements(
         control,
-        ribn_foundation::BytePool::new(176).shared(),
+        ribn_foundation::BytePool::new(192).shared(),
         requirements,
     );
     let first = model
         .0
         .manager
-        .allocate_kv(KvStateSpec::new(1, 1, 2, 14, DataType::F16).unwrap())
+        .allocate_kv(
+            KvStateSpec::with_pages(1, 1, 2, FIXTURE_PAGE_TOKENS, 4, DataType::F16).unwrap(),
+        )
         .unwrap();
     let wait = model.0.manager.capacity_wait();
     assert!(model.0.reserve_continuation(6).unwrap().is_none());
@@ -539,7 +552,7 @@ fn failed_hybrid_reservation_does_not_publish_its_own_readiness() {
         !wait.changed(),
         "failed bundle must not manufacture a release"
     );
-    assert_eq!(model.0.manager.used_bytes(), 112);
+    assert_eq!(model.0.manager.used_bytes(), 128);
     model.0.manager.release(first.handle()).unwrap();
     assert!(wait.changed());
     let (state, _) = model.0.reserve_continuation(6).unwrap().unwrap();
@@ -549,8 +562,8 @@ fn failed_hybrid_reservation_does_not_publish_its_own_readiness() {
 #[test]
 fn continuation_demand_above_the_authority_is_rejected_without_waiting() {
     let control = Arc::new(Mutex::new(Control::default()));
-    // Less than one six-token sequence can ever fit, so no release admits it.
-    let mut engine = engine_with_capacity(control.clone(), 47);
+    // Less than one two-page sequence can ever fit, so no release admits it.
+    let mut engine = engine_with_capacity(control.clone(), 63);
     engine.enqueue(request(vec![1, 2, 3])).unwrap();
     engine.step().unwrap();
     let events = drive(&mut engine);

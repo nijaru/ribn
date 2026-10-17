@@ -27,12 +27,19 @@ impl StateId {
     }
 }
 
+/// Geometry of a paged KV continuation.
+///
+/// `page_tokens` is the fixed page size a model declares and never varies per
+/// request; `pages` is the concrete number of pages one sequence holds. A
+/// sequence's capacity is `pages * page_tokens`, and it grows by adding pages
+/// rather than by reallocating a capacity-tailed buffer.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub struct KvStateSpec {
     layer_count: u16,
     kv_heads: u16,
     head_dim: u16,
-    block_tokens: u32,
+    page_tokens: u32,
+    pages: u32,
     dtype: DataType,
 }
 
@@ -44,17 +51,33 @@ impl KvStateSpec {
         layer_count: u16,
         kv_heads: u16,
         head_dim: u16,
-        block_tokens: u32,
+        page_tokens: u32,
         dtype: DataType,
     ) -> Result<Self, StateSpecError> {
-        if layer_count == 0 || kv_heads == 0 || head_dim == 0 || block_tokens == 0 {
+        Self::with_pages(layer_count, kv_heads, head_dim, page_tokens, 1, dtype)
+    }
+
+    /// # Errors
+    ///
+    /// Returns [`StateSpecError::ZeroDimension`] when any dimension or the page
+    /// count is zero.
+    pub fn with_pages(
+        layer_count: u16,
+        kv_heads: u16,
+        head_dim: u16,
+        page_tokens: u32,
+        pages: u32,
+        dtype: DataType,
+    ) -> Result<Self, StateSpecError> {
+        if layer_count == 0 || kv_heads == 0 || head_dim == 0 || page_tokens == 0 || pages == 0 {
             return Err(StateSpecError::ZeroDimension);
         }
         Ok(Self {
             layer_count,
             kv_heads,
             head_dim,
-            block_tokens,
+            page_tokens,
+            pages,
             dtype,
         })
     }
@@ -74,9 +97,22 @@ impl KvStateSpec {
         self.head_dim
     }
 
+    /// Fixed number of tokens one page holds.
     #[must_use]
-    pub const fn block_tokens(self) -> u32 {
-        self.block_tokens
+    pub const fn page_tokens(self) -> u32 {
+        self.page_tokens
+    }
+
+    /// Pages this sequence holds.
+    #[must_use]
+    pub const fn pages(self) -> u32 {
+        self.pages
+    }
+
+    /// Capacity in tokens: `pages * page_tokens`.
+    #[must_use]
+    pub const fn capacity_tokens(self) -> u32 {
+        self.pages * self.page_tokens
     }
 
     #[must_use]
@@ -84,32 +120,52 @@ impl KvStateSpec {
         self.dtype
     }
 
-    /// The same shape with a different token capacity.
+    /// Pages needed to cover `tokens`, or `None` on overflow.
+    #[must_use]
+    pub const fn pages_for(self, tokens: u32) -> Option<u32> {
+        if tokens == 0 {
+            return None;
+        }
+        let pages = tokens.div_ceil(self.page_tokens);
+        Some(pages)
+    }
+
+    /// The same page geometry sized for a concrete number of tokens.
     ///
-    /// A declaration states a shape and the most this component can hold; a concrete
-    /// sequence materializes the capacity its own work can reach. This is the only
-    /// way to derive that concrete requirement, so capacity is never edited in place.
+    /// A declaration states the page geometry and the most a component holds; a
+    /// concrete sequence holds the pages its own work can reach.
     ///
     /// # Errors
-    /// Returns [`StateSpecError::ZeroDimension`] when `block_tokens` is zero.
-    pub fn with_capacity(self, block_tokens: u32) -> Result<Self, StateSpecError> {
-        Self::new(
+    /// Returns [`StateSpecError::ZeroDimension`] when the derived page count is zero.
+    pub fn for_tokens(self, tokens: u32) -> Result<Self, StateSpecError> {
+        let pages = self
+            .pages_for(tokens)
+            .ok_or(StateSpecError::ZeroDimension)?;
+        Self::with_pages(
             self.layer_count,
             self.kv_heads,
             self.head_dim,
-            block_tokens,
+            self.page_tokens,
+            pages,
             self.dtype,
         )
     }
 
+    /// Bytes one page occupies: `layers * kv_heads * head_dim * 2 * dtype`.
     #[must_use]
-    pub fn byte_size(self) -> Option<u64> {
+    pub fn page_bytes(self) -> Option<u64> {
         let elements = u64::from(self.layer_count)
             .checked_mul(u64::from(self.kv_heads))?
             .checked_mul(u64::from(self.head_dim))?
-            .checked_mul(u64::from(self.block_tokens))?
+            .checked_mul(u64::from(self.page_tokens))?
             .checked_mul(2)?;
         elements.checked_mul(self.dtype.byte_width())
+    }
+
+    /// Bytes this sequence's pages occupy.
+    #[must_use]
+    pub fn byte_size(self) -> Option<u64> {
+        self.page_bytes()?.checked_mul(u64::from(self.pages))
     }
 }
 
@@ -274,18 +330,18 @@ impl StateRequirement {
         }
     }
 
-    /// This requirement with a concrete continuation capacity of `tokens`.
+    /// This requirement sized for a sequence that reaches `tokens`.
     ///
-    /// A declaration covers a maximum capacity, so one declared schema derives the
-    /// concrete requirement of any sequence that reaches no further than `tokens`.
+    /// A declaration covers a maximum reach, so one declared schema derives the
+    /// concrete page count of any sequence that reaches no further than `tokens`.
     /// Recurrent state is a fixed-size summary of the whole prefix and has no
     /// capacity dimension, so it is returned unchanged.
     ///
     /// # Errors
     /// Returns [`StateSpecError::ZeroDimension`] when `tokens` is zero.
-    pub fn with_capacity(self, tokens: u32) -> Result<Self, StateSpecError> {
+    pub fn for_tokens(self, tokens: u32) -> Result<Self, StateSpecError> {
         match self {
-            Self::FullAttentionKv(spec) => Ok(Self::FullAttentionKv(spec.with_capacity(tokens)?)),
+            Self::FullAttentionKv(spec) => Ok(Self::FullAttentionKv(spec.for_tokens(tokens)?)),
             Self::Recurrent(spec) => Ok(Self::Recurrent(spec)),
         }
     }
@@ -304,7 +360,8 @@ impl StateRequirement {
                     && concrete.kv_heads == declared.kv_heads
                     && concrete.head_dim == declared.head_dim
                     && concrete.dtype == declared.dtype
-                    && concrete.block_tokens <= declared.block_tokens
+                    && concrete.page_tokens == declared.page_tokens
+                    && concrete.pages <= declared.pages
             }
             (Self::Recurrent(concrete), Self::Recurrent(declared)) => concrete == declared,
             _ => false,
@@ -906,37 +963,53 @@ mod tests {
     }
 
     #[test]
-    fn a_declaration_covers_the_concrete_capacity_its_sequences_can_reach() {
-        let declared = StateRequirement::FullAttentionKv(
-            KvStateSpec::new(2, 4, 8, 64, DataType::F16).expect("declared spec"),
+    fn a_declaration_covers_the_pages_its_sequences_can_reach() {
+        // Page geometry is the model's declaration; a sequence holds whole pages.
+        let declared = KvStateSpec::new(2, 4, 8, 16, DataType::F16).expect("declared spec");
+        let page_bytes = declared.page_bytes().expect("page bytes");
+        assert_eq!(declared.capacity_tokens(), 16);
+        assert_eq!(declared.pages_for(16), Some(1));
+        assert_eq!(declared.pages_for(17), Some(2));
+        assert_eq!(declared.pages_for(64), Some(4));
+        assert_eq!(declared.pages_for(0), None);
+
+        let short = declared.for_tokens(16).expect("short reach");
+        let long = declared.for_tokens(64).expect("long reach");
+        assert_eq!(short.byte_size(), page_bytes.checked_mul(1));
+        assert_eq!(long.byte_size(), page_bytes.checked_mul(4));
+        assert!(
+            StateRequirement::FullAttentionKv(short)
+                .within(StateRequirement::FullAttentionKv(long))
         );
-        let concrete = declared.with_capacity(16).expect("concrete spec");
-        assert!(concrete.within(declared));
-        assert_eq!(
-            concrete.byte_size(),
-            declared.byte_size().map(|bytes| bytes / 4)
+        assert!(
+            !StateRequirement::FullAttentionKv(long)
+                .within(StateRequirement::FullAttentionKv(short)),
+            "capacity above the bound is not covered"
         );
-        // Capacity above the bound, a different shape and a different dtype are all
-        // still that model's declaration, just not one this state satisfies.
-        assert!(!declared.within(concrete));
-        assert!(!concrete.within(declared.with_capacity(8).expect("narrower")));
-        let wider = StateRequirement::FullAttentionKv(
-            KvStateSpec::new(2, 4, 8, 64, DataType::F32).expect("wider dtype"),
-        );
-        assert!(!concrete.within(wider));
-        let deeper = StateRequirement::FullAttentionKv(
-            KvStateSpec::new(3, 4, 8, 64, DataType::F16).expect("deeper"),
-        );
-        assert!(!concrete.within(deeper));
+
+        // A different page size, shape or dtype is a different declaration.
+        let other_page = KvStateSpec::new(2, 4, 8, 32, DataType::F16).expect("other page");
+        let wider = KvStateSpec::new(2, 4, 8, 16, DataType::F32).expect("wider dtype");
+        let deeper = KvStateSpec::new(3, 4, 8, 16, DataType::F16).expect("deeper");
+        for incompatible in [other_page, wider, deeper] {
+            assert!(!StateRequirement::FullAttentionKv(short).within(
+                StateRequirement::FullAttentionKv(incompatible.for_tokens(16).expect("concrete"))
+            ));
+        }
+
         // A recurrent summary has no capacity dimension: it is the same requirement
         // however far the sequence reached, and it never covers a KV declaration.
         let recurrent = recurrent_requirement();
-        assert_eq!(recurrent.with_capacity(16).expect("unchanged"), recurrent);
-        assert!(!recurrent.within(declared));
-        assert!(!concrete.within(recurrent));
+        assert_eq!(recurrent.for_tokens(16).expect("unchanged"), recurrent);
+        assert!(!recurrent.within(StateRequirement::FullAttentionKv(long)));
+        assert!(!StateRequirement::FullAttentionKv(short).within(recurrent));
         assert!(recurrent.within(recurrent));
         assert!(matches!(
-            declared.with_capacity(0),
+            recurrent.for_tokens(0),
+            Ok(StateRequirement::Recurrent(_))
+        ));
+        assert!(matches!(
+            StateRequirement::FullAttentionKv(declared).for_tokens(0),
             Err(StateSpecError::ZeroDimension)
         ));
     }

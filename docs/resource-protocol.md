@@ -268,8 +268,9 @@ Before exposing owned encoder access, establish these contracts through the real
 Status: the declared-shape/concrete-capacity split and capacity backpressure are
 implemented for the Qwen path (2026-09-15, roadmap 4a, device-qualified at `323f258`).
 Block-table KV addressing is qualified in the backend (2026-10-12, `ee689d7`) but has
-no runtime consumer: production Qwen still holds one contiguous allocation per
-sequence. Paged block reuse, eviction and preemption are accepted design and remain
+no runtime consumer. The host contract is page-granular — fixed page size per model,
+whole pages per sequence, capacity `pages * page_tokens` — while materialization is
+still one contiguous run per sequence. Paged block reuse, eviction and preemption are accepted design and remain
 unimplemented; this section states the contract they must satisfy.
 
 Continuation is the state a sequence must keep to continue: full-attention KV,

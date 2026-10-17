@@ -386,13 +386,7 @@ fn run_case(
 fn continuation_demand(requirements: &[StateRequirement], tokens: u32, sequences: usize) -> u64 {
     let per_sequence = requirements
         .iter()
-        .map(|requirement| {
-            requirement
-                .with_capacity(tokens)
-                .unwrap()
-                .byte_size()
-                .unwrap()
-        })
+        .map(|requirement| requirement.for_tokens(tokens).unwrap().byte_size().unwrap())
         .sum::<u64>();
     per_sequence * u64::try_from(sequences).unwrap()
 }

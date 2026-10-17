@@ -135,7 +135,7 @@ impl CudaKvState {
 
     #[must_use]
     pub fn token_capacity(&self) -> u32 {
-        self.spec.block_tokens()
+        self.spec.capacity_tokens()
     }
 
     #[must_use]
@@ -175,7 +175,7 @@ impl CudaKvState {
         })?;
         let layers = usize::from(spec.layer_count());
         let block_tokens =
-            usize::try_from(spec.block_tokens()).map_err(|_| CudaStateError::IndexOverflow {
+            usize::try_from(spec.capacity_tokens()).map_err(|_| CudaStateError::IndexOverflow {
                 family: "full-attention KV",
             })?;
         let token_width = usize::from(spec.kv_heads())
@@ -735,7 +735,7 @@ fn allocate_kv(stream: &Arc<CudaStream>, spec: KvStateSpec) -> Result<CudaKvStat
     // making one token contiguous for state append and attention reads.
     let layer_elements = checked_product(
         [
-            u64::from(spec.block_tokens()),
+            u64::from(spec.capacity_tokens()),
             u64::from(spec.kv_heads()),
             u64::from(spec.head_dim()),
         ],

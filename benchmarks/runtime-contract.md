@@ -682,9 +682,11 @@ cargo test --release -p engine-qwen --features cuda --test cuda_runtime --locked
   (SHA-256 `322e194f…23482`) still matches its reference tokens, including the
   constrained-authority and stalled/abandoned-peer gates, through the modified kernel.
 
-This qualifies addressing only. Production Qwen still uses one contiguous allocation
-per sequence and no block table: the cache, block growth, shared ownership and hybrid
-validity rules are unimplemented, and the paged path has no runtime consumer yet.
+This qualifies addressing only. The runtime contract is now page-granular — a model
+declares a fixed KV page size (16 tokens for Qwen), a sequence holds whole pages, and its
+capacity is `pages * page_tokens` — but materialization is still one contiguous run per
+sequence and the paged kernel entry point has no runtime consumer. Page tables, growth,
+shared ownership and hybrid validity rules remain unimplemented.
 
 ## Experimental CLI
 
