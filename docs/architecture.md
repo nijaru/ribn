@@ -70,10 +70,12 @@ not wake itself. The adapter still translates scalar AR rows into transitional c
 batch/state types; it has no second scheduler. Preparation retains one validated backend batch without taking
 continuation leases; submit consumes its exact rows, and abandonment preserves old state.
 
-Block-table attention reads exist in the backend, and the host continuation contract is
-page-granular: a model declares a fixed KV page size, a sequence holds whole pages, and its
-capacity is `pages * page_tokens`. Materialization is still one contiguous run per
-sequence, so no page table reaches a kernel yet. There is no paged write/growth consumer, prefix cache, restore operation
+The host continuation contract is page-granular — a model declares a fixed KV page size,
+a sequence holds whole pages, and its capacity is `pages * page_tokens` — and production
+decode addresses state through a device page table, so appends and attention both resolve
+logical tokens to physical ones. Each sequence still owns its own run of pages, so the
+table is identity-bound: sharing a resident arena, non-identity pages and page growth are
+not implemented. There is no paged write/growth consumer, prefix cache, restore operation
 or recomputation preemption. The surviving `engine-core` contracts are the prepared batch
 a backend executes, continuation state declarations and accounting, and artifact weight
 descriptions; they are not a model or execution-plan layer. A plan/description/capability

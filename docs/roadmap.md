@@ -91,7 +91,7 @@ features; they do not require completing the entire non-AR lifecycle before text
 | 4a. Request-reachable continuation | Prompt plus output reach, not maximum context. Three reference-matching requests fit a 500 MiB authority that cannot hold two context-sized charges. [Evidence](../benchmarks/runtime-contract.md) |
 | 4b host preparation | Aggregate accepted ranges, credit refunds, readiness/local rejection and uncertain ownership through the AR engine. Qwen validates/retains a fully reserved backend batch; no physical growth. [Host gate](../benchmarks/runtime-contract.md#ar-pre-submit-preparation-host-gate) |
 | 4b host authority | Supplied `BytePool` authorities, atomic hybrid grants and sibling readiness/closure. Production Qwen remains private. [Host gate](../benchmarks/runtime-contract.md#ar-reservation-authority-host-gate) |
-| 4b prerequisite | Block-table attention **reads** qualified at `ee689d7`; no paged executor follows from that primitive. [Addressing evidence](../benchmarks/runtime-contract.md#block-table-kv-addressing-2026-10-12-ee689d7) |
+| 4b page addressing | Host continuation is page-granular and production Qwen decode appends and attends through a device page table (`e82f58d`, `e36e097`). Tables are identity-bound from a per-sequence run, so a shared arena, non-identity pages and page growth remain. [Addressing evidence](../benchmarks/runtime-contract.md#page-table-continuation-e36e097) |
 
 Admission notification (`3e4dbec`) and shared batch/AR readiness (`e8e3b48`) are
 host-qualified; their device requalification remains pending. Only pending device

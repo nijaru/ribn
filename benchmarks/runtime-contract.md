@@ -688,6 +688,33 @@ capacity is `pages * page_tokens` — but materialization is still one contiguou
 sequence and the paged kernel entry point has no runtime consumer. Page tables, growth,
 shared ownership and hybrid validity rules remain unimplemented.
 
+### Page-table continuation (`e36e097`)
+
+The host continuation contract is page-granular (`e82f58d`): a model declares a fixed
+KV page size — 16 tokens for Qwen — a sequence holds whole pages, its capacity is
+`pages * page_tokens`, and reservation charges whole pages. Production decode then
+addresses state through a page table: appends map the logical token to a physical one
+and attention runs the paged entry point with the table as a device buffer. With the
+table currently identity-bound, the expected result is bit equality with the previous
+contiguous addressing, not a tolerance.
+
+Serialized on an idle RTX 4090, all exit 0: full `cuda_reference` 63/63 (444 s),
+`paged_attention` 2/2, Qwen CUDA runtime 5/5 (556 s), `cuda_http` 1/1, in-flight
+retirement 1/1, and `sampled_final_chunk_row_matches_serial_hidden_bits` under
+compute-sanitizer memcheck (205 s, 0 errors).
+
+One caveat is recorded rather than resolved: a first full `cuda_reference` run failed
+`heterogeneous_decode::different_capacities_preserve_hidden_and_all_continuation_bits`
+and the same commit then passed that test in isolation (36 s) and in a second full run
+(63/63). That test builds eight states of up to 4096 tokens, so device-memory pressure
+across a long binary is the likely cause, but the failing assertion was not captured
+and the cause is unattributed.
+
+This qualifies addressing, not sharing. A sequence still owns its own run of pages, so
+page indices are consecutive and no cache, reuse policy or growth path exists yet: a
+shared arena with non-identity tables and page growth is the next slice, and the
+per-request device allocation it removes is still on the admission path.
+
 ## Experimental CLI
 
 ```sh
