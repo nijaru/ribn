@@ -16,6 +16,7 @@ pub(crate) fn run(arguments: &[String]) -> Result<(), String> {
     let load = LoadOptions {
         device: options.device,
         context_tokens: options.context_length,
+        sampled_prefill_final: options.sampled_prefill_final,
         max_sequences: options
             .max_sequences
             .unwrap_or(LoadOptions::default().max_sequences),

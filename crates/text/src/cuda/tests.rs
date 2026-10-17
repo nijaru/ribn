@@ -96,6 +96,22 @@ fn loaded_sequence_limit_controls_admission_without_a_hidden_permit_cap() {
 }
 
 #[test]
+fn experimental_sampling_is_default_off_and_reaches_model_loading() {
+    let defaults = LoadOptions::default();
+    assert!(!defaults.sampled_prefill_final);
+    assert!(!QwenLoadOptions::from(defaults).sampled_prefill_final);
+    let enabled = QwenLoadOptions::from(LoadOptions {
+        sampled_prefill_final: true,
+        ..defaults
+    });
+    assert!(enabled.sampled_prefill_final);
+    assert_eq!(
+        enabled.prefill_chunk_members,
+        defaults.prefill_chunk_members
+    );
+}
+
+#[test]
 fn impossible_count_envelopes_reject_before_artifact_or_device_access() {
     for max_sequences in [0, usize::MAX, usize::MAX / 2] {
         let result = TextOwner::load(

@@ -32,6 +32,8 @@ pub struct LoadOptions {
     pub max_sequences: usize,
     /// Same-sequence prefill chunk size, or `None` for the serial prefill path.
     pub prefill_chunk_members: Option<usize>,
+    /// Experimental whole-chunk final-row sampling; disabled by default.
+    pub sampled_prefill_final: bool,
     pub weight_budget_bytes: Option<u64>,
     /// Continuation bytes the prepared execution may charge in total. `None` keeps the
     /// conservative context-sized reservation; a request is charged for the tokens it
@@ -53,6 +55,7 @@ impl Default for LoadOptions {
             context_tokens: qwen.context_tokens,
             max_sequences: qwen.max_sequences,
             prefill_chunk_members: qwen.prefill_chunk_members,
+            sampled_prefill_final: qwen.sampled_prefill_final,
             weight_budget_bytes: qwen.weight_budget_bytes,
             continuation_capacity_bytes: qwen.continuation_capacity_bytes,
             headroom_bytes: qwen.headroom_bytes,
@@ -69,6 +72,7 @@ impl From<LoadOptions> for QwenLoadOptions {
             context_tokens: value.context_tokens,
             max_sequences: value.max_sequences,
             prefill_chunk_members: value.prefill_chunk_members,
+            sampled_prefill_final: value.sampled_prefill_final,
             weight_budget_bytes: value.weight_budget_bytes,
             continuation_capacity_bytes: value.continuation_capacity_bytes,
             headroom_bytes: value.headroom_bytes,

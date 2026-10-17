@@ -2,7 +2,7 @@ use std::collections::HashSet;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 
-pub(crate) const USAGE: &str = "ribn serve <model.gguf> [--bind <loopback-ip:port>] [--model-name <name>] [--device <ordinal>] [--context-length <n>] [--max-sequences <n>] [--max-connections <n>] [--max-requests <n>] [--max-body-bytes <n>] [--max-response-bytes <n>] [--max-output-tokens <n>] [--connection-deadline-secs <n>]";
+pub(crate) const USAGE: &str = "ribn serve <model.gguf> [--bind <loopback-ip:port>] [--model-name <name>] [--device <ordinal>] [--context-length <n>] [--max-sequences <n>] [--max-connections <n>] [--max-requests <n>] [--max-body-bytes <n>] [--max-response-bytes <n>] [--max-output-tokens <n>] [--connection-deadline-secs <n>] [--sampled-prefill-final]";
 
 #[derive(Debug)]
 pub(crate) struct ServeOptions {
@@ -12,6 +12,7 @@ pub(crate) struct ServeOptions {
     pub device: u16,
     pub context_length: u32,
     pub max_sequences: Option<usize>,
+    pub sampled_prefill_final: bool,
     pub max_connections: Option<usize>,
     pub max_requests: Option<usize>,
     pub max_body_bytes: Option<usize>,
@@ -28,6 +29,7 @@ pub(crate) fn parse(arguments: &[String]) -> Result<ServeOptions, String> {
         device: 0,
         context_length: 4096,
         max_sequences: None,
+        sampled_prefill_final: false,
         max_connections: None,
         max_requests: None,
         max_body_bytes: None,
@@ -45,6 +47,10 @@ pub(crate) fn parse(arguments: &[String]) -> Result<ServeOptions, String> {
         }
         if !seen.insert(name) {
             return Err(format!("duplicate option {name}"));
+        }
+        if name == "--sampled-prefill-final" {
+            options.sampled_prefill_final = true;
+            continue;
         }
         let value = args
             .next()
@@ -120,6 +126,9 @@ mod tests {
         assert_eq!(options.max_requests, Some(8));
         assert_eq!(options.model_name, "qwen");
         assert_eq!(options.context_length, 4096);
+        assert!(!options.sampled_prefill_final);
+        let experimental = parse(&args(&["m.gguf", "--sampled-prefill-final"])).unwrap();
+        assert!(experimental.sampled_prefill_final);
     }
     #[test]
     fn rejects_unresolved_exposure_and_invalid_flags() {
@@ -129,6 +138,7 @@ mod tests {
             vec!["m", "--max-requests", "0"],
             vec!["m", "--device", "-1"],
             vec!["m", "--raw"],
+            vec!["m", "--sampled-prefill-final", "--sampled-prefill-final"],
             vec!["m", "other"],
             vec!["m", "--model-name", "a", "--model-name", "b"],
         ] {

@@ -44,6 +44,9 @@ pub struct QwenLoadOptions {
     /// serving-effect gates are recorded in
     /// `benchmarks/qwen-prefill-qualification.md`.
     pub prefill_chunk_members: Option<usize>,
+    /// Experimental sampling from a whole prefill chunk's final row. Default off;
+    /// requires a prefill lane and retains the serial fallback outside warp mode.
+    pub sampled_prefill_final: bool,
     /// Optional upper bound for staged weights. Automatic mode uses observed
     /// free device memory minus request-state reservations and headroom.
     pub weight_budget_bytes: Option<u64>,
@@ -66,6 +69,7 @@ impl Default for QwenLoadOptions {
             gemv_mode: GemvMode::default(),
             grouped_decode: false,
             prefill_chunk_members: Some(DEFAULT_PREFILL_CHUNK_MEMBERS),
+            sampled_prefill_final: false,
             weight_budget_bytes: None,
             continuation_capacity_bytes: None,
             headroom_bytes: 512 << 20,
@@ -148,12 +152,7 @@ pub(crate) fn load(
             .with_grouped_decode(options.grouped_decode);
     // The chunk lane is part of preparation, so its scratch is allocated
     // before the post-preparation memory check below accounts for it.
-    let dispatcher = match options.prefill_chunk_members {
-        Some(members) => dispatcher
-            .with_prefill_chunk(members)
-            .map_err(model_error)?,
-        None => dispatcher,
-    };
+    let dispatcher = prepare_dispatcher(dispatcher, &options)?;
     // Preparation is outside the scheduler. Publish no ready owner until all
     // uploads and preparation work have completed.
     stream.synchronize().map_err(model_error)?;
@@ -190,6 +189,25 @@ pub(crate) fn load(
             free_after_preparation_bytes,
         },
     ))
+}
+
+/// Apply the preparation-time lane toggles that cannot be set on construction.
+///
+/// The chunk lane and sampled-final selection are part of preparation, so their
+/// scratch must exist before the post-preparation memory check accounts for it.
+fn prepare_dispatcher(
+    dispatcher: CudaQwen35ServingDispatcher,
+    options: &QwenLoadOptions,
+) -> Result<CudaQwen35ServingDispatcher, ExecutionError> {
+    let dispatcher = match options.prefill_chunk_members {
+        Some(members) => dispatcher
+            .with_prefill_chunk(members)
+            .map_err(model_error)?,
+        None => dispatcher,
+    };
+    dispatcher
+        .with_sampled_prefill_final(options.sampled_prefill_final)
+        .map_err(model_error)
 }
 
 /// Continuation bytes this loaded execution may charge in total.
