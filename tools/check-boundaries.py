@@ -94,9 +94,30 @@ def main() -> int:
         "crates/core/src/scheduler.rs",
         "crates/core/src/serving.rs",
         "crates/core/src/serving_runtime.rs",
+        "crates/core/src/model.rs",
     ):
         if (ROOT / obsolete).exists():
             errors.append(f"{obsolete}: implementation is back in the wrong owner")
+    # The model/backend seam is a prepared batch, continuation state and weight
+    # descriptions. A plan/description/capability layer between them was removed
+    # because nothing read it; keep it from returning as bookkeeping.
+    removed_layer = (
+        "struct ExecutionPlan",
+        "struct ExecutionStage",
+        "struct ModelDescription",
+        "struct ModelCapabilities",
+        "trait ModelProvider",
+        "struct BackendCapabilities",
+        "struct BackendFeatures",
+        "struct PolicyVersion",
+    )
+    for path in sorted((ROOT / "crates" / "core" / "src").glob("*.rs")):
+        text = path.read_text()
+        for symbol in removed_layer:
+            if symbol in text:
+                errors.append(
+                    f"{path.relative_to(ROOT)}: {symbol!r} re-introduces the removed plan layer"
+                )
     if errors:
         print("\n".join(errors), file=sys.stderr)
         return 1
