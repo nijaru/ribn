@@ -59,10 +59,12 @@ pub(crate) fn run(arguments: &[String]) -> Result<(), String> {
             tokio::task::spawn_blocking(move || {
                 let (owner, memory) = TextOwner::load(options.model, load)?;
                 eprintln!(
-                    "ready: active sequence limit={}; application request capacity={}; sequence state reservation={} bytes",
+                    "ready: active sequence limit={}; application request capacity={}; sequence state reservation={} bytes; prefill chunk={:?}; sampled final prefill token={}",
                     load.max_sequences,
                     owner.model().request_capacity(),
-                    memory.reserved_sequence_bytes
+                    memory.reserved_sequence_bytes,
+                    load.prefill_chunk_members,
+                    load.sampled_prefill_final
                 );
                 Ok(owner)
             })
