@@ -3,11 +3,13 @@
 Initial qualification: 2026-09-12, `0496f79`, pinned artifact. Production Qwen loading
 now selects an eight-token same-sequence prefill lane independently of request concurrency.
 It batches token-independent operations and multi-row causal attention; convolution/GDN
-recurrence remains ordered per token. Serial remainder and, by default, the final sampling
-token stay on the batch-1 path. An opt-in path can sample the final token from the last
-chunk row when the prompt is an exact whole number of chunks and the lane runs warp
-projections without the chunk scan; see the
-[sampled-final device gate](runtime-contract.md#sampled-final-prefill-chunk-2026-10-17-device-gates-endpoint-measurement-pending).
+recurrence remains ordered per token. Serial remainder stays on the batch-1 path. By
+default the lane also samples the final prompt token from the last chunk row when the
+prompt is an exact whole number of chunks and the lane runs warp projections without the
+chunk scan; every other shape or mode keeps the serial final step. On the 2026-10-17
+endpoint cohort that halved short-prompt TTFT p95 and left the mixed cohorts within noise;
+see the
+[sampled-final measurement](runtime-contract.md#sampled-final-prefill-chunk-2026-10-17-promoted).
 GDN scan remains opt-in while its full-model numerical gate fails.
 See [current source and limits](../docs/architecture.md) and
 [recent device re-execution](runtime-contract.md#device-re-execution-2026-10-16-dc4aed0).

@@ -79,6 +79,10 @@ KV capacities/positions when model geometry/dtype match. Attention remains per-m
 on one stream, sharing executor-owned score scratch without padding caches; mixed
 prefill/decode and larger offers retain their fallbacks. See the
 [qualification](../benchmarks/runtime-contract.md#heterogeneous-capacity-decode-2026-10-16).
+The eight-token same-sequence prefill lane samples its final chunk row by default, so a
+prompt that is an exact whole number of chunks never re-runs its last token; partial
+prompts, the scalar projection mode and the chunk scan keep the serial final step. See the
+[sampled-final measurement](../benchmarks/runtime-contract.md#sampled-final-prefill-chunk-2026-10-17-promoted).
 The Qwen-owned serving benchmark exercises the real AR engine and preserves explicit
 GEMV variants; its timings are not the legacy baseline's qualification. Compatible decode
 subgroups within mixed offers are an experimental, default-off backend option. They

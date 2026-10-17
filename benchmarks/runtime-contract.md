@@ -847,23 +847,18 @@ hard shared-memory bound, broader model/hardware qualification or SOTA claim fol
 Raw evidence/scripts remain outside Git in `desktop:~/ribn-qualification/hetero-{experiment,candidate}/`
 and `desktop:~/ribn-qualification/bf76a6a-hetero-before/`.
 
-## Sampled final prefill chunk (2026-10-17, device gates; endpoint measurement pending)
+## Sampled final prefill chunk (2026-10-17, promoted)
 
-**Implemented, opt-in, not yet promoted.** The eight-token same-sequence prefill lane can
-now include the final prompt sampling token and hand that chunk's last residual row to the
-unchanged batch-1 output head. The chunk already advanced every persistent component for
-the token, so this runs only `RMSNorm` + vocabulary projection + argmax; it never consumes
-the token twice. Selection requires:
-
-- `with_sampled_prefill_final(true)` on the dispatcher (off by default), which also
-  requires a configured prefill lane;
-- the warp projection mode with the chunk-parallel recurrent scan disabled, whose
-  full-model rows are bit-identical to the batch-1 warp rows;
-- a prompt that is an exact whole number of chunks. Partial prompts still keep their final
-  token on the serial path, and every other mode/shape keeps the previous behavior.
-
-No kernel changed, no state layout or grant changed, and the fallback is the existing
-serial final step. The experiment's predeclared endpoint criteria live in the roadmap.
+**Promoted: the eight-token same-sequence prefill lane now samples its final chunk row by
+default.** The lane can include the final prompt sampling token and hand that chunk's last
+residual row to the unchanged batch-1 output head. The chunk already advanced every
+persistent component for the token, so this runs only `RMSNorm` + vocabulary projection +
+argmax; it never consumes the token twice. Selection requires the warp projection mode with
+the chunk-parallel recurrent scan disabled, whose full-model rows are bit-identical to the
+batch-1 warp rows, and a prompt that is an exact whole number of chunks. Partial prompts,
+the scalar projection mode and the chunk scan keep the previous serial final step, so
+`QwenLoadOptions::sampled_prefill_final` is a preference rather than a capability request.
+No kernel changed and no state layout or grant changed.
 
 ### Device evidence
 
@@ -876,10 +871,12 @@ serial final step. The experiment's predeclared endpoint criteria live in the ro
 | Existing 21-token fallback (2 chunks + 5 serial) | Unchanged, still matches llama-server |
 | Multi-chunk (3×8) chunk-versus-serial continuation | Still within its existing 5e-3 gate |
 | Compute Sanitizer memcheck over the new path | 0 errors |
+| Re-execution of the above on the promoted source | Bit identity, serving seam and memcheck passed |
 
 Raw logs: `desktop:~/ribn-qualification/sampled-prefill/`
 (`sampled-bits.log`, `memcheck-sampled-bits.log`, `serves-chunked.log`,
-`multi-chunk.log`, `exits.txt`). Commands:
+`multi-chunk.log`, `exits.txt`) and `desktop:~/ribn-qualification/sampled-prefill/promoted/`
+for the promotion re-run. Commands:
 
 ```sh
 ENGINE_QWEN_GGUF=/absolute/path/model.gguf \
@@ -891,12 +888,38 @@ cargo test --release -p engine-nvidia --features cuda --test cuda_reference --lo
   serves_chunked_prefill_matching_the_serial_path -- --ignored --exact --test-threads=1
 ```
 
-Limits: one artifact, one device, one warp lane; prompts of 8/16 tokens plus the existing
-21-token fallback. There is no endpoint throughput/latency measurement yet (three
-alternating-order A/B repeats are required), no independent-reference run beyond the
-anchored 21-token prompt, and no failed-enqueue/drain injection on this path. Sampling
-remains greedy-only. Bit identity is a property of the current warp lane; changing
-projection mode, scan selection or chunk size voids it and needs its own gate.
+### Endpoint measurement
+
+Three alternating-order A/B repeats (`control`, `candidate`, `control` order) of the
+[previous endpoint cohort](#first-equal-artifact-endpoint-diagnostic-2026-10-16): AIPerf
+0.13.0, seed 42, greedy with EOS, 32-token cap, 16 profiling requests plus two warmups per
+arm. The control is the retained `d1af02a` release CLI; only the candidate requested the
+new selection. [Structured results](qwen-trace/2026-10-17-sampled-final-prefill.json) retain
+source and binary identities, all 18 run summaries and the promotion criteria.
+
+Medians of three run-level measurements:
+
+| Cohort | Control output tok/s | Candidate output tok/s | Gain | p95 TTFT ms | Control → candidate p95 content E2E ms |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Short c1 | 28.22 | 32.72 | 16.0% | 272.68 → 116.56 (−57.3%) | 1135.52 → 979.07 |
+| Mixed c4 | 31.71 | 32.39 | 2.1% | 2309.11 → 2257.75 | 4649.63 → 4645.47 |
+| Mixed c8 | 34.91 | 35.74 | 2.4% | 4960.08 → 4789.07 | 9090.90 → 8876.23 |
+
+All predeclared criteria passed: short-c1 median p95 TTFT fell 57.3% (≥20% required), no
+cohort regressed throughput or p95 content E2E by more than 5%, and all **144 paired
+profiling visible outputs and core usage counts matched**. Every cohort kept its SLO pass
+count (16/16/16, 16/16/16, 15/15/15). The independent Qwen reference/cancellation/admission
+suite, the bounded CUDA HTTP parity/disconnect gate (which loads the promoted defaults
+through `TextOwner::load`) and low-level in-flight retirement were re-executed on the
+promoted source and passed. This is not an invertible token-ID comparison,
+distributional-quality proof, or product SLO claim.
+
+Limits: one artifact, one device, one warp lane. Only prompts that are an exact whole number
+of eight-token chunks benefit; the retained serial final step still covers every other
+shape, and the measurement says nothing about its latency. There is no failed-enqueue/drain
+injection on this path. Sampling remains greedy-only. Bit identity is a property of the
+current warp lane; changing projection mode, scan selection or chunk size voids it and needs
+its own gate.
 
 ## First equal-artifact endpoint diagnostic (2026-10-16)
 

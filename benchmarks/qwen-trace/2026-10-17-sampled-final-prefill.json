@@ -1,0 +1,154 @@
+{
+  "schema_version": 1,
+  "date": "2026-10-17",
+  "decision": "promote_sampling_the_final_prefill_chunk_row_by_default",
+  "base_commit": "0d553dd0b540fc6b706695284640e330827e1123",
+  "control": {
+    "source": "d1af02a",
+    "binary_sha256": "a473f6b95055b5566130f1b7a581585a76ff346dd8e3aea5145da75a12607070",
+    "frozen_at": "2026-10-17T04:49Z before any candidate rebuild"
+  },
+  "candidate": {
+    "source": "466042728b26109fd56d05c7fa67361dd7fa0d0f",
+    "source_plus_crates_diff": "466042728b26109fd56d05c7fa67361dd7fa0d0f+sha256:9cd497a3c3c0c0b069938b73894ee02f2c2d92b9d53976319b147968f25ef522",
+    "binary_sha256": "fdcc34b932a6e51a8bb36045d9021b711f487b57e53b5c98bd50220f6da65736",
+    "configuration": "default release CLI plus --sampled-prefill-final (the opt-in surface measured in this experiment; 360c8fc makes that behaviour the default and removes the flag)"
+  },
+  "cohort_configuration_reference": "2026-10-16-endpoint-diagnostic.json",
+  "criteria": {
+    "minimum_median_short_c1_p95_ttft_reduction": 0.2,
+    "maximum_throughput_or_p95_content_e2e_regression_per_cohort": 0.05,
+    "required_equal_profile_visible_outputs_and_core_usage": 144,
+    "independent_reference_cancellation_retirement_gates": "required",
+    "budget": "one implementation/qualification cycle",
+    "scope": "experiment criteria, not product SLOs"
+  },
+  "results": {
+    "complete": true,
+    "criteria_passed": true,
+    "aggregates": [
+      {
+        "case": "short-c1",
+        "control": {
+          "throughput_median": 28.21576965618612,
+          "throughput_range": [
+            28.187866395053966,
+            28.23350379691741
+          ],
+          "ttft_p50_median_ms": 271.2331735,
+          "ttft_p95_median_ms": 272.67739575,
+          "e2e_p95_median_ms": 1135.51752475,
+          "tpot_p95_median_ms": 27.84894981451613,
+          "slo_passes": [
+            16,
+            16,
+            16
+          ]
+        },
+        "candidate": {
+          "throughput_median": 32.72219047468151,
+          "throughput_range": [
+            32.700422117575876,
+            32.742612742267866
+          ],
+          "ttft_p50_median_ms": 115.21990650000001,
+          "ttft_p95_median_ms": 116.56374600000001,
+          "e2e_p95_median_ms": 979.06819975,
+          "tpot_p95_median_ms": 27.82575960483871,
+          "slo_passes": [
+            16,
+            16,
+            16
+          ]
+        },
+        "throughput_gain": 0.15971284403746155,
+        "ttft_p95_change": -0.572521419755418,
+        "e2e_p95_change": -0.13777799249240508
+      },
+      {
+        "case": "mixed-c4",
+        "control": {
+          "throughput_median": 31.711558969131126,
+          "throughput_range": [
+            31.69886581880339,
+            31.738802194763963
+          ],
+          "ttft_p50_median_ms": 1734.938926,
+          "ttft_p95_median_ms": 2309.10583,
+          "e2e_p95_median_ms": 4649.62972,
+          "tpot_p95_median_ms": 99.9690975,
+          "slo_passes": [
+            16,
+            16,
+            16
+          ]
+        },
+        "candidate": {
+          "throughput_median": 32.39324480439125,
+          "throughput_range": [
+            32.32206875324362,
+            32.73968840631031
+          ],
+          "ttft_p50_median_ms": 1627.759149,
+          "ttft_p95_median_ms": 2257.7466059999997,
+          "e2e_p95_median_ms": 4645.4728165,
+          "tpot_p95_median_ms": 99.90549197580646,
+          "slo_passes": [
+            16,
+            16,
+            16
+          ]
+        },
+        "throughput_gain": 0.021496446640283384,
+        "ttft_p95_change": -0.022242039898188737,
+        "e2e_p95_change": -0.0008940289335556129
+      },
+      {
+        "case": "mixed-c8",
+        "control": {
+          "throughput_median": 34.90581033965817,
+          "throughput_range": [
+            34.895859081382675,
+            34.92864288138181
+          ],
+          "ttft_p50_median_ms": 3492.6745954999997,
+          "ttft_p95_median_ms": 4960.08114275,
+          "e2e_p95_median_ms": 9090.8954665,
+          "tpot_p95_median_ms": 168.00035293548387,
+          "slo_passes": [
+            15,
+            15,
+            15
+          ]
+        },
+        "candidate": {
+          "throughput_median": 35.74090326833582,
+          "throughput_range": [
+            35.740591876883805,
+            35.77124320487822
+          ],
+          "ttft_p50_median_ms": 3406.2125754999997,
+          "ttft_p95_median_ms": 4789.0732115,
+          "e2e_p95_median_ms": 8876.22938725,
+          "tpot_p95_median_ms": 162.5443965,
+          "slo_passes": [
+            15,
+            15,
+            15
+          ]
+        },
+        "throughput_gain": 0.023924181119177934,
+        "ttft_p95_change": -0.03447684147263541,
+        "e2e_p95_change": -0.02361330410640472
+      }
+    ],
+    "cohort_audit": {
+      "runs": 18,
+      "paired_comparisons": 9,
+      "paired_requests_per_comparison": 16,
+      "equal_visible_outputs_and_core_usage": 144,
+      "note": "Nine control/candidate pairs (three alternating-order repeats per cohort), each reconciling the same 16 profiling payloads. Visible-text equality is not an invertible token-ID comparison or a distributional-quality proof."
+    }
+  },
+  "scope": "One pinned GGUF artifact, one RTX 4090, greedy decoding, 32-token output cap, 512-token sequence slots. Short-c1 uses a fixed 16-token input; mixed c4/c8 draw 64-token mean, 32-token standard deviation inputs. Prompts that are not an exact whole number of eight-token chunks keep the serial final step and are outside this measurement."
+}
