@@ -254,6 +254,16 @@ This work starts alongside serving and paging, not after prefix reuse.
    results, not broad numerical equivalence or product SLOs. The native replay now has
    23 whole-decode groups instead of zero, while retaining identical work-token totals.
    Mixed phases still fall back; investigate prefill/tail and projection costs next.
+   **Selected next experiment:** include the final sampling token in the existing
+   eight-token prefill chunk and copy its last hidden row to the unchanged scalar
+   output head, without consuming that token twice. Limit selection to warp mode with
+   GDN scan off; retain the old path for other shapes/modes. Budget one implementation/
+   qualification cycle. Require >=20% lower median short-c1 p95 TTFT over three
+   alternating-order endpoint repeats, <=5% throughput or p95 E2E regression in every
+   cohort, unchanged visible outputs/core usage, bit-preserving hidden/state continuation
+   on common histories, and independent reference/cancellation/retirement gates. These
+   are experiment criteria, not product SLOs. Keep the fallback and record non-promotion
+   if any criterion fails rather than changing thresholds after observing results.
 2. **Qualify useful physical lanes.** Compare packed/ragged heterogeneous-capacity work,
    scalable prefill GEMM and tiled attention against qualified small-row kernels and native
    vendor options. Preserve independent nonadjacent histories/completion mapping. Do not
