@@ -256,8 +256,9 @@ enqueue is not device completion, logical output usage or numerical acceptance.
 failed cleanup, but excludes initial validation and diagnostic publication. It is
 not device time, host/device idle time or a sum of per-row durations. Counters saturate;
 publication uses one fixed-size snapshot per observed attempt, with no per-step log.
-Instrumentation overhead and real-device counter mapping remain unqualified. Keep
-observation settings matched across performance comparisons. Device phase costs,
+[Bounded device probes](runtime-contract.md#bounded-device-mapping-and-trace-2026-10-16-dc4aed0)
+now cover specific lane/chunk histories; broad instrumentation overhead remains unqualified.
+Keep observation settings matched across performance comparisons. Device phase costs,
 queue age and physical-memory peaks still need separate instrumentation/qualification;
 these native diagnostics are not exposed by the HTTP endpoint.
 
@@ -265,6 +266,12 @@ The checked-in eight-request trace is a heterogeneous smoke workload, not steady
 traffic or competitive evidence. It excludes HTTP and tokenization. Use matched endpoint
 load generators above for serving comparisons. Its initial device evidence and the
 heterogeneous-capacity regression are in the [runtime contract](runtime-contract.md#mixed-arrival-native-qwen-gate).
+The [qualified capacity-independent decode lane](runtime-contract.md#heterogeneous-capacity-decode-2026-10-16)
+now batches whole decode offers of two through eight rows with matching KV model layout,
+even when capacities/positions differ. Each request retains its own allocation; no
+continuation padding is introduced. Mixed prefill/decode and larger offers still use
+their existing fallbacks. The v0 diagnostics reason `incompatible_kv` replaces
+`nonuniform_kv`; historical snapshots retain their original keys.
 
 The 2026-10-07 subgroup comparison used three `8427f63` baseline runs followed by three
 `c0c0242` runs with `--grouped-decode`, otherwise identical flags including

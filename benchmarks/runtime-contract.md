@@ -159,10 +159,11 @@ counts rejected/failed requests, and reports latency-objective goodput. See
 The initial device run exposed a real selection defect: heterogeneous request-reachable
 KV capacities were routed to a dense batched attention lane requiring uniform capacity.
 The run faulted with `batched attention requires positive uniform KV capacity`.
-Selection now requires equal concrete KV specifications; heterogeneous valid rows stay on
-the qualified per-row lane. This does not pad requests back to maximum context or widen
-the batched kernel's qualified scope. It also does not provide efficient heterogeneous
-batching: those rows lose cross-request weight amortization until a suitable lane qualifies.
+The initial repair required equal concrete KV specifications and kept heterogeneous
+valid rows on the qualified per-row lane, without padding requests to maximum context.
+The later [capacity-independent lane qualification](#heterogeneous-capacity-decode-2026-10-16)
+replaces that temporary capacity restriction with stream-ordered score reuse; model-layout
+checks remain. The historical measurements below describe the earlier row-wise fallback.
 
 The host selection regression failed before the fix and passes afterward.
 `mixed_request_reaches_preserve_reference_and_cancelled_peers` exercises three identical
@@ -752,6 +753,92 @@ engine was measured in these smokes; there is no representative mixed-load, SLO-
 quality-matched competitive or RSS/device-peak result. Those remain the
 [serving acceptance matrix](../docs/roadmap.md#first-competitive-acceptance-matrix).
 The desktop's four untracked SIMT artifacts retained their content fingerprints.
+
+## Heterogeneous-capacity decode (2026-10-16)
+
+**Promoted for the existing whole-decode lane.** Compatible KV model geometry/dtype no
+longer requires equal token capacities. The kernels already attend each member's cache
+sequentially on one stream; the old member-major score slicing imposed an unnecessary
+uniform stride. Decode now reuses executor-owned `[q_heads][max_capacity]` scratch,
+viewed with each member's own score stride. Same-sequence prefill retains its separate
+query-row dimension. Each request keeps its original continuation allocation/grant;
+there is no KV padding, new kernel, scheduler change or additional execution depth.
+Single rows, more than eight rows, mixed phases and incompatible model layouts retain
+their existing fallbacks. Experimental mixed-offer grouping remains off by default.
+The v0 diagnostics key `incompatible_kv` replaces `nonuniform_kv`; historical artifacts
+retain their original schema keys.
+
+The predeclared budget was one implementation/qualification cycle. Promotion required
+at least 10% median throughput gain on both mixed c4/c8 cohorts, no more than 5%
+short-c1 p95 E2E regression, unchanged cohort outputs/core usage, and the numerical and
+lifecycle gates below. These are experiment criteria, not product SLOs.
+[Structured results](qwen-trace/2026-10-16-heterogeneous-decode.json) retain the source
+patch/binary identities, all run results, numerical scope and native dispatch counts.
+The control is the retained `bf76a6a` release CLI; candidate and control ran on the same
+RTX 4090 with three alternating-order A/B, B/A, A/B repeats of the
+[previous endpoint cohort](#first-equal-artifact-endpoint-diagnostic-2026-10-16).
+
+Medians of three run-level measurements; 16 profiling requests plus two warmups/run,
+seed 42, output cap 32, actual usage and the same client/tokenizer/settings:
+
+| Cohort | Control output tok/s | Candidate output tok/s | Gain | Control → candidate p95 content E2E ms |
+| --- | ---: | ---: | ---: | ---: |
+| Short c1 | 28.23 | 28.26 | Within run variation | 1134.71 → 1132.95 |
+| Mixed c4 | 21.99 | 31.72 | 44.2% | 6423.94 → 4648.60 |
+| Mixed c8 | 21.98 | 34.92 | 58.9% | 13342.88 → 9067.41 |
+
+All 18 protocol/usage audits and raw-clock checks passed. All **144 paired profiling
+visible outputs and core usage counts matched**. This is not an invertible token-ID
+comparison or distributional-quality proof. At the existing illustrative 5 s TTFT /
+200 ms average TPOT / 10 s content E2E objectives, c8 improved from 1/16 to 15/16
+passing requests in every repeat. Its TTFT p95 barely changed (5006.06 → 4958.60 ms),
+while average-TPOT p95 fell from 297.11 to 165.86 ms. Prefill/projection throughput and
+remaining mixed-offer fallback therefore remain investigation targets, not a reason to
+rewrite logical policy. This finite cohort does not establish production saturation,
+fairness, population tails or quality equivalence to llama.cpp.
+
+### Numerical, addressing and retirement evidence
+
+The new capability test first failed on the original uniform-capacity guard (exit 101);
+the host selection test likewise rejected different capacities. After the change:
+
+- Full-model capacity-invariance test passed for widths 1/2/4/8, small capacities 2–9,
+  mixed capacities through 4096, and smaller capacities on reused lanes. Real distinct
+  prefixes plus two teacher-forced steps gave finite, bit-identical hidden values,
+  selected tokens, KV contents and all recurrent matrices/convolution histories against
+  a uniform-capacity control. Both batch instances use the candidate implementation:
+  this is a metamorphic addressing check, **not an independent model oracle**.
+- Shared-score attention at active extents 1, 2, 4096 and 262144 matched the unchanged
+  owned-slice per-member operator bitwise, with overlapping score views queued before
+  readback. Compute Sanitizer memcheck passed with **zero errors**. These are sparse
+  primitive inputs, not a 262144-token model-history or long-context-quality gate.
+- The independent Qwen runtime reference/cancellation/admission tests passed **5/5**
+  (553.66 s), HTTP parity/disconnect recovery **1/1**, and low-level in-flight retirement
+  at eight/nine rows **1/1**. The reference still covers the 257-token prompt and
+  eighteen-token agreed continuation, not broad numerical acceptance.
+
+```sh
+ENGINE_QWEN_GGUF=/absolute/path/model.gguf cargo test --release -p engine-nvidia --features cuda --test cuda_reference --locked heterogeneous_decode -- --ignored --test-threads=1
+cargo test --release -p engine-nvidia --features cuda --test cuda_reference --no-run --locked --message-format=json-render-diagnostics
+# Set EXE to that target's compiler-artifact.executable, not a guessed target path.
+EXE=/absolute/path/from-cargo-compiler-artifact
+/usr/local/cuda/bin/compute-sanitizer --tool memcheck --error-exitcode 99 "$EXE" heterogeneous_decode::shared_scores_preserve_attention_bits_through_model_context_limit --ignored --exact --test-threads=1
+```
+
+The same native eight-request workload then preserved all 960 model-step tokens
+(832 prefill / 128 decode), completed all eight requests and emitted 136 tokens without
+failure. Previously all 128 decode calls were scalar; the candidate used 67 scalar,
+eight width-two and fifteen width-three calls: **23 whole-decode groups**. The changed
+first-failure classification also moves mixed offers from `nonuniform_kv` to
+`non_decode_phase`; it does not mean the logical scheduler changed. This replay confirms
+physical lane use; the endpoint A/B runs, not one native sample, determine promotion.
+
+All required host gates, CUDA-feature checks and the focused review passed. Kernels and
+reduction orders within each lane are unchanged. The broader cross-engine fidelity
+question, failed-drain device injection and physical-accounting gaps remain open; no
+hard shared-memory bound, broader model/hardware qualification or SOTA claim follows.
+Raw evidence/scripts remain outside Git in `desktop:~/ribn-qualification/hetero-{experiment,candidate}/`
+and `desktop:~/ribn-qualification/bf76a6a-hetero-before/`.
 
 ## First equal-artifact endpoint diagnostic (2026-10-16)
 

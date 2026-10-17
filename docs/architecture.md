@@ -74,6 +74,11 @@ Block-table attention reads exist in the backend, but production Qwen remains
 contiguous. There is no paged write/growth consumer, prefix cache, restore operation
 or recomputation preemption. The surviving `engine-core` contracts are transitional;
 its duplicate scheduler, serving runtime and `ribn local` frontend have been removed.
+Whole decode offers of two through eight rows can now batch across different positive
+KV capacities/positions when model geometry/dtype match. Attention remains per-member
+on one stream, sharing executor-owned score scratch without padding caches; mixed
+prefill/decode and larger offers retain their fallbacks. See the
+[qualification](../benchmarks/runtime-contract.md#heterogeneous-capacity-decode-2026-10-16).
 The Qwen-owned serving benchmark exercises the real AR engine and preserves explicit
 GEMV variants; its timings are not the legacy baseline's qualification. Compatible decode
 subgroups within mixed offers are an experimental, default-off backend option. They

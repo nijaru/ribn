@@ -7,13 +7,16 @@ open implementation choices and acceptance gates. All v0 interfaces may change.
 
 ## Current execution order
 
-**Next: qualify the numerical comparison and select one measured physical-execution
-experiment on the contiguous path.** The [first repeated equal-artifact endpoint diagnostic](../benchmarks/runtime-contract.md#first-equal-artifact-endpoint-diagnostic-2026-10-16)
-is complete: Ribn achieved about 28 tok/s at short c1 and 22 tok/s at mixed c4/c8,
-versus llama.cpp's 48/97/187. Output histories differ and the incumbent's mixed-batch
-outputs vary, so this is not quality-equivalent competitive acceptance. Classify those
-differences on common histories rather than chasing greedy equality; attribute the
-performance gap with the same logical policy before selecting an optimization.
+**Next: qualify the cross-engine numerical comparison and target remaining prefill/
+projection costs on the contiguous path.** The [first endpoint diagnostic](../benchmarks/runtime-contract.md#first-equal-artifact-endpoint-diagnostic-2026-10-16)
+exposed flat mixed c4/c8 throughput at about 22 tok/s. The [first measured lane improvement](../benchmarks/runtime-contract.md#heterogeneous-capacity-decode-2026-10-16)
+now batches compatible decode rows across different KV capacities: the same cohort
+improved to about 32/35 tok/s (+44%/+59%), with unchanged sampled outputs and short-c1
+latency. Its c8 TTFT p95 remains near 5 s. Keep logical policy as the control when
+selecting the next bounded execution experiment.
+The earlier llama.cpp observations were 48/97/187 tok/s, but cross-engine histories
+differ and the incumbent's mixed outputs vary. Quality-equivalent competitive acceptance
+remains open; classify differences on common histories rather than chase greedy equality.
 The bounded CUDA HTTP/reference gates and host input-retention gates passed.
 Prove model-local integration with a real dense second decoder alongside this work;
 do not postpone it until hybrid caching or scheduling is complete.
@@ -67,9 +70,9 @@ paths; do not turn every unfinished subsystem into a dependency of text measurem
    different backend tests backend portability. Neither follows from the other.
 
 Choose workload objectives before the baseline; choose the incumbent gap to address,
-acceptance criteria and an effort budget before the optimization experiment. None is
-numerically selected by this roadmap. Record the
-result and whether it warrants promotion, another experiment or redesign in the existing
+acceptance criteria and an effort budget before the optimization experiment. Individual
+experiment thresholds below are not product SLOs or a general effort commitment. Record
+the result and whether it warrants promotion, another experiment or redesign in the existing
 benchmark evidence. Do not count a completed abstraction as a competitive milestone.
 
 While device access is unavailable, close specific host-testable baseline gaps or prepare
@@ -242,11 +245,22 @@ This work starts alongside serving and paging, not after prefix reuse.
    projection/prefill throughput and heterogeneous decode before a scheduler-only rewrite;
    compare qualified native/vendor options as well as custom kernels. Queue age, physical
    memory attribution, endpoint exposure and broad diagnostics overhead remain open.
+   **First experiment promoted:** the existing whole-decode lane now accepts different
+   positive KV capacities with matching model layout. Stream-ordered score reuse needs
+   no new kernel, policy or continuation padding. The one-cycle experiment passed its
+   predeclared >=10% mixed-c4/c8 median throughput and <=5% short-c1 p95 E2E-regression
+   criteria, unchanged cohort outputs/usage, capacity-invariance/attention memcheck and
+   independent reference/cancellation/retirement gates. These are scoped experimental
+   results, not broad numerical equivalence or product SLOs. The native replay now has
+   23 whole-decode groups instead of zero, while retaining identical work-token totals.
+   Mixed phases still fall back; investigate prefill/tail and projection costs next.
 2. **Qualify useful physical lanes.** Compare packed/ragged heterogeneous-capacity work,
    scalable prefill GEMM and tiled attention against qualified small-row kernels and native
    vendor options. Preserve independent nonadjacent histories/completion mapping. Do not
-   remove uniform-capacity guards until descriptors/scratch/addressing qualify, or restore
-   maximum-context reservation just to batch. Measure conversion/repacking/workspace costs.
+   weaken geometry/addressing checks without qualification, or restore maximum-context
+   reservation just to batch. The capacity-only restriction above is removed after its
+   addressing gate; other lanes need their own evidence. Measure conversion/repacking/
+   workspace costs.
 3. **Evaluate unified logical policy.** Select bounded prefill/decode/replay frontiers using
    age/priority, output credits, token bounds and aggregate backend feasibility. Protect
    decode latency and prefill/replay progress. Compare against current queues with the same

@@ -529,9 +529,24 @@ impl CudaQwen35ServingDispatcher {
         })
     }
 
+    /// KV model layout, excluding independently owned token capacities.
+    fn decode_kv_layout(
+        state: &InferenceStateSet,
+    ) -> Option<(u16, u16, u16, engine_core::DataType)> {
+        state.kv().map(|kv| {
+            let spec = kv.spec();
+            (
+                spec.layer_count(),
+                spec.kv_heads(),
+                spec.head_dim(),
+                spec.dtype(),
+            )
+        })
+    }
+
     /// First failed whole-batch decode selection condition. Single rows retain
-    /// the batch-1 oracle; mixed phases, unsupported decode shapes and unequal
-    /// concrete KV layouts retain the row-wise path. Sampling values and other
+    /// the batch-1 oracle; mixed phases, unsupported decode shapes and incompatible
+    /// KV model layouts retain the row-wise path. Sampling values and other
     /// model/device validation still belong to enqueue.
     fn whole_decode_ineligibility(
         batch: &ExecutionBatch,
@@ -543,10 +558,7 @@ impl CudaQwen35ServingDispatcher {
         if batch.len() > crate::quantized::MAX_BATCH_MEMBERS {
             return Some(DecodeFallback::RowLimit);
         }
-        let kv_spec = states
-            .first()
-            .and_then(InferenceStateSet::kv)
-            .map(engine_core::KvState::spec);
+        let kv_layout = states.first().and_then(Self::decode_kv_layout);
         for (segment, state) in batch.segments().iter().zip(states) {
             if segment.phase() != ExecutionPhase::Decode {
                 return Some(DecodeFallback::NonDecodePhase);
@@ -563,8 +575,8 @@ impl CudaQwen35ServingDispatcher {
             if state.token_position().is_none() {
                 return Some(DecodeFallback::MissingPosition);
             }
-            if state.kv().map(engine_core::KvState::spec) != kv_spec {
-                return Some(DecodeFallback::NonuniformKv);
+            if Self::decode_kv_layout(state) != kv_layout {
+                return Some(DecodeFallback::IncompatibleKv);
             }
         }
         None
@@ -594,12 +606,12 @@ impl CudaQwen35ServingDispatcher {
         if !eligible(first) {
             return vec![first];
         }
-        let spec = states[first].kv().expect("eligible KV").spec();
+        let layout = Self::decode_kv_layout(&states[first]);
         (first..segments.len())
             .filter(|&index| {
                 !scheduled[index]
                     && eligible(index)
-                    && states[index].kv().expect("eligible KV").spec() == spec
+                    && Self::decode_kv_layout(&states[index]) == layout
             })
             .take(crate::quantized::MAX_BATCH_MEMBERS)
             .collect()
@@ -1167,18 +1179,8 @@ mod tests {
         for (capacities, prefill, expected, fallback) in [
             (vec![4], None, vec![0], Some(DecodeFallback::SingleRow)),
             (vec![4, 4], None, vec![0, 1], None),
-            (
-                vec![4, 5],
-                None,
-                vec![0],
-                Some(DecodeFallback::NonuniformKv),
-            ),
-            (
-                vec![4, 5, 4],
-                None,
-                vec![0, 2],
-                Some(DecodeFallback::NonuniformKv),
-            ),
+            (vec![4, 5], None, vec![0, 1], None),
+            (vec![4, 5, 4], None, vec![0, 1, 2], None),
             (
                 vec![4, 4, 4],
                 Some(1),
@@ -1193,20 +1195,46 @@ mod tests {
                 Some(DecodeFallback::RowLimit),
             ),
         ] {
-            assert_decode_selection(capacities, prefill, &expected, fallback);
+            let specs = capacities
+                .into_iter()
+                .map(|capacity| {
+                    engine_core::KvStateSpec::new(1, 1, 2, capacity, engine_core::DataType::F16)
+                        .unwrap()
+                })
+                .collect();
+            assert_decode_selection(specs, prefill, &expected, fallback);
+        }
+    }
+
+    #[test]
+    fn decode_groups_reject_incompatible_kv_layouts() {
+        use engine_core::{DataType, KvStateSpec};
+        let base = KvStateSpec::new(1, 1, 2, 4, DataType::F16).unwrap();
+        for other in [
+            KvStateSpec::new(2, 1, 2, 4, DataType::F16).unwrap(),
+            KvStateSpec::new(1, 2, 2, 4, DataType::F16).unwrap(),
+            KvStateSpec::new(1, 1, 3, 4, DataType::F16).unwrap(),
+            KvStateSpec::new(1, 1, 2, 4, DataType::F32).unwrap(),
+        ] {
+            assert_decode_selection(
+                vec![base, other, base.with_capacity(8).unwrap()],
+                None,
+                &[0, 2],
+                Some(super::DecodeFallback::IncompatibleKv),
+            );
         }
     }
 
     fn assert_decode_selection(
-        capacities: Vec<u32>,
+        specs: Vec<engine_core::KvStateSpec>,
         prefill: Option<usize>,
         expected: &[usize],
         fallback: Option<super::DecodeFallback>,
     ) {
         use engine_core::{
-            DataType, DeviceId, ExecutionBatch, ExecutionPhase, ExecutionSegment,
-            ExecutionTokenInput, KvStateSpec, LogicalStateManager, RequestId, SamplingParams,
-            StateLocation, StateManager, StateRequirement,
+            DeviceId, ExecutionBatch, ExecutionPhase, ExecutionSegment, ExecutionTokenInput,
+            LogicalStateManager, RequestId, SamplingParams, StateLocation, StateManager,
+            StateRequirement,
         };
         let device = DeviceId::new(0);
         let location = StateLocation::Device(device);
@@ -1216,16 +1244,11 @@ mod tests {
             ribn_foundation::BytePool::new(0).shared(),
         );
 
-        let mut states = capacities
+        let mut states = specs
             .into_iter()
-            .map(|capacity| {
+            .map(|spec| {
                 manager
-                    .allocate_set(
-                        &[StateRequirement::FullAttentionKv(
-                            KvStateSpec::new(1, 1, 2, capacity, DataType::F16).unwrap(),
-                        )],
-                        location,
-                    )
+                    .allocate_set(&[StateRequirement::FullAttentionKv(spec)], location)
                     .unwrap()
             })
             .collect::<Vec<_>>();

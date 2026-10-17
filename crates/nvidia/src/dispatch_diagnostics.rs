@@ -15,7 +15,7 @@ pub enum DecodeFallback {
     NonDecodePhase,
     DecodeShape,
     MissingPosition,
-    NonuniformKv,
+    IncompatibleKv,
 }
 
 impl DecodeFallback {
@@ -25,7 +25,7 @@ impl DecodeFallback {
         Self::NonDecodePhase,
         Self::DecodeShape,
         Self::MissingPosition,
-        Self::NonuniformKv,
+        Self::IncompatibleKv,
     ];
 
     #[must_use]
@@ -36,7 +36,7 @@ impl DecodeFallback {
             Self::NonDecodePhase => "non_decode_phase",
             Self::DecodeShape => "decode_shape",
             Self::MissingPosition => "missing_position",
-            Self::NonuniformKv => "nonuniform_kv",
+            Self::IncompatibleKv => "incompatible_kv",
         }
     }
 }

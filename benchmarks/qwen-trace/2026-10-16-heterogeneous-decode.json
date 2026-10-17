@@ -1,0 +1,1178 @@
+{
+  "schema_version": 1,
+  "date": "2026-10-16",
+  "decision": "promote_existing_decode_batch_lane_for_compatible_layouts_with_different_KV_capacities",
+  "base_commit": "bf76a6a65c0a7bd23a3b0306926940853dd3a5d9",
+  "candidate_identity": {
+    "control_source": "bf76a6a",
+    "candidate_source": "bf76a6a+sha256:3a67f64c70da97497fdc6a604cd2bf248ee27caeea938bcbbfa296fa2ae5499d",
+    "sha256": {
+      "ribn-control": "eec00878abf3b1b1511aa4669fe9439a65a19be58d3e4fcfc4e9affa7f7270fe",
+      "ribn-candidate": "a473f6b95055b5566130f1b7a581585a76ff346dd8e3aea5145da75a12607070"
+    }
+  },
+  "cohort_configuration_reference": "2026-10-16-endpoint-diagnostic.json",
+  "criteria": {
+    "minimum_mixed_c4_c8_median_throughput_gain": 0.1,
+    "maximum_short_c1_p95_content_e2e_regression": 0.05,
+    "required_equal_profile_visible_outputs_and_core_usage": 144,
+    "budget": "one implementation/qualification cycle",
+    "scope": "experiment criteria, not product SLOs"
+  },
+  "results": {
+    "complete": true,
+    "performance_and_cohort_criteria_passed": true,
+    "aggregates": [
+      {
+        "case": "short-c1",
+        "control": {
+          "throughput_median": 28.227825311121265,
+          "throughput_range": [
+            28.204703723207178,
+            28.2586325659336
+          ],
+          "e2e_p95_median_ms": 1134.71127925,
+          "ttft_p95_median_ms": 272.9557455,
+          "tpot_p95_median_ms": 27.832510967741936,
+          "slo_passes": [
+            16,
+            16,
+            16
+          ]
+        },
+        "candidate": {
+          "throughput_median": 28.261690031166268,
+          "throughput_range": [
+            28.253608160470925,
+            28.261808203682495
+          ],
+          "e2e_p95_median_ms": 1132.9531562500001,
+          "ttft_p95_median_ms": 272.44795899999997,
+          "tpot_p95_median_ms": 27.77998487096774,
+          "slo_passes": [
+            16,
+            16,
+            16
+          ]
+        },
+        "throughput_gain": 0.001199692844622291,
+        "e2e_p95_change": -0.0015494011843805167
+      },
+      {
+        "case": "mixed-c4",
+        "control": {
+          "throughput_median": 21.99349449675342,
+          "throughput_range": [
+            21.958821757755153,
+            21.995453457029722
+          ],
+          "e2e_p95_median_ms": 6423.9372299999995,
+          "ttft_p95_median_ms": 2346.63464375,
+          "tpot_p95_median_ms": 152.62017008064515,
+          "slo_passes": [
+            16,
+            16,
+            16
+          ]
+        },
+        "candidate": {
+          "throughput_median": 31.716764063645574,
+          "throughput_range": [
+            31.708746663947537,
+            31.720626026360193
+          ],
+          "e2e_p95_median_ms": 4648.59595025,
+          "ttft_p95_median_ms": 2309.74869925,
+          "tpot_p95_median_ms": 99.95557846774193,
+          "slo_passes": [
+            16,
+            16,
+            16
+          ]
+        },
+        "throughput_gain": 0.442097528809142,
+        "e2e_p95_change": -0.2763634226466437
+      },
+      {
+        "case": "mixed-c8",
+        "control": {
+          "throughput_median": 21.97974057465457,
+          "throughput_range": [
+            21.967916626986618,
+            22.00864476818497
+          ],
+          "e2e_p95_median_ms": 13342.8814225,
+          "ttft_p95_median_ms": 5006.05977925,
+          "tpot_p95_median_ms": 297.1129006693548,
+          "slo_passes": [
+            1,
+            1,
+            1
+          ]
+        },
+        "candidate": {
+          "throughput_median": 34.922743801802675,
+          "throughput_range": [
+            34.91340381264702,
+            34.933354121080704
+          ],
+          "e2e_p95_median_ms": 9067.406196,
+          "ttft_p95_median_ms": 4958.5956747499995,
+          "tpot_p95_median_ms": 165.8638539516129,
+          "slo_passes": [
+            15,
+            15,
+            15
+          ]
+        },
+        "throughput_gain": 0.5888606002053103,
+        "e2e_p95_change": -0.32043117907727925
+      }
+    ],
+    "comparisons": [
+      {
+        "control": "ribn-control-mixed-c4-r1",
+        "candidate": "ribn-candidate-mixed-c4-r1",
+        "equal_visible_outputs": 16,
+        "requests": 16
+      },
+      {
+        "control": "ribn-control-mixed-c4-r2",
+        "candidate": "ribn-candidate-mixed-c4-r2",
+        "equal_visible_outputs": 16,
+        "requests": 16
+      },
+      {
+        "control": "ribn-control-mixed-c4-r3",
+        "candidate": "ribn-candidate-mixed-c4-r3",
+        "equal_visible_outputs": 16,
+        "requests": 16
+      },
+      {
+        "control": "ribn-control-mixed-c8-r1",
+        "candidate": "ribn-candidate-mixed-c8-r1",
+        "equal_visible_outputs": 16,
+        "requests": 16
+      },
+      {
+        "control": "ribn-control-mixed-c8-r2",
+        "candidate": "ribn-candidate-mixed-c8-r2",
+        "equal_visible_outputs": 16,
+        "requests": 16
+      },
+      {
+        "control": "ribn-control-mixed-c8-r3",
+        "candidate": "ribn-candidate-mixed-c8-r3",
+        "equal_visible_outputs": 16,
+        "requests": 16
+      },
+      {
+        "control": "ribn-control-short-c1-r1",
+        "candidate": "ribn-candidate-short-c1-r1",
+        "equal_visible_outputs": 16,
+        "requests": 16
+      },
+      {
+        "control": "ribn-control-short-c1-r2",
+        "candidate": "ribn-candidate-short-c1-r2",
+        "equal_visible_outputs": 16,
+        "requests": 16
+      },
+      {
+        "control": "ribn-control-short-c1-r3",
+        "candidate": "ribn-candidate-short-c1-r3",
+        "equal_visible_outputs": 16,
+        "requests": 16
+      }
+    ],
+    "runs": [
+      {
+        "output_token_throughput": {
+          "unit": "tokens/sec",
+          "avg": 31.709540441102565
+        },
+        "request_throughput": {
+          "unit": "requests/sec",
+          "avg": 0.9909231387844551
+        },
+        "benchmark_duration": {
+          "unit": "sec",
+          "avg": 16.140917248
+        },
+        "request_goodput": null,
+        "request_goodput_percentage": null,
+        "run": "ribn-candidate-mixed-c4-r1",
+        "requests": 16,
+        "output_tokens": 512,
+        "input_range": [
+          22,
+          119
+        ],
+        "wall_clock_active_window_s": 16.140917256,
+        "window_output_toks_per_s": 31.720626026360193,
+        "slo_passes": 16,
+        "window_slo_goodput_rps": 0.991269563323756,
+        "ttft_ms": {
+          "p50": 1735.1609735000002,
+          "p95": 2309.21948575,
+          "max": 2588.153281
+        },
+        "e2e_ms": {
+          "p50": 4025.2926065,
+          "p95": 4646.90315925,
+          "max": 5628.8403
+        },
+        "terminal_e2e_ms": {
+          "p50": 4025.2926065,
+          "p95": 4646.90315925,
+          "max": 5628.8403
+        },
+        "tpot_ms": {
+          "p50": 77.57502519354838,
+          "p95": 99.95557846774193,
+          "max": 105.56227977419356
+        }
+      },
+      {
+        "output_token_throughput": {
+          "unit": "tokens/sec",
+          "avg": 31.707196768284398
+        },
+        "request_throughput": {
+          "unit": "requests/sec",
+          "avg": 0.9908498990088874
+        },
+        "benchmark_duration": {
+          "unit": "sec",
+          "avg": 16.142882816
+        },
+        "request_goodput": null,
+        "request_goodput_percentage": null,
+        "run": "ribn-candidate-mixed-c4-r2",
+        "requests": 16,
+        "output_tokens": 512,
+        "input_range": [
+          22,
+          119
+        ],
+        "wall_clock_active_window_s": 16.14288264,
+        "window_output_toks_per_s": 31.716764063645574,
+        "slo_passes": 16,
+        "window_slo_goodput_rps": 0.9911488769889242,
+        "ttft_ms": {
+          "p50": 1737.2476080000001,
+          "p95": 2309.8493065000002,
+          "max": 2592.938971
+        },
+        "e2e_ms": {
+          "p50": 4024.2388355,
+          "p95": 4651.489673,
+          "max": 5633.017523
+        },
+        "terminal_e2e_ms": {
+          "p50": 4024.2388355,
+          "p95": 4651.489673,
+          "max": 5633.017523
+        },
+        "tpot_ms": {
+          "p50": 77.57805622580645,
+          "p95": 99.93300345967742,
+          "max": 105.53086364516129
+        }
+      },
+      {
+        "output_token_throughput": {
+          "unit": "tokens/sec",
+          "avg": 31.696603498883192
+        },
+        "request_throughput": {
+          "unit": "requests/sec",
+          "avg": 0.9905188593400998
+        },
+        "benchmark_duration": {
+          "unit": "sec",
+          "avg": 16.146964224
+        },
+        "request_goodput": null,
+        "request_goodput_percentage": null,
+        "run": "ribn-candidate-mixed-c4-r3",
+        "requests": 16,
+        "output_tokens": 512,
+        "input_range": [
+          22,
+          119
+        ],
+        "wall_clock_active_window_s": 16.146964288,
+        "window_output_toks_per_s": 31.708746663947537,
+        "slo_passes": 16,
+        "window_slo_goodput_rps": 0.9908983332483605,
+        "ttft_ms": {
+          "p50": 1735.3949535,
+          "p95": 2309.74869925,
+          "max": 2588.942209
+        },
+        "e2e_ms": {
+          "p50": 4026.024186,
+          "p95": 4648.59595025,
+          "max": 5630.975588
+        },
+        "terminal_e2e_ms": {
+          "p50": 4026.024186,
+          "p95": 4648.59595025,
+          "max": 5630.975588
+        },
+        "tpot_ms": {
+          "p50": 77.60991787096773,
+          "p95": 100.00347067741937,
+          "max": 105.62355570967742
+        }
+      },
+      {
+        "output_token_throughput": {
+          "unit": "tokens/sec",
+          "avg": 34.91098328036227
+        },
+        "request_throughput": {
+          "unit": "requests/sec",
+          "avg": 1.0909682275113208
+        },
+        "benchmark_duration": {
+          "unit": "sec",
+          "avg": 14.660932608000001
+        },
+        "request_goodput": null,
+        "request_goodput_percentage": null,
+        "run": "ribn-candidate-mixed-c8-r1",
+        "requests": 16,
+        "output_tokens": 512,
+        "input_range": [
+          22,
+          119
+        ],
+        "wall_clock_active_window_s": 14.660932798,
+        "window_output_toks_per_s": 34.922743801802675,
+        "slo_passes": 15,
+        "window_slo_goodput_rps": 1.0231272598184378,
+        "ttft_ms": {
+          "p50": 3490.765335,
+          "p95": 4958.5956747499995,
+          "max": 5307.613142
+        },
+        "e2e_ms": {
+          "p50": 7182.7298885,
+          "p95": 9088.3049725,
+          "max": 10247.632726
+        },
+        "terminal_e2e_ms": {
+          "p50": 7182.7298885,
+          "p95": 9088.3049725,
+          "max": 10247.632726
+        },
+        "tpot_ms": {
+          "p50": 121.67291993548389,
+          "p95": 167.93540159677417,
+          "max": 193.67519503225805
+        }
+      },
+      {
+        "output_token_throughput": {
+          "unit": "tokens/sec",
+          "avg": 34.91973138297816
+        },
+        "request_throughput": {
+          "unit": "requests/sec",
+          "avg": 1.0912416057180676
+        },
+        "benchmark_duration": {
+          "unit": "sec",
+          "avg": 14.65648
+        },
+        "request_goodput": null,
+        "request_goodput_percentage": null,
+        "run": "ribn-candidate-mixed-c8-r2",
+        "requests": 16,
+        "output_tokens": 512,
+        "input_range": [
+          22,
+          119
+        ],
+        "wall_clock_active_window_s": 14.656479828,
+        "window_output_toks_per_s": 34.933354121080704,
+        "slo_passes": 15,
+        "window_slo_goodput_rps": 1.0234381090160363,
+        "ttft_ms": {
+          "p50": 3813.6601259999998,
+          "p95": 4957.534614,
+          "max": 5306.59869
+        },
+        "e2e_ms": {
+          "p50": 7140.042198,
+          "p95": 9062.27947075,
+          "max": 10157.931796
+        },
+        "terminal_e2e_ms": {
+          "p50": 7140.042198,
+          "p95": 9062.27947075,
+          "max": 10157.931796
+        },
+        "tpot_ms": {
+          "p50": 115.71113851612903,
+          "p95": 165.77918498387098,
+          "max": 193.63289096774193
+        }
+      },
+      {
+        "output_token_throughput": {
+          "unit": "tokens/sec",
+          "avg": 34.90060253049141
+        },
+        "request_throughput": {
+          "unit": "requests/sec",
+          "avg": 1.0906438290778566
+        },
+        "benchmark_duration": {
+          "unit": "sec",
+          "avg": 14.664854784000001
+        },
+        "request_goodput": null,
+        "request_goodput_percentage": null,
+        "run": "ribn-candidate-mixed-c8-r3",
+        "requests": 16,
+        "output_tokens": 512,
+        "input_range": [
+          22,
+          119
+        ],
+        "wall_clock_active_window_s": 14.664854872,
+        "window_output_toks_per_s": 34.91340381264702,
+        "slo_passes": 15,
+        "window_slo_goodput_rps": 1.022853627323643,
+        "ttft_ms": {
+          "p50": 3816.282539,
+          "p95": 4959.95596775,
+          "max": 5310.242408
+        },
+        "e2e_ms": {
+          "p50": 7144.231879,
+          "p95": 9067.406196,
+          "max": 10164.0342
+        },
+        "terminal_e2e_ms": {
+          "p50": 7144.231879,
+          "p95": 9067.406196,
+          "max": 10164.0342
+        },
+        "tpot_ms": {
+          "p50": 115.7745694516129,
+          "p95": 165.8638539516129,
+          "max": 193.73362948387094
+        }
+      },
+      {
+        "output_token_throughput": {
+          "unit": "tokens/sec",
+          "avg": 28.25553473466458
+        },
+        "request_throughput": {
+          "unit": "requests/sec",
+          "avg": 0.8829854604582681
+        },
+        "benchmark_duration": {
+          "unit": "sec",
+          "avg": 18.11632128
+        },
+        "request_goodput": null,
+        "request_goodput_percentage": null,
+        "run": "ribn-candidate-short-c1-r1",
+        "requests": 16,
+        "output_tokens": 512,
+        "input_range": [
+          16,
+          16
+        ],
+        "wall_clock_active_window_s": 18.116321373,
+        "window_output_toks_per_s": 28.261808203682495,
+        "slo_passes": 16,
+        "window_slo_goodput_rps": 0.883181506365078,
+        "ttft_ms": {
+          "p50": 270.9726355,
+          "p95": 272.44795899999997,
+          "max": 274.865776
+        },
+        "e2e_ms": {
+          "p50": 1131.3187295,
+          "p95": 1132.9531562500001,
+          "max": 1134.155995
+        },
+        "terminal_e2e_ms": {
+          "p50": 1131.3187295,
+          "p95": 1132.9531562500001,
+          "max": 1134.155995
+        },
+        "tpot_ms": {
+          "p50": 27.75350691935484,
+          "p95": 27.787149088709675,
+          "max": 27.789482870967745
+        }
+      },
+      {
+        "output_token_throughput": {
+          "unit": "tokens/sec",
+          "avg": 28.25523677543367
+        },
+        "request_throughput": {
+          "unit": "requests/sec",
+          "avg": 0.8829761492323022
+        },
+        "benchmark_duration": {
+          "unit": "sec",
+          "avg": 18.116397056
+        },
+        "request_goodput": null,
+        "request_goodput_percentage": null,
+        "run": "ribn-candidate-short-c1-r2",
+        "requests": 16,
+        "output_tokens": 512,
+        "input_range": [
+          16,
+          16
+        ],
+        "wall_clock_active_window_s": 18.116397124,
+        "window_output_toks_per_s": 28.261690031166268,
+        "slo_passes": 16,
+        "window_slo_goodput_rps": 0.8831778134739459,
+        "ttft_ms": {
+          "p50": 270.830906,
+          "p95": 273.02041025,
+          "max": 277.054562
+        },
+        "e2e_ms": {
+          "p50": 1131.1043915,
+          "p95": 1133.509159,
+          "max": 1137.094621
+        },
+        "terminal_e2e_ms": {
+          "p50": 1131.1043915,
+          "p95": 1133.509159,
+          "max": 1137.094621
+        },
+        "tpot_ms": {
+          "p50": 27.74802322580645,
+          "p95": 27.770671266129032,
+          "max": 27.773923677419354
+        }
+      },
+      {
+        "output_token_throughput": {
+          "unit": "tokens/sec",
+          "avg": 28.246775062987755
+        },
+        "request_throughput": {
+          "unit": "requests/sec",
+          "avg": 0.8827117207183673
+        },
+        "benchmark_duration": {
+          "unit": "sec",
+          "avg": 18.121579264
+        },
+        "request_goodput": null,
+        "request_goodput_percentage": null,
+        "run": "ribn-candidate-short-c1-r3",
+        "requests": 16,
+        "output_tokens": 512,
+        "input_range": [
+          16,
+          16
+        ],
+        "wall_clock_active_window_s": 18.121579272,
+        "window_output_toks_per_s": 28.253608160470925,
+        "slo_passes": 16,
+        "window_slo_goodput_rps": 0.8829252550147164,
+        "ttft_ms": {
+          "p50": 270.94297600000004,
+          "p95": 272.024157,
+          "max": 273.15408
+        },
+        "e2e_ms": {
+          "p50": 1131.7882049999998,
+          "p95": 1132.8951427499999,
+          "max": 1133.307771
+        },
+        "terminal_e2e_ms": {
+          "p50": 1131.7882049999998,
+          "p95": 1132.8951427499999,
+          "max": 1133.307771
+        },
+        "tpot_ms": {
+          "p50": 27.764529838709677,
+          "p95": 27.77998487096774,
+          "max": 27.786705548387097
+        }
+      },
+      {
+        "output_token_throughput": {
+          "unit": "tokens/sec",
+          "avg": 21.991707166473244
+        },
+        "request_throughput": {
+          "unit": "requests/sec",
+          "avg": 0.6872408489522889
+        },
+        "benchmark_duration": {
+          "unit": "sec",
+          "avg": 23.277537792
+        },
+        "request_goodput": null,
+        "request_goodput_percentage": null,
+        "run": "ribn-control-mixed-c4-r1",
+        "requests": 16,
+        "output_tokens": 512,
+        "input_range": [
+          22,
+          119
+        ],
+        "wall_clock_active_window_s": 23.277537833,
+        "window_output_toks_per_s": 21.995453457029722,
+        "slo_passes": 16,
+        "window_slo_goodput_rps": 0.6873579205321788,
+        "ttft_ms": {
+          "p50": 1761.489391,
+          "p95": 2346.63464375,
+          "max": 2661.10526
+        },
+        "e2e_ms": {
+          "p50": 5746.9783005,
+          "p95": 6423.9372299999995,
+          "max": 7335.272682
+        },
+        "terminal_e2e_ms": {
+          "p50": 5746.9783005,
+          "p95": 6423.9372299999995,
+          "max": 7335.272682
+        },
+        "tpot_ms": {
+          "p50": 133.26112432258066,
+          "p95": 152.64332607258063,
+          "max": 158.23452151612904
+        }
+      },
+      {
+        "output_token_throughput": {
+          "unit": "tokens/sec",
+          "avg": 21.989942307016424
+        },
+        "request_throughput": {
+          "unit": "requests/sec",
+          "avg": 0.6871856970942632
+        },
+        "benchmark_duration": {
+          "unit": "sec",
+          "avg": 23.279611392000003
+        },
+        "request_goodput": null,
+        "request_goodput_percentage": null,
+        "run": "ribn-control-mixed-c4-r2",
+        "requests": 16,
+        "output_tokens": 512,
+        "input_range": [
+          22,
+          119
+        ],
+        "wall_clock_active_window_s": 23.279611163,
+        "window_output_toks_per_s": 21.99349449675342,
+        "slo_passes": 16,
+        "window_slo_goodput_rps": 0.6872967030235444,
+        "ttft_ms": {
+          "p50": 1760.2707255,
+          "p95": 2345.3666705,
+          "max": 2659.655678
+        },
+        "e2e_ms": {
+          "p50": 5747.2406965,
+          "p95": 6422.1716575,
+          "max": 7332.273343
+        },
+        "terminal_e2e_ms": {
+          "p50": 5747.2406965,
+          "p95": 6422.1716575,
+          "max": 7332.273343
+        },
+        "tpot_ms": {
+          "p50": 133.2878658548387,
+          "p95": 152.62017008064515,
+          "max": 158.29187403225808
+        }
+      },
+      {
+        "output_token_throughput": {
+          "unit": "tokens/sec",
+          "avg": 21.955399689663917
+        },
+        "request_throughput": {
+          "unit": "requests/sec",
+          "avg": 0.6861062403019974
+        },
+        "benchmark_duration": {
+          "unit": "sec",
+          "avg": 23.316369408
+        },
+        "request_goodput": null,
+        "request_goodput_percentage": null,
+        "run": "ribn-control-mixed-c4-r3",
+        "requests": 16,
+        "output_tokens": 512,
+        "input_range": [
+          22,
+          119
+        ],
+        "wall_clock_active_window_s": 23.316369414,
+        "window_output_toks_per_s": 21.958821757755153,
+        "slo_passes": 16,
+        "window_slo_goodput_rps": 0.6862131799298485,
+        "ttft_ms": {
+          "p50": 1749.9178875,
+          "p95": 2393.72057775,
+          "max": 2664.190785
+        },
+        "e2e_ms": {
+          "p50": 5750.823596,
+          "p95": 6427.24004375,
+          "max": 7373.216684
+        },
+        "terminal_e2e_ms": {
+          "p50": 5750.823596,
+          "p95": 6427.24004375,
+          "max": 7373.216684
+        },
+        "tpot_ms": {
+          "p50": 135.1074551935484,
+          "p95": 151.27073977419357,
+          "max": 151.90406125806453
+        }
+      },
+      {
+        "output_token_throughput": {
+          "unit": "tokens/sec",
+          "avg": 22.004770481496337
+        },
+        "request_throughput": {
+          "unit": "requests/sec",
+          "avg": 0.6876490775467605
+        },
+        "benchmark_duration": {
+          "unit": "sec",
+          "avg": 23.263586048
+        },
+        "request_goodput": null,
+        "request_goodput_percentage": null,
+        "run": "ribn-control-mixed-c8-r1",
+        "requests": 16,
+        "output_tokens": 512,
+        "input_range": [
+          22,
+          119
+        ],
+        "wall_clock_active_window_s": 23.263585986,
+        "window_output_toks_per_s": 22.00864476818497,
+        "slo_passes": 1,
+        "window_slo_goodput_rps": 0.042985634312861266,
+        "ttft_ms": {
+          "p50": 3488.7120935000003,
+          "p95": 4998.022933,
+          "max": 5469.369601
+        },
+        "e2e_ms": {
+          "p50": 11328.0985845,
+          "p95": 13325.186786,
+          "max": 14485.146965
+        },
+        "terminal_e2e_ms": {
+          "p50": 11328.0985845,
+          "p95": 13325.186786,
+          "max": 14485.146965
+        },
+        "tpot_ms": {
+          "p50": 258.41888898387094,
+          "p95": 296.77404104838706,
+          "max": 314.6015805806452
+        }
+      },
+      {
+        "output_token_throughput": {
+          "unit": "tokens/sec",
+          "avg": 21.97472465530626
+        },
+        "request_throughput": {
+          "unit": "requests/sec",
+          "avg": 0.6867101454783207
+        },
+        "benchmark_duration": {
+          "unit": "sec",
+          "avg": 23.294178560000002
+        },
+        "request_goodput": null,
+        "request_goodput_percentage": null,
+        "run": "ribn-control-mixed-c8-r2",
+        "requests": 16,
+        "output_tokens": 512,
+        "input_range": [
+          22,
+          119
+        ],
+        "wall_clock_active_window_s": 23.294178485,
+        "window_output_toks_per_s": 21.97974057465457,
+        "slo_passes": 1,
+        "window_slo_goodput_rps": 0.04292918080987221,
+        "ttft_ms": {
+          "p50": 3495.19515,
+          "p95": 5006.05977925,
+          "max": 5477.672413
+        },
+        "e2e_ms": {
+          "p50": 11341.827344000001,
+          "p95": 13342.8814225,
+          "max": 14503.547563
+        },
+        "terminal_e2e_ms": {
+          "p50": 11341.827344000001,
+          "p95": 13342.8814225,
+          "max": 14503.547563
+        },
+        "tpot_ms": {
+          "p50": 258.68584441935485,
+          "p95": 297.1129006693548,
+          "max": 314.9798139677419
+        }
+      },
+      {
+        "output_token_throughput": {
+          "unit": "tokens/sec",
+          "avg": 21.964009245598003
+        },
+        "request_throughput": {
+          "unit": "requests/sec",
+          "avg": 0.6863752889249376
+        },
+        "benchmark_duration": {
+          "unit": "sec",
+          "avg": 23.306716416
+        },
+        "request_goodput": null,
+        "request_goodput_percentage": null,
+        "run": "ribn-control-mixed-c8-r3",
+        "requests": 16,
+        "output_tokens": 512,
+        "input_range": [
+          22,
+          119
+        ],
+        "wall_clock_active_window_s": 23.306716276,
+        "window_output_toks_per_s": 21.967916626986618,
+        "slo_passes": 1,
+        "window_slo_goodput_rps": 0.04290608716208324,
+        "ttft_ms": {
+          "p50": 3496.9961279999998,
+          "p95": 5007.55403025,
+          "max": 5480.537136
+        },
+        "e2e_ms": {
+          "p50": 11347.2649365,
+          "p95": 13350.58081875,
+          "max": 14512.880013
+        },
+        "terminal_e2e_ms": {
+          "p50": 11347.2649365,
+          "p95": 13350.58081875,
+          "max": 14512.880013
+        },
+        "tpot_ms": {
+          "p50": 258.92361182258065,
+          "p95": 297.3055573064516,
+          "max": 315.1245314516129
+        }
+      },
+      {
+        "output_token_throughput": {
+          "unit": "tokens/sec",
+          "avg": 28.25186869546555
+        },
+        "request_throughput": {
+          "unit": "requests/sec",
+          "avg": 0.8828708967332984
+        },
+        "benchmark_duration": {
+          "unit": "sec",
+          "avg": 18.118357248000002
+        },
+        "request_goodput": null,
+        "request_goodput_percentage": null,
+        "run": "ribn-control-short-c1-r1",
+        "requests": 16,
+        "output_tokens": 512,
+        "input_range": [
+          16,
+          16
+        ],
+        "wall_clock_active_window_s": 18.118357242,
+        "window_output_toks_per_s": 28.2586325659336,
+        "slo_passes": 16,
+        "window_slo_goodput_rps": 0.883082267685425,
+        "ttft_ms": {
+          "p50": 271.109052,
+          "p95": 273.06151725,
+          "max": 277.641933
+        },
+        "e2e_ms": {
+          "p50": 1131.32834,
+          "p95": 1134.034863,
+          "max": 1137.855093
+        },
+        "terminal_e2e_ms": {
+          "p50": 1131.32834,
+          "p95": 1134.034863,
+          "max": 1137.855093
+        },
+        "tpot_ms": {
+          "p50": 27.750036822580647,
+          "p95": 27.772345120967742,
+          "max": 27.8001535483871
+        }
+      },
+      {
+        "output_token_throughput": {
+          "unit": "tokens/sec",
+          "avg": 28.221346666933503
+        },
+        "request_throughput": {
+          "unit": "requests/sec",
+          "avg": 0.881917083341672
+        },
+        "benchmark_duration": {
+          "unit": "sec",
+          "avg": 18.1381312
+        },
+        "request_goodput": null,
+        "request_goodput_percentage": null,
+        "run": "ribn-control-short-c1-r2",
+        "requests": 16,
+        "output_tokens": 512,
+        "input_range": [
+          16,
+          16
+        ],
+        "wall_clock_active_window_s": 18.138131236,
+        "window_output_toks_per_s": 28.227825311121265,
+        "slo_passes": 16,
+        "window_slo_goodput_rps": 0.8821195409725395,
+        "ttft_ms": {
+          "p50": 271.0522545,
+          "p95": 272.094506,
+          "max": 273.684365
+        },
+        "e2e_ms": {
+          "p50": 1132.663062,
+          "p95": 1134.71127925,
+          "max": 1135.137067
+        },
+        "terminal_e2e_ms": {
+          "p50": 1132.663062,
+          "p95": 1134.71127925,
+          "max": 1135.137067
+        },
+        "tpot_ms": {
+          "p50": 27.79325532258065,
+          "p95": 27.832510967741936,
+          "max": 27.862234387096777
+        }
+      },
+      {
+        "output_token_throughput": {
+          "unit": "tokens/sec",
+          "avg": 28.19871743995973
+        },
+        "request_throughput": {
+          "unit": "requests/sec",
+          "avg": 0.8812099199987415
+        },
+        "benchmark_duration": {
+          "unit": "sec",
+          "avg": 18.153000448
+        },
+        "request_goodput": null,
+        "request_goodput_percentage": null,
+        "run": "ribn-control-short-c1-r3",
+        "requests": 16,
+        "output_tokens": 512,
+        "input_range": [
+          16,
+          16
+        ],
+        "wall_clock_active_window_s": 18.153000472,
+        "window_output_toks_per_s": 28.204703723207178,
+        "slo_passes": 16,
+        "window_slo_goodput_rps": 0.8813969913502243,
+        "ttft_ms": {
+          "p50": 271.348382,
+          "p95": 272.9557455,
+          "max": 276.217284
+        },
+        "e2e_ms": {
+          "p50": 1133.6278265,
+          "p95": 1135.132586,
+          "max": 1136.594723
+        },
+        "terminal_e2e_ms": {
+          "p50": 1133.6278265,
+          "p95": 1135.132586,
+          "max": 1136.594723
+        },
+        "tpot_ms": {
+          "p50": 27.80755664516129,
+          "p95": 27.83956698387097,
+          "max": 27.849782612903226
+        }
+      }
+    ]
+  },
+  "device_evidence": {
+    "capacity_invariance": {
+      "rows": [
+        1,
+        2,
+        4,
+        8
+      ],
+      "capacities": "small 2..9, mixed up to4096, small again on reused lanes",
+      "histories": "real distinct short prefixes plus two teacher-forced steps",
+      "comparison": "finite bitwise hidden, selected tokens, every KV element within actual allocation, all recurrent matrices/convolution vs uniform-capacity control",
+      "limitation": "both batch instances use the candidate implementation; this is a capacity-invariance check, not an independent model oracle",
+      "before": "old uniform-only guard rejects, exit101",
+      "after": "passed"
+    },
+    "shared_attention_memcheck": {
+      "active_extents": [
+        1,
+        2,
+        4096,
+        262144
+      ],
+      "reference": "unchanged owned-slice per-member attention operator, compared bitwise with overlapping shared score views queued before readback",
+      "inputs": "sparse finite primitive KV inputs, not long model histories",
+      "compute_sanitizer_errors": 0
+    },
+    "qwen_runtime": {
+      "passed": 5,
+      "test_seconds": 553.66,
+      "scope": "independent pinned257-token prompt/18-token agreed continuation, widths1..9, mixed/nonadjacent reaches and histories,cancellation,constrained admission,stalled/abandoned peers"
+    },
+    "cuda_http": {
+      "passed": 1
+    },
+    "in_flight_retirement": {
+      "passed": 1,
+      "member_counts": [
+        8,
+        9
+      ]
+    },
+    "failed_drain_device_injection_qualified": false
+  },
+  "native_route_control": {
+    "control": {
+      "dispatch_diagnostics": {
+        "attempts": 95,
+        "decode_lane_calls_by_width": [
+          0,
+          128,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "enqueue_failures": 0,
+        "enqueued_submissions": 95,
+        "grouped_policy_submissions": 0,
+        "host_submit_nanos": 7798088677,
+        "offered_rows": 187,
+        "offered_tokens": 960,
+        "prefill_chunk_calls": 102,
+        "prefill_chunk_tokens": 816,
+        "prefill_rows": 59,
+        "prefill_tokens": 832,
+        "row_wise_fallbacks": {
+          "decode_shape": 0,
+          "missing_position": 0,
+          "non_decode_phase": 9,
+          "nonuniform_kv": 44,
+          "row_limit": 0,
+          "single_row": 42
+        },
+        "timing_scope": "host_route_enqueue_and_event_including_failed_cleanup",
+        "whole_decode_submissions": 0,
+        "work_scope": "fully_enqueued_submissions_only"
+      },
+      "offered": 8,
+      "completed": 8,
+      "rejected": 0,
+      "failed": 0,
+      "emitted_tokens": 136
+    },
+    "candidate": {
+      "dispatch_diagnostics": {
+        "attempts": 95,
+        "decode_lane_calls_by_width": [
+          0,
+          67,
+          8,
+          15,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "enqueue_failures": 0,
+        "enqueued_submissions": 95,
+        "grouped_policy_submissions": 0,
+        "host_submit_nanos": 6886948192,
+        "offered_rows": 187,
+        "offered_tokens": 960,
+        "prefill_chunk_calls": 102,
+        "prefill_chunk_tokens": 816,
+        "prefill_rows": 59,
+        "prefill_tokens": 832,
+        "row_wise_fallbacks": {
+          "decode_shape": 0,
+          "incompatible_kv": 0,
+          "missing_position": 0,
+          "non_decode_phase": 30,
+          "row_limit": 0,
+          "single_row": 42
+        },
+        "timing_scope": "host_route_enqueue_and_event_including_failed_cleanup",
+        "whole_decode_submissions": 23,
+        "work_scope": "fully_enqueued_submissions_only"
+      },
+      "offered": 8,
+      "completed": 8,
+      "rejected": 0,
+      "failed": 0,
+      "emitted_tokens": 136
+    }
+  },
+  "scope": [
+    "No CUDA kernels, scheduler, generation settings, continuation capacities or application bounds changed.",
+    "Default warp GEMV on the pinned GGUF/RTX4090; grouped-decode and GDN-scan experiments remain off.",
+    "Mixed prefill/decode offers and more than8 rows still retain their fallbacks.",
+    "No broad-context/model/hardware, task-quality equivalence to llama.cpp or hard physical-memory qualification.",
+    "Same finite concurrency-limited cohort, three alternating-order repeats; not production saturation/fairness/tail estimates."
+  ],
+  "raw_artifacts": [
+    "desktop:~/ribn-qualification/bf76a6a-hetero-before/",
+    "desktop:~/ribn-qualification/hetero-candidate/",
+    "desktop:~/ribn-qualification/hetero-experiment/"
+  ]
+}

@@ -25,6 +25,9 @@ use engine_nvidia::{
 };
 use engine_qwen::{QwenGguf, QwenLayerKind as GgufQwenLayerKind};
 
+#[path = "cuda_reference/heterogeneous_decode.rs"]
+mod heterogeneous_decode;
+
 fn push_u32(bytes: &mut Vec<u8>, value: u32) {
     bytes.extend(value.to_le_bytes());
 }

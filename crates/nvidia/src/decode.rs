@@ -1612,7 +1612,8 @@ struct BatchScratch {
     /// never dereferenced (grid.y stops at the member count) but each needs a
     /// distinct slice so the launch builder holds separate borrows.
     gdn_matrix_pads: Vec<CudaSlice<f32>>,
-    /// Per-member attention scores, `[m][q_heads][stride]`.
+    /// Attention scores: `[query_rows][q_heads][stride]` for same-sequence
+    /// prefill, or one reused `[q_heads][stride]` row for sequential member attention.
     scores: Option<CudaSlice<f32>>,
 }
 
@@ -2022,21 +2023,15 @@ impl CudaQwen35BatchDecode {
                 return Err(CudaDecodeError::PositionOverflow { position, capacity });
             }
         }
-        // Validate current member capacities on every step, including reuse of
-        // a previously allocated lane. Growth precedes state writes.
-        let required = attention_scratch_elements(
-            self.members,
-            states
-                .iter()
-                .filter_map(|state| state.kv().map(|kv| kv.spec().block_tokens() as usize)),
-        )?;
-        if self
-            .scratch
-            .scores
-            .as_ref()
-            .is_none_or(|scores| scores.len() < required)
+        // Each member's attention finishes before the next member uses these
+        // scores on the same stream. Only the largest member's row is needed;
+        // caches themselves keep their independently granted capacities.
+        if let Some(capacity) = states
+            .iter()
+            .filter_map(|state| state.kv().map(|kv| kv.spec().block_tokens() as usize))
+            .max()
         {
-            self.scratch.scores = Some(alloc(&self.stream, required)?);
+            self.ensure_attention_scores(1, capacity)?;
         }
         for &token in tokens {
             validate_token(token, self.scratch.logits.len() / self.members)?;
@@ -2139,6 +2134,23 @@ impl CudaQwen35BatchDecode {
         Ok(())
     }
 
+    fn ensure_attention_scores(
+        &mut self,
+        query_rows: usize,
+        capacity: usize,
+    ) -> Result<(), CudaDecodeError> {
+        let required = attention_scratch_elements(query_rows, capacity)?;
+        if self
+            .scratch
+            .scores
+            .as_ref()
+            .is_none_or(|scores| scores.len() < required)
+        {
+            self.scratch.scores = Some(alloc(&self.stream, required)?);
+        }
+        Ok(())
+    }
+
     /// Run one same-sequence prompt chunk. This deliberately keeps stateful
     /// operations serial within each layer while amortizing the surrounding
     /// weight-heavy operations across prompt-token rows.
@@ -2175,19 +2187,7 @@ impl CudaQwen35BatchDecode {
             {
                 return Err(CudaDecodeError::PositionOverflow { position, capacity });
             }
-            let capacity = capacity as usize;
-            let required = attention_scratch_elements(
-                self.members,
-                std::iter::repeat_n(capacity, self.members),
-            )?;
-            if self
-                .scratch
-                .scores
-                .as_ref()
-                .is_none_or(|scores| scores.len() < required)
-            {
-                self.scratch.scores = Some(alloc(&self.stream, required)?);
-            }
+            self.ensure_attention_scores(self.members, capacity as usize)?;
         }
 
         self.upload_tokens(tokens, positions)?;
@@ -2996,7 +2996,11 @@ impl CudaQwen35BatchDecode {
                 self.scratch.scores.as_mut().ok_or_else(|| {
                     CudaDecodeError::InvalidPlan("score scratch is unset".to_owned())
                 })?;
-            let mut scores_member = member_row_mut(scores, member, ATTN_Q_HEADS * stride)
+            // No member-major offset: score/softmax/weighted-sum for this
+            // member are queued before the next member overwrites the buffer.
+            // The full allocation remains executor-owned through completion.
+            let mut scores_member = scores
+                .try_slice_mut(..ATTN_Q_HEADS * stride)
                 .ok_or_else(|| CudaDecodeError::Driver("scores row out of range".to_owned()))?;
             let mut out_member = member_row_mut(
                 &mut self.scratch.attn_out,
@@ -3077,21 +3081,17 @@ fn validate_token(token: u32, vocab: usize) -> Result<(), CudaDecodeError> {
 }
 
 fn attention_scratch_elements(
-    members: usize,
-    capacities: impl IntoIterator<Item = usize>,
+    query_rows: usize,
+    capacity: usize,
 ) -> Result<usize, CudaDecodeError> {
-    let mut stride = None;
-    for capacity in capacities {
-        if capacity == 0 || stride.is_some_and(|known| known != capacity) {
-            return Err(CudaDecodeError::InvalidPlan(
-                "batched attention requires positive uniform KV capacity".to_owned(),
-            ));
-        }
-        stride = Some(capacity);
+    if capacity == 0 {
+        return Err(CudaDecodeError::InvalidPlan(
+            "attention requires positive KV capacity".to_owned(),
+        ));
     }
-    members
+    query_rows
         .checked_mul(ATTN_Q_HEADS)
-        .and_then(|heads| heads.checked_mul(stride.unwrap_or(0)))
+        .and_then(|heads| heads.checked_mul(capacity))
         .ok_or_else(|| CudaDecodeError::InvalidPlan("attention scratch size overflow".to_owned()))
 }
 
@@ -3110,22 +3110,18 @@ mod preparation_tests {
     }
 
     #[test]
-    fn validates_current_attention_capacity_on_lane_reuse() {
+    fn bounds_attention_scratch_rows_and_stride() {
+        assert_eq!(attention_scratch_elements(1, 4).unwrap(), 4 * ATTN_Q_HEADS);
         assert_eq!(
-            attention_scratch_elements(2, [4, 4]).unwrap(),
-            8 * ATTN_Q_HEADS
+            attention_scratch_elements(1, 4096).unwrap(),
+            4096 * ATTN_Q_HEADS
         );
         assert_eq!(
-            attention_scratch_elements(2, [16, 16]).unwrap(),
-            32 * ATTN_Q_HEADS
+            attention_scratch_elements(8, 4096).unwrap(),
+            8 * 4096 * ATTN_Q_HEADS
         );
-        assert_eq!(
-            attention_scratch_elements(2, [4, 4]).unwrap(),
-            8 * ATTN_Q_HEADS
-        );
-        assert!(attention_scratch_elements(2, [4, 16]).is_err());
-        assert!(attention_scratch_elements(2, [0, 0]).is_err());
-        assert!(attention_scratch_elements(2, [usize::MAX, usize::MAX]).is_err());
+        assert!(attention_scratch_elements(1, 0).is_err());
+        assert!(attention_scratch_elements(8, usize::MAX).is_err());
     }
 
     #[test]
