@@ -2303,6 +2303,131 @@ impl CudaQwen35Ops {
         Ok(())
     }
 
+    /// Paged GQA attention with caller-supplied views for query, gate, scores and
+    /// output. The KV side is always whole buffers, so this variant exists only to
+    /// let one batched launch address per-member scratch on a paged cache.
+    ///
+    /// The launch is asynchronous with respect to the host.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CudaModelKernelError`] when contexts, lengths, the page table, or
+    /// launch arguments are invalid.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "the launch mirrors the kernel's fixed model geometry"
+    )]
+    pub fn attn_score_gqa_paged_views(
+        &self,
+        q: &CudaView<f32>,
+        keys: &CudaSlice<u16>,
+        values: &CudaSlice<u16>,
+        block_table: &CudaSlice<i32>,
+        block_tokens: usize,
+        gate_scratch: &CudaView<f32>,
+        scores_scratch: &mut CudaViewMut<f32>,
+        output: &mut CudaViewMut<f32>,
+        tokens: usize,
+        rows: usize,
+        scores_stride: usize,
+        q_heads: usize,
+        kv_heads: usize,
+        head_dim: usize,
+    ) -> Result<(), CudaModelKernelError> {
+        if q_heads == 0 || kv_heads == 0 || head_dim == 0 || tokens == 0 || rows == 0 {
+            return Err(CudaModelKernelError::EmptyInput);
+        }
+        if tokens < rows {
+            return Err(CudaModelKernelError::ShapeOverflow);
+        }
+        if !q_heads.is_multiple_of(kv_heads) {
+            return Err(CudaModelKernelError::ShapeOverflow);
+        }
+        if !head_dim.is_multiple_of(32) {
+            return Err(CudaModelKernelError::ShapeOverflow);
+        }
+        let rows_heads = rows
+            .checked_mul(q_heads)
+            .ok_or(CudaModelKernelError::ShapeOverflow)?;
+        let row_elements = rows_heads
+            .checked_mul(head_dim)
+            .ok_or(CudaModelKernelError::ShapeOverflow)?;
+        let score_elements = rows_heads
+            .checked_mul(scores_stride)
+            .ok_or(CudaModelKernelError::ShapeOverflow)?;
+        if q.len() != row_elements
+            || gate_scratch.len() != 2 * row_elements
+            || output.len() != row_elements
+            || scores_scratch.len() < score_elements
+            || scores_stride < tokens
+        {
+            return Err(CudaModelKernelError::InputLength {
+                expected: row_elements,
+                actual: q.len(),
+            });
+        }
+        if block_tokens == 0 {
+            return Err(CudaModelKernelError::EmptyInput);
+        }
+        let blocks = tokens.div_ceil(block_tokens);
+        let pool_tokens = block_table
+            .len()
+            .checked_mul(block_tokens)
+            .ok_or(CudaModelKernelError::ShapeOverflow)?;
+        if block_table.len() < blocks
+            || keys.len() < pool_tokens * kv_heads * head_dim
+            || values.len() < pool_tokens * kv_heads * head_dim
+        {
+            return Err(CudaModelKernelError::InputLength {
+                expected: blocks * kv_heads * head_dim,
+                actual: block_table.len(),
+            });
+        }
+        let tokens_u32 = u32::try_from(tokens).map_err(|_| CudaModelKernelError::ShapeOverflow)?;
+        let rows_u32 = u32::try_from(rows).map_err(|_| CudaModelKernelError::ShapeOverflow)?;
+        let stride_u32 =
+            u32::try_from(scores_stride).map_err(|_| CudaModelKernelError::ShapeOverflow)?;
+        let q_heads_u32 =
+            u32::try_from(q_heads).map_err(|_| CudaModelKernelError::ShapeOverflow)?;
+        let kv_heads_u32 =
+            u32::try_from(kv_heads).map_err(|_| CudaModelKernelError::ShapeOverflow)?;
+        let head_dim_u32 =
+            u32::try_from(head_dim).map_err(|_| CudaModelKernelError::ShapeOverflow)?;
+        let block_tokens_u32 =
+            i32::try_from(block_tokens).map_err(|_| CudaModelKernelError::ShapeOverflow)?;
+        let warps = rows_u32
+            .checked_mul(q_heads_u32)
+            .ok_or(CudaModelKernelError::ShapeOverflow)?;
+        let config = LaunchConfig {
+            grid_dim: (warps.div_ceil(4), 1, 1),
+            block_dim: (4 * 32, 1, 1),
+            shared_mem_bytes: 0,
+        };
+        // Safety: views borrow live slices on this stream; geometry is
+        // validated exactly as in the slice variant.
+        unsafe {
+            self.stream
+                .launch_builder(&self.attn_score_gqa_paged)
+                .arg(q)
+                .arg(keys)
+                .arg(values)
+                .arg(block_table)
+                .arg(&block_tokens_u32)
+                .arg(gate_scratch)
+                .arg(&mut *scores_scratch)
+                .arg(&mut *output)
+                .arg(&tokens_u32)
+                .arg(&rows_u32)
+                .arg(&stride_u32)
+                .arg(&q_heads_u32)
+                .arg(&kv_heads_u32)
+                .arg(&head_dim_u32)
+                .launch(config)
+                .map_err(|error| CudaModelKernelError::Driver(error.to_string()))?;
+        }
+        Ok(())
+    }
+
     /// Add `increment` into `accumulator` elementwise.
     ///
     /// The launch is asynchronous with respect to the host.

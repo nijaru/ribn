@@ -93,21 +93,105 @@ impl CudaStateBuffer {
     }
 }
 
-/// Physical full-attention KV state. Keys and values remain separate device
-/// buffers even when they share one allocation shape; each layer owns its
-/// pair so kernels address one layer's cache without offset arithmetic.
+/// Physical full-attention KV continuation of one sequence.
+///
+/// State is addressed by pages: keys and values are one device run per layer
+/// covering `pages * page_tokens` tokens, and a page table maps each logical page
+/// to the run's physical page. Kernels resolve a logical token as
+/// `table[token / page_tokens] * page_tokens + token % page_tokens`, so the same
+/// addressing serves a contiguous sequence (consecutive entries) and a scattered
+/// one. Capacity is therefore `pages * page_tokens` and grows by whole pages.
 pub struct CudaKvState {
     spec: KvStateSpec,
-    /// Per-layer `[token][kv_head][head_dim]` key caches.
+    /// Logical page index to physical page index.
+    table: Vec<i32>,
+    table_device: CudaSlice<i32>,
+    /// Per-layer `[physical_page][token][kv_head][head_dim]` key caches.
     keys: Vec<CudaStateBuffer>,
-    /// Per-layer `[token][kv_head][head_dim]` value caches.
+    /// Per-layer `[physical_page][token][kv_head][head_dim]` value caches.
     values: Vec<CudaStateBuffer>,
 }
 
 impl CudaKvState {
+    /// Allocate `spec.pages()` pages per layer and bind them in order.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CudaStateError`] when the geometry is unsupported or CUDA
+    /// allocation fails.
+    pub fn new(stream: &Arc<CudaStream>, spec: KvStateSpec) -> Result<Self, CudaStateError> {
+        let layer_elements = checked_product(
+            [
+                u64::from(spec.capacity_tokens()),
+                u64::from(spec.kv_heads()),
+                u64::from(spec.head_dim()),
+            ],
+            "full-attention KV layer",
+        )?;
+        let layer_count = usize::from(spec.layer_count());
+        let mut keys = Vec::with_capacity(layer_count);
+        let mut values = Vec::with_capacity(layer_count);
+        for _ in 0..layer_count {
+            keys.push(allocate_buffer(
+                stream,
+                spec.dtype(),
+                layer_elements,
+                "full-attention KV keys",
+            )?);
+            values.push(allocate_buffer(
+                stream,
+                spec.dtype(),
+                layer_elements,
+                "full-attention KV values",
+            )?);
+        }
+        let table = (0..spec.pages())
+            .map(|page| {
+                i32::try_from(page).map_err(|_| CudaStateError::IndexOverflow {
+                    family: "full-attention KV page",
+                })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let table_device = stream
+            .clone_htod(&table)
+            .map_err(|error| CudaStateError::Driver(error.to_string()))?;
+        Ok(Self {
+            spec,
+            table,
+            table_device,
+            keys,
+            values,
+        })
+    }
+
     #[must_use]
     pub const fn spec(&self) -> KvStateSpec {
         self.spec
+    }
+
+    /// The host page table: logical page index to physical page index.
+    #[must_use]
+    pub fn table(&self) -> &[i32] {
+        &self.table
+    }
+
+    /// The device page table handed to paged attention.
+    #[must_use]
+    pub fn table_device(&self) -> &CudaSlice<i32> {
+        &self.table_device
+    }
+
+    /// Physical token index of one logical token, or `None` when it has no page.
+    #[must_use]
+    pub fn physical_token(&self, token: u32) -> Option<usize> {
+        let page = token / self.spec.page_tokens();
+        let offset = token % self.spec.page_tokens();
+        let slot = usize::try_from(page).ok()?;
+        let physical_page = u32::try_from(*self.table.get(slot)?).ok()?;
+        let physical = u64::from(physical_page)
+            .checked_mul(u64::from(self.spec.page_tokens()))?
+            .checked_add(u64::from(offset))?;
+        usize::try_from(physical).ok()
     }
 
     /// The device key cache for one full-attention layer.
@@ -120,6 +204,20 @@ impl CudaKvState {
     #[must_use]
     pub fn layer_values(&self, layer: u32) -> Option<&CudaStateBuffer> {
         self.values.get(usize::try_from(layer).ok()?)
+    }
+
+    /// The device page table with the mutable key and value caches for one layer.
+    ///
+    /// Paged attention needs all three at once; returning them from one borrow
+    /// keeps the page table and the buffers it addresses in step.
+    pub fn layer_paged_mut(
+        &mut self,
+        layer: u32,
+    ) -> Option<(&CudaSlice<i32>, &mut CudaStateBuffer, &mut CudaStateBuffer)> {
+        let index = usize::try_from(layer).ok()?;
+        let keys = self.keys.get_mut(index)?;
+        let values = self.values.get_mut(index)?;
+        Some((&self.table_device, keys, values))
     }
 
     /// The mutable key and value caches for one full-attention layer.
@@ -150,9 +248,7 @@ impl CudaKvState {
             )
     }
 
-    /// Write one token's keys and values into a token-major KV block. The
-    /// caller commits the shared sequence position after all model regions
-    /// have written their state for that token.
+    /// Write one token's keys and values through the page table.
     ///
     /// # Errors
     ///
@@ -174,7 +270,7 @@ impl CudaKvState {
             family: "full-attention KV",
         })?;
         let layers = usize::from(spec.layer_count());
-        let block_tokens =
+        let capacity =
             usize::try_from(spec.capacity_tokens()).map_err(|_| CudaStateError::IndexOverflow {
                 family: "full-attention KV",
             })?;
@@ -190,11 +286,11 @@ impl CudaKvState {
                 length: layers,
             });
         }
-        if token >= block_tokens {
+        if token >= capacity {
             return Err(CudaStateError::IndexOutOfBounds {
                 family: "full-attention KV token",
                 index: token,
-                length: block_tokens,
+                length: capacity,
             });
         }
         if keys.len() != token_width || values.len() != token_width {
@@ -210,11 +306,23 @@ impl CudaKvState {
                 dtype: spec.dtype(),
             });
         }
-        let token_offset = token
-            .checked_mul(token_width)
-            .ok_or(CudaStateError::SizeOverflow {
-                family: "full-attention KV token offset",
+        let physical = self
+            .physical_token(
+                u32::try_from(token).map_err(|_| CudaStateError::IndexOverflow {
+                    family: "full-attention KV",
+                })?,
+            )
+            .ok_or(CudaStateError::IndexOutOfBounds {
+                family: "full-attention KV page table",
+                index: token,
+                length: self.table.len(),
             })?;
+        let token_offset =
+            physical
+                .checked_mul(token_width)
+                .ok_or(CudaStateError::SizeOverflow {
+                    family: "full-attention KV token offset",
+                })?;
         let key_layers = self.keys.len();
         let layer_keys = self
             .keys
@@ -623,7 +731,7 @@ impl CudaHybridState {
         kv: Option<KvStateSpec>,
         recurrent: Option<RecurrentStateSpec>,
     ) -> Result<Self, CudaStateError> {
-        let kv = kv.map(|spec| allocate_kv(&stream, spec)).transpose()?;
+        let kv = kv.map(|spec| CudaKvState::new(&stream, spec)).transpose()?;
         let recurrent = recurrent
             .map(|spec| allocate_recurrent(&stream, spec))
             .transpose()?;
@@ -728,37 +836,6 @@ fn validate_fresh_materialization(state: &InferenceStateSet) -> Result<(), CudaS
     } else {
         Err(CudaStateError::UnmaterializedPrefix { position })
     }
-}
-
-fn allocate_kv(stream: &Arc<CudaStream>, spec: KvStateSpec) -> Result<CudaKvState, CudaStateError> {
-    // Each layer's cache is a contiguous [token][kv_head][head_dim] buffer,
-    // making one token contiguous for state append and attention reads.
-    let layer_elements = checked_product(
-        [
-            u64::from(spec.capacity_tokens()),
-            u64::from(spec.kv_heads()),
-            u64::from(spec.head_dim()),
-        ],
-        "full-attention KV layer",
-    )?;
-    let layer_count = usize::from(spec.layer_count());
-    let mut keys = Vec::with_capacity(layer_count);
-    let mut values = Vec::with_capacity(layer_count);
-    for _ in 0..layer_count {
-        keys.push(allocate_buffer(
-            stream,
-            spec.dtype(),
-            layer_elements,
-            "full-attention KV keys",
-        )?);
-        values.push(allocate_buffer(
-            stream,
-            spec.dtype(),
-            layer_elements,
-            "full-attention KV values",
-        )?);
-    }
-    Ok(CudaKvState { spec, keys, values })
 }
 
 fn allocate_recurrent(

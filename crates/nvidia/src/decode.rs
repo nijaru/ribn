@@ -1035,8 +1035,13 @@ impl CudaQwen35Decode {
         )?;
 
         let kv = state.kv_mut().ok_or(missing_kv())?;
-        let (keys_buffer, values_buffer) = kv
-            .layer_mut(slot)
+        let page_tokens = usize::try_from(kv.spec().page_tokens())
+            .map_err(|_| CudaDecodeError::InvalidPlan("KV page size overflows usize".to_owned()))?;
+        let physical = kv.physical_token(position).ok_or_else(|| {
+            CudaDecodeError::InvalidPlan("KV page table lacks the token's page".to_owned())
+        })?;
+        let (table, keys_buffer, values_buffer) = kv
+            .layer_paged_mut(slot)
             .ok_or_else(|| CudaDecodeError::InvalidPlan(format!("KV state lacks slot {slot}")))?;
         {
             let keys = keys_buffer
@@ -1050,7 +1055,7 @@ impl CudaQwen35Decode {
                 &self.v_raw,
                 keys,
                 values,
-                position as usize,
+                physical,
                 ATTN_KV_HEADS,
                 ATTN_HEAD_DIM,
             )?;
@@ -1066,10 +1071,12 @@ impl CudaQwen35Decode {
             .scores
             .as_mut()
             .ok_or_else(|| CudaDecodeError::InvalidPlan("score scratch is unset".to_owned()))?;
-        self.ops.attn_score_gqa(
+        self.ops.attn_score_gqa_paged(
             &self.q_packed,
             keys,
             values,
+            table,
+            page_tokens,
             &self.q_raw,
             scores,
             &mut self.attn_out,
@@ -2669,18 +2676,33 @@ impl CudaQwen35BatchDecode {
         let capacity = state.kv().ok_or(missing_kv())?.spec().capacity_tokens() as usize;
         let stride = capacity;
         let slot = self.kv_slot[layer];
+        // Resolve every row's page first: the page table is read-only here and
+        // the erase below needs the buffers mutably.
+        let (page_tokens, physical) = {
+            let kv = state.kv().ok_or(missing_kv())?;
+            let page_tokens = usize::try_from(kv.spec().page_tokens()).map_err(|_| {
+                CudaDecodeError::InvalidPlan("KV page size overflows usize".to_owned())
+            })?;
+            let physical = positions
+                .iter()
+                .map(|&position| {
+                    kv.physical_token(position).ok_or_else(|| {
+                        CudaDecodeError::InvalidPlan("KV page table lacks a row's page".to_owned())
+                    })
+                })
+                .collect::<Result<Vec<_>, CudaDecodeError>>()?;
+            (page_tokens, physical)
+        };
+        let kv = state.kv_mut().ok_or(missing_kv())?;
+        let (table, keys_buffer, values_buffer) = kv
+            .layer_paged_mut(slot)
+            .ok_or_else(|| CudaDecodeError::InvalidPlan(format!("KV state lacks slot {slot}")))?;
         // Append every row's K/V first. The rows are consecutive positions of
         // this one sequence, so the cache prefix they read is shared and one
         // multi-row attention launch below reads it once instead of once per
         // row; causality is unaffected because row `r` only reads keys at or
         // before its own position.
-        for (member, &position_u32) in positions.iter().enumerate() {
-            let position = usize::try_from(position_u32)
-                .map_err(|_| CudaDecodeError::Driver("position overflowed usize".to_owned()))?;
-            let kv = state.kv_mut().ok_or(missing_kv())?;
-            let (keys_buffer, values_buffer) = kv.layer_mut(slot).ok_or_else(|| {
-                CudaDecodeError::InvalidPlan(format!("KV state lacks slot {slot}"))
-            })?;
+        for (member, &physical) in physical.iter().enumerate() {
             let cache_keys = keys_buffer
                 .as_f16_mut()
                 .ok_or_else(|| CudaDecodeError::InvalidPlan("KV cache must be F16".to_owned()))?;
@@ -2701,7 +2723,7 @@ impl CudaQwen35BatchDecode {
                 &v_member,
                 cache_keys,
                 cache_values,
-                position,
+                physical,
                 ATTN_KV_HEADS,
                 ATTN_HEAD_DIM,
             )?;
@@ -2715,25 +2737,23 @@ impl CudaQwen35BatchDecode {
             .ok_or_else(|| {
                 CudaDecodeError::Driver("attention token count overflowed".to_owned())
             })?;
-        let kv = state.kv_mut().ok_or(missing_kv())?;
-        let (keys_buffer, values_buffer) = kv
-            .layer_mut(slot)
-            .ok_or_else(|| CudaDecodeError::InvalidPlan(format!("KV state lacks slot {slot}")))?;
         let cache_keys = keys_buffer
-            .as_f16_mut()
+            .as_f16()
             .ok_or_else(|| CudaDecodeError::InvalidPlan("KV cache must be F16".to_owned()))?;
         let cache_values = values_buffer
-            .as_f16_mut()
+            .as_f16()
             .ok_or_else(|| CudaDecodeError::InvalidPlan("KV cache must be F16".to_owned()))?;
         let scores = self
             .scratch
             .scores
             .as_mut()
             .ok_or_else(|| CudaDecodeError::InvalidPlan("score scratch is unset".to_owned()))?;
-        self.ops.attn_score_gqa(
+        self.ops.attn_score_gqa_paged(
             &self.scratch.q_packed,
             cache_keys,
             cache_values,
+            table,
+            page_tokens,
             &self.scratch.q_raw,
             scores,
             &mut self.scratch.attn_out,
@@ -3037,16 +3057,24 @@ impl CudaQwen35BatchDecode {
             let state = states
                 .get_mut(member)
                 .ok_or_else(|| CudaDecodeError::InvalidPlan("missing member state".to_owned()))?;
-            // Read the capacity before borrowing the cache mutably.
+            // Read the capacity and this row's physical page before borrowing
+            // the cache mutably.
             let capacity = state
                 .kv()
                 .map_or(usize::MAX, |kv| kv.spec().capacity_tokens() as usize);
             let stride = capacity;
             let tokens = position + 1;
             let kv = state.kv_mut().ok_or(missing_kv())?;
-            let (keys_buffer, values_buffer) = kv.layer_mut(slot).ok_or_else(|| {
-                CudaDecodeError::InvalidPlan(format!("KV state lacks slot {slot}"))
+            let page_tokens = usize::try_from(kv.spec().page_tokens()).map_err(|_| {
+                CudaDecodeError::InvalidPlan("KV page size overflows usize".to_owned())
             })?;
+            let physical = kv.physical_token(position_u32).ok_or_else(|| {
+                CudaDecodeError::InvalidPlan("KV page table lacks the row's page".to_owned())
+            })?;
+            let (table, keys_buffer, values_buffer) =
+                kv.layer_paged_mut(slot).ok_or_else(|| {
+                    CudaDecodeError::InvalidPlan(format!("KV state lacks slot {slot}"))
+                })?;
             let cache_keys = keys_buffer
                 .as_f16_mut()
                 .ok_or_else(|| CudaDecodeError::InvalidPlan("KV cache must be F16".to_owned()))?;
@@ -3067,10 +3095,16 @@ impl CudaQwen35BatchDecode {
                 &v_member,
                 cache_keys,
                 cache_values,
-                position,
+                physical,
                 ATTN_KV_HEADS,
                 ATTN_HEAD_DIM,
             )?;
+            let cache_keys = keys_buffer
+                .as_f16()
+                .ok_or_else(|| CudaDecodeError::InvalidPlan("KV cache must be F16".to_owned()))?;
+            let cache_values = values_buffer
+                .as_f16()
+                .ok_or_else(|| CudaDecodeError::InvalidPlan("KV cache must be F16".to_owned()))?;
 
             let q_member = member_row(&self.scratch.q_packed, member, ATTN_Q_HEADS * ATTN_HEAD_DIM)
                 .ok_or_else(|| CudaDecodeError::Driver("q_packed row out of range".to_owned()))?;
@@ -3096,10 +3130,12 @@ impl CudaQwen35BatchDecode {
                 ATTN_Q_HEADS * ATTN_HEAD_DIM,
             )
             .ok_or_else(|| CudaDecodeError::Driver("attn_out row out of range".to_owned()))?;
-            self.ops.attn_score_gqa_views(
+            self.ops.attn_score_gqa_paged_views(
                 &q_member,
                 cache_keys,
                 cache_values,
+                table,
+                page_tokens,
                 &gate_member,
                 &mut scores_member,
                 &mut out_member,
