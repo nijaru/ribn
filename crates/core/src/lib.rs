@@ -22,7 +22,7 @@ pub use request::{RequestId, SamplingError, SamplingParams};
 pub use state::{
     ConvolutionStateShape, InferenceState, InferenceStateSet, KvState, KvStateSpec,
     LogicalStateManager, RecurrentMatrixShape, RecurrentState, RecurrentStateSpec, StateError,
-    StateHandle, StateId, StateManager, StateRequirement, StateSpecError,
+    StateHandle, StateId, StateRequirement, StateSpecError,
 };
 pub use tensor::{DataType, Quantization, WeightFormat};
 pub use weights::{
@@ -150,7 +150,7 @@ mod tests {
         manager.commit(&mut committed, 4).expect("commit");
         assert_eq!(committed.token_position(), Some(4));
         manager
-            .release(committed.kv().expect("KV state").handle().clone())
+            .release(committed.kv().expect("KV state").handle())
             .expect("release");
         assert_eq!(manager.used_bytes(), 0);
     }

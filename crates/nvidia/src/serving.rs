@@ -1326,7 +1326,7 @@ mod tests {
     ) {
         use engine_core::{
             DeviceId, ExecutionBatch, ExecutionPhase, ExecutionSegment, ExecutionTokenInput,
-            LogicalStateManager, RequestId, SamplingParams, StateManager, StateRequirement,
+            LogicalStateManager, RequestId, SamplingParams, StateRequirement,
         };
         let device = DeviceId::new(0);
         let mut manager =

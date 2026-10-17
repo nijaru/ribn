@@ -745,8 +745,15 @@ impl Drop for LogicalStateManager {
     }
 }
 
-impl StateManager for LogicalStateManager {
-    fn allocate_set(
+impl LogicalStateManager {
+    /// Allocate a coherent bundle with one aggregate grant. Nothing commits or
+    /// publishes on failure; the charge persists until its last component releases.
+    ///
+    /// # Errors
+    ///
+    /// Rejects invalid or overflowing requirements, a closed authority and
+    /// insufficient aggregate capacity.
+    pub fn allocate_set(
         &mut self,
         requirements: &[StateRequirement],
     ) -> Result<InferenceStateSet, StateError> {
@@ -776,19 +783,30 @@ impl StateManager for LogicalStateManager {
         Ok(state)
     }
 
-    fn validate(&self, state: &InferenceStateSet) -> Result<(), StateError> {
+    /// Validate allocation provenance for every component of a set.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for stale, released or foreign allocation handles.
+    pub fn validate(&self, state: &InferenceStateSet) -> Result<(), StateError> {
         for value in state.states() {
             self.record_for(value.handle())?;
         }
         Ok(())
     }
 
-    fn allocate_kv(&mut self, spec: KvStateSpec) -> Result<KvState, StateError> {
+    /// # Errors
+    ///
+    /// Returns [`StateError`] when storage cannot satisfy the KV allocation.
+    pub fn allocate_kv(&mut self, spec: KvStateSpec) -> Result<KvState, StateError> {
         let handle = self.reserve(StateRequirement::FullAttentionKv(spec))?;
         KvState::new(handle, spec).ok_or(StateError::UnsupportedRequirement)
     }
 
-    fn allocate_recurrent(
+    /// # Errors
+    ///
+    /// Returns [`StateError`] when storage cannot satisfy the recurrent allocation.
+    pub fn allocate_recurrent(
         &mut self,
         spec: RecurrentStateSpec,
     ) -> Result<RecurrentState, StateError> {
@@ -796,7 +814,13 @@ impl StateManager for LogicalStateManager {
         RecurrentState::new(handle, spec).ok_or(StateError::UnsupportedRequirement)
     }
 
-    fn commit_batch(
+    /// Commit a batch of positions atomically. On error, both manager records and
+    /// every supplied position remain unchanged.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for invalid handles, regressing positions or mismatched lengths.
+    pub fn commit_batch(
         &mut self,
         states: &mut [InferenceStateSet],
         token_positions: &[u32],
@@ -816,7 +840,7 @@ impl StateManager for LogicalStateManager {
             for value in &mut state.states {
                 self.allocations
                     .get_mut(&value.handle().id())
-                    .expect("all allocation handles were validated")
+                    .ok_or(StateError::InvalidHandle)?
                     .token_position = position;
                 value.set_position(position);
             }
@@ -824,74 +848,12 @@ impl StateManager for LogicalStateManager {
         Ok(())
     }
 
-    fn release_set(&mut self, state: &InferenceStateSet) -> Result<(), StateError> {
-        for value in state.states() {
-            self.record_for(value.handle())?;
-        }
-        for value in state.states() {
-            self.release(value.handle().clone())
-                .expect("all allocation handles were validated");
-        }
-        Ok(())
-    }
-
-    fn release(&mut self, handle: StateHandle) -> Result<(), StateError> {
-        self.record_for(&handle)?;
-        self.allocations.remove(&handle.id());
-        Ok(())
-    }
-}
-
-pub trait StateManager: Send {
-    /// Allocate a coherent bundle with one aggregate grant. Nothing commits or
-    /// publishes on failure. The charge persists until its last component releases.
-    ///
-    /// # Errors
-    /// Rejects invalid/overflowing requirements, unsupported placement, a closed
-    /// authority or insufficient aggregate capacity.
-    fn allocate_set(
-        &mut self,
-        requirements: &[StateRequirement],
-    ) -> Result<InferenceStateSet, StateError>;
-
-    /// Validate allocation provenance and the current logical prefix.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error for stale, released, or foreign allocation handles.
-    fn validate(&self, state: &InferenceStateSet) -> Result<(), StateError>;
-
-    /// # Errors
-    ///
-    /// Returns [`StateError`] when storage cannot satisfy the KV allocation.
-    fn allocate_kv(&mut self, spec: KvStateSpec) -> Result<KvState, StateError>;
-
-    /// # Errors
-    ///
-    /// Returns [`StateError`] when storage cannot satisfy the recurrent allocation.
-    fn allocate_recurrent(
-        &mut self,
-        spec: RecurrentStateSpec,
-    ) -> Result<RecurrentState, StateError>;
-
-    /// Commit a batch atomically. On error, both manager records and all
-    /// supplied state positions must remain unchanged.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error for invalid handles, positions, or mismatched lengths.
-    fn commit_batch(
-        &mut self,
-        states: &mut [InferenceStateSet],
-        token_positions: &[u32],
-    ) -> Result<(), StateError>;
-
     /// Advance one state set without relinquishing ownership on failure.
     ///
     /// # Errors
     ///
     /// Returns an error when the transition cannot be committed.
-    fn commit(
+    pub fn commit(
         &mut self,
         state: &mut InferenceStateSet,
         token_position: u32,
@@ -899,18 +861,29 @@ pub trait StateManager: Send {
         self.commit_batch(std::slice::from_mut(state), &[token_position])
     }
 
-    /// Release every allocation in a set atomically. On error, retain all
-    /// allocations so the caller can retry with the same state owner.
+    /// Release every allocation in a set, retaining all of them on error.
     ///
     /// # Errors
     ///
     /// Returns an error when an allocation cannot be released.
-    fn release_set(&mut self, state: &InferenceStateSet) -> Result<(), StateError>;
+    pub fn release_set(&mut self, state: &InferenceStateSet) -> Result<(), StateError> {
+        for value in state.states() {
+            self.record_for(value.handle())?;
+        }
+        for value in state.states() {
+            self.release(value.handle())?;
+        }
+        Ok(())
+    }
 
     /// # Errors
     ///
     /// Returns [`StateError::InvalidHandle`] when the handle is unknown or was released.
-    fn release(&mut self, handle: StateHandle) -> Result<(), StateError>;
+    pub fn release(&mut self, handle: &StateHandle) -> Result<(), StateError> {
+        self.record_for(handle)?;
+        self.allocations.remove(&handle.id());
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -1006,9 +979,7 @@ mod tests {
         let mut manager = LogicalStateManager::new(DeviceId::new(0), Arc::clone(&pool));
         let state = manager.allocate_set(&requirements).unwrap();
         let wait = pool.capacity_wait();
-        manager
-            .release(state.kv().unwrap().handle().clone())
-            .unwrap();
+        manager.release(state.kv().unwrap().handle()).unwrap();
         assert_eq!(
             pool.granted(),
             total,
@@ -1018,7 +989,7 @@ mod tests {
         assert_eq!(manager.release_set(&state), Err(StateError::InvalidHandle));
         assert_eq!(pool.granted(), total);
         manager
-            .release(state.recurrent().unwrap().handle().clone())
+            .release(state.recurrent().unwrap().handle())
             .unwrap();
         assert_eq!(pool.granted(), 0);
         assert!(wait.changed());

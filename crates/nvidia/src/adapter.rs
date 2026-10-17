@@ -286,7 +286,7 @@ mod tests {
     use engine_core::execution::ExecutionPhase;
     use engine_core::request::{RequestId, SamplingParams};
     use engine_core::state::{
-        InferenceStateSet, KvStateSpec, LogicalStateManager, StateManager, StateRequirement,
+        InferenceStateSet, KvStateSpec, LogicalStateManager, StateRequirement,
     };
     use engine_core::tensor::DataType;
     use std::collections::HashSet;

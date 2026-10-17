@@ -540,7 +540,7 @@ fn failed_hybrid_reservation_does_not_publish_its_own_readiness() {
         "failed bundle must not manufacture a release"
     );
     assert_eq!(model.0.manager.used_bytes(), 112);
-    model.0.manager.release(first.handle().clone()).unwrap();
+    model.0.manager.release(first.handle()).unwrap();
     assert!(wait.changed());
     let (state, _) = model.0.reserve_continuation(6).unwrap().unwrap();
     model.0.manager.release_set(&state).unwrap();

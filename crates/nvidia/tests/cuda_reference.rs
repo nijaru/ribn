@@ -7,7 +7,7 @@ use cudarc::driver::{CudaContext, CudaSlice, CudaStream};
 use engine_core::{
     ComputeBackend, ConvolutionStateShape, DeviceId, ExecutionBatch, ExecutionPhase,
     ExecutionSegment, InferenceStateSet, LogicalStateManager, RecurrentMatrixShape,
-    RecurrentStateSpec, StateManager, WeightBinding, WeightTensorSpec,
+    RecurrentStateSpec, WeightBinding, WeightTensorSpec,
 };
 use engine_gguf::GgufFile;
 use engine_nvidia::NvidiaBackend;
@@ -5767,7 +5767,7 @@ fn finds_first_diverging_batched_step_against_batch1() {
 fn serves_multi_row_batches_asynchronously_matching_the_eager_path() {
     use engine_core::{
         BackendSubmissionId, ComputeBackend, ExecutionBatch, ExecutionPhase, InferenceState,
-        LogicalStateManager, RequestId, SamplingParams, StateManager, StateRequirement,
+        LogicalStateManager, RequestId, SamplingParams, StateRequirement,
     };
     use engine_nvidia::NvidiaBackend;
     use engine_nvidia::{CudaQwen35Decode, CudaQwen35ServingDispatcher, QwenLayerKind};
@@ -6257,7 +6257,7 @@ fn stage_full_text_path(
 fn serves_qwen_tokens_asynchronously_matching_the_eager_path() {
     use engine_core::{
         ComputeBackend, ExecutionBatch, ExecutionPhase, InferenceState, LogicalStateManager,
-        RequestId, SamplingParams, StateManager, StateRequirement,
+        RequestId, SamplingParams, StateRequirement,
     };
     use engine_nvidia::NvidiaBackend;
     use engine_nvidia::{CudaQwen35Decode, CudaQwen35ServingDispatcher, QwenLayerKind};
@@ -6547,7 +6547,7 @@ fn serves_qwen_tokens_asynchronously_matching_the_eager_path() {
 fn serves_chunked_prefill_matching_the_serial_path() {
     use engine_core::{
         ComputeBackend, ExecutionBatch, ExecutionPhase, InferenceState, LogicalStateManager,
-        RequestId, SamplingParams, StateManager, StateRequirement,
+        RequestId, SamplingParams, StateRequirement,
     };
     use engine_nvidia::NvidiaBackend;
     use engine_nvidia::{CudaQwen35Decode, CudaQwen35ServingDispatcher, QwenLayerKind};

@@ -1003,7 +1003,7 @@ impl std::error::Error for CudaStateError {}
 #[cfg(test)]
 mod tests {
     use super::*;
-    use engine_core::{LogicalStateManager, StateManager};
+    use engine_core::LogicalStateManager;
 
     #[test]
     fn fresh_materialization_rejects_nonzero_logical_prefix() {

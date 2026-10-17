@@ -16,7 +16,7 @@ pub(crate) fn manager(device: DeviceId, bytes: u64) -> LogicalStateManager {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use engine_core::{DataType, KvStateSpec, StateError, StateManager};
+    use engine_core::{DataType, KvStateSpec, StateError};
 
     fn kv(tokens: u32) -> StateRequirement {
         StateRequirement::FullAttentionKv(KvStateSpec::new(1, 1, 2, tokens, DataType::F16).unwrap())
@@ -30,7 +30,7 @@ mod tests {
         let old_handle = state.kv().unwrap().handle().clone();
         manager.commit(&mut state, 1).unwrap();
         assert!(!wait.changed());
-        assert!(manager.release(old_handle).is_err());
+        assert!(manager.release(&old_handle).is_err());
         assert!(!wait.changed());
         manager.release_set(&state).unwrap();
         assert!(wait.changed());

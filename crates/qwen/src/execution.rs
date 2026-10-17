@@ -4,7 +4,7 @@ use std::sync::Arc;
 use engine_core::{
     BackendSubmissionId, ComputeBackend, ExecutionBatch, ExecutionBatchEvent, ExecutionPhase,
     ExecutionSegment, ExecutionTokenInput, InferenceStateSet, LogicalStateManager, RequestId,
-    SamplingParams, StateError, StateManager, StateRequirement,
+    SamplingParams, StateError, StateRequirement,
 };
 use ribn::{
     Admission, BatchItem, BatchPreparation, ExecutionError, ExecutorInfo, SequenceId,
