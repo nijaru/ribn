@@ -109,24 +109,49 @@ pub struct CudaQwen35ServingDispatcher {
 }
 
 /// How many leading tokens of one prefill segment can run through a
-/// same-sequence lane of `members` tokens.
+/// same-sequence lane of `members` tokens, and whether the final sampling
+/// token rides in the last chunk.
 ///
 /// Only whole chunks qualify: the lane executes exactly `members` tokens and
-/// leaves the remainder to the serial path. A segment that requests sampling
-/// never chunks its final token, because that token is the one the output path
-/// reads logits from — chunking it would compute logits nothing ever reads and
-/// would move the qualified final step off the batch-1 executor.
-fn chunked_prefix_len(token_count: usize, members: usize, requests_sampling: bool) -> usize {
+/// leaves the remainder to the serial path. A sampling segment normally keeps
+/// its final token out of a chunk, because the output path reads logits from
+/// the row that token produces. When the lane can sample that row directly
+/// (`sample_final`) and the prompt is an exact whole number of chunks, the
+/// final token joins the last chunk instead: state advances once and only the
+/// output head remains.
+fn chunked_prefix_len(
+    token_count: usize,
+    members: usize,
+    requests_sampling: bool,
+    sample_final: bool,
+) -> (usize, bool) {
+    if members == 0 {
+        return (0, false);
+    }
+    let whole = token_count / members * members;
+    if requests_sampling && sample_final && token_count > 0 && whole == token_count {
+        return (whole, true);
+    }
     let chunkable = if requests_sampling {
         token_count.saturating_sub(1)
     } else {
         token_count
     };
-    chunkable / members * members
+    (chunkable / members * members, false)
+}
+
+/// Prompt work consumed by the leading whole chunks of one segment.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct PrefillChunks {
+    /// Tokens consumed, always a whole number of chunks.
+    consumed: usize,
+    /// The last chunk's final row holds the residual of the final sampling
+    /// token, so the caller must run only the output head for it.
+    sampled_final: bool,
 }
 
 /// Run the leading whole chunks of one prefill segment through the
-/// same-sequence lane and return how many tokens it consumed.
+/// same-sequence lane and report how many tokens it consumed.
 ///
 /// Chunking performs the same computation the serial path performs: the same
 /// physical state advances in the same position order, and recurrent layers
@@ -141,9 +166,14 @@ fn run_prefill_chunks(
     physical: &mut CudaHybridState,
     segment: &ExecutionSegment,
     tokens: &[u32],
-) -> Result<usize, BackendError> {
+) -> Result<PrefillChunks, BackendError> {
     let members = lane.members();
-    let chunked = chunked_prefix_len(tokens.len(), members, segment.requests_sampling());
+    let (chunked, sampled_final) = chunked_prefix_len(
+        tokens.len(),
+        members,
+        segment.requests_sampling(),
+        lane.can_sample_final_chunk(),
+    );
     let mut offset = 0;
     while offset < chunked {
         let position = segment
@@ -168,20 +198,148 @@ fn run_prefill_chunks(
             .map_err(|error| BackendError::ExecutionFailed(error.to_string()))?;
         offset += members;
     }
-    Ok(chunked)
+    Ok(PrefillChunks {
+        consumed: chunked,
+        sampled_final,
+    })
+}
+
+/// Where one scheduler row's sampled output goes.
+enum RowOutput<'a> {
+    /// Blocking greedy readback, used by the eager dispatch path.
+    Readback,
+    /// Stream-ordered greedy copy into dispatcher-owned pinned memory.
+    Pinned(&'a mut PinnedHostSlice<u32>),
+    /// The row did not request sampling, so only its state advances.
+    Unsampled,
+}
+
+/// Run the one model step that produces a row's output token: the final
+/// prefill token or the decode token.
+fn run_sample_step(
+    executor: &mut CudaQwen35Decode,
+    physical: &mut CudaHybridState,
+    token: u32,
+    position: u32,
+    output: &mut RowOutput<'_>,
+) -> Result<Option<u32>, BackendError> {
+    let result = match output {
+        RowOutput::Readback => executor.decode_step(physical, token, position).map(Some),
+        RowOutput::Pinned(destination) => executor
+            .decode_step_into_pinned(physical, token, position, destination)
+            .map(|()| None),
+        RowOutput::Unsampled => executor
+            .prefill_step(physical, token, position)
+            .map(|()| None),
+    };
+    result.map_err(|error| BackendError::ExecutionFailed(error.to_string()))
+}
+
+/// Sample a final prompt token from the chunk row that already advanced its
+/// state, without consuming the token a second time.
+fn run_chunk_sample(
+    executor: &mut CudaQwen35Decode,
+    lane: &CudaQwen35BatchDecode,
+    member: usize,
+    output: &mut RowOutput<'_>,
+) -> Result<Option<u32>, BackendError> {
+    let result = match output {
+        RowOutput::Readback => executor.sample_prefill_chunk_row(lane, member).map(Some),
+        RowOutput::Pinned(destination) => executor
+            .sample_prefill_chunk_row_into_pinned(lane, member, destination)
+            .map(|()| None),
+        RowOutput::Unsampled => Ok(None),
+    };
+    result.map_err(|error| BackendError::ExecutionFailed(error.to_string()))
+}
+
+/// Run one prefill segment: leading whole chunks, the serial remainder, and
+/// the optional sampled final chunk row.
+fn run_prefill_row(
+    executor: &mut CudaQwen35Decode,
+    mut prefill_lane: Option<&mut CudaQwen35BatchDecode>,
+    physical: &mut CudaHybridState,
+    segment: &ExecutionSegment,
+    work: Option<&mut DispatchWork>,
+    output: &mut RowOutput<'_>,
+) -> Result<Option<u32>, BackendError> {
+    let mut output_token = None;
+
+    let tokens = segment
+        .token_input()
+        .and_then(engine_core::ExecutionTokenInput::prompt_slice)
+        .ok_or_else(|| {
+            BackendError::ExecutionFailed(
+                "Qwen prefill segment requires prompt token input".to_owned(),
+            )
+        })?;
+    // Whole leading chunks run through the same-sequence lane; the
+    // remainder, and most sampling tokens, stay on the serial path.
+    let chunks = match prefill_lane.as_deref_mut() {
+        Some(lane) => run_prefill_chunks(lane, physical, segment, tokens)?,
+        None => PrefillChunks {
+            consumed: 0,
+            sampled_final: false,
+        },
+    };
+    let (chunked, members) = (
+        chunks.consumed,
+        prefill_lane.as_ref().map(|lane| lane.members()),
+    );
+    if chunks.sampled_final {
+        // The last chunk already advanced state through the final
+        // prompt token; only its output head remains. The lane is
+        // present because sampled_final requires one.
+        let lane = prefill_lane.as_deref().ok_or_else(|| {
+            BackendError::ExecutionFailed(
+                "sampled prefill chunk requires a configured lane".to_owned(),
+            )
+        })?;
+        // Batch rows are chunk-local, so the sampled row is the lane's last
+        // row, not the prompt's last offset.
+        output_token = run_chunk_sample(executor, lane, lane.members().saturating_sub(1), output)?;
+    }
+    for (offset, &token) in tokens.iter().enumerate().skip(chunked) {
+        let offset = u32::try_from(offset)
+            .map_err(|_| BackendError::ExecutionFailed("prefill offset overflowed".to_owned()))?;
+        let position = segment
+            .state_position()
+            .checked_add(offset)
+            .ok_or_else(|| {
+                BackendError::ExecutionFailed("prefill position overflowed".to_owned())
+            })?;
+        let requests_output = segment.requests_sampling() && offset + 1 == segment.token_count();
+        if requests_output {
+            output_token = run_sample_step(executor, physical, token, position, output)?;
+        } else {
+            executor
+                .prefill_step(physical, token, position)
+                .map_err(|error| BackendError::ExecutionFailed(error.to_string()))?;
+        }
+        let next = position.checked_add(1).ok_or_else(|| {
+            BackendError::ExecutionFailed("prefill position overflowed".to_owned())
+        })?;
+        physical
+            .advance_to(next)
+            .map_err(|error| BackendError::ExecutionFailed(error.to_string()))?;
+    }
+    if let Some(work) = work {
+        work.merge(DispatchWork::prefill(tokens.len(), chunked, members));
+    }
+
+    Ok(output_token)
 }
 
 /// Run one scheduler row's model steps.
 ///
-/// `step` performs the one model step that produces the row's output token
-/// (the final prefill token or the decode token): eager callers read the
-/// token back immediately; asynchronous callers stream-order the copy into a
-/// pinned slot and return `None`. All other prefill tokens run through the
-/// output-free `prefill_step`.
+/// `output` selects how the row's sampled token leaves the executor: a
+/// blocking readback, a stream-ordered copy into pinned memory, or nothing
+/// when the row does not request sampling.
 ///
-/// Returns the row's sampled token and host wall-clock enqueue interval.
-/// Optional work accounting stays submission-local until the entire enqueue and
-/// completion-event recording succeed.
+/// Returns the row's sampled token, if this call read it back, and host
+/// wall-clock enqueue interval. Optional work accounting stays
+/// submission-local until the entire enqueue and completion-event recording
+/// succeed.
 fn run_row(
     executor: &mut CudaQwen35Decode,
     prefill_lane: Option<&mut CudaQwen35BatchDecode>,
@@ -189,12 +347,7 @@ fn run_row(
     segment: &ExecutionSegment,
     state: &InferenceStateSet,
     work: Option<&mut DispatchWork>,
-    mut step: impl FnMut(
-        &mut CudaQwen35Decode,
-        &mut CudaHybridState,
-        u32,
-        u32,
-    ) -> Result<Option<u32>, BackendError>,
+    mut output: RowOutput<'_>,
 ) -> Result<(Option<u32>, u64), BackendError> {
     if let Some(sampling) = segment.sampling()
         && sampling.temperature() != 0.0
@@ -208,56 +361,10 @@ fn run_row(
         .get_or_create(state)
         .map_err(|error| BackendError::ExecutionFailed(error.to_string()))?;
     let started = Instant::now();
-    let mut output_token = None;
 
-    match segment.phase() {
+    let output_token = match segment.phase() {
         ExecutionPhase::Prefill => {
-            let tokens = segment
-                .token_input()
-                .and_then(engine_core::ExecutionTokenInput::prompt_slice)
-                .ok_or_else(|| {
-                    BackendError::ExecutionFailed(
-                        "Qwen prefill segment requires prompt token input".to_owned(),
-                    )
-                })?;
-            // Whole leading chunks run through the same-sequence lane; the
-            // remainder, and the sampling token, stay on the serial path.
-            let (chunked, members) = match prefill_lane {
-                Some(lane) => (
-                    run_prefill_chunks(lane, physical, segment, tokens)?,
-                    Some(lane.members()),
-                ),
-                None => (0, None),
-            };
-            for (offset, &token) in tokens.iter().enumerate().skip(chunked) {
-                let offset = u32::try_from(offset).map_err(|_| {
-                    BackendError::ExecutionFailed("prefill offset overflowed".to_owned())
-                })?;
-                let position = segment
-                    .state_position()
-                    .checked_add(offset)
-                    .ok_or_else(|| {
-                        BackendError::ExecutionFailed("prefill position overflowed".to_owned())
-                    })?;
-                let requests_output =
-                    segment.requests_sampling() && offset + 1 == segment.token_count();
-                if requests_output {
-                    output_token = step(executor, physical, token, position)?;
-                } else {
-                    executor
-                        .prefill_step(physical, token, position)
-                        .map_err(|error| BackendError::ExecutionFailed(error.to_string()))?;
-                }
-                let next = position.checked_add(1).ok_or_else(|| {
-                    BackendError::ExecutionFailed("prefill position overflowed".to_owned())
-                })?;
-                physical
-                    .advance_to(next)
-                    .map_err(|error| BackendError::ExecutionFailed(error.to_string()))?;
-            }
-            if let Some(work) = work {
-                work.merge(DispatchWork::prefill(tokens.len(), chunked, members));
-            }
+            run_prefill_row(executor, prefill_lane, physical, segment, work, &mut output)?
         }
         ExecutionPhase::Decode => {
             let token = segment
@@ -268,7 +375,13 @@ fn run_row(
                         "Qwen decode segment requires one decode token".to_owned(),
                     )
                 })?;
-            output_token = step(executor, physical, token, segment.state_position())?;
+            let output_token = run_sample_step(
+                executor,
+                physical,
+                token,
+                segment.state_position(),
+                &mut output,
+            )?;
             let next = segment.state_position().checked_add(1).ok_or_else(|| {
                 BackendError::ExecutionFailed("decode position overflowed".to_owned())
             })?;
@@ -278,6 +391,7 @@ fn run_row(
             if let Some(work) = work {
                 work.merge(DispatchWork::decode(1));
             }
+            output_token
         }
         ExecutionPhase::SpecDraft
         | ExecutionPhase::SpecVerify
@@ -287,7 +401,7 @@ fn run_row(
                 "this Qwen3.8 CUDA serving execution phase",
             ));
         }
-    }
+    };
 
     let elapsed_nanos = u64::try_from(started.elapsed().as_nanos()).unwrap_or(u64::MAX);
     Ok((output_token, elapsed_nanos))
@@ -393,6 +507,32 @@ impl CudaQwen35ServingDispatcher {
         let lane = CudaQwen35BatchDecode::from_decode(&self.executor, members)
             .map_err(|error| BackendError::ExecutionFailed(error.to_string()))?;
         self.prefill_lane = Some(lane);
+        Ok(self)
+    }
+
+    /// Opt into sampling the final prompt token from the last whole prefill
+    /// chunk instead of running that token again on the serial path.
+    ///
+    /// Off by default and refused unless the lane runs warp projections with
+    /// the chunk-parallel recurrent scan disabled; see the roadmap experiment
+    /// for the device and endpoint criteria. Requires a configured lane.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BackendError`] when no prefill lane is configured or the lane
+    /// does not satisfy the qualification conditions.
+    pub fn with_sampled_prefill_final(mut self, enabled: bool) -> Result<Self, BackendError> {
+        let lane = self.prefill_lane.as_mut().ok_or_else(|| {
+            BackendError::ExecutionFailed(
+                "sampled final prefill token requires a configured prefill chunk lane".to_owned(),
+            )
+        })?;
+        lane.set_sampled_final_chunk(enabled);
+        if enabled && !lane.can_sample_final_chunk() {
+            return Err(BackendError::Unsupported(
+                "sampled final prefill token requires warp projections without the chunk-parallel scan",
+            ));
+        }
         Ok(self)
     }
 
@@ -511,12 +651,7 @@ impl CudaQwen35ServingDispatcher {
             segment,
             state,
             None,
-            |executor, physical, token, position| {
-                executor
-                    .decode_step(physical, token, position)
-                    .map(Some)
-                    .map_err(|error| BackendError::ExecutionFailed(error.to_string()))
-            },
+            RowOutput::Readback,
         );
         if let Err(error) = self.stream.synchronize() {
             return Err(self.fail_device(BackendError::ExecutionFailed(error.to_string())));
@@ -855,6 +990,10 @@ impl CudaQwen35ServingDispatcher {
                         })
                     })
                     .transpose()?;
+                let output = match &mut pinned {
+                    Some(pinned) => RowOutput::Pinned(pinned),
+                    None => RowOutput::Unsampled,
+                };
                 let (_, row_elapsed) = run_row(
                     executor,
                     prefill_lane.as_mut(),
@@ -862,17 +1001,7 @@ impl CudaQwen35ServingDispatcher {
                     segment,
                     state,
                     work.as_deref_mut(),
-                    |executor, physical, token, position| {
-                        let result = match &mut pinned {
-                            Some(pinned) => {
-                                executor.decode_step_into_pinned(physical, token, position, pinned)
-                            }
-                            None => executor.prefill_step(physical, token, position),
-                        };
-                        result
-                            .map(|()| None)
-                            .map_err(|error| BackendError::ExecutionFailed(error.to_string()))
-                    },
+                    output,
                 )?;
                 queued_rows.elapsed_nanos[first] = row_elapsed;
                 queued_rows
@@ -1371,9 +1500,35 @@ mod tests {
             (3, 4, 0),
         ] {
             assert_eq!(
-                chunked_prefix_len(token_count, members, true),
-                expected,
+                chunked_prefix_len(token_count, members, true, false),
+                (expected, false),
                 "sampling prefill of {token_count} tokens in chunks of {members}"
+            );
+        }
+    }
+
+    /// Only a whole-chunk prompt on a qualified lane may put the final
+    /// sampling token in the last chunk. Partial prompts still leave their
+    /// final token serial, and unqualified lanes never sample a chunk row.
+    #[test]
+    fn sampled_final_chunk_requires_a_whole_prompt_and_a_qualified_lane() {
+        for (token_count, members, sampling, sample_final, expected) in [
+            (16, 8, true, true, (16, true)),
+            (8, 8, true, true, (8, true)),
+            (32, 8, true, true, (32, true)),
+            (16, 4, true, true, (16, true)),
+            (17, 8, true, true, (16, false)),
+            (21, 8, true, true, (16, false)),
+            (16, 8, true, false, (8, false)),
+            (16, 8, false, true, (16, false)),
+            (7, 8, true, true, (0, false)),
+            (0, 8, true, true, (0, false)),
+            (16, 0, true, true, (0, false)),
+        ] {
+            assert_eq!(
+                chunked_prefix_len(token_count, members, sampling, sample_final),
+                expected,
+                "prefill of {token_count} tokens in chunks of {members}: sampling {sampling}, qualified lane {sample_final}"
             );
         }
     }
@@ -1393,8 +1548,8 @@ mod tests {
             (48, 8, 48),
         ] {
             assert_eq!(
-                chunked_prefix_len(token_count, members, false),
-                expected,
+                chunked_prefix_len(token_count, members, false, false),
+                (expected, false),
                 "unsampled prefill of {token_count} tokens in chunks of {members}"
             );
         }

@@ -847,6 +847,57 @@ hard shared-memory bound, broader model/hardware qualification or SOTA claim fol
 Raw evidence/scripts remain outside Git in `desktop:~/ribn-qualification/hetero-{experiment,candidate}/`
 and `desktop:~/ribn-qualification/bf76a6a-hetero-before/`.
 
+## Sampled final prefill chunk (2026-10-17, device gates; endpoint measurement pending)
+
+**Implemented, opt-in, not yet promoted.** The eight-token same-sequence prefill lane can
+now include the final prompt sampling token and hand that chunk's last residual row to the
+unchanged batch-1 output head. The chunk already advanced every persistent component for
+the token, so this runs only `RMSNorm` + vocabulary projection + argmax; it never consumes
+the token twice. Selection requires:
+
+- `with_sampled_prefill_final(true)` on the dispatcher (off by default), which also
+  requires a configured prefill lane;
+- the warp projection mode with the chunk-parallel recurrent scan disabled, whose
+  full-model rows are bit-identical to the batch-1 warp rows;
+- a prompt that is an exact whole number of chunks. Partial prompts still keep their final
+  token on the serial path, and every other mode/shape keeps the previous behavior.
+
+No kernel changed, no state layout or grant changed, and the fallback is the existing
+serial final step. The experiment's predeclared endpoint criteria live in the roadmap.
+
+### Device evidence
+
+| Gate | Result |
+| --- | --- |
+| Chunk row versus serial final residual, 8 tokens, full 64-layer model | 5120/5120 floats bit-identical |
+| Sampled token from that row vs serial `decode_step`, fresh states | Equal |
+| Serving seam, 16-token anchored prompt vs serial dispatcher | Equal sampled token, eight equal decodes |
+| Diagnostics at 16 tokens | 2 chunk calls, 16 chunked tokens, 0 serial prompt tokens |
+| Existing 21-token fallback (2 chunks + 5 serial) | Unchanged, still matches llama-server |
+| Multi-chunk (3×8) chunk-versus-serial continuation | Still within its existing 5e-3 gate |
+| Compute Sanitizer memcheck over the new path | 0 errors |
+
+Raw logs: `desktop:~/ribn-qualification/sampled-prefill/`
+(`sampled-bits.log`, `memcheck-sampled-bits.log`, `serves-chunked.log`,
+`multi-chunk.log`, `exits.txt`). Commands:
+
+```sh
+ENGINE_QWEN_GGUF=/absolute/path/model.gguf \
+cargo test --release -p engine-nvidia --features cuda --test cuda_reference --locked \
+  sampled_final_chunk_row_matches_serial_hidden_bits -- --ignored --exact --test-threads=1
+
+ENGINE_QWEN_GGUF=/absolute/path/model.gguf \
+cargo test --release -p engine-nvidia --features cuda --test cuda_reference --locked \
+  serves_chunked_prefill_matching_the_serial_path -- --ignored --exact --test-threads=1
+```
+
+Limits: one artifact, one device, one warp lane; prompts of 8/16 tokens plus the existing
+21-token fallback. There is no endpoint throughput/latency measurement yet (three
+alternating-order A/B repeats are required), no independent-reference run beyond the
+anchored 21-token prompt, and no failed-enqueue/drain injection on this path. Sampling
+remains greedy-only. Bit identity is a property of the current warp lane; changing
+projection mode, scan selection or chunk size voids it and needs its own gate.
+
 ## First equal-artifact endpoint diagnostic (2026-10-16)
 
 Ribn `dc4aed0` and llama.cpp `4e416ee7308dd6b581796f1a6241276cd5982691`

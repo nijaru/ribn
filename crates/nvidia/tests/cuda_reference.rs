@@ -6834,7 +6834,7 @@ fn serves_chunked_prefill_matching_the_serial_path() {
         &context,
         stream.clone(),
         Arc::clone(&staged),
-        layer_kinds,
+        layer_kinds.clone(),
         EPS,
     )
     .expect("chunked executor");
@@ -6847,7 +6847,7 @@ fn serves_chunked_prefill_matching_the_serial_path() {
             .with_prefill_chunk(MEMBERS)
             .expect("prefill lane");
     let mut chunked_backend =
-        NvidiaBackend::new(capabilities, chunked_dispatcher).expect("chunked backend");
+        NvidiaBackend::new(capabilities.clone(), chunked_dispatcher).expect("chunked backend");
 
     assert_eq!(serial_backend.dispatcher().prefill_chunk_members(), None);
     assert_eq!(
@@ -6982,6 +6982,247 @@ fn serves_chunked_prefill_matching_the_serial_path() {
         fed_serial = next_serial;
         fed_chunked = next_chunked;
     }
+
+    // The sampled-final path only applies to prompts that are an exact whole
+    // number of chunks. Feed the same anchored continuation with a 16-token
+    // prompt: two whole chunks, with the second chunk's last row producing the
+    // sampled token instead of a third serial step.
+    let mut short_prompt = vec![760, 6511, 314, 9338, 369];
+    short_prompt.extend_from_slice(&LLAMA_GREEDY_CONTINUATION[..11]);
+    assert_eq!(short_prompt.len(), 2 * MEMBERS, "two whole chunks");
+
+    let mut sampled_manager = LogicalStateManager::new(
+        device,
+        ribn_foundation::BytePool::new(state_bytes).shared(),
+        ribn_foundation::BytePool::new(0).shared(),
+    );
+    let mut sampled_state = allocate_state(&mut sampled_manager);
+    let sampled_executor = CudaQwen35Decode::new(
+        &context,
+        stream.clone(),
+        Arc::clone(&staged),
+        layer_kinds,
+        EPS,
+    )
+    .expect("sampled executor");
+    let sampled_dispatcher =
+        CudaQwen35ServingDispatcher::new(&context, sampled_executor, stream.clone(), 2)
+            .expect("sampled dispatcher")
+            .with_prefill_chunk(MEMBERS)
+            .expect("sampled prefill lane")
+            .with_sampled_prefill_final(true)
+            .expect("sampled final opt-in");
+    let mut sampled_backend =
+        NvidiaBackend::new(capabilities.clone(), sampled_dispatcher).expect("sampled backend");
+    let observer = sampled_backend.dispatcher_mut().observe_dispatch();
+
+    let mut plain_manager = LogicalStateManager::new(
+        device,
+        ribn_foundation::BytePool::new(state_bytes).shared(),
+        ribn_foundation::BytePool::new(0).shared(),
+    );
+    let mut plain_state = allocate_state(&mut plain_manager);
+
+    let short_prompt_len = u32::try_from(short_prompt.len()).expect("fits u32");
+    let short_prompt: Arc<[u32]> = Arc::from(short_prompt);
+    let plain_token = run_one_step(
+        &mut serial_backend,
+        &mut plain_manager,
+        &mut plain_state,
+        ExecutionPhase::Prefill,
+        Arc::clone(&short_prompt),
+        0,
+        short_prompt_len,
+    );
+    let sampled_token = run_one_step(
+        &mut sampled_backend,
+        &mut sampled_manager,
+        &mut sampled_state,
+        ExecutionPhase::Prefill,
+        Arc::clone(&short_prompt),
+        0,
+        short_prompt_len,
+    );
+    assert_eq!(
+        sampled_token, LLAMA_GREEDY_CONTINUATION[11],
+        "the sampled final chunk must reproduce the independent continuation"
+    );
+    assert_eq!(
+        sampled_token, plain_token,
+        "sampling a chunk row disagreed with the serial final step"
+    );
+
+    let snapshot = observer.snapshot();
+    assert_eq!(
+        snapshot.work.prefill_chunk_calls, 2,
+        "the 16-token prompt must run as two chunks"
+    );
+    assert_eq!(snapshot.work.prefill_chunk_tokens, 16);
+    assert_eq!(
+        snapshot.work.prefill_tokens - snapshot.work.prefill_chunk_tokens,
+        0,
+        "no prompt token may run on the serial path"
+    );
+
+    let mut fed_plain = plain_token;
+    let mut fed_sampled = sampled_token;
+    for step in 0..DECODE_STEPS {
+        let position = short_prompt_len + u32::try_from(step).expect("fits u32");
+        let expected = LLAMA_GREEDY_CONTINUATION[12 + step];
+        let next_plain = run_one_step(
+            &mut serial_backend,
+            &mut plain_manager,
+            &mut plain_state,
+            ExecutionPhase::Decode,
+            Arc::from([fed_plain]),
+            position,
+            1,
+        );
+        let next_sampled = run_one_step(
+            &mut sampled_backend,
+            &mut sampled_manager,
+            &mut sampled_state,
+            ExecutionPhase::Decode,
+            Arc::from([fed_sampled]),
+            position,
+            1,
+        );
+        assert_eq!(
+            next_plain, expected,
+            "serial decode diverged from llama-server at step {step}"
+        );
+        assert_eq!(
+            next_sampled, next_plain,
+            "decode after a sampled chunk diverged at step {step}"
+        );
+        fed_plain = next_plain;
+        fed_sampled = next_sampled;
+    }
+}
+
+/// The sampled-final optimization rests on one property: the chunk's last row
+/// is bit-identical to the residual the serial final step produces, so the
+/// unchanged output head selects the same token. This gate checks that property
+/// directly instead of inferring it from token equality.
+#[test]
+#[ignore = "requires the pinned Qwen GGUF and a CUDA device"]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one staging pass plus the bit check and the serial final step it protects"
+)]
+fn sampled_final_chunk_row_matches_serial_hidden_bits() {
+    use engine_core::{
+        ConvolutionStateShape, DataType, KvStateSpec, RecurrentMatrixShape, RecurrentStateSpec,
+    };
+    use engine_nvidia::{CudaHybridState, CudaQwen35BatchDecode, CudaQwen35Decode, QwenLayerKind};
+    use std::sync::Arc;
+
+    const GGUF: &str = "/home/nick/models/qwen38-27b/Qwen3.8-27B-UD-Q4_K_M.gguf";
+    const EPS: f32 = 1.0e-6;
+    const MEMBERS: usize = 8;
+    const TOKENS: [u32; MEMBERS] = [12_675, 1017, 760, 6511, 314, 9338, 369, 42];
+
+    let provider = QwenGguf::open(GGUF).expect("open pinned Qwen GGUF");
+    let context = CudaContext::new(0).expect("CUDA context");
+    let stream = context.default_stream();
+    let staged = stage_full_text_path(&provider, &context, &stream);
+    let layer_kinds = (0..64_u32)
+        .map(
+            |layer| match provider.layer_kind(layer).expect("layer kind") {
+                GgufQwenLayerKind::Recurrent => QwenLayerKind::Recurrent,
+                GgufQwenLayerKind::FullAttention => QwenLayerKind::FullAttention,
+            },
+        )
+        .collect::<Vec<_>>();
+    let kv_spec = KvStateSpec::new(16, 4, 256, 32, DataType::F16).expect("KV spec");
+    let recurrent_spec = RecurrentStateSpec::new(
+        48,
+        RecurrentMatrixShape::new(48, 128, 128).expect("matrix shape"),
+        ConvolutionStateShape::new(10_240, 3).expect("convolution shape"),
+        DataType::F32,
+        DataType::F32,
+    )
+    .expect("recurrent spec");
+    let fresh_state = || {
+        let mut state =
+            CudaHybridState::from_specs(stream.clone(), Some(kv_spec), Some(recurrent_spec))
+                .expect("physical hybrid state");
+        state.zero().expect("zero state");
+        state
+    };
+
+    let mut serial = CudaQwen35Decode::new(
+        &context,
+        stream.clone(),
+        Arc::clone(&staged),
+        layer_kinds.clone(),
+        EPS,
+    )
+    .expect("serial executor");
+    let mut serial_state = fresh_state();
+    for (position, &token) in TOKENS.iter().enumerate() {
+        let position = u32::try_from(position).expect("position fits u32");
+        serial
+            .prefill_step(&mut serial_state, token, position)
+            .expect("serial prefill");
+        serial_state.advance_to(position + 1).expect("advance");
+    }
+    let expected = serial.copy_hidden().expect("serial hidden");
+
+    let mut lane_executor =
+        CudaQwen35Decode::new(&context, stream.clone(), staged, layer_kinds, EPS)
+            .expect("lane executor");
+    let mut lane = CudaQwen35BatchDecode::from_decode(&lane_executor, MEMBERS).expect("chunk lane");
+    assert!(
+        !lane.can_sample_final_chunk(),
+        "sampled final chunks must stay opt-in"
+    );
+    lane.set_sampled_final_chunk(true);
+    assert!(lane.can_sample_final_chunk());
+    let mut lane_state = fresh_state();
+    lane.prefill_chunk(&mut lane_state, &TOKENS, 0)
+        .expect("full-model prefill chunk");
+    lane_state
+        .advance_to(u32::try_from(MEMBERS).expect("fits u32"))
+        .expect("chunk advance");
+
+    let actual = lane
+        .copy_hidden_member(MEMBERS - 1)
+        .expect("last chunk row");
+    assert_eq!(actual.len(), expected.len());
+    for (index, (actual, expected)) in actual.iter().zip(&expected).enumerate() {
+        assert_eq!(
+            actual.to_bits(),
+            expected.to_bits(),
+            "chunk row {index} is not bit-identical to the serial final residual"
+        );
+    }
+
+    // The batch-1 output head must therefore select the token the serial path
+    // would have selected after consuming the same final token.
+    let sampled = lane_executor
+        .sample_prefill_chunk_row(&lane, MEMBERS - 1)
+        .expect("sample the chunk row");
+    let mut serial_final = fresh_state();
+    for (position, &token) in TOKENS[..MEMBERS - 1].iter().enumerate() {
+        let position = u32::try_from(position).expect("position fits u32");
+        serial
+            .prefill_step(&mut serial_final, token, position)
+            .expect("serial prefix");
+        serial_final.advance_to(position + 1).expect("advance");
+    }
+    let final_token = TOKENS[MEMBERS - 1];
+    let serial_selected = serial
+        .decode_step(
+            &mut serial_final,
+            final_token,
+            u32::try_from(MEMBERS - 1).expect("fits u32"),
+        )
+        .expect("serial final step");
+    assert_eq!(
+        sampled, serial_selected,
+        "sampling the chunk row selected a different token than the serial step"
+    );
 }
 
 /// Request cancellation is covered through the AR runtime. This gate preserves

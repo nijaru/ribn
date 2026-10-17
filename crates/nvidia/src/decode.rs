@@ -783,6 +783,45 @@ impl CudaQwen35Decode {
             .map_err(|error| CudaDecodeError::Driver(error.to_string()))
     }
 
+    /// Sample the final prompt token from a prefill chunk's last row.
+    ///
+    /// The chunk already advanced every persistent component for that token, so
+    /// this only moves the row's residual stream into the batch-1 executor's
+    /// storage and runs the ordinary output head. It never consumes the token a
+    /// second time. Chunk rows are bit-identical to the batch-1 warp rows, so the
+    /// selected token equals the serial final step's result when the lane
+    /// reports [`CudaQwen35BatchDecode::can_sample_final_chunk`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CudaDecodeError`] when the row/geometry is invalid or a copy or
+    /// launch fails.
+    pub fn sample_prefill_chunk_row(
+        &mut self,
+        lane: &CudaQwen35BatchDecode,
+        member: usize,
+    ) -> Result<u32, CudaDecodeError> {
+        lane.copy_hidden_row_into(member, &mut self.hidden)?;
+        self.select_greedy_token()
+    }
+
+    /// Sample a prefill chunk's final row into pinned memory, stream-ordered
+    /// with the chunk's kernels. See [`Self::sample_prefill_chunk_row`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CudaDecodeError`] under the same conditions, plus a failed
+    /// stream-ordered copy.
+    pub fn sample_prefill_chunk_row_into_pinned(
+        &mut self,
+        lane: &CudaQwen35BatchDecode,
+        member: usize,
+        destination: &mut PinnedHostSlice<u32>,
+    ) -> Result<(), CudaDecodeError> {
+        lane.copy_hidden_row_into(member, &mut self.hidden)?;
+        self.select_greedy_token_into_pinned(destination)
+    }
+
     /// Record a completion event covering everything queued on the decoder
     /// stream so far.
     ///
@@ -1644,6 +1683,13 @@ pub struct CudaQwen35BatchDecode {
     /// is a qualification decision, not a kernel detail. Device gates:
     /// `gdn_chunk_scan_matches_*` in `crates/nvidia/tests/cuda_reference.rs`.
     gdn_chunk_scan: bool,
+    /// Let the batch-1 executor sample the final sampling token from this
+    /// lane's last chunk row instead of consuming it a second time. Off by
+    /// default: the path is implemented and host-tested but awaits its device
+    /// and endpoint qualification (see the roadmap experiment). Qualified only
+    /// with [`GemvMode::Warp`] and [`Self::gdn_chunk_scan`] disabled, whose
+    /// rows are bit-identical to the batch-1 warp rows.
+    sampled_final_chunk: bool,
     /// Lazily built integer-dot state for [`GemvMode::IntegerDot`], shared
     /// shape with the batch-1 projector but holding batch-major scratch:
     /// one packed `[members][K/32*9]` buffer per distinct projection width.
@@ -1800,6 +1846,7 @@ impl CudaQwen35BatchDecode {
             scratch,
             gemv_mode,
             gdn_chunk_scan,
+            sampled_final_chunk: false,
             int_dot: None,
         })
     }
@@ -1826,6 +1873,27 @@ impl CudaQwen35BatchDecode {
     /// selecting it is a qualification decision rather than a kernel detail.
     pub fn set_gdn_chunk_scan(&mut self, enabled: bool) {
         self.gdn_chunk_scan = enabled;
+    }
+
+    /// Whether the batch-1 executor may sample this lane's final chunk row
+    /// instead of running the final prompt token again.
+    ///
+    /// Qualified only for the warp projection lane without the chunk-parallel
+    /// recurrent scan: those settings compute rows bit-identical to the batch-1
+    /// warp path, so the scalar output head sees exactly the residual the
+    /// serial final step would produce. The scalar mode's batch projection is
+    /// the warp-batch kernel rather than the single-row scalar kernel, and the
+    /// chunk scan reorders recurrent summation; both keep the serial final step.
+    #[must_use]
+    pub const fn can_sample_final_chunk(&self) -> bool {
+        self.sampled_final_chunk && matches!(self.gemv_mode, GemvMode::Warp) && !self.gdn_chunk_scan
+    }
+
+    /// Opt into (or out of) sampling the final prompt token from the last
+    /// prefill chunk. Off by default; selection is still refused unless the
+    /// lane runs the warp projection without the chunk-parallel scan.
+    pub fn set_sampled_final_chunk(&mut self, enabled: bool) {
+        self.sampled_final_chunk = enabled;
     }
 
     /// Number of batch rows this executor was built for.
@@ -1927,6 +1995,21 @@ impl CudaQwen35BatchDecode {
             .ok_or_else(|| CudaDecodeError::Driver("hidden row out of range".to_owned()))?;
         self.stream
             .clone_dtoh(&row)
+            .map_err(|error| CudaDecodeError::Driver(error.to_string()))
+    }
+
+    /// Copy one chunk row's residual stream into a batch-1 executor's row
+    /// storage on the same stream. The destination only needs to hold one
+    /// model row; a wider buffer keeps its unused tail untouched.
+    pub(crate) fn copy_hidden_row_into(
+        &self,
+        member: usize,
+        destination: &mut CudaSlice<f32>,
+    ) -> Result<(), CudaDecodeError> {
+        let row = member_row(&self.scratch.hidden, member, N_EMBD)
+            .ok_or_else(|| CudaDecodeError::Driver("hidden row out of range".to_owned()))?;
+        self.stream
+            .memcpy_dtod(&row, destination)
             .map_err(|error| CudaDecodeError::Driver(error.to_string()))
     }
 
