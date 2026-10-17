@@ -273,16 +273,6 @@ pub enum StateRequirement {
 
 impl StateRequirement {
     #[must_use]
-    pub const fn is_kv(self) -> bool {
-        matches!(self, Self::FullAttentionKv(_))
-    }
-
-    #[must_use]
-    pub const fn is_recurrent(self) -> bool {
-        matches!(self, Self::Recurrent(_))
-    }
-
-    #[must_use]
     pub fn byte_size(self) -> Option<u64> {
         match self {
             Self::FullAttentionKv(spec) => spec.byte_size(),
