@@ -58,8 +58,8 @@ discard works across that boundary, without frontend orphan queues.
 Qwen's GGUF adapter normalizes required normalization epsilon, reference RoPE defaults,
 identity scaling, text-equivalent MRoPE sections and supported regular layer catalogs.
 Model configuration owns the resulting numerical semantics. Loading rejects disagreement
-with the CUDA executor's fixed geometry/numerical profile before tokenizer or device
-access. The pinned artifact's real header and existing bounded CUDA gates passed
+with the CUDA executor's declared geometry/numerical profile before tokenizer or device
+access; the profile is data in `engine-nvidia`, not a list of comparisons here. The pinned artifact's real header and existing bounded CUDA gates passed
 re-execution; this does not establish broader artifact or context support.
 See [metadata preflight evidence](../benchmarks/runtime-contract.md#qwen-model-metadata-preflight-host-gate).
 

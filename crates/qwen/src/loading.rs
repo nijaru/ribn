@@ -11,8 +11,8 @@ use engine_core::{
 };
 use engine_nvidia::NvidiaBackend;
 use engine_nvidia::{
-    CudaQwen35Decode, CudaQwen35ServingDispatcher, CudaQwen35Weights, GemvMode, QwenLayerKind,
-    StagedTensorSource, wrap_f32_stream,
+    CudaQwen35Decode, CudaQwen35ServingDispatcher, CudaQwen35Weights, GemvMode, QwenCudaProfile,
+    QwenLayerKind, StagedTensorSource, wrap_f32_stream,
 };
 use ribn::{ExecutionError, ExecutorInfo, GenerationLimits};
 
@@ -275,48 +275,30 @@ fn prepare_execution(
     Ok((backend, plan))
 }
 
-/// The current physical executor has fixed projection/head geometry and `RoPE`.
-/// Reject mismatches before CUDA access; valid model metadata is not backend support.
+/// The current physical executor executes one declared geometry and numerical profile.
+/// Describe what the artifact declares and reject disagreements before CUDA access; valid
+/// model metadata is not backend support.
 fn validate_cuda_profile(config: &crate::QwenConfig) -> Result<(), ExecutionError> {
-    use engine_nvidia::{
-        ATTN_HEAD_DIM, ATTN_KV_HEADS, ATTN_Q_HEADS, ATTN_ROPE_BASE, ATTN_ROT_DIMS, GDN_D_CONV,
-        GDN_HEAD_DIM, GDN_INNER, GDN_K_HEADS, GDN_V_HEADS, N_EMBD, N_FF,
+    let declared = QwenCudaProfile {
+        embedding_length: u64::from(config.embedding_length),
+        feed_forward_length: u64::from(config.feed_forward_length),
+        attention_heads: u64::from(config.attention_heads),
+        kv_heads: u64::from(config.kv_heads),
+        key_length: u64::from(config.key_length),
+        value_length: u64::from(config.value_length),
+        rope_dimensions: u64::from(config.rope_dimensions),
+        rope_frequency_base: config.rope_frequency_base,
+        rms_norm_epsilon: config.rms_norm_epsilon,
+        ssm_group_count: u64::from(config.ssm_group_count),
+        ssm_inner_size: u64::from(config.ssm_inner_size),
+        ssm_state_size: u64::from(config.ssm_state_size),
+        ssm_time_step_rank: u64::from(config.ssm_time_step_rank),
+        ssm_conv_kernel: u64::from(config.ssm_conv_kernel),
     };
-    for (field, actual, expected) in [
-        ("embedding_length", config.embedding_length, N_EMBD),
-        ("feed_forward_length", config.feed_forward_length, N_FF),
-        ("attention_heads", config.attention_heads, ATTN_Q_HEADS),
-        ("kv_heads", config.kv_heads, ATTN_KV_HEADS),
-        ("key_length", config.key_length, ATTN_HEAD_DIM),
-        ("value_length", config.value_length, ATTN_HEAD_DIM),
-        ("rope_dimensions", config.rope_dimensions, ATTN_ROT_DIMS),
-        ("ssm_group_count", config.ssm_group_count, GDN_K_HEADS),
-        ("ssm_inner_size", config.ssm_inner_size, GDN_INNER),
-        ("ssm_state_size", config.ssm_state_size, GDN_HEAD_DIM),
-        ("ssm_time_step_rank", config.ssm_time_step_rank, GDN_V_HEADS),
-        ("ssm_conv_kernel", config.ssm_conv_kernel, GDN_D_CONV),
-    ] {
-        if usize::try_from(actual).ok() != Some(expected) {
-            return Err(ExecutionError::new(format!(
-                "CUDA Qwen does not support {field} {actual}; requires {expected}"
-            )));
-        }
+    match QwenCudaProfile::SUPPORTED.mismatch(&declared) {
+        Some(mismatch) => Err(ExecutionError::new(mismatch.to_string())),
+        None => Ok(()),
     }
-    for (field, actual, expected) in [
-        ("rms_norm_epsilon", config.rms_norm_epsilon, 1.0e-6_f32),
-        (
-            "rope_frequency_base",
-            config.rope_frequency_base,
-            ATTN_ROPE_BASE,
-        ),
-    ] {
-        if actual.to_bits() != expected.to_bits() {
-            return Err(ExecutionError::new(format!(
-                "CUDA Qwen does not support {field} {actual}; requires {expected}"
-            )));
-        }
-    }
-    Ok(())
 }
 
 fn stage_weights(

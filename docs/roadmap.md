@@ -144,8 +144,11 @@ quarantine settlement after a successful shutdown drain. Host regressions and bo
 CUDA success-path requalification passed; real failed-drain device injection and the
 physical-accounting repairs above remain open. See [audit qualification](../benchmarks/runtime-contract.md#audit-boundary-repairs-2026-10-15).
 
-Qwen now normalizes model-owned numerical metadata and rejects fixed CUDA-profile
-mismatches before tokenizer/device access; [host preflight evidence](../benchmarks/runtime-contract.md#qwen-model-metadata-preflight-host-gate)
+Qwen now normalizes model-owned numerical metadata and rejects mismatches against the
+backend's declared execution profile before tokenizer/device access. `QwenCudaProfile`
+owns that geometry and its numerical bits as data, and a mirror test fails if it drifts
+from the compiled kernel constants; a second executable geometry still needs its own
+kernel specialization. [Host preflight evidence](../benchmarks/runtime-contract.md#qwen-model-metadata-preflight-host-gate)
 covers normalization/RoPE and same-width head decompositions. The actual pinned header
 and affected Qwen/HTTP/BERT device gates [passed at `dc4aed0`](../benchmarks/runtime-contract.md#device-re-execution-2026-10-16-dc4aed0),
 within their existing bounded reference scope—not broad-context qualification.

@@ -1,8 +1,8 @@
 //! NVIDIA execution mechanisms and the current specialized Qwen CUDA path.
 //!
-//! Host reference mathematics and the submission adapter build without CUDA.
-//! Device resources, kernels, and Qwen execution are behind the `cuda` feature.
-//! Model loading and generic request scheduling belong to their own packages.
+//! Host reference mathematics, the declared execution geometry and the submission adapter
+//! build without CUDA. Device resources, kernels, and Qwen execution are behind the `cuda`
+//! feature. Model loading and generic request scheduling belong to their own packages.
 
 #[cfg(feature = "cuda")]
 mod activation;
@@ -32,6 +32,9 @@ mod state;
 
 #[cfg(any(feature = "cuda", test))]
 mod submissions;
+
+mod profile;
+pub use profile::{ProfileMismatch, QwenCudaProfile};
 
 mod qwen_reference;
 
