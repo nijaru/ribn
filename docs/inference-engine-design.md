@@ -226,7 +226,9 @@ Model families own configuration, parameter interpretation, processors, special 
 operations, continuation semantics and backend execution. Registration is central selection,
 not family branches throughout lifecycle/routing. Prove this boundary with a real dense
 second decoder, then a real VLM/processor; do not wait for all continuation optimizations.
-The surviving `engine-core` bridge is transitional, not the universal model layer.
+The surviving `engine-core` contracts are the prepared batch, continuation state declarations
+and weight descriptions its model and backend actually consume; the plan/description/capability
+layer that nothing read has been removed. What remains is not the universal model layer.
 Replace hard-coded geometry and obsolete bridge contracts with their actual model/backend
 owners during those integrations, without creating another catch-all crate.
 

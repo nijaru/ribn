@@ -1,52 +1,15 @@
-//! Compute-backend capability and execution boundary.
+//! Compute-backend execution boundary.
+//!
+//! A backend executes one prepared batch of request segments against the continuation state
+//! the model hands it. It owns physical resources and completion; it does not own model
+//! identity, capability metadata or a plan that describes what it already is.
 
 use std::fmt;
 
-use crate::execution::{
-    ExecutionBatch, ExecutionBatchEvent, ExecutionPlan, ExecutionSegment, PlanError,
-};
+use crate::execution::{BatchError, ExecutionBatch, ExecutionBatchEvent, ExecutionSegment};
 use crate::state::{InferenceStateSet, StateLocation};
-use crate::tensor::{DataType, Quantization};
 
 pub use crate::device::DeviceId;
-
-#[derive(Clone, Debug, Eq, Hash, PartialEq)]
-pub struct BackendId(String);
-
-impl BackendId {
-    /// # Errors
-    ///
-    /// Returns [`BackendIdError`] when `value` is empty or whitespace-only.
-    pub fn new(value: impl Into<String>) -> Result<Self, BackendIdError> {
-        let value = value.into();
-        if value.trim().is_empty() {
-            return Err(BackendIdError);
-        }
-        Ok(Self(value))
-    }
-
-    #[must_use]
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-}
-
-impl fmt::Display for BackendId {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(&self.0)
-    }
-}
-
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-pub struct BackendIdError;
-
-impl fmt::Display for BackendIdError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str("backend identity must not be empty")
-    }
-}
-
-impl std::error::Error for BackendIdError {}
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub struct BackendSubmissionId(u64);
@@ -63,132 +26,10 @@ impl BackendSubmissionId {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-pub enum BackendKind {
-    Cpu,
-    Cuda,
-    Metal,
-    Other,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct BackendFeatures {
-    data_types: Vec<DataType>,
-    quantizations: Vec<Quantization>,
-    graph_capture: bool,
-    streams: bool,
-}
-
-impl BackendFeatures {
-    #[must_use]
-    pub fn new(
-        data_types: Vec<DataType>,
-        quantizations: Vec<Quantization>,
-        graph_capture: bool,
-        streams: bool,
-    ) -> Self {
-        Self {
-            data_types,
-            quantizations,
-            graph_capture,
-            streams,
-        }
-    }
-
-    #[must_use]
-    pub fn supports_dtype(&self, dtype: DataType) -> bool {
-        self.data_types.contains(&dtype)
-    }
-
-    #[must_use]
-    pub fn supports_quantization(&self, quantization: Quantization) -> bool {
-        self.quantizations.contains(&quantization)
-    }
-
-    #[must_use]
-    pub const fn supports_graph_capture(&self) -> bool {
-        self.graph_capture
-    }
-
-    #[must_use]
-    pub const fn supports_streams(&self) -> bool {
-        self.streams
-    }
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct BackendCapabilities {
-    backend: BackendId,
-    device: DeviceId,
-    kind: BackendKind,
-    memory_bytes: u64,
-    features: BackendFeatures,
-}
-
-impl BackendCapabilities {
-    #[must_use]
-    pub fn new(
-        backend: BackendId,
-        device: DeviceId,
-        kind: BackendKind,
-        memory_bytes: u64,
-        features: BackendFeatures,
-    ) -> Self {
-        Self {
-            backend,
-            device,
-            kind,
-            memory_bytes,
-            features,
-        }
-    }
-
-    #[must_use]
-    pub fn backend(&self) -> &BackendId {
-        &self.backend
-    }
-
-    #[must_use]
-    pub const fn device(&self) -> DeviceId {
-        self.device
-    }
-
-    #[must_use]
-    pub const fn kind(&self) -> BackendKind {
-        self.kind
-    }
-
-    #[must_use]
-    pub const fn memory_bytes(&self) -> u64 {
-        self.memory_bytes
-    }
-
-    #[must_use]
-    pub fn supports_dtype(&self, dtype: DataType) -> bool {
-        self.features.supports_dtype(dtype)
-    }
-
-    #[must_use]
-    pub fn supports_quantization(&self, quantization: Quantization) -> bool {
-        self.features.supports_quantization(quantization)
-    }
-
-    #[must_use]
-    pub const fn supports_graph_capture(&self) -> bool {
-        self.features.supports_graph_capture()
-    }
-
-    #[must_use]
-    pub const fn supports_streams(&self) -> bool {
-        self.features.supports_streams()
-    }
-}
-
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum BackendError {
     Unsupported(&'static str),
-    PlanMismatch,
-    InvalidPlan(PlanError),
+    InvalidBatch(BatchError),
     StateCountMismatch,
     StateMismatch(&'static str),
     UnknownSubmission(BackendSubmissionId),
@@ -199,8 +40,7 @@ impl fmt::Display for BackendError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Unsupported(capability) => write!(f, "backend does not support {capability}"),
-            Self::PlanMismatch => f.write_str("execution plan targets a different backend/device"),
-            Self::InvalidPlan(error) => write!(f, "invalid execution plan: {error}"),
+            Self::InvalidBatch(error) => write!(f, "invalid execution batch: {error}"),
             Self::StateCountMismatch => {
                 f.write_str("execution batch and inference-state counts differ")
             }
@@ -214,25 +54,18 @@ impl fmt::Display for BackendError {
 impl std::error::Error for BackendError {}
 
 pub trait ComputeBackend: Send {
-    fn capabilities(&self) -> &BackendCapabilities;
+    /// The device this backend executes on. Continuation state must be resident here.
+    fn device(&self) -> DeviceId;
 
     /// # Errors
     ///
-    /// Returns an error when the plan is not prepared for this backend or a
-    /// state set does not satisfy its request segment.
+    /// Returns an error when a state set does not satisfy its request segment, or when the
+    /// batch and state counts differ.
     fn validate_execution(
         &self,
-        plan: &ExecutionPlan,
         batch: &ExecutionBatch,
         states: &[InferenceStateSet],
     ) -> Result<(), BackendError> {
-        if plan.backend() != self.capabilities().backend()
-            || plan.device() != self.capabilities().device()
-        {
-            return Err(BackendError::PlanMismatch);
-        }
-        plan.validate_batch(batch)
-            .map_err(BackendError::InvalidPlan)?;
         if batch.len() != states.len() {
             return Err(BackendError::StateCountMismatch);
         }
@@ -267,7 +100,7 @@ pub trait ComputeBackend: Send {
                 "state is at a different prefix position",
             ));
         }
-        if state.location() == Some(StateLocation::Device(self.capabilities().device())) {
+        if state.location() == Some(StateLocation::Device(self.device())) {
             return Ok(());
         }
         if matches!(state.location(), Some(StateLocation::Device(_))) {
@@ -302,7 +135,6 @@ pub trait ComputeBackend: Send {
     /// Returns a backend error when the batch cannot be submitted.
     fn submit(
         &mut self,
-        plan: &ExecutionPlan,
         batch: &ExecutionBatch,
         states: &mut [InferenceStateSet],
     ) -> Result<BackendSubmissionId, BackendError>;
@@ -338,11 +170,10 @@ pub trait ComputeBackend: Send {
     /// Returns a backend error from submission or completion.
     fn execute(
         &mut self,
-        plan: &ExecutionPlan,
         batch: &ExecutionBatch,
         states: &mut [InferenceStateSet],
     ) -> Result<ExecutionBatchEvent, BackendError> {
-        let submission = self.submit(plan, batch, states)?;
+        let submission = self.submit(batch, states)?;
         self.wait(submission)
     }
 }

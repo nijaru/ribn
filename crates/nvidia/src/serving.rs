@@ -6,8 +6,8 @@ use crate::NvidiaDispatcher;
 use crate::dispatch_diagnostics::{DecodeFallback, DispatchObserver, DispatchRoute, DispatchWork};
 use cudarc::driver::{CudaContext, CudaEvent, CudaStream, PinnedHostSlice};
 use engine_core::{
-    BackendError, BackendSubmissionId, ExecutionBatch, ExecutionMetrics, ExecutionOutcome,
-    ExecutionPhase, ExecutionPlan, ExecutionSegment, InferenceStateSet, WeightBinding,
+    BackendError, BackendSubmissionId, ExecutionBatch, ExecutionOutcome, ExecutionPhase,
+    ExecutionSegment, InferenceStateSet, WeightBinding,
 };
 
 use crate::decode::{CudaQwen35BatchDecode, CudaQwen35Decode};
@@ -28,9 +28,6 @@ struct PendingSubmission {
     /// request sampling hold `None`, keeping row order aligned with batch
     /// order.
     outputs: Vec<Option<PinnedSlotLease>>,
-    /// Per-row host enqueue time; a decode group repeats its time for each row.
-    /// These values must not be summed as device time.
-    elapsed_nanos: Vec<u64>,
     /// Logical state keys whose physical registry entries this submission's
     /// queued work still accesses. Retained until completion so an early
     /// `release_inference_state` cannot free device state under live work.
@@ -40,7 +37,6 @@ struct PendingSubmission {
 /// Row results collected while queueing one scheduler batch.
 struct QueuedRows {
     outputs: Vec<Option<PinnedSlotLease>>,
-    elapsed_nanos: Vec<u64>,
     state_keys: Vec<CudaStateKey>,
 }
 
@@ -48,12 +44,8 @@ impl QueuedRows {
     /// Restore scheduler positions after independently owned rows run together.
     fn scatter_group(&mut self, indices: &[usize], group: Self) {
         debug_assert_eq!(indices.len(), group.outputs.len());
-        debug_assert_eq!(indices.len(), group.elapsed_nanos.len());
-        for ((&index, output), elapsed) in
-            indices.iter().zip(group.outputs).zip(group.elapsed_nanos)
-        {
+        for (&index, output) in indices.iter().zip(group.outputs) {
             self.outputs[index] = output;
-            self.elapsed_nanos[index] = elapsed;
         }
         self.state_keys.extend(group.state_keys);
     }
@@ -348,7 +340,7 @@ fn run_row(
     state: &InferenceStateSet,
     work: Option<&mut DispatchWork>,
     mut output: RowOutput<'_>,
-) -> Result<(Option<u32>, u64), BackendError> {
+) -> Result<Option<u32>, BackendError> {
     if let Some(sampling) = segment.sampling()
         && sampling.temperature() != 0.0
     {
@@ -360,7 +352,6 @@ fn run_row(
     let physical = registry
         .get_or_create(state)
         .map_err(|error| BackendError::ExecutionFailed(error.to_string()))?;
-    let started = Instant::now();
 
     let output_token = match segment.phase() {
         ExecutionPhase::Prefill => {
@@ -403,8 +394,7 @@ fn run_row(
         }
     };
 
-    let elapsed_nanos = u64::try_from(started.elapsed().as_nanos()).unwrap_or(u64::MAX);
-    Ok((output_token, elapsed_nanos))
+    Ok(output_token)
 }
 
 impl CudaQwen35ServingDispatcher {
@@ -645,8 +635,8 @@ impl CudaQwen35ServingDispatcher {
         if let Err(error) = self.stream.synchronize() {
             return Err(self.fail_device(BackendError::ExecutionFailed(error.to_string())));
         }
-        let (output_token, elapsed_nanos) = result?;
-        let outcome = ExecutionOutcome::new(ExecutionMetrics::new(elapsed_nanos, 0, 0));
+        let output_token = result?;
+        let outcome = ExecutionOutcome::new();
         Ok(match output_token {
             Some(token) => outcome.with_output_token(token),
             None => outcome,
@@ -769,9 +759,7 @@ impl CudaQwen35ServingDispatcher {
         work: Option<&mut DispatchWork>,
     ) -> Result<QueuedRows, BackendError> {
         let row_count = segments.len();
-        let started = Instant::now();
         let mut leased: Vec<Option<PinnedSlotLease>> = Vec::with_capacity(row_count);
-        let mut elapsed_nanos = Vec::with_capacity(row_count);
         let mut state_keys = Vec::with_capacity(row_count);
 
         // Member physical states live outside the step closure so every
@@ -863,8 +851,6 @@ impl CudaQwen35ServingDispatcher {
                     .map_err(|error| BackendError::ExecutionFailed(error.to_string()))?;
             }
 
-            let elapsed = u64::try_from(started.elapsed().as_nanos()).unwrap_or(u64::MAX);
-            elapsed_nanos.extend(std::iter::repeat_n(elapsed, row_count));
             Ok(())
         })();
 
@@ -883,7 +869,6 @@ impl CudaQwen35ServingDispatcher {
                 }
                 Ok(QueuedRows {
                     outputs: leased,
-                    elapsed_nanos,
                     state_keys,
                 })
             }
@@ -917,7 +902,6 @@ impl CudaQwen35ServingDispatcher {
         let segments = batch.segments();
         let mut queued_rows = QueuedRows {
             outputs: vec![None; row_count],
-            elapsed_nanos: vec![0; row_count],
             state_keys: Vec::with_capacity(row_count),
         };
         let mut scheduled = vec![false; row_count];
@@ -983,7 +967,7 @@ impl CudaQwen35ServingDispatcher {
                     Some(pinned) => RowOutput::Pinned(pinned),
                     None => RowOutput::Unsampled,
                 };
-                let (_, row_elapsed) = run_row(
+                let _ = run_row(
                     executor,
                     prefill_lane.as_mut(),
                     registry,
@@ -992,7 +976,6 @@ impl CudaQwen35ServingDispatcher {
                     work.as_deref_mut(),
                     output,
                 )?;
-                queued_rows.elapsed_nanos[first] = row_elapsed;
                 queued_rows
                     .state_keys
                     .push(CudaStateKey::from_state_set(state));
@@ -1054,7 +1037,6 @@ impl CudaQwen35ServingDispatcher {
             PendingSubmission {
                 completion,
                 outputs: rows.outputs,
-                elapsed_nanos: rows.elapsed_nanos,
                 state_keys: rows.state_keys,
             },
         );
@@ -1100,7 +1082,6 @@ impl CudaQwen35ServingDispatcher {
 impl NvidiaDispatcher for CudaQwen35ServingDispatcher {
     fn dispatch(
         &mut self,
-        _plan: &ExecutionPlan,
         segment: &ExecutionSegment,
         _weights: &WeightBinding,
         state: &mut InferenceStateSet,
@@ -1111,7 +1092,6 @@ impl NvidiaDispatcher for CudaQwen35ServingDispatcher {
 
     fn dispatch_batch(
         &mut self,
-        _plan: &ExecutionPlan,
         batch: &ExecutionBatch,
         _weights: &WeightBinding,
         states: &mut [InferenceStateSet],
@@ -1143,7 +1123,6 @@ impl NvidiaDispatcher for CudaQwen35ServingDispatcher {
     fn submit_batch(
         &mut self,
         submission: BackendSubmissionId,
-        _plan: &ExecutionPlan,
         batch: &ExecutionBatch,
         _weights: &WeightBinding,
         states: &mut [InferenceStateSet],
@@ -1206,11 +1185,10 @@ impl NvidiaDispatcher for CudaQwen35ServingDispatcher {
             .remove(&submission)
             .expect("presence was checked above");
         let result = pending
-            .elapsed_nanos
+            .outputs
             .iter()
-            .zip(&pending.outputs)
-            .map(|(elapsed, lease)| {
-                let outcome = ExecutionOutcome::new(ExecutionMetrics::new(*elapsed, 0, 0));
+            .map(|lease| {
+                let outcome = ExecutionOutcome::new();
                 match lease {
                     Some(lease) => self
                         .read_pinned_output(*lease)
@@ -1267,7 +1245,6 @@ mod tests {
         use super::{PinnedSlotLease, QueuedRows};
         let mut rows = QueuedRows {
             outputs: vec![None; 3],
-            elapsed_nanos: vec![0; 3],
             state_keys: Vec::new(),
         };
         rows.scatter_group(
@@ -1277,7 +1254,6 @@ mod tests {
                     Some(PinnedSlotLease { index: 7 }),
                     Some(PinnedSlotLease { index: 3 }),
                 ],
-                elapsed_nanos: vec![11, 19],
                 state_keys: Vec::new(),
             },
         );
@@ -1288,7 +1264,6 @@ mod tests {
                 .collect::<Vec<_>>(),
             [Some(7), None, Some(3)]
         );
-        assert_eq!(rows.elapsed_nanos, [11, 0, 19]);
     }
 
     #[test]

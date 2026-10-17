@@ -2,13 +2,10 @@
 
 use std::collections::HashMap;
 
-use engine_core::PolicyVersion;
-use engine_core::backend::{
-    BackendCapabilities, BackendError, BackendKind, BackendSubmissionId, ComputeBackend,
-};
+use engine_core::DeviceId;
+use engine_core::backend::{BackendError, BackendSubmissionId, ComputeBackend};
 use engine_core::execution::{
-    ExecutionBatch, ExecutionBatchEvent, ExecutionEvent, ExecutionOutcome, ExecutionPlan,
-    ExecutionSegment,
+    ExecutionBatch, ExecutionBatchEvent, ExecutionEvent, ExecutionOutcome, ExecutionSegment,
 };
 use engine_core::state::InferenceStateSet;
 use engine_core::weights::WeightBinding;
@@ -26,7 +23,6 @@ pub trait NvidiaDispatcher: Send {
     /// Returns a backend error when CUDA dispatch or state mutation fails.
     fn dispatch(
         &mut self,
-        plan: &ExecutionPlan,
         segment: &ExecutionSegment,
         weights: &WeightBinding,
         state: &mut InferenceStateSet,
@@ -60,7 +56,6 @@ pub trait NvidiaDispatcher: Send {
     /// supplied request state.
     fn dispatch_batch(
         &mut self,
-        plan: &ExecutionPlan,
         batch: &ExecutionBatch,
         weights: &WeightBinding,
         states: &mut [InferenceStateSet],
@@ -72,7 +67,7 @@ pub trait NvidiaDispatcher: Send {
             .segments()
             .iter()
             .zip(states)
-            .map(|(segment, state)| self.dispatch(plan, segment, weights, state))
+            .map(|(segment, state)| self.dispatch(segment, weights, state))
             .collect()
     }
 
@@ -95,12 +90,11 @@ pub trait NvidiaDispatcher: Send {
     fn submit_batch(
         &mut self,
         _submission: BackendSubmissionId,
-        plan: &ExecutionPlan,
         batch: &ExecutionBatch,
         weights: &WeightBinding,
         states: &mut [InferenceStateSet],
     ) -> Result<Option<Vec<ExecutionOutcome>>, BackendError> {
-        self.dispatch_batch(plan, batch, weights, states).map(Some)
+        self.dispatch_batch(batch, weights, states).map(Some)
     }
 
     /// Poll outcomes for a batch previously accepted asynchronously.
@@ -130,11 +124,16 @@ pub trait NvidiaDispatcher: Send {
 #[derive(Clone, Debug)]
 struct PendingNvidiaSubmission {
     batch: ExecutionBatch,
-    policy_version: PolicyVersion,
 }
 
+/// Submission bookkeeping over one NVIDIA dispatcher.
+///
+/// The backend owns submission identity, completion bookkeeping and the weight binding the
+/// dispatcher resolves names against. It is not a model or capability descriptor: the model
+/// constructed it with the device and weights it prepared.
 pub struct NvidiaBackend<D> {
-    capabilities: BackendCapabilities,
+    device: DeviceId,
+    weights: WeightBinding,
     dispatcher: D,
     next_submission: u64,
     completed: HashMap<BackendSubmissionId, ExecutionBatchEvent>,
@@ -142,21 +141,16 @@ pub struct NvidiaBackend<D> {
 }
 
 impl<D> NvidiaBackend<D> {
-    /// # Errors
-    ///
-    /// Returns [`BackendError::Unsupported`] when the supplied capabilities do
-    /// not describe a CUDA backend.
-    pub fn new(capabilities: BackendCapabilities, dispatcher: D) -> Result<Self, BackendError> {
-        if capabilities.kind() != BackendKind::Cuda {
-            return Err(BackendError::Unsupported("CUDA backend capabilities"));
-        }
-        Ok(Self {
-            capabilities,
+    #[must_use]
+    pub fn new(device: DeviceId, weights: WeightBinding, dispatcher: D) -> Self {
+        Self {
+            device,
+            weights,
             dispatcher,
             next_submission: 1,
             completed: HashMap::new(),
             pending: HashMap::new(),
-        })
+        }
     }
 
     #[must_use]
@@ -187,7 +181,6 @@ impl<D> NvidiaBackend<D> {
 
 fn completion_event(
     batch: &ExecutionBatch,
-    policy_version: PolicyVersion,
     outcomes: Vec<ExecutionOutcome>,
 ) -> Result<ExecutionBatchEvent, BackendError> {
     if outcomes.len() != batch.len() {
@@ -210,28 +203,23 @@ fn completion_event(
                     segment.request().get()
                 )));
             }
-            let event = ExecutionEvent::new(
-                segment.request(),
-                policy_version,
-                segment.phase(),
-                segment.token_count(),
-                outcome.metrics(),
-            )
-            .ok_or_else(|| {
-                BackendError::ExecutionFailed("segment contained no tokens".to_owned())
-            })?;
+            let event =
+                ExecutionEvent::new(segment.request(), segment.phase(), segment.token_count())
+                    .ok_or_else(|| {
+                        BackendError::ExecutionFailed("segment contained no tokens".to_owned())
+                    })?;
             Ok(match output_token {
                 Some(token) => event.with_output_token(token),
                 None => event,
             })
         })
         .collect::<Result<Vec<_>, BackendError>>()?;
-    ExecutionBatchEvent::new(events).map_err(BackendError::InvalidPlan)
+    ExecutionBatchEvent::new(events).map_err(BackendError::InvalidBatch)
 }
 
 impl<D: NvidiaDispatcher> ComputeBackend for NvidiaBackend<D> {
-    fn capabilities(&self) -> &BackendCapabilities {
-        &self.capabilities
+    fn device(&self) -> DeviceId {
+        self.device
     }
 
     fn release_inference_state(&mut self, state: &InferenceStateSet) -> Result<(), BackendError> {
@@ -240,18 +228,17 @@ impl<D: NvidiaDispatcher> ComputeBackend for NvidiaBackend<D> {
 
     fn submit(
         &mut self,
-        plan: &ExecutionPlan,
         batch: &ExecutionBatch,
         states: &mut [InferenceStateSet],
     ) -> Result<BackendSubmissionId, BackendError> {
-        self.validate_execution(plan, batch, states)?;
+        ComputeBackend::validate_execution(self, batch, states)?;
         let submission = self.allocate_submission()?;
-        let result =
-            self.dispatcher
-                .submit_batch(submission, plan, batch, plan.weights(), states)?;
+        let result = self
+            .dispatcher
+            .submit_batch(submission, batch, &self.weights, states)?;
         match result {
             Some(outcomes) => {
-                let event = completion_event(batch, plan.policy_version(), outcomes)?;
+                let event = completion_event(batch, outcomes)?;
                 self.completed.insert(submission, event);
             }
             None => {
@@ -259,7 +246,6 @@ impl<D: NvidiaDispatcher> ComputeBackend for NvidiaBackend<D> {
                     submission,
                     PendingNvidiaSubmission {
                         batch: batch.clone(),
-                        policy_version: plan.policy_version(),
                     },
                 );
             }
@@ -289,24 +275,21 @@ impl<D: NvidiaDispatcher> ComputeBackend for NvidiaBackend<D> {
             .pending
             .remove(&submission)
             .ok_or(BackendError::UnknownSubmission(submission))?;
-        completion_event(&pending.batch, pending.policy_version, outcomes).map(Some)
+        completion_event(&pending.batch, outcomes).map(Some)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use engine_core::PolicyVersion;
-    use engine_core::backend::{BackendFeatures, BackendId};
     use engine_core::device::DeviceId;
-    use engine_core::execution::{ExecutionMetrics, ExecutionPhase, ExecutionStage};
-    use engine_core::model::{ModelId, ModelRegionId};
+    use engine_core::execution::ExecutionPhase;
     use engine_core::request::{RequestId, SamplingParams};
     use engine_core::state::{
         InferenceStateSet, KvStateSpec, LogicalStateManager, StateLocation, StateManager,
         StateRequirement,
     };
-    use engine_core::tensor::{DataType, Quantization};
+    use engine_core::tensor::DataType;
     use std::collections::HashSet;
 
     struct TestDispatcher;
@@ -314,12 +297,11 @@ mod tests {
     impl NvidiaDispatcher for TestDispatcher {
         fn dispatch(
             &mut self,
-            _plan: &ExecutionPlan,
             _segment: &ExecutionSegment,
             _weights: &WeightBinding,
             _state: &mut InferenceStateSet,
         ) -> Result<ExecutionOutcome, BackendError> {
-            Ok(ExecutionOutcome::new(ExecutionMetrics::new(12, 4, 8)))
+            Ok(ExecutionOutcome::new())
         }
     }
 
@@ -333,18 +315,16 @@ mod tests {
     impl NvidiaDispatcher for BatchAwareDispatcher {
         fn dispatch(
             &mut self,
-            _plan: &ExecutionPlan,
             _segment: &ExecutionSegment,
             _weights: &WeightBinding,
             _state: &mut InferenceStateSet,
         ) -> Result<ExecutionOutcome, BackendError> {
             self.segments += 1;
-            Ok(ExecutionOutcome::new(ExecutionMetrics::new(99, 0, 0)))
+            Ok(ExecutionOutcome::new())
         }
 
         fn dispatch_batch(
             &mut self,
-            _plan: &ExecutionPlan,
             batch: &ExecutionBatch,
             _weights: &WeightBinding,
             states: &mut [InferenceStateSet],
@@ -353,9 +333,7 @@ mod tests {
                 return Err(BackendError::StateCountMismatch);
             }
             self.batches += 1;
-            Ok((0..batch.len())
-                .map(|_| ExecutionOutcome::new(ExecutionMetrics::new(7, 0, 0)))
-                .collect())
+            Ok((0..batch.len()).map(|_| ExecutionOutcome::new()).collect())
         }
 
         fn release_inference_state(
@@ -377,7 +355,6 @@ mod tests {
     impl NvidiaDispatcher for AsyncDispatcher {
         fn dispatch(
             &mut self,
-            _plan: &ExecutionPlan,
             _segment: &ExecutionSegment,
             _weights: &WeightBinding,
             _state: &mut InferenceStateSet,
@@ -390,7 +367,6 @@ mod tests {
         fn submit_batch(
             &mut self,
             submission: BackendSubmissionId,
-            _plan: &ExecutionPlan,
             batch: &ExecutionBatch,
             _weights: &WeightBinding,
             states: &mut [InferenceStateSet],
@@ -412,11 +388,7 @@ mod tests {
                 .pending
                 .remove(&submission)
                 .ok_or(BackendError::UnknownSubmission(submission))?;
-            Ok(Some(
-                (0..count)
-                    .map(|_| ExecutionOutcome::new(ExecutionMetrics::new(5, 0, 0)))
-                    .collect(),
-            ))
+            Ok(Some((0..count).map(|_| ExecutionOutcome::new()).collect()))
         }
     }
 
@@ -428,7 +400,6 @@ mod tests {
     impl NvidiaDispatcher for FailingAsyncDispatcher {
         fn dispatch(
             &mut self,
-            _plan: &ExecutionPlan,
             _segment: &ExecutionSegment,
             _weights: &WeightBinding,
             _state: &mut InferenceStateSet,
@@ -439,7 +410,6 @@ mod tests {
         fn submit_batch(
             &mut self,
             submission: BackendSubmissionId,
-            _plan: &ExecutionPlan,
             batch: &ExecutionBatch,
             _weights: &WeightBinding,
             states: &mut [InferenceStateSet],
@@ -466,36 +436,9 @@ mod tests {
 
     fn empty_decode_fixture<D: NvidiaDispatcher>(
         dispatcher: D,
-    ) -> (
-        NvidiaBackend<D>,
-        ExecutionPlan,
-        ExecutionBatch,
-        Vec<InferenceStateSet>,
-    ) {
+    ) -> (NvidiaBackend<D>, ExecutionBatch, Vec<InferenceStateSet>) {
         let device = DeviceId::new(0);
-        let backend_id = BackendId::new("cuda").expect("backend ID");
-        let capabilities = BackendCapabilities::new(
-            backend_id.clone(),
-            device,
-            BackendKind::Cuda,
-            24 * 1024 * 1024 * 1024,
-            BackendFeatures::new(vec![DataType::F16], vec![], false, true),
-        );
-        let backend = NvidiaBackend::new(capabilities, dispatcher).expect("CUDA backend");
-        let model = ModelId::new("test-model").expect("model ID");
-        let plan = ExecutionPlan::new(
-            model.clone(),
-            backend_id,
-            device,
-            PolicyVersion::new(1).expect("policy version"),
-            vec![ExecutionStage::new(
-                ModelRegionId::new(0),
-                ExecutionPhase::Decode,
-            )],
-            Vec::new(),
-            WeightBinding::empty(model, device),
-        )
-        .expect("plan");
+        let backend = NvidiaBackend::new(device, WeightBinding::empty(device), dispatcher);
         let batch = ExecutionBatch::new(vec![
             ExecutionSegment::new(
                 RequestId::new(1).expect("request ID"),
@@ -509,43 +452,16 @@ mod tests {
         ])
         .expect("batch");
         let states = vec![InferenceStateSet::new(Vec::new()).expect("state")];
-        (backend, plan, batch, states)
+        (backend, batch, states)
     }
 
     #[test]
     fn backend_dispatches_only_after_capability_and_state_validation() {
         let device = DeviceId::new(0);
-        let capabilities = BackendCapabilities::new(
-            BackendId::new("cuda").expect("backend ID"),
-            device,
-            BackendKind::Cuda,
-            24 * 1024 * 1024 * 1024,
-            BackendFeatures::new(
-                vec![DataType::F16],
-                vec![Quantization::GgufQ4Km],
-                false,
-                true,
-            ),
-        );
-        let mut backend = NvidiaBackend::new(capabilities, TestDispatcher).expect("CUDA backend");
-        let model = ModelId::new("test-model").expect("model ID");
-        let policy = PolicyVersion::new(1).expect("policy version");
+        let mut backend = NvidiaBackend::new(device, WeightBinding::empty(device), TestDispatcher);
         let requirement = StateRequirement::FullAttentionKv(
             KvStateSpec::new(1, 1, 2, 1, DataType::F16).expect("KV spec"),
         );
-        let plan = ExecutionPlan::new(
-            model.clone(),
-            BackendId::new("cuda").expect("backend ID"),
-            device,
-            policy,
-            vec![ExecutionStage::new(
-                ModelRegionId::new(0),
-                ExecutionPhase::Decode,
-            )],
-            vec![requirement],
-            WeightBinding::empty(model.clone(), device),
-        )
-        .expect("plan");
         let request = RequestId::new(1).expect("request ID");
         let segment =
             ExecutionSegment::new(request, ExecutionPhase::Decode, 1, 1, 0, vec![requirement])
@@ -564,38 +480,14 @@ mod tests {
             .allocate_kv(spec, StateLocation::Device(device))
             .expect("state allocation");
         let state = InferenceStateSet::try_new(Some(kv), None).expect("state set");
-        let submission = backend.submit(&plan, &batch, &mut [state]).expect("submit");
-        let event = backend.wait(submission).expect("completion");
-        assert_eq!(event.events()[0].metrics().elapsed_nanos(), 12);
-        assert_eq!(event.events()[0].policy_version(), policy);
+        let submission = backend.submit(&batch, &mut [state]).expect("submit");
+        let _ = backend.wait(submission).expect("completion");
     }
 
     #[test]
     fn backend_rejects_missing_requested_output_token() {
         let device = DeviceId::new(0);
-        let backend_id = BackendId::new("cuda").expect("backend ID");
-        let capabilities = BackendCapabilities::new(
-            backend_id.clone(),
-            device,
-            BackendKind::Cuda,
-            24 * 1024 * 1024 * 1024,
-            BackendFeatures::new(vec![DataType::F16], vec![], false, true),
-        );
-        let mut backend = NvidiaBackend::new(capabilities, TestDispatcher).expect("CUDA backend");
-        let model = ModelId::new("test-model").expect("model ID");
-        let plan = ExecutionPlan::new(
-            model.clone(),
-            backend_id,
-            device,
-            PolicyVersion::new(1).expect("policy version"),
-            vec![ExecutionStage::new(
-                ModelRegionId::new(0),
-                ExecutionPhase::Decode,
-            )],
-            Vec::new(),
-            WeightBinding::empty(model, device),
-        )
-        .expect("plan");
+        let mut backend = NvidiaBackend::new(device, WeightBinding::empty(device), TestDispatcher);
         let segment = ExecutionSegment::new(
             RequestId::new(1).expect("request ID"),
             ExecutionPhase::Decode,
@@ -610,7 +502,7 @@ mod tests {
         let mut states = vec![InferenceStateSet::new(Vec::new()).expect("state")];
 
         assert!(matches!(
-            backend.submit(&plan, &batch, &mut states),
+            backend.submit(&batch, &mut states),
             Err(BackendError::ExecutionFailed(_))
         ));
     }
@@ -618,15 +510,11 @@ mod tests {
     #[test]
     fn backend_forwards_state_release_to_the_dispatcher() {
         let device = DeviceId::new(0);
-        let capabilities = BackendCapabilities::new(
-            BackendId::new("cuda").expect("backend ID"),
+        let mut backend = NvidiaBackend::new(
             device,
-            BackendKind::Cuda,
-            24 * 1024 * 1024 * 1024,
-            BackendFeatures::new(vec![DataType::F16], vec![], false, true),
+            WeightBinding::empty(device),
+            BatchAwareDispatcher::default(),
         );
-        let mut backend = NvidiaBackend::new(capabilities, BatchAwareDispatcher::default())
-            .expect("CUDA backend");
         let state = InferenceStateSet::new(Vec::new()).expect("state");
 
         backend
@@ -638,31 +526,11 @@ mod tests {
     #[test]
     fn backend_forwards_the_whole_scheduler_batch_to_the_dispatcher() {
         let device = DeviceId::new(0);
-        let backend_id = BackendId::new("cuda").expect("backend ID");
-        let capabilities = BackendCapabilities::new(
-            backend_id.clone(),
+        let mut backend = NvidiaBackend::new(
             device,
-            BackendKind::Cuda,
-            24 * 1024 * 1024 * 1024,
-            BackendFeatures::new(vec![DataType::F16], vec![], false, true),
+            WeightBinding::empty(device),
+            BatchAwareDispatcher::default(),
         );
-        let mut backend = NvidiaBackend::new(capabilities, BatchAwareDispatcher::default())
-            .expect("CUDA backend");
-        let model = ModelId::new("test-model").expect("model ID");
-        let policy = PolicyVersion::new(1).expect("policy version");
-        let plan = ExecutionPlan::new(
-            model.clone(),
-            backend_id,
-            device,
-            policy,
-            vec![ExecutionStage::new(
-                ModelRegionId::new(0),
-                ExecutionPhase::Decode,
-            )],
-            Vec::new(),
-            WeightBinding::empty(model, device),
-        )
-        .expect("plan");
         let batch = ExecutionBatch::new(vec![
             ExecutionSegment::new(
                 RequestId::new(1).expect("request ID"),
@@ -687,15 +555,17 @@ mod tests {
         let empty_state = || InferenceStateSet::new(Vec::new()).expect("state");
         let mut states = vec![empty_state(), empty_state()];
 
-        let submission = backend.submit(&plan, &batch, &mut states).expect("submit");
+        let submission = backend.submit(&batch, &mut states).expect("submit");
         let completed = backend.wait(submission).expect("completion");
 
         assert_eq!(completed.len(), 2);
-        assert!(
+        assert_eq!(
             completed
                 .events()
                 .iter()
-                .all(|event| event.metrics().elapsed_nanos() == 7)
+                .map(|event| event.phase())
+                .collect::<Vec<_>>(),
+            [ExecutionPhase::Decode, ExecutionPhase::Decode]
         );
         assert_eq!(backend.dispatcher().batches, 1);
         assert_eq!(backend.dispatcher().segments, 0);
@@ -703,27 +573,25 @@ mod tests {
 
     #[test]
     fn backend_supports_dispatcher_owned_async_completion() {
-        let (mut backend, plan, batch, mut states) =
-            empty_decode_fixture(AsyncDispatcher::default());
+        let (mut backend, batch, mut states) = empty_decode_fixture(AsyncDispatcher::default());
 
-        let submission = backend.submit(&plan, &batch, &mut states).expect("submit");
+        let submission = backend.submit(&batch, &mut states).expect("submit");
         assert_eq!(backend.dispatcher().submits, 1);
         assert_eq!(backend.dispatcher().polls, 0);
 
-        let completed = backend
+        let _ = backend
             .poll(submission)
             .expect("poll async dispatcher")
             .expect("completion");
-        assert_eq!(completed.events()[0].metrics().elapsed_nanos(), 5);
         assert_eq!(backend.dispatcher().polls, 1);
         assert!(backend.pending.is_empty());
     }
 
     #[test]
     fn terminal_async_failure_releases_backend_pending_metadata() {
-        let (mut backend, plan, batch, mut states) =
+        let (mut backend, batch, mut states) =
             empty_decode_fixture(FailingAsyncDispatcher::default());
-        let submission = backend.submit(&plan, &batch, &mut states).expect("submit");
+        let submission = backend.submit(&batch, &mut states).expect("submit");
         assert_eq!(backend.pending.len(), 1);
 
         assert!(matches!(

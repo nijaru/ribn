@@ -1,10 +1,8 @@
 //! Qwen model metadata, state requirements, and weight bindings.
 use crate::{QwenConfig, QwenLayerKind};
 use engine_core::{
-    ConvolutionStateShape, DataType, DeviceId, KvStateSpec, ModelCapabilities, ModelDescription,
-    ModelError, ModelId, ModelProvider, ModelRegion, ModelRegionId, ModelRegionKind, MtpCapability,
-    Quantization, RecurrentMatrixShape, RecurrentStateSpec, StateRequirement, WeightBinding,
-    WeightDescription, WeightFormat,
+    ConvolutionStateShape, DataType, DeviceId, KvStateSpec, Quantization, RecurrentMatrixShape,
+    RecurrentStateSpec, StateRequirement, WeightBinding,
 };
 use engine_gguf::{GgufError, GgufFile, MetadataValue, TensorDataReader};
 use std::fs::File;
@@ -14,12 +12,13 @@ use std::path::{Path, PathBuf};
 pub(crate) mod config;
 use config::read as config_from_gguf;
 
-fn qwen35_model_description(
+/// Declare this artifact's continuation components: one full-attention KV family and one
+/// recurrent family. These are the model's own maximum shapes; a request materializes and is
+/// charged for the capacity it can actually reach.
+fn qwen35_state_requirements(
     config: &QwenConfig,
     kv_block_tokens: u32,
-    model_id: ModelId,
-    quantization: Quantization,
-) -> Result<ModelDescription, GgufError> {
+) -> Result<Vec<StateRequirement>, GgufError> {
     let language_layers =
         config
             .language_layer_count()
@@ -84,39 +83,10 @@ fn qwen35_model_description(
         DataType::F32,
     )
     .map_err(|_| GgufError::InvalidModelConfiguration("recurrent state dimensions are invalid"))?;
-    let mtp = MtpCapability::new(
-        u8::try_from(config.nextn_predict_layers()).map_err(|_| {
-            GgufError::InvalidModelConfiguration("MTP layer count exceeds the core capability")
-        })?,
-        u8::try_from(config.nextn_predict_layers()).map_err(|_| {
-            GgufError::InvalidModelConfiguration("MTP token count exceeds the core capability")
-        })?,
-    );
-    ModelDescription::new(
-        model_id,
-        "qwen3.8-hybrid",
-        vec![
-            ModelRegion::new(ModelRegionId::new(0), ModelRegionKind::Embedding),
-            ModelRegion::new(ModelRegionId::new(1), ModelRegionKind::RecurrentAttention),
-            ModelRegion::new(ModelRegionId::new(2), ModelRegionKind::FullAttention),
-            ModelRegion::new(ModelRegionId::new(3), ModelRegionKind::FeedForward),
-            ModelRegion::new(ModelRegionId::new(4), ModelRegionKind::OutputProjection),
-        ],
-        vec![
-            StateRequirement::Recurrent(recurrent_spec),
-            StateRequirement::FullAttentionKv(full_spec),
-        ],
-        ModelCapabilities::new(mtp, false),
-        WeightDescription::new(WeightFormat::Gguf, quantization),
-    )
-    .map_err(|error| match error {
-        ModelError::InvalidDescription(reason) => GgufError::InvalidModelConfiguration(reason),
-        ModelError::PlanModelMismatch
-        | ModelError::UnknownRegion(_)
-        | ModelError::UndeclaredState(_) => {
-            GgufError::InvalidModelConfiguration("unexpected model description validation failure")
-        }
-    })
+    Ok(vec![
+        StateRequirement::Recurrent(recurrent_spec),
+        StateRequirement::FullAttentionKv(full_spec),
+    ])
 }
 
 fn narrow_u16(value: u32, name: &'static str) -> Result<u16, GgufError> {
@@ -155,14 +125,17 @@ const QWEN35_FULL_LAYER_TENSORS: &[&str] = &[
 ];
 
 /// A provider for the text-only Qwen3.8 language artifact carried by GGUF.
-/// It owns validated format metadata and the core model description; tensor
-/// execution remains a separate backend/dispatcher responsibility.
+/// It owns validated format metadata, artifact identity and the model's declared continuation
+/// components; tensor execution remains a separate backend/dispatcher responsibility.
 /// Opening hashes the complete file in bounded memory to identify its contents.
 /// The artifact must remain immutable while the provider and tensor readers live.
 pub struct QwenGguf {
     file: GgufFile,
     config: QwenConfig,
-    description: ModelDescription,
+    /// Complete-artifact hash identifying the exact weights, not a model name.
+    artifact_id: String,
+    quantization: Quantization,
+    state_requirements: Vec<StateRequirement>,
 }
 
 impl QwenGguf {
@@ -170,8 +143,8 @@ impl QwenGguf {
     ///
     /// # Errors
     ///
-    /// Returns [`GgufError`] when the artifact, model metadata, tensor ranges,
-    /// or core model description is invalid.
+    /// Returns [`GgufError`] when the artifact, model metadata, tensor ranges or
+    /// declared continuation components are invalid.
     pub fn open(path: impl Into<PathBuf>) -> Result<Self, GgufError> {
         Self::open_with_kv_block_tokens(path, 16)
     }
@@ -181,8 +154,8 @@ impl QwenGguf {
     ///
     /// # Errors
     ///
-    /// Returns [`GgufError`] when the block size, artifact, model metadata,
-    /// tensor ranges, or core model description is invalid.
+    /// Returns [`GgufError`] when the block size, artifact, model metadata, tensor
+    /// ranges or declared continuation components are invalid.
     pub fn open_with_kv_block_tokens(
         path: impl Into<PathBuf>,
         kv_block_tokens: u32,
@@ -197,15 +170,34 @@ impl QwenGguf {
         for tensor in file.tensors() {
             file.tensor_data_range(tensor.name())?;
         }
-        let identity = artifact_identity(file.path())?;
+        let artifact_id = artifact_identity(file.path())?;
         let quantization = artifact_quantization(&file);
-        let description =
-            qwen35_model_description(&config, kv_block_tokens, identity, quantization)?;
+        let state_requirements = qwen35_state_requirements(&config, kv_block_tokens)?;
         Ok(Self {
             file,
             config,
-            description,
+            artifact_id,
+            quantization,
+            state_requirements,
         })
+    }
+
+    /// The complete-artifact identity: `gguf:sha256:<digest>`.
+    #[must_use]
+    pub fn artifact_id(&self) -> &str {
+        &self.artifact_id
+    }
+
+    /// The artifact's mixture recipe, not each tensor's encoding.
+    #[must_use]
+    pub const fn quantization(&self) -> Quantization {
+        self.quantization
+    }
+
+    /// Continuation components every request of this artifact must reserve.
+    #[must_use]
+    pub fn state_requirements(&self) -> &[StateRequirement] {
+        &self.state_requirements
     }
 
     #[must_use]
@@ -246,7 +238,7 @@ impl QwenGguf {
             .iter()
             .map(|name| self.open_tensor(name).map(|reader| reader.spec().clone()))
             .collect::<Result<Vec<_>, _>>()?;
-        WeightBinding::new(self.description.id().clone(), device, specs)
+        WeightBinding::new(device, specs)
             .map_err(|error| GgufError::InvalidWeightBinding(error.to_string()))
     }
 
@@ -289,21 +281,15 @@ impl QwenGguf {
             .iter()
             .map(|name| self.open_tensor(name).map(|reader| reader.spec().clone()))
             .collect::<Result<Vec<_>, _>>()?;
-        WeightBinding::new(self.description.id().clone(), device, specs)
+        WeightBinding::new(device, specs)
             .map_err(|error| GgufError::InvalidWeightBinding(error.to_string()))
-    }
-}
-
-impl ModelProvider for QwenGguf {
-    fn description(&self) -> &ModelDescription {
-        &self.description
     }
 }
 
 /// Hash the complete artifact in bounded memory, including actual weight bytes.
 /// This deliberately pays a startup read instead of treating a model family or
 /// file name as proof that two prepared artifacts contain the same weights.
-fn artifact_identity(path: &Path) -> Result<ModelId, GgufError> {
+fn artifact_identity(path: &Path) -> Result<String, GgufError> {
     use sha2::{Digest, Sha256};
     let mut file = File::open(path).map_err(|error| GgufError::Io {
         path: path.to_path_buf(),
@@ -329,8 +315,7 @@ fn artifact_identity(path: &Path) -> Result<ModelId, GgufError> {
             write!(text, "{byte:02x}").expect("writing to String cannot fail");
             text
         });
-    ModelId::new(format!("gguf:sha256:{hash}"))
-        .map_err(|_| GgufError::InvalidModelConfiguration("invalid artifact identity"))
+    Ok(format!("gguf:sha256:{hash}"))
 }
 
 fn artifact_quantization(file: &GgufFile) -> Quantization {
@@ -381,7 +366,7 @@ mod tests {
     }
 
     #[test]
-    fn builds_qwen35_description_with_distinct_state_families() {
+    fn declares_distinct_continuation_state_families() {
         let mut config = QwenConfig {
             context_length: 262_144,
             embedding_length: 5120,
@@ -402,18 +387,9 @@ mod tests {
             ssm_conv_kernel: 4,
             nextn_predict_layers: 1,
         };
-        let description = qwen35_model_description(
-            &config,
-            16,
-            ModelId::new("test-artifact").unwrap(),
-            Quantization::Other,
-        )
-        .expect("model description");
-        assert_eq!(description.id().as_str(), "test-artifact");
-        assert_eq!(description.regions().len(), 5);
-        assert_eq!(description.state_requirements().len(), 2);
-        let recurrent = description
-            .state_requirements()
+        let requirements = qwen35_state_requirements(&config, 16).expect("state requirements");
+        assert_eq!(requirements.len(), 2);
+        let recurrent = requirements
             .iter()
             .find_map(|requirement| match requirement {
                 StateRequirement::Recurrent(spec) => Some(*spec),
@@ -426,24 +402,15 @@ mod tests {
         assert_eq!(recurrent.convolution().channels(), 10_240);
         assert_eq!(recurrent.convolution().history_tokens(), 3);
         assert!(
-            description
-                .state_requirements()
+            requirements
                 .iter()
                 .any(|requirement| matches!(requirement, StateRequirement::FullAttentionKv(_)))
         );
+        // A concrete request re-derives each component at the capacity it can reach.
         assert!(
-            description
-                .state_requirements()
+            requirements
                 .iter()
-                .any(|requirement| matches!(requirement, StateRequirement::Recurrent(_)))
-        );
-        assert_eq!(
-            description
-                .capabilities()
-                .mtp()
-                .expect("MTP")
-                .max_draft_tokens(),
-            1
+                .all(|requirement| requirement.with_capacity(1).is_ok())
         );
         // Valid head geometry fits the state representation, but doubling the
         // group product for convolution channels must fail without panic.
@@ -453,12 +420,7 @@ mod tests {
         config.ssm_inner_size = u32::from(u16::MAX).pow(2);
         config.validate().unwrap();
         assert!(matches!(
-            qwen35_model_description(
-                &config,
-                16,
-                ModelId::new("overflow").unwrap(),
-                Quantization::Other
-            ),
+            qwen35_state_requirements(&config, 16),
             Err(GgufError::InvalidModelConfiguration(
                 "recurrent convolution dimensions overflow"
             ))

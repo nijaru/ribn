@@ -3,8 +3,7 @@ use std::sync::Arc;
 
 use cudarc::driver::{CudaContext, CudaStream};
 use engine_core::{
-    ConvolutionStateShape, DataType, KvStateSpec, ModelProvider, RecurrentMatrixShape,
-    RecurrentStateSpec,
+    ConvolutionStateShape, DataType, KvStateSpec, RecurrentMatrixShape, RecurrentStateSpec,
 };
 use engine_nvidia::{CudaHybridState, CudaQwen35BatchDecode, CudaQwen35Decode, QwenLayerKind};
 use engine_qwen::{QwenGguf, QwenLayerKind as ModelLayerKind};
@@ -118,7 +117,7 @@ fn different_capacities_preserve_hidden_and_all_continuation_bits() {
     let path = std::env::var("ENGINE_QWEN_GGUF").expect("pinned GGUF path");
     let provider = QwenGguf::open(path).unwrap();
     assert_eq!(
-        provider.description().id().as_str(),
+        provider.artifact_id(),
         "gguf:sha256:322e194ff79741c7baa497c240f677f54b201b0efab44ca8e50f122b39123482"
     );
     let context = CudaContext::new(0).unwrap();

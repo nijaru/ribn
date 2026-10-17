@@ -5,10 +5,8 @@ use std::sync::Arc;
 
 use cudarc::driver::{CudaContext, CudaSlice, CudaStream};
 use engine_core::{
-    BackendCapabilities, BackendFeatures, BackendId, BackendKind, ComputeBackend,
-    ConvolutionStateShape, DeviceId, ExecutionBatch, ExecutionPhase, ExecutionPlan,
-    ExecutionSegment, ExecutionStage, InferenceStateSet, LogicalStateManager, ModelId,
-    ModelProvider, ModelRegionId, PolicyVersion, Quantization, RecurrentMatrixShape,
+    ComputeBackend, ConvolutionStateShape, DeviceId, ExecutionBatch, ExecutionPhase,
+    ExecutionSegment, InferenceStateSet, LogicalStateManager, RecurrentMatrixShape,
     RecurrentStateSpec, StateLocation, StateManager, WeightBinding, WeightTensorSpec,
 };
 use engine_gguf::GgufFile;
@@ -69,24 +67,9 @@ fn reference_gguf() -> Vec<u8> {
 #[ignore = "requires a CUDA device"]
 fn executes_reference_linear_layer_through_backend() {
     let device = DeviceId::new(0);
-    let model = ModelId::new("engine/reference-linear").expect("model ID");
-    let backend_id = BackendId::new("cuda-reference").expect("backend ID");
-    let capabilities = BackendCapabilities::new(
-        backend_id.clone(),
-        device,
-        BackendKind::Cuda,
-        1 << 30,
-        BackendFeatures::new(
-            vec![engine_core::DataType::F32],
-            vec![Quantization::None],
-            false,
-            true,
-        ),
-    );
     let dispatcher =
         CudaReferenceDispatcher::new(device.get() as usize).expect("CUDA reference dispatcher");
     let weights = WeightBinding::new(
-        model.clone(),
         device,
         vec![
             dispatcher
@@ -96,21 +79,7 @@ fn executes_reference_linear_layer_through_backend() {
         ],
     )
     .expect("reference weight binding");
-    let mut backend = NvidiaBackend::new(capabilities, dispatcher).expect("CUDA backend");
-    let policy = PolicyVersion::new(1).expect("policy version");
-    let plan = ExecutionPlan::new(
-        model.clone(),
-        backend_id,
-        device,
-        policy,
-        vec![ExecutionStage::new(
-            ModelRegionId::new(0),
-            ExecutionPhase::Decode,
-        )],
-        Vec::new(),
-        weights,
-    )
-    .expect("execution plan");
+    let mut backend = NvidiaBackend::new(device, weights, dispatcher);
     let segment = ExecutionSegment::new(
         engine_core::RequestId::new(1).expect("request ID"),
         ExecutionPhase::Decode,
@@ -123,19 +92,17 @@ fn executes_reference_linear_layer_through_backend() {
     let mut state = InferenceStateSet::try_new(None, None).expect("state");
     let batch = ExecutionBatch::new(vec![segment]).expect("batch");
     let completion = backend
-        .execute(&plan, &batch, std::slice::from_mut(&mut state))
+        .execute(&batch, std::slice::from_mut(&mut state))
         .expect("reference execution");
     let event = &completion.events()[0];
 
     assert_eq!(event.phase(), ExecutionPhase::Decode);
     assert_eq!(event.token_count(), 1);
-    assert_eq!(event.policy_version(), policy);
     assert_eq!(state.token_position(), None);
     assert_eq!(
         backend.dispatcher().last_output(),
         Some([16.0, 14.0].as_slice())
     );
-    assert!(event.metrics().elapsed_nanos() > 0);
 }
 
 #[test]
@@ -160,36 +127,8 @@ fn materializes_a_bounded_gguf_tensor_before_reference_execution() {
     assert_eq!(dispatcher.weight_spec(), Some(&spec));
 
     let device = DeviceId::new(0);
-    let model = ModelId::new("engine/reference-gguf").expect("model ID");
-    let backend_id = BackendId::new("cuda-reference").expect("backend ID");
-    let capabilities = BackendCapabilities::new(
-        backend_id.clone(),
-        device,
-        BackendKind::Cuda,
-        1 << 30,
-        BackendFeatures::new(
-            vec![engine_core::DataType::F32],
-            vec![Quantization::None],
-            false,
-            true,
-        ),
-    );
-    let weights = WeightBinding::new(model.clone(), device, vec![spec]).expect("weight binding");
-    let mut backend = NvidiaBackend::new(capabilities, dispatcher).expect("CUDA backend");
-    let policy = PolicyVersion::new(1).expect("policy version");
-    let plan = ExecutionPlan::new(
-        model,
-        backend_id,
-        device,
-        policy,
-        vec![ExecutionStage::new(
-            ModelRegionId::new(0),
-            ExecutionPhase::Decode,
-        )],
-        Vec::new(),
-        weights,
-    )
-    .expect("execution plan");
+    let weights = WeightBinding::new(device, vec![spec]).expect("weight binding");
+    let mut backend = NvidiaBackend::new(device, weights, dispatcher);
     let segment = ExecutionSegment::new(
         engine_core::RequestId::new(2).expect("request ID"),
         ExecutionPhase::Decode,
@@ -201,16 +140,13 @@ fn materializes_a_bounded_gguf_tensor_before_reference_execution() {
     .expect("execution segment");
     let mut state = InferenceStateSet::try_new(None, None).expect("state");
     let batch = ExecutionBatch::new(vec![segment]).expect("batch");
-    let completion = backend
-        .execute(&plan, &batch, std::slice::from_mut(&mut state))
+    backend
+        .execute(&batch, std::slice::from_mut(&mut state))
         .expect("reference execution");
-    let event = &completion.events()[0];
-
     assert_eq!(
         backend.dispatcher().last_output(),
         Some([16.0, 14.0].as_slice())
     );
-    assert!(event.metrics().elapsed_nanos() > 0);
     std::fs::remove_file(path).expect("remove GGUF fixture");
 }
 
@@ -5835,10 +5771,9 @@ fn finds_first_diverging_batched_step_against_batch1() {
 )]
 fn serves_multi_row_batches_asynchronously_matching_the_eager_path() {
     use engine_core::{
-        BackendCapabilities, BackendFeatures, BackendKind, BackendSubmissionId, ComputeBackend,
-        DataType, ExecutionBatch, ExecutionPhase, ExecutionPlan, ExecutionStage, InferenceState,
-        LogicalStateManager, ModelProvider, PolicyVersion, Quantization, RequestId, SamplingParams,
-        StateLocation, StateManager, StateRequirement,
+        BackendSubmissionId, ComputeBackend, ExecutionBatch, ExecutionPhase, InferenceState,
+        LogicalStateManager, RequestId, SamplingParams, StateLocation, StateManager,
+        StateRequirement,
     };
     use engine_nvidia::NvidiaBackend;
     use engine_nvidia::{CudaQwen35Decode, CudaQwen35ServingDispatcher, QwenLayerKind};
@@ -5869,47 +5804,12 @@ fn serves_multi_row_batches_asynchronously_matching_the_eager_path() {
         .collect::<Vec<_>>();
 
     let device = DeviceId::new(0);
-    let description = provider.description();
-    let state_requirements = description.state_requirements().to_vec();
-    let execution_stages = [ExecutionPhase::Prefill, ExecutionPhase::Decode]
-        .into_iter()
-        .flat_map(|phase| {
-            description
-                .regions()
-                .iter()
-                .map(move |region| ExecutionStage::new(region.id(), phase))
-        })
-        .collect::<Vec<_>>();
+    let state_requirements = provider.state_requirements().to_vec();
 
-    let backend_id = BackendId::new("cuda").expect("backend ID");
     let state_bytes: u64 = state_requirements
         .iter()
         .map(|requirement| requirement.byte_size().expect("state size"))
         .sum();
-    let capabilities = BackendCapabilities::new(
-        backend_id.clone(),
-        device,
-        BackendKind::Cuda,
-        (20_u64 << 30) + state_bytes * 4,
-        BackendFeatures::new(
-            vec![DataType::F16, DataType::F32],
-            vec![Quantization::GgufQ4Km],
-            false,
-            true,
-        ),
-    );
-
-    let plan = ExecutionPlan::new(
-        description.id().clone(),
-        backend_id.clone(),
-        device,
-        PolicyVersion::new(1).expect("policy version"),
-        execution_stages,
-        state_requirements.clone(),
-        WeightBinding::empty(description.id().clone(), device),
-    )
-    .expect("plan");
-
     let allocate_state = |manager: &mut LogicalStateManager| {
         let states = state_requirements
             .iter()
@@ -5948,7 +5848,7 @@ fn serves_multi_row_batches_asynchronously_matching_the_eager_path() {
         CudaQwen35ServingDispatcher::new(&context, eager_executor, stream.clone(), 8)
             .expect("eager dispatcher");
     let mut eager_backend =
-        NvidiaBackend::new(capabilities.clone(), eager_dispatcher).expect("eager backend");
+        NvidiaBackend::new(device, WeightBinding::empty(device), eager_dispatcher);
 
     // Batched path: the same ROWS requests through one dispatcher, whose
     // submit seam picks the batched executor for all-decode batches.
@@ -5972,7 +5872,7 @@ fn serves_multi_row_batches_asynchronously_matching_the_eager_path() {
         CudaQwen35ServingDispatcher::new(&context, batched_executor, stream.clone(), 8)
             .expect("batched dispatcher");
     let mut batched_backend =
-        NvidiaBackend::new(capabilities, batched_dispatcher).expect("batched backend");
+        NvidiaBackend::new(device, WeightBinding::empty(device), batched_dispatcher);
 
     // Prefill each request separately (per-row path on both backends), then
     // drive ROWS-row decode batches through submit/poll.
@@ -6031,7 +5931,7 @@ fn serves_multi_row_batches_asynchronously_matching_the_eager_path() {
         .with_sampling(greedy);
         let batch = ExecutionBatch::new(vec![segment]).expect("batch");
         let submission = backend
-            .submit(&plan, &batch, std::slice::from_mut(state))
+            .submit(&batch, std::slice::from_mut(state))
             .expect("submit");
         poll_one(backend, submission)
     };
@@ -6090,7 +5990,7 @@ fn serves_multi_row_batches_asynchronously_matching_the_eager_path() {
             .with_sampling(greedy);
             let batch = ExecutionBatch::new(vec![segment]).expect("batch");
             let submission = eager_backend
-                .submit(&plan, &batch, std::slice::from_mut(&mut eager_states[row]))
+                .submit(&batch, std::slice::from_mut(&mut eager_states[row]))
                 .expect("eager submit");
             let token = poll_one(&mut eager_backend, submission);
             assert_eq!(token, expected, "eager row {row} diverged at token {step}");
@@ -6117,7 +6017,7 @@ fn serves_multi_row_batches_asynchronously_matching_the_eager_path() {
         }
         let batch = ExecutionBatch::new(segments).expect("batch");
         let submission = batched_backend
-            .submit(&plan, &batch, &mut batched_states)
+            .submit(&batch, &mut batched_states)
             .expect("batched submit");
         let tokens = {
             let deadline = Duration::from_secs(120);
@@ -6364,10 +6264,8 @@ fn stage_full_text_path(
 )]
 fn serves_qwen_tokens_asynchronously_matching_the_eager_path() {
     use engine_core::{
-        BackendCapabilities, BackendFeatures, BackendKind, ComputeBackend, DataType,
-        ExecutionBatch, ExecutionPhase, ExecutionPlan, ExecutionStage, InferenceState,
-        LogicalStateManager, ModelProvider, PolicyVersion, Quantization, RequestId, SamplingParams,
-        StateLocation, StateManager, StateRequirement,
+        ComputeBackend, ExecutionBatch, ExecutionPhase, InferenceState, LogicalStateManager,
+        RequestId, SamplingParams, StateLocation, StateManager, StateRequirement,
     };
     use engine_nvidia::NvidiaBackend;
     use engine_nvidia::{CudaQwen35Decode, CudaQwen35ServingDispatcher, QwenLayerKind};
@@ -6397,47 +6295,12 @@ fn serves_qwen_tokens_asynchronously_matching_the_eager_path() {
         .collect::<Vec<_>>();
 
     let device = DeviceId::new(0);
-    let description = provider.description();
-    let state_requirements = description.state_requirements().to_vec();
-    let execution_stages = [ExecutionPhase::Prefill, ExecutionPhase::Decode]
-        .into_iter()
-        .flat_map(|phase| {
-            description
-                .regions()
-                .iter()
-                .map(move |region| ExecutionStage::new(region.id(), phase))
-        })
-        .collect::<Vec<_>>();
+    let state_requirements = provider.state_requirements().to_vec();
 
-    let backend_id = BackendId::new("cuda").expect("backend ID");
     let state_bytes: u64 = state_requirements
         .iter()
         .map(|requirement| requirement.byte_size().expect("state size"))
         .sum();
-    let capabilities = BackendCapabilities::new(
-        backend_id.clone(),
-        device,
-        BackendKind::Cuda,
-        (20_u64 << 30) + state_bytes * 4,
-        BackendFeatures::new(
-            vec![DataType::F16, DataType::F32],
-            vec![Quantization::GgufQ4Km],
-            false,
-            true,
-        ),
-    );
-
-    let plan = ExecutionPlan::new(
-        description.id().clone(),
-        backend_id.clone(),
-        device,
-        PolicyVersion::new(1).expect("policy version"),
-        execution_stages,
-        state_requirements.clone(),
-        WeightBinding::empty(description.id().clone(), device),
-    )
-    .expect("plan");
-
     let allocate_state = |manager: &mut LogicalStateManager| {
         let states = state_requirements
             .iter()
@@ -6475,7 +6338,7 @@ fn serves_qwen_tokens_asynchronously_matching_the_eager_path() {
         CudaQwen35ServingDispatcher::new(&context, eager_executor, stream.clone(), 8)
             .expect("eager dispatcher");
     let mut eager_backend =
-        NvidiaBackend::new(capabilities.clone(), eager_dispatcher).expect("eager backend");
+        NvidiaBackend::new(device, WeightBinding::empty(device), eager_dispatcher);
 
     // Async: the new pinned-output completion path.
     let mut async_manager = LogicalStateManager::new(
@@ -6496,7 +6359,7 @@ fn serves_qwen_tokens_asynchronously_matching_the_eager_path() {
         CudaQwen35ServingDispatcher::new(&context, async_executor, stream.clone(), 8)
             .expect("async dispatcher");
     let mut async_backend =
-        NvidiaBackend::new(capabilities, async_dispatcher).expect("async backend");
+        NvidiaBackend::new(device, WeightBinding::empty(device), async_dispatcher);
 
     // Drive both backends through submit/poll with the same token sequence:
     // the shared prompt, then the eager path's own greedy choices, so the
@@ -6535,7 +6398,7 @@ fn serves_qwen_tokens_asynchronously_matching_the_eager_path() {
         .with_sampling(greedy);
         let batch = ExecutionBatch::new(vec![segment]).expect("batch");
         let submission = backend
-            .submit(&plan, &batch, std::slice::from_mut(state))
+            .submit(&batch, std::slice::from_mut(state))
             .expect("submit");
         let deadline = Duration::from_secs(120);
         let started = std::time::Instant::now();
@@ -6653,7 +6516,7 @@ fn serves_qwen_tokens_asynchronously_matching_the_eager_path() {
     .with_sampling(greedy);
     let batch = ExecutionBatch::new(vec![segment]).expect("batch");
     let submission = async_backend
-        .submit(&plan, &batch, std::slice::from_mut(&mut async_state))
+        .submit(&batch, std::slice::from_mut(&mut async_state))
         .expect("submit final step");
     assert_eq!(async_backend.dispatcher().pending_submissions(), 1);
     async_backend
@@ -6697,10 +6560,8 @@ fn serves_qwen_tokens_asynchronously_matching_the_eager_path() {
 )]
 fn serves_chunked_prefill_matching_the_serial_path() {
     use engine_core::{
-        BackendCapabilities, BackendFeatures, BackendKind, ComputeBackend, DataType,
-        ExecutionBatch, ExecutionPhase, ExecutionPlan, ExecutionStage, InferenceState,
-        LogicalStateManager, ModelProvider, PolicyVersion, Quantization, RequestId, SamplingParams,
-        StateLocation, StateManager, StateRequirement,
+        ComputeBackend, ExecutionBatch, ExecutionPhase, InferenceState, LogicalStateManager,
+        RequestId, SamplingParams, StateLocation, StateManager, StateRequirement,
     };
     use engine_nvidia::NvidiaBackend;
     use engine_nvidia::{CudaQwen35Decode, CudaQwen35ServingDispatcher, QwenLayerKind};
@@ -6747,47 +6608,12 @@ fn serves_chunked_prefill_matching_the_serial_path() {
         .collect::<Vec<_>>();
 
     let device = DeviceId::new(0);
-    let description = provider.description();
-    let state_requirements = description.state_requirements().to_vec();
-    let execution_stages = [ExecutionPhase::Prefill, ExecutionPhase::Decode]
-        .into_iter()
-        .flat_map(|phase| {
-            description
-                .regions()
-                .iter()
-                .map(move |region| ExecutionStage::new(region.id(), phase))
-        })
-        .collect::<Vec<_>>();
+    let state_requirements = provider.state_requirements().to_vec();
 
-    let backend_id = BackendId::new("cuda").expect("backend ID");
     let state_bytes: u64 = state_requirements
         .iter()
         .map(|requirement| requirement.byte_size().expect("state size"))
         .sum();
-    let capabilities = BackendCapabilities::new(
-        backend_id.clone(),
-        device,
-        BackendKind::Cuda,
-        (20_u64 << 30) + state_bytes * 2,
-        BackendFeatures::new(
-            vec![DataType::F16, DataType::F32],
-            vec![Quantization::GgufQ4Km],
-            false,
-            true,
-        ),
-    );
-
-    let plan = ExecutionPlan::new(
-        description.id().clone(),
-        backend_id.clone(),
-        device,
-        PolicyVersion::new(1).expect("policy version"),
-        execution_stages,
-        state_requirements.clone(),
-        WeightBinding::empty(description.id().clone(), device),
-    )
-    .expect("plan");
-
     let allocate_state = |manager: &mut LogicalStateManager| {
         let states = state_requirements
             .iter()
@@ -6822,7 +6648,7 @@ fn serves_chunked_prefill_matching_the_serial_path() {
         CudaQwen35ServingDispatcher::new(&context, serial_executor, stream.clone(), 8)
             .expect("serial dispatcher");
     let mut serial_backend =
-        NvidiaBackend::new(capabilities.clone(), serial_dispatcher).expect("serial backend");
+        NvidiaBackend::new(device, WeightBinding::empty(device), serial_dispatcher);
 
     let mut chunked_manager = LogicalStateManager::new(
         device,
@@ -6847,7 +6673,7 @@ fn serves_chunked_prefill_matching_the_serial_path() {
             .with_prefill_chunk(MEMBERS)
             .expect("prefill lane");
     let mut chunked_backend =
-        NvidiaBackend::new(capabilities.clone(), chunked_dispatcher).expect("chunked backend");
+        NvidiaBackend::new(device, WeightBinding::empty(device), chunked_dispatcher);
 
     assert_eq!(serial_backend.dispatcher().prefill_chunk_members(), None);
     assert_eq!(
@@ -6886,7 +6712,7 @@ fn serves_chunked_prefill_matching_the_serial_path() {
         .with_sampling(greedy);
         let batch = ExecutionBatch::new(vec![segment]).expect("batch");
         let submission = backend
-            .submit(&plan, &batch, std::slice::from_mut(state))
+            .submit(&batch, std::slice::from_mut(state))
             .expect("submit");
         let deadline = Duration::from_secs(120);
         let started = std::time::Instant::now();
@@ -7012,7 +6838,7 @@ fn serves_chunked_prefill_matching_the_serial_path() {
             .expect("sampled prefill lane")
             .with_sampled_prefill_final(true);
     let mut sampled_backend =
-        NvidiaBackend::new(capabilities.clone(), sampled_dispatcher).expect("sampled backend");
+        NvidiaBackend::new(device, WeightBinding::empty(device), sampled_dispatcher);
     let observer = sampled_backend.dispatcher_mut().observe_dispatch();
 
     let mut plain_manager = LogicalStateManager::new(
@@ -7234,7 +7060,7 @@ fn sampled_final_chunk_row_matches_serial_hidden_bits() {
     reason = "one staging pass and both retirement paths"
 )]
 fn retires_in_flight_members_without_losing_peers_or_state() {
-    use engine_core::{DataType, ExecutionTokenInput, InferenceState, SamplingParams};
+    use engine_core::{ExecutionTokenInput, InferenceState, SamplingParams};
     use engine_nvidia::{CudaQwen35Decode, CudaQwen35ServingDispatcher, QwenLayerKind};
 
     const PROMPT: [u32; 5] = [760, 6511, 314, 9338, 369];
@@ -7253,31 +7079,8 @@ fn retires_in_flight_members_without_losing_peers_or_state() {
             GgufQwenLayerKind::FullAttention => QwenLayerKind::FullAttention,
         })
         .collect();
-    let description = provider.description();
-    let model = description.id().clone();
-    let requirements = description.state_requirements().to_vec();
-    let execution_stages = [ExecutionPhase::Prefill, ExecutionPhase::Decode]
-        .into_iter()
-        .flat_map(|phase| {
-            description
-                .regions()
-                .iter()
-                .map(move |region| ExecutionStage::new(region.id(), phase))
-        })
-        .collect();
+    let requirements = provider.state_requirements().to_vec();
     let state_bytes: u64 = requirements.iter().map(|r| r.byte_size().unwrap()).sum();
-    let id = BackendId::new("cuda").unwrap();
-    let plan = ExecutionPlan::new(
-        model.clone(),
-        id.clone(),
-        device,
-        PolicyVersion::new(1).unwrap(),
-        execution_stages,
-        requirements.clone(),
-        WeightBinding::empty(model, device),
-    )
-    .unwrap();
-
     let grouped_decode = std::env::var_os("RIBN_GROUPED_DECODE").is_some();
     for members in [8, 9] {
         let executor = CudaQwen35Decode::new(
@@ -7292,19 +7095,7 @@ fn retires_in_flight_members_without_losing_peers_or_state() {
             CudaQwen35ServingDispatcher::new(&context, executor, stream.clone(), members)
                 .unwrap()
                 .with_grouped_decode(grouped_decode);
-        let caps = BackendCapabilities::new(
-            id.clone(),
-            device,
-            BackendKind::Cuda,
-            (20_u64 << 30) + state_bytes * members as u64,
-            BackendFeatures::new(
-                vec![DataType::F16, DataType::F32],
-                vec![description.weights().quantization()],
-                false,
-                true,
-            ),
-        );
-        let mut backend = NvidiaBackend::new(caps, dispatcher).unwrap();
+        let mut backend = NvidiaBackend::new(device, WeightBinding::empty(device), dispatcher);
         let mut manager = LogicalStateManager::new(
             device,
             ribn_foundation::BytePool::new(state_bytes * members as u64).shared(),
@@ -7359,7 +7150,7 @@ fn retires_in_flight_members_without_losing_peers_or_state() {
                 })
                 .collect();
             let batch = ExecutionBatch::new(segments).unwrap();
-            let submission = backend.submit(&plan, &batch, &mut states[first..]).unwrap();
+            let submission = backend.submit(&batch, &mut states[first..]).unwrap();
             if step == 1 {
                 backend.release_inference_state(&states[0]).unwrap();
                 // Release intent is not completion; retain storage and charge.
@@ -7438,7 +7229,7 @@ fn retires_in_flight_members_without_losing_peers_or_state() {
                 .collect();
             let batch = ExecutionBatch::new(segments).unwrap();
             assert!(matches!(
-                backend.submit(&plan, &batch, &mut states[1..]),
+                backend.submit(&batch, &mut states[1..]),
                 Err(engine_core::BackendError::Unsupported(_))
             ));
             assert_eq!(backend.dispatcher().state_registry().len(), members - 1);

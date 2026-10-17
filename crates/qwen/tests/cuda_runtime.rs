@@ -3,7 +3,7 @@
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
-use engine_core::{ModelProvider, StateRequirement};
+use engine_core::StateRequirement;
 use engine_qwen::{QwenCuda, QwenGguf, QwenLoadOptions};
 use ribn::{
     Engine, EngineConfig, Event, FinishReason, GenerationExecutor, GenerationOptions,
@@ -417,7 +417,6 @@ fn continuation_capacity_admits_concurrent_requests_a_context_charge_cannot() {
     // Read the declared state schema without touching the device.
     let requirements = QwenGguf::open_with_kv_block_tokens(&model, declared_bound)
         .unwrap()
-        .description()
         .state_requirements()
         .to_vec();
     let request_charge = continuation_demand(&requirements, reachable, 1);

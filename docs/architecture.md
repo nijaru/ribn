@@ -12,7 +12,7 @@ CLI run / HTTP (CLI serve → ribn-server)
   → ribn::driver: one worker, request permits, owned streams, shutdown
   → ribn::Engine: AR lifecycle, scheduling, bounded output mailboxes
   → engine-qwen: QwenCuda / QwenExecution
-  → engine-core: transitional batch/plan/logical-state contracts
+  → engine-core: prepared batch, continuation state and weight contracts
   → engine-nvidia: physical state, dispatch and kernels
 ```
 
@@ -72,7 +72,11 @@ continuation leases; submit consumes its exact rows, and abandonment preserves o
 
 Block-table attention reads exist in the backend, but production Qwen remains
 contiguous. There is no paged write/growth consumer, prefix cache, restore operation
-or recomputation preemption. The surviving `engine-core` contracts are transitional;
+or recomputation preemption. The surviving `engine-core` contracts are the prepared batch
+a backend executes, continuation state declarations and accounting, and artifact weight
+descriptions; they are not a model or execution-plan layer. A plan/description/capability
+layer that nothing read was removed, so a model now describes only what its backend and its
+own state accounting consume.
 its duplicate scheduler, serving runtime and `ribn local` frontend have been removed.
 Whole decode offers of two through eight rows can now batch across different positive
 KV capacities/positions when model geometry/dtype match. Attention remains per-member
@@ -131,7 +135,7 @@ Shared CUDA physical retirement and downstream-workspace progress remain unprove
 | `crates/qwen` / `engine-qwen` | Qwen config, GGUF mapping, CUDA assembly and AR adapter; serving benchmark |
 | `crates/nvidia` / `engine-nvidia` | NVIDIA storage, completion, dispatch and kernels |
 | `crates/bert` / `engine-bert` | BERT semantics, preparation, executor binding and device retirement |
-| `crates/core` / `engine-core` | Transitional execution/batch/plan, backend, state and weight contracts; no scheduler |
+| `crates/core` / `engine-core` | Prepared batch, backend submission, continuation state and weight contracts; no scheduler, plan or model description |
 | `crates/gguf` / `engine-gguf` | GGUF artifact access and current tokenizer/chat-template implementation |
 | `crates/safetensors` / `ribn-safetensors` | Generic validated SafeTensors views |
 | `crates/hf` / `ribn-hf` | Local HF-style config/shard resolution and residency |
@@ -141,7 +145,7 @@ Shared CUDA physical retirement and downstream-workspace progress remain unprove
 | `crates/cli` / `ribn-cli` | `inspect`, experimental `run` and `serve` |
 
 `tools/check-boundaries.py` checks production dependency direction and retired-path
-resurrection. It does not freeze transitional crates against an accepted migration.
+resurrection. It does not freeze the remaining shared crates against an accepted migration.
 
 ## Qualification and missing support
 

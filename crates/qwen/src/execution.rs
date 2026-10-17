@@ -3,8 +3,8 @@ use std::sync::Arc;
 
 use engine_core::{
     BackendSubmissionId, ComputeBackend, ExecutionBatch, ExecutionBatchEvent, ExecutionPhase,
-    ExecutionPlan, ExecutionSegment, ExecutionTokenInput, InferenceStateSet, LogicalStateManager,
-    RequestId, SamplingParams, StateError, StateLocation, StateManager, StateRequirement,
+    ExecutionSegment, ExecutionTokenInput, InferenceStateSet, LogicalStateManager, RequestId,
+    SamplingParams, StateError, StateLocation, StateManager, StateRequirement,
 };
 use ribn::{
     Admission, BatchItem, BatchPreparation, ExecutionError, ExecutorInfo, SequenceId,
@@ -16,7 +16,7 @@ use crate::state;
 struct Sequence {
     state: Option<InferenceStateSet>,
     /// The continuation capacity this sequence actually reaches, derived from the
-    /// plan's declared schema. Each segment states it, so the physical owner can
+    /// model's declared schema. Each segment states it, so the physical owner can
     /// check the exact state it was given instead of the model's maximum.
     requirements: Arc<[StateRequirement]>,
     prompt: Option<Arc<[u32]>>,
@@ -45,7 +45,8 @@ struct Pending {
 pub(crate) struct QwenExecution<B> {
     pub(crate) backend: B,
     info: ExecutorInfo,
-    plan: ExecutionPlan,
+    /// Declared continuation components; a request materializes the capacity it can reach.
+    requirements: Arc<[StateRequirement]>,
     manager: LogicalStateManager,
     sequences: HashMap<SequenceId, Sequence>,
     prepared: Option<Prepared>,
@@ -58,13 +59,13 @@ impl<B: ComputeBackend> QwenExecution<B> {
     pub(crate) fn new(
         backend: B,
         info: ExecutorInfo,
-        plan: ExecutionPlan,
+        requirements: Arc<[StateRequirement]>,
         manager: LogicalStateManager,
         vocabulary_size: u32,
     ) -> Self {
         Self {
             backend,
-            plan,
+            requirements,
             manager,
             sequences: HashMap::with_capacity(info.limits.max_sequences),
             info,
@@ -158,8 +159,7 @@ impl<B: ComputeBackend> QwenExecution<B> {
         reachable: u32,
     ) -> Result<Option<ReservedContinuation>, ExecutionError> {
         let requirements = self
-            .plan
-            .state_requirements()
+            .requirements
             .iter()
             .map(|declaration| declaration.with_capacity(reachable).map_err(model_error))
             .collect::<Result<Vec<_>, ExecutionError>>()?;
@@ -322,10 +322,7 @@ impl<B: ComputeBackend> QwenExecution<B> {
                     .expect("validated lease")
             })
             .collect::<Vec<_>>();
-        match self
-            .backend
-            .submit(&self.plan, &prepared.batch, &mut states)
-        {
+        match self.backend.submit(&prepared.batch, &mut states) {
             Ok(id) => {
                 self.pending = Some(Pending {
                     id,
@@ -398,7 +395,6 @@ impl<B: ComputeBackend> QwenExecution<B> {
             if result.request() != segment.request()
                 || result.phase() != segment.phase()
                 || result.token_count() != segment.token_count()
-                || result.policy_version() != self.plan.policy_version()
                 || result.output_token().is_some() != segment.requests_sampling()
                 || result
                     .output_token()

@@ -1,31 +1,22 @@
-//! Transitional execution, weight and state contracts used by Qwen and NVIDIA.
+//! Execution vocabulary shared by the Qwen model and its NVIDIA backend.
 //!
-//! Request scheduling and serving lifecycle belong to `ribn`, not this crate.
-//! Surviving contracts stay here until their model/backend consumers migrate;
-//! they are not the general inference engine API.
+//! Request scheduling and serving lifecycle belong to `ribn`, not this crate. The remaining
+//! contracts are the prepared batch a backend consumes, continuation state declarations and
+//! accounting, and artifact weight descriptions. They are not the general inference API.
 
 pub mod backend;
 pub mod device;
 pub mod execution;
-pub mod model;
 pub mod request;
 pub mod state;
 pub mod tensor;
 pub mod weights;
 
-pub use backend::{
-    BackendCapabilities, BackendError, BackendFeatures, BackendId, BackendKind,
-    BackendSubmissionId, ComputeBackend,
-};
+pub use backend::{BackendError, BackendSubmissionId, ComputeBackend};
 pub use device::DeviceId;
 pub use execution::{
-    ExecutionBatch, ExecutionBatchEvent, ExecutionEvent, ExecutionMetrics, ExecutionOutcome,
-    ExecutionPhase, ExecutionPlan, ExecutionSegment, ExecutionStage, ExecutionTokenInput,
-    PlanError, PolicyVersion,
-};
-pub use model::{
-    ModelCapabilities, ModelDescription, ModelError, ModelId, ModelProvider, ModelRegion,
-    ModelRegionId, ModelRegionKind, MtpCapability, WeightDescription,
+    BatchError, ExecutionBatch, ExecutionBatchEvent, ExecutionEvent, ExecutionOutcome,
+    ExecutionPhase, ExecutionSegment, ExecutionTokenInput,
 };
 pub use request::{RequestId, SamplingError, SamplingParams};
 pub use state::{
@@ -42,18 +33,7 @@ pub use weights::{
 mod tests {
     use super::*;
 
-    struct StaticProvider {
-        description: ModelDescription,
-    }
-
-    impl ModelProvider for StaticProvider {
-        fn description(&self) -> &ModelDescription {
-            &self.description
-        }
-    }
-
-    fn qwen_description() -> ModelDescription {
-        let model = ModelId::new("Qwen/Qwen3.8-27B").expect("valid model identity");
+    fn state_requirements() -> Vec<StateRequirement> {
         let kv = KvStateSpec::new(16, 4, 256, 16, DataType::F16).expect("valid KV spec");
         let matrix = RecurrentMatrixShape::new(48, 128, 128).expect("valid matrix shape");
         let convolution =
@@ -61,135 +41,66 @@ mod tests {
         let recurrent =
             RecurrentStateSpec::new(48, matrix, convolution, DataType::F16, DataType::F32)
                 .expect("valid recurrent spec");
-        let mtp = MtpCapability::new(1, 3);
-        ModelDescription::new(
-            model,
-            "qwen3.8-hybrid",
-            vec![
-                ModelRegion::new(ModelRegionId::new(0), ModelRegionKind::RecurrentAttention),
-                ModelRegion::new(ModelRegionId::new(1), ModelRegionKind::FullAttention),
-                ModelRegion::new(ModelRegionId::new(2), ModelRegionKind::FeedForward),
-            ],
-            vec![
-                StateRequirement::Recurrent(recurrent),
-                StateRequirement::FullAttentionKv(kv),
-            ],
-            ModelCapabilities::new(mtp, true),
-            WeightDescription::new(WeightFormat::Gguf, Quantization::GgufQ4Km),
-        )
-        .expect("valid model description")
+        vec![
+            StateRequirement::Recurrent(recurrent),
+            StateRequirement::FullAttentionKv(kv),
+        ]
     }
 
     #[test]
-    fn hybrid_description_and_plan_keep_state_families_distinct() {
-        let description = qwen_description();
-        let backend = BackendId::new("cuda").expect("valid backend identity");
-        let version = PolicyVersion::new(1).expect("valid policy version");
-        let plan = ExecutionPlan::new(
-            description.id().clone(),
-            backend,
-            DeviceId::new(0),
-            version,
-            vec![ExecutionStage::new(
-                ModelRegionId::new(0),
-                ExecutionPhase::Decode,
-            )],
-            description.state_requirements().to_vec(),
-            WeightBinding::empty(description.id().clone(), DeviceId::new(0)),
-        )
-        .expect("valid plan");
-
-        assert!(plan.requires_kv_state());
-        assert!(plan.requires_recurrent_state());
+    fn a_batch_rejects_duplicate_request_work() {
+        let requirements: std::sync::Arc<[StateRequirement]> = state_requirements().into();
+        let request = RequestId::new(1).expect("valid request ID");
+        let segment = |phase, tokens| {
+            ExecutionSegment::new_shared(
+                request,
+                phase,
+                1,
+                tokens,
+                0,
+                std::sync::Arc::clone(&requirements),
+            )
+            .expect("valid segment")
+        };
         assert_eq!(
-            description
-                .capabilities()
-                .mtp()
-                .expect("MTP")
-                .draft_layers(),
-            1
+            ExecutionBatch::new(vec![
+                segment(ExecutionPhase::Decode, 1),
+                segment(ExecutionPhase::Decode, 1)
+            ]),
+            Err(BatchError::DuplicateBatchRequest)
         );
-        assert!(description.capabilities().has_vision_encoder());
-
-        let segment = ExecutionSegment::new(
-            RequestId::new(1).expect("valid request ID"),
-            ExecutionPhase::Decode,
-            1,
-            1,
-            32,
-            description.state_requirements().to_vec(),
-        )
-        .expect("valid segment");
-        assert!(plan.validate_segment(&segment).is_ok());
-        // A segment states the concrete capacity it works on, so reaching less of the
-        // context than the declaration allows is valid while exceeding it is not.
-        let concrete = ExecutionSegment::new(
-            segment.request(),
-            ExecutionPhase::Decode,
-            1,
-            1,
-            32,
-            description
-                .state_requirements()
-                .iter()
-                .map(|requirement| requirement.with_capacity(8).expect("concrete capacity"))
-                .collect::<Vec<_>>(),
-        )
-        .expect("valid segment");
-        assert!(plan.validate_segment(&concrete).is_ok());
-        let exceeding = ExecutionSegment::new(
-            segment.request(),
-            ExecutionPhase::Decode,
-            1,
-            1,
-            32,
-            description
-                .state_requirements()
-                .iter()
-                .map(|requirement| requirement.with_capacity(32).expect("over-bound capacity"))
-                .collect::<Vec<_>>(),
-        )
-        .expect("valid segment");
-        assert_eq!(
-            plan.validate_segment(&exceeding),
-            Err(PlanError::SegmentStateUndeclared)
-        );
-        let wrong_phase = ExecutionSegment::new(
-            segment.request(),
-            ExecutionPhase::Encoder,
-            1,
-            1,
-            32,
-            Vec::new(),
-        )
-        .expect("valid segment");
-        assert_eq!(
-            plan.validate_segment(&wrong_phase),
-            Err(PlanError::SegmentPhaseMismatch)
-        );
+        assert_eq!(ExecutionBatch::new(Vec::new()), Err(BatchError::EmptyBatch));
+        let batch = ExecutionBatch::new(vec![segment(ExecutionPhase::Decode, 1)]).expect("batch");
+        assert_eq!(batch.total_tokens(), Some(1));
     }
 
     #[test]
-    fn provider_rejects_unknown_regions_before_execution() {
-        let description = qwen_description();
-        let plan = ExecutionPlan::new(
-            description.id().clone(),
-            BackendId::new("cuda").expect("valid backend identity"),
-            DeviceId::new(0),
-            PolicyVersion::new(1).expect("valid policy version"),
-            vec![ExecutionStage::new(
-                ModelRegionId::new(99),
-                ExecutionPhase::Decode,
-            )],
-            description.state_requirements().to_vec(),
-            WeightBinding::empty(description.id().clone(), DeviceId::new(0)),
-        )
-        .expect("valid plan shape");
-
-        let provider = StaticProvider { description };
+    fn token_input_must_match_the_segment_phase_and_length() {
+        let prompt: std::sync::Arc<[u32]> = std::sync::Arc::from([1_u32, 2, 3]);
+        let decode = ExecutionTokenInput::decode(7);
+        assert_eq!(decode.decode_token(), Some(7));
         assert_eq!(
-            provider.validate_plan(&plan),
-            Err(ModelError::UnknownRegion(ModelRegionId::new(99)))
+            ExecutionTokenInput::prompt(prompt.clone(), 1, 2)
+                .expect("slice")
+                .prompt_slice(),
+            Some(&[2, 3][..])
+        );
+        assert_eq!(
+            ExecutionTokenInput::prompt(prompt.clone(), 2, 2),
+            Err(BatchError::InvalidTokenInput)
+        );
+        let segment = ExecutionSegment::new_shared(
+            RequestId::new(2).expect("valid request ID"),
+            ExecutionPhase::Prefill,
+            1,
+            2,
+            0,
+            state_requirements().into(),
+        )
+        .expect("valid segment");
+        assert_eq!(
+            segment.with_token_input(decode),
+            Err(BatchError::InvalidTokenInput)
         );
     }
 
@@ -218,26 +129,6 @@ mod tests {
             32,
         );
         assert!(RecurrentState::new(wrong_family_handle, recurrent).is_none());
-
-        let recurrent_handle = StateHandle::new(
-            StateId::new(3).expect("valid state ID"),
-            StateRequirement::Recurrent(recurrent),
-            StateLocation::Device(DeviceId::new(0)),
-            31,
-        );
-        let recurrent_state =
-            RecurrentState::new(recurrent_handle, recurrent).expect("valid recurrent state");
-        let kv_handle = StateHandle::new(
-            StateId::new(4).expect("valid state ID"),
-            requirement,
-            StateLocation::Device(DeviceId::new(0)),
-            32,
-        );
-        let kv_state = KvState::new(kv_handle, spec).expect("valid KV state");
-        assert_eq!(
-            InferenceStateSet::try_new(Some(kv_state), Some(recurrent_state)),
-            Err(StateError::PositionMismatch)
-        );
     }
 
     #[test]

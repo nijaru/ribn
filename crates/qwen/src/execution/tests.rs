@@ -1,10 +1,8 @@
 use std::sync::{Arc, Mutex};
 
 use engine_core::{
-    BackendCapabilities, BackendError, BackendFeatures, BackendId, BackendKind, ComputeBackend,
-    DataType, DeviceId, ExecutionBatch, ExecutionBatchEvent, ExecutionEvent, ExecutionMetrics,
-    ExecutionPhase, ExecutionPlan, ExecutionStage, InferenceStateSet, KvStateSpec, ModelId,
-    ModelRegionId, PolicyVersion, StateRequirement, WeightBinding,
+    BackendError, ComputeBackend, DataType, DeviceId, ExecutionBatch, ExecutionBatchEvent,
+    ExecutionEvent, ExecutionPhase, InferenceStateSet, KvStateSpec, StateRequirement,
 };
 use ribn::{
     Engine, EngineConfig, Event, FinishReason, GenerationExecutor, GenerationLimits,
@@ -33,23 +31,22 @@ struct Control {
 }
 
 struct Backend {
-    caps: BackendCapabilities,
+    device: DeviceId,
     pending: Option<ExecutionBatchEvent>,
     control: Arc<Mutex<Control>>,
     id: u64,
 }
 
 impl ComputeBackend for Backend {
-    fn capabilities(&self) -> &BackendCapabilities {
-        &self.caps
+    fn device(&self) -> DeviceId {
+        self.device
     }
     fn submit(
         &mut self,
-        plan: &ExecutionPlan,
         batch: &ExecutionBatch,
         states: &mut [InferenceStateSet],
     ) -> Result<BackendSubmissionId, BackendError> {
-        self.validate_execution(plan, batch, states)?;
+        self.validate_execution(batch, states)?;
         let mut control = self.control.lock().unwrap();
         control.kv_capacities.extend(
             states
@@ -74,14 +71,8 @@ impl ComputeBackend for Backend {
             .segments()
             .iter()
             .map(|row| {
-                let result = ExecutionEvent::new(
-                    row.request(),
-                    plan.policy_version(),
-                    row.phase(),
-                    row.token_count(),
-                    ExecutionMetrics::new(1, 0, 0),
-                )
-                .unwrap();
+                let result =
+                    ExecutionEvent::new(row.request(), row.phase(), row.token_count()).unwrap();
                 if row.requests_sampling() {
                     result.with_output_token(
                         if matches!(control.fault, Some(BackendFault::Output)) {
@@ -194,23 +185,8 @@ fn model_with_requirements(
     pool: Arc<ribn_foundation::BytePool>,
     requirements: Vec<StateRequirement>,
 ) -> Model {
-    let capacity = pool.capacity();
     let device = DeviceId::new(0);
-    let model = ModelId::new("Qwen adapter fixture").unwrap();
-    let backend = BackendId::new("host-fixture").unwrap();
-    let plan = ExecutionPlan::new(
-        model.clone(),
-        backend.clone(),
-        device,
-        PolicyVersion::new(1).unwrap(),
-        vec![
-            ExecutionStage::new(ModelRegionId::new(0), ExecutionPhase::Prefill),
-            ExecutionStage::new(ModelRegionId::new(0), ExecutionPhase::Decode),
-        ],
-        requirements,
-        WeightBinding::empty(model, device),
-    )
-    .unwrap();
+    let requirements: Arc<[StateRequirement]> = requirements.into();
     let info = ExecutorInfo {
         name: "Qwen adapter fixture".into(),
         limits: GenerationLimits {
@@ -222,19 +198,13 @@ fn model_with_requirements(
     };
     Model(QwenExecution::new(
         Backend {
-            caps: BackendCapabilities::new(
-                backend,
-                device,
-                BackendKind::Cpu,
-                capacity,
-                BackendFeatures::new(vec![DataType::F16], vec![], false, false),
-            ),
+            device,
             pending: None,
             control,
             id: 0,
         },
         info,
-        plan,
+        Arc::clone(&requirements),
         engine_core::LogicalStateManager::new(
             device,
             pool,

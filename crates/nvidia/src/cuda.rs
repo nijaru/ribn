@@ -2,15 +2,14 @@ use std::collections::BTreeMap;
 use std::fmt;
 use std::io::Read;
 use std::sync::Arc;
-use std::time::Instant;
 
 use crate::NvidiaDispatcher;
 use cudarc::cublas::sys::cublasOperation_t;
 use cudarc::cublas::{CudaBlas, Gemv, GemvConfig};
 use cudarc::driver::{CudaContext, CudaSlice, CudaStream};
 use engine_core::{
-    BackendError, DataType, ExecutionMetrics, ExecutionOutcome, ExecutionPlan, ExecutionSegment,
-    F32BlockStream, InferenceStateSet, WeightBinding, WeightTensorSpec,
+    BackendError, DataType, ExecutionOutcome, ExecutionSegment, F32BlockStream, InferenceStateSet,
+    WeightBinding, WeightTensorSpec,
 };
 
 const INPUT: [f32; 4] = [1.0, 2.0, 3.0, 4.0];
@@ -596,10 +595,7 @@ impl CudaReferenceDispatcher {
             .map_err(|error| CudaRuntimeError::Weight(error.to_string()))
     }
 
-    fn run_linear_layer(
-        &mut self,
-        binding: &WeightBinding,
-    ) -> Result<ExecutionMetrics, CudaRuntimeError> {
+    fn run_linear_layer(&mut self, binding: &WeightBinding) -> Result<(), CudaRuntimeError> {
         if binding.tensor(&self.reference_weight_name).is_none() {
             return Err(CudaRuntimeError::Weight(format!(
                 "weight binding does not include reference tensor {:?}",
@@ -618,7 +614,6 @@ impl CudaReferenceDispatcher {
                     self.reference_weight_name
                 ))
             })?;
-        let started = Instant::now();
         // cuBLAS uses column-major matrices. The reference weight is a 2x4
         // matrix, so the output is a two-element vector with m=2 and n=4.
         // Safety: the device slices remain alive for the duration of the call;
@@ -658,15 +653,13 @@ impl CudaReferenceDispatcher {
             )));
         }
         self.last_output = Some(output);
-        let elapsed_nanos = u64::try_from(started.elapsed().as_nanos()).unwrap_or(u64::MAX);
-        Ok(ExecutionMetrics::new(elapsed_nanos, 0, 0))
+        Ok(())
     }
 }
 
 impl NvidiaDispatcher for CudaReferenceDispatcher {
     fn dispatch(
         &mut self,
-        _plan: &ExecutionPlan,
         segment: &ExecutionSegment,
         weights: &WeightBinding,
         _state: &mut InferenceStateSet,
@@ -677,7 +670,7 @@ impl NvidiaDispatcher for CudaReferenceDispatcher {
             ));
         }
         self.run_linear_layer(weights)
-            .map(ExecutionOutcome::new)
+            .map(|()| ExecutionOutcome::new())
             .map_err(|error| BackendError::ExecutionFailed(error.to_string()))
     }
 }

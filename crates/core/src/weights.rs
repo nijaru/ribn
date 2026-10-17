@@ -8,7 +8,6 @@
 use std::fmt;
 
 use crate::device::DeviceId;
-use crate::model::ModelId;
 use crate::tensor::DataType;
 
 /// Metadata for one tensor in the stream's scalar ordering.
@@ -101,11 +100,10 @@ pub trait F32BlockStream {
     fn next_block(&mut self) -> Result<Option<Vec<f32>>, Self::Error>;
 }
 
-/// Logical model/device association for a prepared set of weight tensors.
+/// Device association for a prepared set of weight tensors.
 /// Physical buffers remain owned by the selected backend.
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub struct WeightBinding {
-    model: ModelId,
     device: DeviceId,
     tensors: Vec<WeightTensorSpec>,
 }
@@ -116,7 +114,6 @@ impl WeightBinding {
     /// Returns [`WeightBindingError::DuplicateTensor`] when two entries have
     /// the same tensor name.
     pub fn new(
-        model: ModelId,
         device: DeviceId,
         tensors: Vec<WeightTensorSpec>,
     ) -> Result<Self, WeightBindingError> {
@@ -130,25 +127,15 @@ impl WeightBinding {
                 ));
             }
         }
-        Ok(Self {
-            model,
-            device,
-            tensors,
-        })
+        Ok(Self { device, tensors })
     }
 
     #[must_use]
-    pub fn empty(model: ModelId, device: DeviceId) -> Self {
+    pub const fn empty(device: DeviceId) -> Self {
         Self {
-            model,
             device,
             tensors: Vec::new(),
         }
-    }
-
-    #[must_use]
-    pub fn model(&self) -> &ModelId {
-        &self.model
     }
 
     #[must_use]

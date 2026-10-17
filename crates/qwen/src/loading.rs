@@ -4,11 +4,7 @@ use std::sync::Arc;
 
 use crate::{QwenGguf, QwenLayerKind as GgufQwenLayerKind};
 use cudarc::driver::{CudaContext, CudaStream};
-use engine_core::{
-    BackendCapabilities, BackendFeatures, BackendId, BackendKind, DataType, DeviceId,
-    ExecutionPhase, ExecutionPlan, ExecutionStage, ModelProvider, PolicyVersion, StateRequirement,
-    WeightBinding,
-};
+use engine_core::{DeviceId, StateRequirement, WeightBinding};
 use engine_nvidia::NvidiaBackend;
 use engine_nvidia::{
     CudaQwen35Decode, CudaQwen35ServingDispatcher, CudaQwen35Weights, GemvMode, QwenCudaProfile,
@@ -117,7 +113,7 @@ pub(crate) fn load(
     .map_err(model_error)?;
     let device = DeviceId::new(options.device);
     let continuation_capacity_bytes =
-        continuation_capacity(provider.description().state_requirements(), &options)?;
+        continuation_capacity(provider.state_requirements(), &options)?;
     let context = CudaContext::new(usize::from(options.device)).map_err(model_error)?;
     let stream = context.default_stream();
     let free_before_preparation_bytes =
@@ -165,9 +161,10 @@ pub(crate) fn load(
             "prepared Qwen leaves {free_after_preparation_bytes} free bytes, below its {continuation_capacity_bytes}-byte continuation capacity"
         )));
     }
-    let (backend, plan) = prepare_execution(&provider, &context, dispatcher, device)?;
+    let requirements: Arc<[StateRequirement]> = provider.state_requirements().into();
+    let backend = prepare_execution(dispatcher, device);
     let info = ExecutorInfo {
-        name: provider.description().id().to_string(),
+        name: provider.artifact_id().to_owned(),
         limits: GenerationLimits {
             context_tokens: options.context_tokens,
             max_sequences: options.max_sequences,
@@ -178,7 +175,7 @@ pub(crate) fn load(
     let execution = QwenExecution::new(
         backend,
         info,
-        plan,
+        requirements,
         state::manager(device, continuation_capacity_bytes),
         vocabulary_size,
     );
@@ -231,49 +228,12 @@ fn continuation_capacity(
     Ok(capacity)
 }
 
-fn prepare_execution(
-    provider: &QwenGguf,
-    context: &Arc<CudaContext>,
-    dispatcher: CudaQwen35ServingDispatcher,
-    device: DeviceId,
-) -> Result<(Backend, ExecutionPlan), ExecutionError> {
-    let description = provider.description();
-    let backend_id = BackendId::new("cuda").map_err(model_error)?;
-    let capabilities = BackendCapabilities::new(
-        backend_id.clone(),
-        device,
-        BackendKind::Cuda,
-        u64::try_from(context.total_mem().map_err(model_error)?).map_err(model_error)?,
-        BackendFeatures::new(
-            vec![DataType::F16, DataType::F32],
-            vec![description.weights().quantization()],
-            false,
-            true,
-        ),
-    );
-    let backend = NvidiaBackend::new(capabilities, dispatcher).map_err(model_error)?;
-    let model = description.id().clone();
-    let stages = [ExecutionPhase::Prefill, ExecutionPhase::Decode]
-        .into_iter()
-        .flat_map(|phase| {
-            description
-                .regions()
-                .iter()
-                .map(move |region| ExecutionStage::new(region.id(), phase))
-        })
-        .collect();
-    let plan = ExecutionPlan::new(
-        model.clone(),
-        backend_id,
-        device,
-        PolicyVersion::new(1).expect("constant version"),
-        stages,
-        description.state_requirements().to_vec(),
-        WeightBinding::empty(model.clone(), device),
-    )
-    .map_err(model_error)?;
-    provider.validate_plan(&plan).map_err(model_error)?;
-    Ok((backend, plan))
+/// Wrap the prepared dispatcher in the submission bookkeeping the engine drives.
+///
+/// The production serving dispatcher resolves staged tensors from its own store, so it needs
+/// no name binding; the empty binding still records the device the batch executes on.
+fn prepare_execution(dispatcher: CudaQwen35ServingDispatcher, device: DeviceId) -> Backend {
+    NvidiaBackend::new(device, WeightBinding::empty(device), dispatcher)
 }
 
 /// The current physical executor executes one declared geometry and numerical profile.
