@@ -44,8 +44,9 @@ pub struct QwenLoadOptions {
     /// serving-effect gates are recorded in
     /// `benchmarks/qwen-prefill-qualification.md`.
     pub prefill_chunk_members: Option<usize>,
-    /// Experimental sampling from a whole prefill chunk's final row. Default off;
-    /// requires a prefill lane and retains the serial fallback outside warp mode.
+    /// Sample a whole prefill chunk's final row instead of re-running that token
+    /// on the serial path. Only the warp projection without the chunk-parallel
+    /// scan honours it; every other mode and prompt shape keeps the serial step.
     pub sampled_prefill_final: bool,
     /// Optional upper bound for staged weights. Automatic mode uses observed
     /// free device memory minus request-state reservations and headroom.
@@ -69,7 +70,7 @@ impl Default for QwenLoadOptions {
             gemv_mode: GemvMode::default(),
             grouped_decode: false,
             prefill_chunk_members: Some(DEFAULT_PREFILL_CHUNK_MEMBERS),
-            sampled_prefill_final: false,
+            sampled_prefill_final: true,
             weight_budget_bytes: None,
             continuation_capacity_bytes: None,
             headroom_bytes: 512 << 20,
@@ -193,21 +194,19 @@ pub(crate) fn load(
 
 /// Apply the preparation-time lane toggles that cannot be set on construction.
 ///
-/// The chunk lane and sampled-final selection are part of preparation, so their
+/// The chunk lane and sampled-final preference are part of preparation, so their
 /// scratch must exist before the post-preparation memory check accounts for it.
 fn prepare_dispatcher(
     dispatcher: CudaQwen35ServingDispatcher,
     options: &QwenLoadOptions,
 ) -> Result<CudaQwen35ServingDispatcher, ExecutionError> {
-    let dispatcher = match options.prefill_chunk_members {
-        Some(members) => dispatcher
-            .with_prefill_chunk(members)
-            .map_err(model_error)?,
-        None => dispatcher,
+    let Some(members) = options.prefill_chunk_members else {
+        return Ok(dispatcher);
     };
-    dispatcher
-        .with_sampled_prefill_final(options.sampled_prefill_final)
-        .map_err(model_error)
+    Ok(dispatcher
+        .with_prefill_chunk(members)
+        .map_err(model_error)?
+        .with_sampled_prefill_final(options.sampled_prefill_final))
 }
 
 /// Continuation bytes this loaded execution may charge in total.

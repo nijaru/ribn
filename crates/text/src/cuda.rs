@@ -32,7 +32,8 @@ pub struct LoadOptions {
     pub max_sequences: usize,
     /// Same-sequence prefill chunk size, or `None` for the serial prefill path.
     pub prefill_chunk_members: Option<usize>,
-    /// Experimental whole-chunk final-row sampling; disabled by default.
+    /// Prefer sampling a whole prefill chunk's final row. Enabled by default;
+    /// unsupported modes and prompt shapes keep the serial final step.
     pub sampled_prefill_final: bool,
     pub weight_budget_bytes: Option<u64>,
     /// Continuation bytes the prepared execution may charge in total. `None` keeps the

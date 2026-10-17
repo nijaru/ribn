@@ -7010,8 +7010,7 @@ fn serves_chunked_prefill_matching_the_serial_path() {
             .expect("sampled dispatcher")
             .with_prefill_chunk(MEMBERS)
             .expect("sampled prefill lane")
-            .with_sampled_prefill_final(true)
-            .expect("sampled final opt-in");
+            .with_sampled_prefill_final(true);
     let mut sampled_backend =
         NvidiaBackend::new(capabilities.clone(), sampled_dispatcher).expect("sampled backend");
     let observer = sampled_backend.dispatcher_mut().observe_dispatch();

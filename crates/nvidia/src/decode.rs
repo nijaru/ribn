@@ -1890,8 +1890,9 @@ impl CudaQwen35BatchDecode {
     }
 
     /// Opt into (or out of) sampling the final prompt token from the last
-    /// prefill chunk. Off by default; selection is still refused unless the
-    /// lane runs the warp projection without the chunk-parallel scan.
+    /// prefill chunk. Selection still requires the warp projection without the
+    /// chunk-parallel scan, because those settings compute rows bit-identical
+    /// to the batch-1 warp path; every other mode keeps the serial final step.
     pub fn set_sampled_final_chunk(&mut self, enabled: bool) {
         self.sampled_final_chunk = enabled;
     }

@@ -510,30 +510,19 @@ impl CudaQwen35ServingDispatcher {
         Ok(self)
     }
 
-    /// Opt into sampling the final prompt token from the last whole prefill
-    /// chunk instead of running that token again on the serial path.
+    /// Prefer sampling the final prompt token from the last whole prefill chunk
+    /// instead of running that token again on the serial path.
     ///
-    /// Off by default and refused unless the lane runs warp projections with
-    /// the chunk-parallel recurrent scan disabled; see the roadmap experiment
-    /// for the device and endpoint criteria. Requires a configured lane.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`BackendError`] when no prefill lane is configured or the lane
-    /// does not satisfy the qualification conditions.
-    pub fn with_sampled_prefill_final(mut self, enabled: bool) -> Result<Self, BackendError> {
-        let lane = self.prefill_lane.as_mut().ok_or_else(|| {
-            BackendError::ExecutionFailed(
-                "sampled final prefill token requires a configured prefill chunk lane".to_owned(),
-            )
-        })?;
-        lane.set_sampled_final_chunk(enabled);
-        if enabled && !lane.can_sample_final_chunk() {
-            return Err(BackendError::Unsupported(
-                "sampled final prefill token requires warp projections without the chunk-parallel scan",
-            ));
+    /// This is a preference, not a capability request. The lane honours it only
+    /// while it runs warp projections without the chunk-parallel recurrent scan;
+    /// any other mode keeps the previous serial final step. Without a configured
+    /// prefill lane there is nothing to sample from, so the preference is inert.
+    #[must_use]
+    pub fn with_sampled_prefill_final(mut self, enabled: bool) -> Self {
+        if let Some(lane) = self.prefill_lane.as_mut() {
+            lane.set_sampled_final_chunk(enabled);
         }
-        Ok(self)
+        self
     }
 
     /// The configured same-sequence prefill chunk size, if any.

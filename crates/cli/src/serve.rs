@@ -16,7 +16,6 @@ pub(crate) fn run(arguments: &[String]) -> Result<(), String> {
     let load = LoadOptions {
         device: options.device,
         context_tokens: options.context_length,
-        sampled_prefill_final: options.sampled_prefill_final,
         max_sequences: options
             .max_sequences
             .unwrap_or(LoadOptions::default().max_sequences),
@@ -59,12 +58,10 @@ pub(crate) fn run(arguments: &[String]) -> Result<(), String> {
             tokio::task::spawn_blocking(move || {
                 let (owner, memory) = TextOwner::load(options.model, load)?;
                 eprintln!(
-                    "ready: active sequence limit={}; application request capacity={}; sequence state reservation={} bytes; prefill chunk={:?}; sampled final prefill token={}",
+                    "ready: active sequence limit={}; application request capacity={}; sequence state reservation={} bytes",
                     load.max_sequences,
                     owner.model().request_capacity(),
-                    memory.reserved_sequence_bytes,
-                    load.prefill_chunk_members,
-                    load.sampled_prefill_final
+                    memory.reserved_sequence_bytes
                 );
                 Ok(owner)
             })

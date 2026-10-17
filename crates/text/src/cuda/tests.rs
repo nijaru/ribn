@@ -96,17 +96,17 @@ fn loaded_sequence_limit_controls_admission_without_a_hidden_permit_cap() {
 }
 
 #[test]
-fn experimental_sampling_is_default_off_and_reaches_model_loading() {
+fn sampled_final_prefill_preference_is_on_by_default_and_can_be_disabled() {
     let defaults = LoadOptions::default();
-    assert!(!defaults.sampled_prefill_final);
-    assert!(!QwenLoadOptions::from(defaults).sampled_prefill_final);
-    let enabled = QwenLoadOptions::from(LoadOptions {
-        sampled_prefill_final: true,
+    assert!(defaults.sampled_prefill_final);
+    assert!(QwenLoadOptions::from(defaults).sampled_prefill_final);
+    let disabled = QwenLoadOptions::from(LoadOptions {
+        sampled_prefill_final: false,
         ..defaults
     });
-    assert!(enabled.sampled_prefill_final);
+    assert!(!disabled.sampled_prefill_final);
     assert_eq!(
-        enabled.prefill_chunk_members,
+        disabled.prefill_chunk_members,
         defaults.prefill_chunk_members
     );
 }
