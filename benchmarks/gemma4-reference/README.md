@@ -141,6 +141,38 @@ single/sharded inventories, optional inactive tail weights, wrong/dangling shard
 missing/malformed/unknown active parameters, exact BF16 payload preservation and retained
 readers after package drop/path replacement. These checks do not qualify execution.
 
+## Host continuation-range gate
+
+`Gemma4Config::kv_step` calculates absolute half-open old/current/retained ranges
+without claiming a valid continuation, granting memory or committing execution.
+Model configuration resolves owner routing and final consumers once: local donor
+22 is read through layer 40, global donor 23 through layer 41. Separate retained-span
+and attention-span types prevent substituting a trimmed suffix for a donor input.
+
+```sh
+cargo run --release -p engine-gemma4 --example kv_ranges -- \
+  benchmarks/gemma4-reference/config.json 511 513 4096
+```
+
+For that chunk, the local attention/donor span is **[0,1024)**, not merely 512 positions;
+the post-step retained suffix is **[513,1024)**. Per-query causal/window masks still
+restrict each query. Tests include single-token and larger-than-window chunks,
+partition-independent final coverage (not arithmetic identity), window one, invalid
+progress/reach and byte overflow.
+
+The probe matched all **24 prediction rows** in the existing FP32/BF16 CPU records:
+**576 persistent-owner shapes and 48 donor-span shapes**, using their exact submitted
+positions and lengths. This validates range interpretation, not tensor contents,
+physical state validity or asynchronous lifetime safety.
+
+Logical BF16 K+V payload is
+`40960 * min(prefix,511) + 16384 * prefix` bytes across the 24 owners: **88,039,424 bytes**
+at prefix 4096. Donor spans may share backing with persistent state; do not add their
+logical bytes blindly or call either formula a GPU allocation/peak bound. Device
+storage, append/trim layout, staging/workspace and uncertain retirement remain unqualified.
+The [owning contract](../../docs/resource-protocol.md#mixed-retention-and-shared-kv)
+defines preparation, last-consumer retention, commitment and failure scope.
+
 Primary sources:
 
 - [Pinned model config](https://huggingface.co/google/gemma-4-E4B-it/blob/ee0ef6023621cff504d758262d4e04895a5af4a2/config.json)

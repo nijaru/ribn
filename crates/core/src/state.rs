@@ -512,8 +512,10 @@ impl From<RecurrentState> for InferenceState {
     }
 }
 
-/// Typed state at one semantic prefix boundary. New state families extend
-/// [`InferenceState`] rather than changing scheduler/backend signatures.
+/// Typed state at one semantic prefix boundary for the transitional backend seam.
+/// Models with different continuation semantics may instead keep strongly typed
+/// state behind the AR runtime's `GenerationExecutor`; this enum is not a mandate
+/// to universalize their physical layout or retention policy.
 /// The set transfers logical continuation ownership. The manager retains its
 /// byte grant until explicit completion-safe release; inspecting a handle creates
 /// neither another continuation owner nor a pool lease.

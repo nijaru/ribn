@@ -22,6 +22,8 @@ pub struct LayerGeometry {
     pub kind: AttentionKind,
     pub head_dim: usize,
     pub kv_owner: usize,
+    /// Final decoder layer that reads this owner's current-step KV span.
+    pub kv_last_consumer: usize,
     pub rope: Rope,
 }
 
@@ -255,7 +257,7 @@ fn layer_geometry(text: &Value) -> Result<Vec<LayerGeometry>, Gemma4Error> {
             "expected only sliding and full attention entries",
         ));
     }
-    kinds
+    let mut layers = kinds
         .iter()
         .enumerate()
         .map(|(i, kind)| {
@@ -280,10 +282,19 @@ fn layer_geometry(text: &Value) -> Result<Vec<LayerGeometry>, Gemma4Error> {
                 kind: *kind,
                 head_dim,
                 kv_owner,
+                kv_last_consumer: 0,
                 rope,
             })
         })
-        .collect::<Result<Vec<_>, Gemma4Error>>()
+        .collect::<Result<Vec<_>, Gemma4Error>>()?;
+    let mut last_consumers: Vec<_> = (0..layers.len()).collect();
+    for (i, geometry) in layers.iter().enumerate() {
+        last_consumers[geometry.kv_owner] = i;
+    }
+    for geometry in &mut layers {
+        geometry.kv_last_consumer = last_consumers[geometry.kv_owner];
+    }
+    Ok(layers)
 }
 
 const TEXT_FIELDS: &[&str] = &[

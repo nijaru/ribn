@@ -284,6 +284,45 @@ qualified common-base reader. Account recurrent storage, workspace, immutable ta
 staging and retirement overlap separately. Online arena growth is outside the initial
 path until its allocation, peak overlap and physical retirement are qualified.
 
+### Mixed-retention and shared KV
+
+Status: model-local Gemma 4 range semantics can be checked on the host; physical
+storage, charged preparation and execution remain unimplemented. Do not encode this
+as two homogeneous full-attention requirements and then select only the first KV.
+
+The model owns the layer-to-KV-owner mapping, head widths, retention and last consumers.
+The AR runtime sees sequence progress through `GenerationExecutor`, not model-family
+branches or layer scheduling. A valid committed prefix requires every owner to cover
+its model-required range. Shared consumers create no independent persistent KV.
+
+Preparation binds one positive accepted input range to the actual sequence incarnation,
+current committed prefix and request reach. Reject stale/mismatched coverage, overflow,
+over-capacity work or a second outstanding transaction before launch. A pure range plan
+contains no storage, reservation, completion proof or restoration capability.
+
+For a sliding window `w`, prefix `p` and accepted end `e`, retained input is
+`[max(0,p-(w-1)),p)`; the current attention span includes that suffix **plus the entire
+accepted chunk**, ending at `e`. The next persistent suffix begins at
+`max(0,e-(w-1))`. Each query still uses its own causal/window mask. Full attention keeps
+`[0,p)` and supplies `[0,e)`. Never substitute the post-trim suffix for a donor span:
+a 513-token Gemma prefill needs 513 donor positions while retaining only 511.
+
+Producer and shared-consumer layers of the same accepted chunk are one model/backend
+transaction. Pin donor storage until its last consumer's device read completes, not
+until host dispatch or persistent-cache trimming. E4B owner 22 serves through layer 40;
+owner 23 serves through layer 41. Segmented views, concatenation and overlapping backing
+are backend choices, not changes to these ranges. Count shared backing once, but charge
+actual allocation/page sizes, copy/append overlap, workspace, staging and retirement;
+logical payload sums are not physical byte bounds.
+
+Start with one in-flight batch and no dependent next chunk before settlement. Validate
+all required owner completions and all rows before advancing any committed metadata.
+Initially execute exactly the range selected during preparation, rather than executing
+farther and reporting a shorter prefix without rollback. Abandonment leaves committed
+state unchanged; this is not device rollback. A partial in-place enqueue may destroy
+resumability: fault the owner and drain/quarantine old/new storage with its charges.
+Cancellation intent and failed drain never release donor storage early.
+
 ### AR reservation authority
 
 AR's transitional state manager uses supplied `BytePool` authorities, not another

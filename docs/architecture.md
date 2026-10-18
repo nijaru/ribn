@@ -133,7 +133,10 @@ and full E4B artifact probe qualify this I/O path, not Gemma execution or device
 mapping. Its host source preflight validates the whole HF-resolved inventory, retains
 BF16 parameter readers, aliases the output head to the input embedding and explicitly
 excludes inactive shared-tail projections and non-text weights. It does not materialize
-weights on a device or execute a decoder. Unknown text semantics or parameters reject;
+weights on a device or execute a decoder. Model-local KV range calculations distinguish
+persistent suffixes from untrimmed donor spans, with routing/last consumers resolved at
+configuration load; they do not prove live state, grants or safe physical lifetimes.
+Unknown text semantics or parameters reject;
 see the [real-package gate](../benchmarks/gemma4-reference/README.md#ribn-text-source-preflight).
 
 `engine-bert` owns configuration, parameter mapping, masked bidirectional attention,

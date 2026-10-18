@@ -395,11 +395,19 @@ and 1,411 non-text tensors are explicitly excluded. Host fixtures also exercise 
 second, reduced geometry and sharded loading without new family branches. This is
 source selection, not prepared device storage or the second-decoder exit gate.
 
-Next gates: preserve native BF16 and tied allocation ownership during device preparation;
-define model/backend-owned mixed-width local/global KV and donor spans retained through
-shared-tail prefill. The current first-`kv()`/homogeneous-cache conveniences do not establish
-that ownership. Resolve it before CUDA integration; do not add model-family branches
-to routing or scheduling.
+Model-local KV range semantics now separate persistent suffixes from full current
+attention spans and resolve shared-owner/last-consumer routing at configuration load.
+All 24 archived prediction rows (FP32/BF16) match the 24 persistent owner and two donor
+shapes. The [mixed-retention contract](resource-protocol.md#mixed-retention-and-shared-kv)
+requires executor-bound validity, reservation and completion-safe donor retention;
+pure range arithmetic establishes none of those physical properties.
+
+Next gates: load/qualify the real text processor; preserve native BF16 and tied allocation
+ownership during device preparation; implement mixed-width local/global KV with donor
+spans pinned through shared-tail device reads. Use strongly typed model/backend state
+behind `GenerationExecutor`, not the current first-`kv()`/homogeneous-cache convenience
+or family branches in routing/scheduling. Qualified physical allocation/retirement and
+numerical execution remain device-gated.
 
 A byte-aware streaming loader must bound concurrent reads, decoded weights, retained shard
 clones and upload staging before large-model memory claims. Remote resolution and package

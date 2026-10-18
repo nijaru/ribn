@@ -5,10 +5,12 @@
 //! an executable decoder, multimodal processor or qualified CUDA implementation.
 
 mod config;
+mod continuation;
 mod parameters;
 mod source;
 
 pub use config::{AttentionKind, Gemma4Config, LayerGeometry, Rope};
+pub use continuation::{AttentionSpan, KvOwnerStep, KvStep, RetainedSpan};
 pub use parameters::{LayerParameter, ParameterId, ParameterSpec};
 pub use source::{ExcludedParameter, Exclusion, Gemma4Source, StoredParameter};
 
