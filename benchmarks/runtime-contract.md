@@ -715,6 +715,69 @@ page indices are consecutive and no cache, reuse policy or growth path exists ye
 shared arena with non-identity tables and page growth is the next slice, and the
 per-request device allocation it removes is still on the admission path.
 
+### Matched cross-engine decode baseline (2026-10-18)
+
+The first comparison against an incumbent on the same artifact, same client and same
+sampling. `llama-server` 0.4.1-dev (build 11138) and `ribn serve` at `ec47bc5` both served
+the pinned Qwen3.8-27B UD-Q4_K_M GGUF (SHA-256 `322e194f...23482`), greedy, streaming
+`/v1/completions`, 16 requests of 32 output tokens, AIPerf 0.13.0 with identical
+manifests. Ribn ran `--context-length 512 --max-sequences 8`; llama.cpp ran `-c 4096 -np
+8 -fa on` (the same 512 tokens per slot). Serialized on an idle RTX 4090; raw runs,
+manifests and server logs live in `desktop:~/ribn-qualification/cross-engine-2026-10-18/`.
+
+| case | ribn tok/s | llama.cpp tok/s | ribn TTFT p95 | llama TTFT p95 | ribn ITL | llama ITL |
+| --- | --- | --- | --- | --- | --- | --- |
+| short-c1 (isl 16) | 32.68 | 39.89 | 116 ms | 182 ms | 27.8 ms | 20.1 ms |
+| mixed-c4 (isl 64) | 32.16 | 70.89 | 2283 ms | 743 ms | 76.0 ms | 36.8 ms |
+| mixed-c8 (isl 64) | 35.46 | 118.58 | 4804 ms | 1455 ms | 116.8 ms | 32.9 ms |
+
+Single-stream latency is at parity: ribn's c1 TTFT is 1.6x better and its ITL 1.4x worse.
+Everything else is concurrency scaling, and the two engines diverge there by 2.2x at c4
+and 3.3x at c8. This is a decode/prefill *batch* gap, not a per-token kernel gap.
+
+#### Where the batch gap lives
+
+Measured on the same commit with the direct-engine bench
+(`cargo run --release -p engine-qwen --features cuda --example qwen_serving_bench --
+--concurrency=N --tokens=32 --dispatch-diagnostics`), which skips HTTP:
+
+| concurrency | engine tok/s | host enqueue per step | batch width used |
+| --- | --- | --- | --- |
+| 1 | 32.3 | 8.8 ms | 1 (single row) |
+| 2 | 47.4 | 18.9 ms | 2 |
+| 4 | 70.7 | 35.9 ms | 4 |
+| 8 | 94.7 | 32.5 ms | 8 |
+
+Batched lanes are in use (`decode_lane_calls_by_width[8]`), and the weights-read-once
+batch kernels amortize weight traffic: per-step GPU time at eight rows is about 75 ms
+instead of eight times the single-row step. What does *not* amortize is the host.
+
+`nsys` on the same workload counts **3,862 kernel launches per eight-row decode step**,
+against 32.5 ms of host enqueue time — roughly 8 us per launch, with launches in the
+microbenchmark costing 0.8-1.5 us. The count, not the cost of one launch, is the problem:
+`l2_norm_heads` 864/step, `gdn_conv_silu` 432, `residual_add` 284, `rms_norm` 160,
+`kv_append_f16` and `attn_score_paged` 144 each, all issued *per member per layer* because
+each member's KV and recurrent state is a separate allocation.
+
+Serving adds a second, larger cost on the prefill side. With `RIBN_DIAG` instrumentation
+(not committed) an eight-row 30-token prefill took 0.94 s and 1.50 s of host enqueue
+against 34 ms for an eight-row decode step, and it is one submission regardless of the
+`--prefill-chunk` setting. Prefill host cost, not decode, dominates the c8 TTFT and the
+served throughput gap.
+
+`ec47bc5` reduced this by normalizing each batched GDN q/k buffer in one launch instead of
+two per member: decode host enqueue fell from 39.1 ms to 32.5 ms per eight-row step
+(-17%) and engine throughput rose from 91.2 to 94.7 tok/s. Device gates on that commit:
+`cuda_reference` 63/63, Qwen CUDA runtime 5/5, `cuda_http`, in-flight retirement, and the
+sampled-final bit-identity memcheck, all exit 0.
+
+The two remaining levers are structural and need stable addresses before either is cheap:
+member-dimension kernels that take a device array of per-member state pointers (one launch
+per op per step, cutting the count by roughly the batch width), and CUDA graph capture of
+the decode step, which vLLM and llama.cpp both rely on and which requires a resident arena
+so the captured pointers do not move. Prefill needs the same treatment at chunk
+granularity. None of that is implemented.
+
 ## Experimental CLI
 
 ```sh
