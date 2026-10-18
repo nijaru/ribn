@@ -141,7 +141,7 @@ async fn generation(
         // At most six JSON bytes per decoded byte, plus bounded envelope fields.
         let frame_limit = model
             .limits()
-            .max_decoded_token_bytes
+            .max_decoded_delta_bytes
             .checked_mul(6)
             .and_then(|n| n.checked_add(4096))
             .unwrap_or(config.max_response_bytes)

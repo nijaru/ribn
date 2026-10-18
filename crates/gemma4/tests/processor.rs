@@ -1,87 +1,10 @@
-use engine_gemma4::{Gemma4Config, Gemma4TextProcessor, TextLimits, TextMessage};
+use engine_gemma4::{DecodeLimits, Gemma4Config, Gemma4TextProcessor, TextLimits, TextMessage};
 use ribn_hf::LocalModelPackage;
 use serde_json::{Value, json};
-use std::{
-    path::PathBuf,
-    sync::atomic::{AtomicU64, Ordering},
-};
-
-static NEXT: AtomicU64 = AtomicU64::new(0);
-struct Fixture(PathBuf);
+#[path = "common/processor.rs"]
+mod processor_fixture;
+use processor_fixture::Fixture;
 impl Fixture {
-    fn new() -> Self {
-        let path = std::env::temp_dir().join(format!(
-            "ribn-gemma4-processor-{}-{}",
-            std::process::id(),
-            NEXT.fetch_add(1, Ordering::Relaxed)
-        ));
-        std::fs::create_dir(&path).unwrap();
-        let fixture = Self(path);
-        let mut config: Value = serde_json::from_str(include_str!(
-            "../../../benchmarks/gemma4-reference/config.json"
-        ))
-        .unwrap();
-        config["text_config"]["vocab_size"] = json!(268);
-        config["text_config"]["vocab_size_per_layer_input"] = json!(268);
-        config["image_token_id"] = json!(7);
-        config["audio_token_id"] = json!(8);
-        config["video_token_id"] = json!(9);
-        config["eos_token_id"] = json!([1, 4]);
-        fixture.json("config.json", &config);
-        // Package resolution only: no weights may be opened by text processing.
-        std::fs::write(fixture.0.join("model.safetensors"), []).unwrap();
-        let symbols = [
-            "<pad>",
-            "<eos>",
-            "<bos>",
-            "<unk>",
-            "<turn|>",
-            "<|tool_response>",
-            "▁",
-            "<|image|>",
-            "<|audio|>",
-            "<|video|>",
-            "X",
-            "é",
-        ];
-        let mut vocab = serde_json::Map::new();
-        let mut added = Vec::new();
-        for (i, symbol) in symbols.into_iter().enumerate() {
-            vocab.insert(symbol.to_owned(), json!(i));
-            if ![6, 10, 11].contains(&i) {
-                added.push(json!({"id":i,"content":symbol,"single_word":false,"lstrip":false,"rstrip":false,"normalized":false,"special":true}));
-            }
-        }
-        for byte in 0..256 {
-            vocab.insert(format!("<0x{byte:02X}>"), json!(12 + byte));
-        }
-        fixture.json("tokenizer.json", &json!({"version":"1.0","truncation":null,"padding":null,
-            "added_tokens":added,"normalizer":{"type":"Replace","pattern":{"String":" "},"content":"▁"},"pre_tokenizer":null,"post_processor":null,
-            "decoder":{"type":"Sequence","decoders":[{"type":"Replace","pattern":{"String":"▁"},"content":" "},{"type":"ByteFallback"},{"type":"Fuse"}]},
-            "model":{"type":"BPE","dropout":null,"unk_token":"<unk>","continuing_subword_prefix":null,"end_of_word_suffix":null,"fuse_unk":false,"byte_fallback":true,"ignore_merges":false,"vocab":vocab,"merges":[]}}));
-        fixture.json(
-            "tokenizer_config.json",
-            &json!({"bos_token":"<bos>","tokenizer_class":"GemmaTokenizer","backend":"tokenizers"}),
-        );
-        fixture.json(
-            "generation_config.json",
-            &json!({"bos_token_id":2,"pad_token_id":0,"eos_token_id":[1,4,5]}),
-        );
-        std::fs::write(
-            fixture.0.join("chat_template.jinja"),
-            include_str!("../../../benchmarks/gemma4-reference/chat_template.jinja"),
-        )
-        .unwrap();
-        fixture
-    }
-    fn json(&self, name: &str, value: &Value) {
-        std::fs::write(self.0.join(name), serde_json::to_vec(value).unwrap()).unwrap();
-    }
-    fn change(&self, name: &str, edit: impl FnOnce(&mut Value)) {
-        let mut value = serde_json::from_slice(&std::fs::read(self.0.join(name)).unwrap()).unwrap();
-        edit(&mut value);
-        self.json(name, &value);
-    }
     fn processor(
         &self,
         limits: TextLimits,
@@ -89,9 +12,13 @@ impl Fixture {
         Gemma4TextProcessor::open(&LocalModelPackage::open(&self.0).unwrap(), limits)
     }
 }
-impl Drop for Fixture {
-    fn drop(&mut self) {
-        std::fs::remove_dir_all(&self.0).unwrap();
+
+fn decode_limits(tokens: usize, delta_bytes: usize) -> DecodeLimits {
+    DecodeLimits {
+        tokens,
+        token_bytes: delta_bytes,
+        pending_bytes: tokens,
+        delta_bytes,
     }
 }
 fn limits() -> TextLimits {
@@ -137,6 +64,10 @@ fn real_template_preserves_reference_chat_subset_without_weights_or_reopen() {
     // Every asset has already been retained. Later calls never reopen a path.
     drop(fixture);
     assert_eq!(processor.encode("X").unwrap(), [10]);
+    let mut decoder = processor.decoder(decode_limits(2, 16)).unwrap();
+    drop(processor);
+    assert_eq!(decoder.push(10).unwrap(), "X");
+    assert_eq!(decoder.finish().unwrap(), "");
 }
 
 #[test]
@@ -154,7 +85,9 @@ fn fallback_runs_finalize_as_a_unit_without_rewriting_emitted_text() {
         (vec![2, 1, 4, 5], "<bos><eos><turn|><|tool_response>"),
     ] {
         assert_eq!(processor.decode(&ids).unwrap(), expected);
-        let mut stream = processor.decoder();
+        let mut stream = processor
+            .decoder(decode_limits(ids.len(), 131_072))
+            .unwrap();
         let mut output = String::new();
         for &id in &ids {
             let piece = stream.push(id).unwrap();
@@ -164,7 +97,7 @@ fn fallback_runs_finalize_as_a_unit_without_rewriting_emitted_text() {
         output.push_str(&stream.finish().unwrap());
         assert_eq!(output, expected);
     }
-    let mut stream = processor.decoder();
+    let mut stream = processor.decoder(decode_limits(3, 131_072)).unwrap();
     assert_eq!(stream.push(byte(0x61)).unwrap(), "");
     assert_eq!(stream.push(byte(0xFF)).unwrap(), "");
     assert_eq!(stream.push(10).unwrap(), "��X");
@@ -219,7 +152,7 @@ fn request_bounds_unknown_ids_and_media_reject_before_success() {
         "rendered bytes, not merely source bytes"
     );
     assert!(processor.decode(&[268]).is_err());
-    let mut stream = processor.decoder();
+    let mut stream = processor.decoder(decode_limits(4, 12)).unwrap();
     assert!(stream.push(268).is_err());
     assert!(stream.push(10).is_err());
     assert!(stream.finish().is_err());
@@ -229,10 +162,10 @@ fn request_bounds_unknown_ids_and_media_reject_before_success() {
             ..limits()
         })
         .unwrap();
-    let mut stream = tight.decoder();
+    let mut stream = tight.decoder(decode_limits(4, 1)).unwrap();
     assert_eq!(stream.push(12 + 0xC3).unwrap(), "");
     assert!(stream.finish().is_err());
-    let mut stream = processor.decoder();
+    let mut stream = processor.decoder(decode_limits(4, 12)).unwrap();
     for _ in 0..4 {
         stream.push(10).unwrap();
     }
@@ -249,6 +182,48 @@ fn request_bounds_unknown_ids_and_media_reject_before_success() {
     for id in [258_880, 258_881, 258_884, 262_144] {
         assert!(real.validate_text_tokens(&[id]).is_err());
     }
+}
+
+#[test]
+fn decoder_budget_is_independent_of_input_limits_and_rejects_infeasible_storage() {
+    let fixture = Fixture::new();
+    let processor = fixture
+        .processor(TextLimits {
+            tokens: 4,
+            ..limits()
+        })
+        .unwrap();
+    for invalid in [
+        DecodeLimits {
+            tokens: 0,
+            ..decode_limits(4, 12)
+        },
+        DecodeLimits {
+            pending_bytes: 3,
+            ..decode_limits(4, 12)
+        },
+        DecodeLimits {
+            token_bytes: 0,
+            ..decode_limits(4, 12)
+        },
+        DecodeLimits {
+            delta_bytes: 0,
+            ..decode_limits(4, 12)
+        },
+        DecodeLimits {
+            tokens: usize::MAX,
+            pending_bytes: usize::MAX,
+            ..decode_limits(4, 12)
+        },
+    ] {
+        assert!(processor.decoder(invalid).is_err());
+    }
+    let mut decoder = processor.decoder(decode_limits(8, 12)).unwrap();
+    for _ in 0..8 {
+        assert_eq!(decoder.push(10).unwrap(), "X");
+    }
+    assert!(decoder.push(10).is_err());
+    assert!(decoder.finish().is_err());
 }
 
 #[test]

@@ -20,9 +20,12 @@ use ribn::{
     StepCompletion, StepKind, SubmissionId, TokenRequest,
 };
 use ribn_text::{
-    EncodedInput, GgufProcessor, Message, ProcessorLimits, TextConfig, TextError, TextInput,
-    TextModel, TextOwner, TextProcessor,
+    EncodedInput, GgufProcessor, Message, ProcessorLimits, TextConfig, TextDecoder, TextError,
+    TextInput, TextModel, TextOwner, TextProcessor,
 };
+
+#[path = "facade/gemma4.rs"]
+mod gemma4;
 
 /// The fixture vocabulary maps token id `n` to raw byte `n`, so tests can script
 /// exact output bytes. Token `0` doubles as the stop token.
@@ -35,6 +38,8 @@ fn limits() -> ProcessorLimits {
         max_rendered_bytes: 4096,
         max_prompt_tokens: 64,
         max_decoded_token_bytes: 16,
+        max_decode_pending_bytes: 64,
+        max_decoded_delta_bytes: 128,
     }
 }
 
@@ -123,8 +128,8 @@ impl TextProcessor for PanickingProcessor {
         self.inner.encode(input)
     }
 
-    fn decode_token_into(&self, token: u32, out: &mut Vec<u8>) -> Result<(), TextError> {
-        self.inner.decode_token_into(token, out)
+    fn decoder(self: Arc<Self>, tokens: usize) -> Result<Box<dyn TextDecoder>, TextError> {
+        self.inner.clone().decoder(tokens)
     }
 }
 
@@ -149,8 +154,8 @@ impl TextProcessor for BlockingProcessor {
         self.inner.encode(input)
     }
 
-    fn decode_token_into(&self, token: u32, out: &mut Vec<u8>) -> Result<(), TextError> {
-        self.inner.decode_token_into(token, out)
+    fn decoder(self: Arc<Self>, tokens: usize) -> Result<Box<dyn TextDecoder>, TextError> {
+        self.inner.clone().decoder(tokens)
     }
 }
 
@@ -675,6 +680,7 @@ fn input_bounds_reject_before_admission_and_release_the_permit() {
             max_rendered_bytes: 8,
             max_prompt_tokens: 2,
             max_decoded_token_bytes: 4,
+            ..limits()
         },
         TextConfig {
             preprocessing_workers: 2,
@@ -967,6 +973,7 @@ fn prompt_token_bound_is_enforced_after_tokenization() {
             max_rendered_bytes: 4096,
             max_prompt_tokens: 2,
             max_decoded_token_bytes: 4,
+            ..limits()
         },
         TextConfig::default(),
     );
@@ -1167,6 +1174,27 @@ fn invalid_assembly_settings_are_rejected() {
         (
             ProcessorLimits {
                 max_retained_bytes: usize::MAX,
+                ..limits()
+            },
+            TextConfig::default(),
+        ),
+        (
+            ProcessorLimits {
+                max_decode_pending_bytes: usize::MAX,
+                ..limits()
+            },
+            TextConfig::default(),
+        ),
+        (
+            ProcessorLimits {
+                max_decoded_delta_bytes: usize::MAX,
+                ..limits()
+            },
+            TextConfig::default(),
+        ),
+        (
+            ProcessorLimits {
+                max_decoded_token_bytes: usize::MAX,
                 ..limits()
             },
             TextConfig::default(),

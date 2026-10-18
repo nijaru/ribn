@@ -22,6 +22,11 @@ pool, not a second execution loop. Separate payload and retained-heap envelopes 
 excess string/token capacity, chat-container storage and generation options before queue
 insertion. Stop capacity plus the runtime copy must also fit the driver's encoded envelope;
 model-added stops and actual encoded tokens are checked before publishing a prepared reply.
+Prepared replies also own one request-local model decoder, constructed under the
+permit before runtime enqueue. Pending-byte and emitted-delta bounds are separate
+from vocabulary-piece bytes; the stream consumes its finalizer on normal/cancelled
+termination and drops all decoder state on failure. GGUF's strict UTF-8 policy and
+Gemma's whole-run byte fallback are model-local, not branches in delivery or scheduling.
 Fixed job objects are count-bounded; allocator overhead and processor workspace are not
 included in the retained-input envelope. These host checks are not a process-RSS bound.
 Offline batching consumes a bounded window and
@@ -138,7 +143,9 @@ persistent suffixes from untrimmed donor spans, with routing/last consumers reso
 configuration load; they do not prove live state, grants or safe physical lifetimes.
 Its bounded text processor uses the package's tokenizer/template/generation metadata;
 request-local decoding retains complete byte-fallback runs until a boundary or finalization.
-It is not yet bound to the text facade's stateless per-token decoder interface.
+`ribn-text::GemmaProcessor` binds it to owned text delivery, including bounded delayed
+byte runs and fallible terminal finalization. Host fixtures substitute token execution
+only; there is still no executable Gemma model or device-fit evidence.
 Unknown text semantics or parameters reject;
 see the [real-package gate](../benchmarks/gemma4-reference/README.md#ribn-text-source-preflight).
 

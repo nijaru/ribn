@@ -5,15 +5,13 @@
 //! worker pool, after the caller has reserved a request permit, so tokenization
 //! cannot outgrow the permit pool or occupy an async executor thread.
 
-use std::io;
 use std::sync::{Arc, Mutex};
 use std::thread;
 
-use engine_gguf::{ChatMessage, ChatTemplateOptions, GgufTokenizer};
 use flume::{Receiver, Sender};
 use ribn::GenerationOptions;
 use ribn::TokenRequest;
-use ribn::driver::RequestPermit;
+use ribn::driver::{DeliveryLease, RequestPermit};
 
 use crate::error::TextError;
 use crate::input::{Message, TextInput};
@@ -34,8 +32,12 @@ pub struct ProcessorLimits {
     pub max_rendered_bytes: usize,
     /// Encoded prompt tokens per request.
     pub max_prompt_tokens: usize,
-    /// Decoded bytes a single token may contribute.
+    /// Decoded vocabulary-piece bytes, before delayed-run expansion/fusion.
     pub max_decoded_token_bytes: usize,
+    /// Bytes retained across token events by one decoder.
+    pub max_decode_pending_bytes: usize,
+    /// Bytes emitted in one delta, including a delayed run or terminal flush.
+    pub max_decoded_delta_bytes: usize,
 }
 
 impl Default for ProcessorLimits {
@@ -46,6 +48,8 @@ impl Default for ProcessorLimits {
             max_rendered_bytes: 512 * 1024,
             max_prompt_tokens: 65_536,
             max_decoded_token_bytes: 4 * 1024,
+            max_decode_pending_bytes: 65_536,
+            max_decoded_delta_bytes: 65_536,
         }
     }
 }
@@ -58,6 +62,8 @@ impl ProcessorLimits {
             && self.max_rendered_bytes > 0
             && self.max_prompt_tokens > 0
             && self.max_decoded_token_bytes > 0
+            && self.max_decode_pending_bytes > 0
+            && self.max_decoded_delta_bytes > 0
     }
 
     /// Heap capacity retained by an owned input, including chat-container storage.
@@ -138,9 +144,9 @@ impl ProcessorLimits {
 /// Tokenized input plus the stop IDs the request must honor.
 ///
 /// The processor reports both together because the stop set depends on the
-/// encoded prompt: a chat request stops at the conversation delimiters its own
-/// rendered prompt contains. The caller's explicit stop tokens are added to
-/// these, never replaced by them.
+/// model and input. For example, GGUF chat stops at the conversation delimiters
+/// its own rendered prompt contains; Gemma uses generation metadata. Caller stop
+/// tokens are added to these, never replaced by them.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct EncodedInput {
     tokens: Vec<u32>,
@@ -175,7 +181,7 @@ impl EncodedInput {
 /// Model-specific text preparation and incremental decoding.
 ///
 /// Implementations are shared across preprocessing workers and consuming
-/// streams, so they must be stateless per call or internally synchronized.
+/// streams. Request-local state belongs in a separately owned decoder.
 pub trait TextProcessor: Send + Sync + 'static {
     #[must_use]
     fn limits(&self) -> ProcessorLimits;
@@ -188,144 +194,38 @@ pub trait TextProcessor: Send + Sync + 'static {
     /// untokenizable input.
     fn encode(&self, input: TextInput) -> Result<EncodedInput, TextError>;
 
-    /// Replace `out` with one token's decoded bytes.
-    ///
+    /// Construct request-local decoding under the permit, before runtime enqueue.
+    /// Immutable vocabulary may be shared; enforce the declared pending/delta bounds.
     /// # Errors
-    /// Returns a request-local error for an unknown token, an unsupported
-    /// vocabulary symbol, or a token over the decoded byte bound.
-    fn decode_token_into(&self, token: u32, out: &mut Vec<u8>) -> Result<(), TextError>;
+    /// Returns a request-local error for unsupported output budgets or limits.
+    fn decoder(self: Arc<Self>, output_tokens: usize) -> Result<Box<dyn TextDecoder>, TextError>;
 }
 
-/// GGUF tokenizer and chat template with enforced text bounds.
-pub struct GgufProcessor {
-    tokenizer: GgufTokenizer,
-    limits: ProcessorLimits,
+/// Request-owned model semantics. Fragments must be irrevocable; every normal or
+/// cancelled terminal consumes the finalizer, while owner failure drops it unflushed.
+pub trait TextDecoder: Send {
+    /// # Errors
+    /// A request-local token, encoding or output-bound failure.
+    fn push(&mut self, token: u32) -> Result<String, TextError>;
+    /// # Errors
+    /// A request-local finalization or output-bound failure.
+    fn finish(self: Box<Self>) -> Result<String, TextError>;
 }
 
-impl GgufProcessor {
-    #[must_use]
-    pub const fn new(tokenizer: GgufTokenizer, limits: ProcessorLimits) -> Self {
-        Self { tokenizer, limits }
-    }
-
-    fn render_chat(&self, messages: &[ChatMessage]) -> Result<String, TextError> {
-        let mut rendered = LimitedText::new(self.limits.max_rendered_bytes);
-        // Preserve the existing Qwen CLI behavior: generation prompt on,
-        // thinking off until reasoning controls have an explicit public API.
-        let options = ChatTemplateOptions::new(true, false);
-        match self
-            .tokenizer
-            .render_chat_to(messages, options, &mut rendered)
-        {
-            Ok(()) => Ok(rendered.text),
-            Err(_) if rendered.exceeded.is_some() => Err(rendered.exceeded_error()),
-            Err(error) => Err(TextError::Processor(error)),
-        }
-    }
+/// Decoder state and its existing grant travel together, including cancelled
+/// acknowledgement waits. Field order frees state before capacity on implicit Drop.
+pub(crate) struct RequestDecoder {
+    inner: Box<dyn TextDecoder>,
+    delivery: DeliveryLease,
 }
-
-impl TextProcessor for GgufProcessor {
-    fn limits(&self) -> ProcessorLimits {
-        self.limits
+impl RequestDecoder {
+    pub(crate) fn push(&mut self, token: u32) -> Result<String, TextError> {
+        self.inner.push(token)
     }
-
-    fn encode(&self, input: TextInput) -> Result<EncodedInput, TextError> {
-        // The retention boundary checks the same rule before queuing; this keeps
-        // the processor authoritative for direct callers.
-        self.limits.check_input(&input)?;
-        let chat = matches!(&input, TextInput::Chat(_));
-        let tokens = match input {
-            TextInput::Tokens(tokens) => tokens,
-            TextInput::Prompt(text) => {
-                self.tokenizer.encode(&text).map_err(TextError::Processor)?
-            }
-            TextInput::Chat(messages) => {
-                if messages.is_empty() {
-                    return Err(TextError::InvalidInput(
-                        "chat input must contain at least one message",
-                    ));
-                }
-                let messages = messages
-                    .into_iter()
-                    .map(|message| ChatMessage::new(message.role, message.content))
-                    .collect::<Vec<_>>();
-                let rendered = self.render_chat(&messages)?;
-                self.tokenizer
-                    .encode_rendered(&rendered)
-                    .map_err(TextError::Processor)?
-            }
-        };
-        if tokens.len() > self.limits.max_prompt_tokens {
-            return Err(TextError::limit(
-                "prompt tokens",
-                self.limits.max_prompt_tokens,
-                tokens.len(),
-            ));
-        }
-        // A chat turn ends at the artifact's declared EOS IDs and at the
-        // delimiters its own prompt used; raw prompts and token inputs carry no
-        // template structure to delimit.
-        let stop_tokens = if chat {
-            self.tokenizer.chat_stop_token_ids(&tokens)
-        } else {
-            self.tokenizer.stop_token_ids()
-        };
-        Ok(EncodedInput::new(tokens, stop_tokens))
-    }
-
-    fn decode_token_into(&self, token: u32, out: &mut Vec<u8>) -> Result<(), TextError> {
-        self.tokenizer
-            .decode_token_into(token, out, self.limits.max_decoded_token_bytes)
-            .map_err(|source| TextError::Decode { token, source })
-    }
-}
-
-/// A writer that fails instead of retaining more than its byte bound.
-struct LimitedText {
-    text: String,
-    limit: usize,
-    /// Attempted size at the point the bound was crossed, for diagnostics.
-    exceeded: Option<usize>,
-}
-
-impl LimitedText {
-    const fn new(limit: usize) -> Self {
-        Self {
-            text: String::new(),
-            limit,
-            exceeded: None,
-        }
-    }
-
-    fn exceeded_error(&self) -> TextError {
-        TextError::limit(
-            "rendered prompt bytes",
-            self.limit,
-            self.exceeded.unwrap_or(self.limit),
-        )
-    }
-}
-
-impl io::Write for LimitedText {
-    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
-        if bytes.len() > self.limit.saturating_sub(self.text.len()) {
-            self.exceeded = Some(self.text.len().saturating_add(bytes.len()));
-            return Err(io::Error::new(
-                io::ErrorKind::WriteZero,
-                "rendered prompt exceeds its byte bound",
-            ));
-        }
-        // Templates render text; a non-UTF-8 write is a template defect and must
-        // not be silently lossy.
-        let text = std::str::from_utf8(bytes).map_err(|_| {
-            io::Error::new(io::ErrorKind::InvalidData, "template emitted invalid UTF-8")
-        })?;
-        self.text.push_str(text);
-        Ok(bytes.len())
-    }
-
-    fn flush(&mut self) -> io::Result<()> {
-        Ok(())
+    pub(crate) fn finish(self) -> Result<String, TextError> {
+        let result = self.inner.finish();
+        drop(self.delivery);
+        result
     }
 }
 
@@ -333,6 +233,7 @@ impl io::Write for LimitedText {
 pub(crate) struct Prepared {
     pub(crate) request: TokenRequest,
     pub(crate) permit: RequestPermit,
+    pub(crate) decoder: RequestDecoder,
 }
 
 struct Job {
@@ -423,7 +324,7 @@ impl Pool {
                         #[cfg(test)]
                         hooks: &worker_hooks,
                     };
-                    run_worker(&*processor, &worker_jobs, &worker_serviceability);
+                    run_worker(&processor, &worker_jobs, &worker_serviceability);
                 });
             if started.is_err() {
                 // A worker that never starts must still be accounted, or a lost
@@ -516,7 +417,7 @@ impl PoolClient {
 }
 
 fn run_worker(
-    processor: &dyn TextProcessor,
+    processor: &Arc<dyn TextProcessor>,
     jobs: &Receiver<Job>,
     serviceability: &Mutex<Serviceability>,
 ) {
@@ -537,7 +438,7 @@ fn run_worker(
 }
 
 fn prepare(
-    processor: &dyn TextProcessor,
+    processor: &Arc<dyn TextProcessor>,
     input: TextInput,
     mut options: GenerationOptions,
     permit: RequestPermit,
@@ -553,9 +454,16 @@ fn prepare(
     permit
         .check_input(tokens.len(), &options)
         .map_err(TextError::Admission)?;
+    let output_tokens = usize::try_from(options.max_output_tokens)
+        .map_err(|_| TextError::InvalidInput("output token budget exceeds address space"))?;
+    let decoder = RequestDecoder {
+        inner: processor.clone().decoder(output_tokens)?,
+        delivery: permit.retain_delivery(),
+    };
     Ok(Prepared {
         request: TokenRequest::new(tokens, options),
         permit,
+        decoder,
     })
 }
 
@@ -614,8 +522,8 @@ mod tests {
             panic!("fixture processor panic");
         }
 
-        fn decode_token_into(&self, _: u32, _: &mut Vec<u8>) -> Result<(), TextError> {
-            unreachable!("preprocessing never decodes")
+        fn decoder(self: Arc<Self>, _: usize) -> Result<Box<dyn TextDecoder>, TextError> {
+            unreachable!("fixture encoding panics before decoder creation")
         }
     }
 

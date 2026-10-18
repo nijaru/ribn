@@ -17,7 +17,7 @@ use ribn::{Engine, EngineConfig, GenerationExecutor, SchedulePolicy};
 
 use crate::error::TextError;
 use crate::model::{TextConfig, TextOwner};
-use crate::process::{GgufProcessor, ProcessorLimits};
+use crate::{GgufProcessor, ProcessorLimits};
 
 pub use engine_qwen::MemoryReport;
 

@@ -139,7 +139,7 @@ impl TextModel {
             .stream(prepared.request)
             .await
             .map_err(TextError::Admission)?;
-        Ok(TextStream::new(self.processor.clone(), stream))
+        Ok(TextStream::new(prepared.decoder, stream))
     }
 
     /// Blocking counterpart of [`Self::stream`]. Not for async executor tasks.
@@ -157,7 +157,7 @@ impl TextModel {
             .permit
             .stream_blocking(prepared.request)
             .map_err(TextError::Admission)?;
-        Ok(TextStream::new(self.processor.clone(), stream))
+        Ok(TextStream::new(prepared.decoder, stream))
     }
 
     /// Generate one response to completion.
@@ -339,14 +339,17 @@ impl TextOwner {
                 "text processor bounds must all be nonzero",
             ));
         }
-        if processor
-            .limits()
+        let limits = processor.limits();
+        if limits
             .max_retained_bytes
-            .checked_mul(handle.capacity())
+            .checked_add(limits.max_decoded_token_bytes)
+            .and_then(|n| n.checked_add(limits.max_decode_pending_bytes))
+            .and_then(|n| n.checked_add(limits.max_decoded_delta_bytes))
+            .and_then(|n| n.checked_mul(handle.capacity()))
             .is_none()
         {
             return Err(TextError::InvalidInput(
-                "aggregate retained text input bound overflows",
+                "aggregate text buffer bound overflows",
             ));
         }
         if !driver.owns(&handle) {

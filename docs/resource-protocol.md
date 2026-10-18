@@ -637,7 +637,9 @@ Application request permits and HTTP slots remain separate bounded admission lim
 report them separately. None of these counts claims a physical kernel batch size or
 proves requests feasible within a continuation-memory grant.
 
-Stop IDs come from the artifact, never from a model-name list. Every request carries
+Stop IDs and control-token visibility are model-owned, never a model-name list in
+routing or scheduling. Gemma 4 uses its generation metadata's stop IDs and otherwise
+preserves special markers. The GGUF processor uses the following policy: every request carries
 the artifact's declared EOS IDs, and a chat request also carries each control token its
 **own** rendered prompt used: those are the delimiters that conversation's template
 rendered, so a model emitting one is ending or restarting a turn rather than writing
@@ -659,8 +661,9 @@ above it and must be bounded independently:
 - A caller acquires a request permit **before** preprocessing. The permit covers
   retained raw/message input, template rendering, encoded tokens and driver
   delivery until retirement. Preprocessing may not run before that reservation.
-- Raw prompt/message content, rendered chat-template bytes, encoded prompt tokens
-  and the bytes one token decodes to are separate limits. Raw content and rendered
+- Raw prompt/message content, rendered chat-template bytes, encoded prompt tokens,
+  one vocabulary piece's bytes, decoder pending bytes and emitted delta bytes are
+  separate limits. A delta can contain text withheld from many earlier tokens. Raw content and rendered
   bytes are rejected while the payload is produced, and decoded bytes are bounded as
   they are decoded. Encoded prompt tokens are bounded by those byte bounds and by an
   explicit token limit; a caller-supplied token vector is checked before admission.
@@ -690,20 +693,37 @@ above it and must be bounded independently:
   observably closed: queued jobs are released and later submissions are refused, so
   no caller waits on a queue nothing will serve. Once closure begins, a worker that
   is about to start a queued job drops it instead of beginning new work.
-- Immutable loaded vocabulary, caller-collected results and caller-owned input
-  before acceptance are outside buffered application storage. Decoded delta text
-  and terminal staging are inside it and are bounded per token and per request.
+- Preparation creates one owned model-specific decoder, under the request permit,
+  before publishing its prepared reply or submitting to execution. Constructor errors
+  return the unused permit. Cancelled preparation drops the decoder with its reply.
+  Preparation couples the decoder to a delivery lease on the same permit, before
+  moving the permit into submission. That owned pair survives acknowledgement waits,
+  failed/cancelled submissions and finalization/drop: consuming the underlying token
+  terminal must not return capacity while decoder state is still live. This extends the existing grant, not a second
+  accounting authority or device reservation. Raw token streams keep their existing
+  terminal-delivery release semantics. Shared immutable vocabulary is not cloned per
+  request. Pending bytes and delta bytes have explicit per-request bounds; assembly checks aggregate arithmetic with
+  the permit count. These are payload/state envelopes, not allocator or process-RSS
+  guarantees. Immutable vocabulary and caller-collected results are outside them.
+- Gemma's worst-case pending run is one byte per generated token. Its decoder factory
+  rejects output budgets exceeding the pending-byte envelope before enqueue, and
+  reserves that run once. A malformed run can expand to three bytes per byte;
+  exceeding the delta bound during push or finalization is request-local.
 
 ### Delivery and terminal semantics
 
-- Ordinary token events decode incrementally. A token that does not complete a
-  UTF-8 code point yields an empty text delta while retaining its token id; bytes
-  that cannot form valid UTF-8 are a request-local decode error.
-- A normal or explicitly cancelled terminal flushes an incomplete final code
-  point once as a replacement delta before the text terminal event. Flushing is
-  terminal bookkeeping, not recovery.
-- A decode error abandons only its own request. Peers continue, and the failing
-  request yields one typed error instead of a text terminal.
+- Each request owns model-specific incremental decoder state. Every runtime token
+  retains its ID, including an empty text delta while text is withheld. Emitted
+  fragments are irrevocable. GGUF retains incomplete UTF-8 code points and rejects
+  invalid UTF-8. Gemma retains entire consecutive byte-fallback runs: one invalid
+  byte makes every byte in that run a replacement character, including a formerly
+  valid-looking prefix. Neither policy belongs in the token runtime.
+- A normal or explicitly cancelled terminal consumes the decoder's finalizer once,
+  including when the stop token itself was not ingested. Any trailing text is a
+  token-less delta before the text terminal. GGUF replaces an incomplete final code
+  point once; Gemma flushes the final fallback run. Finalization may fail.
+- A push or finalization error abandons only its own request. Peers continue, and
+  the failing request yields one typed error instead of a text terminal.
 - A terminated stream releases its decode scratch and keeps only its terminal
   outcome until its consumer reads it, so a retained finished stream does not
   accumulate request payload.

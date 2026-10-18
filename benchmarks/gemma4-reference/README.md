@@ -206,7 +206,15 @@ token or terminal finalization. This is necessary for exact HF behavior:
 `<0x61><0xFF>` decodes to two replacement characters, not `a�`. Emitting the valid
 prefix early would require retracting already-delivered text. Pending bytes and tokens
 are bounded; errors poison the decoder, and consuming finalization flushes at most once.
-The current text facade's stateless codec is not yet adapted to this model-local API.
+`ribn-text::GemmaProcessor` now adapts this model-local API to owned text delivery.
+Its decoder shares immutable vocabulary and has explicit output-token, pending-byte,
+vocabulary-piece and delta-byte limits independent of chat/input limits. Preparation
+couples decoder state to the existing request permit before submission; the charge
+survives abandoned replies, acknowledgement waits and fallible finalization. Host
+fixtures exercise the real codec/facade with scripted token execution, including
+interleaved runs, stop/cancel flushes, owner failure without flush, and request-local
+push/finalization errors. Barrier tests protect permit retention through finalization
+and abandoned-reply cleanup. None of this implements or qualifies Gemma model execution.
 
 Input bytes/message count, rendered/decoded bytes and token counts have per-call bounds.
 Rendering has a fuel limit; tokenizer assets are limited to 64 MiB and other processor

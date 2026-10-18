@@ -10,7 +10,6 @@ use ribn::{
     Engine, Event, FinishReason, GenerationExecutor, GenerationOptions, TokenRequest, Usage,
 };
 
-use crate::stream::Utf8Decoder;
 use crate::{
     GgufProcessor, Message, ProcessorLimits, TextConfig, TextEvent, TextInput, TextOwner,
     TextProcessor,
@@ -50,16 +49,18 @@ fn options() -> GenerationOptions {
     }
 }
 
-fn direct(engine: &mut Engine, processor: &dyn TextProcessor, case: usize) -> Sample {
+fn direct(engine: &mut Engine, processor: &Arc<dyn TextProcessor>, case: usize) -> Sample {
     let start = Instant::now();
     let (tokens, stops) = processor.encode(input(case)).unwrap().into_parts();
     let mut options = options();
     options.stop_tokens = stops;
+    let mut decoder = processor
+        .clone()
+        .decoder(usize::try_from(options.max_output_tokens).unwrap())
+        .unwrap();
     engine.enqueue(TokenRequest::new(tokens, options)).unwrap();
     let mut tokens = Vec::new();
     let mut text = String::new();
-    let mut bytes = Vec::new();
-    let mut decoder = Utf8Decoder::default();
     let mut ttft = None;
     loop {
         assert!(
@@ -70,13 +71,12 @@ fn direct(engine: &mut Engine, processor: &dyn TextProcessor, case: usize) -> Sa
         while let Some(event) = engine.pop_event() {
             match event {
                 Event::Token { token, .. } => {
-                    processor.decode_token_into(token, &mut bytes).unwrap();
-                    text.push_str(&decoder.push(token, &bytes).unwrap());
+                    text.push_str(&decoder.push(token).unwrap());
                     ttft.get_or_insert_with(|| start.elapsed());
                     tokens.push(token);
                 }
                 Event::Finished { reason, usage, .. } => {
-                    text.push_str(&decoder.finish());
+                    text.push_str(&decoder.finish().unwrap());
                     let elapsed = start.elapsed();
                     return Sample {
                         ttft: ttft.expect("workload must emit a token"),
@@ -183,15 +183,12 @@ fn matched_frontend_overhead() {
                 owner.shutdown().unwrap();
             } else {
                 for (case, reference) in references.iter_mut().enumerate() {
-                    check(
-                        reference,
-                        direct(&mut engine, processor.as_ref(), case).output,
-                    );
+                    check(reference, direct(&mut engine, &processor, case).output);
                     report(
                         pair,
                         "direct",
                         case,
-                        direct(&mut engine, processor.as_ref(), case),
+                        direct(&mut engine, &processor, case),
                         reference,
                     );
                 }

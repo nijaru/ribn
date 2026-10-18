@@ -2,9 +2,9 @@ use std::error::Error;
 use std::fmt;
 use std::str::Utf8Error;
 
-use engine_gguf::GgufError;
 use ribn::driver::DriverError;
 use ribn::{EngineError, ExecutionError};
+use std::sync::Arc;
 
 /// Text-layer failure with its underlying source preserved.
 ///
@@ -21,13 +21,16 @@ pub enum TextError {
     },
     /// The input cannot be prepared as text, for example an empty chat.
     InvalidInput(&'static str),
-    /// Chat-template or tokenizer rejection.
-    Processor(GgufError),
+    /// Model text preparation, decoder construction or finalization rejection.
+    Processor(Arc<dyn Error + Send + Sync>),
     /// The runtime rejected this request, or has no execution owner left.
     Admission(DriverError),
     /// One token is not decodable by the loaded vocabulary, or exceeds its
     /// per-token decoded byte bound.
-    Decode { token: u32, source: GgufError },
+    Decode {
+        token: u32,
+        source: Arc<dyn Error + Send + Sync>,
+    },
     /// Decoded token bytes cannot form UTF-8 text.
     Encoding { token: u32, source: Utf8Error },
     /// The execution owner failed; events already delivered remain readable.
@@ -43,6 +46,11 @@ pub enum TextError {
 }
 
 impl TextError {
+    /// Preserve a model processor's concrete diagnostic without a family branch.
+    pub fn processor(error: impl Error + Send + Sync + 'static) -> Self {
+        Self::Processor(Arc::new(error))
+    }
+
     pub(crate) fn limit(field: &'static str, allowed: usize, actual: usize) -> Self {
         Self::LimitExceeded {
             field,
@@ -91,7 +99,7 @@ impl fmt::Display for TextError {
                 "{field} is {actual} bytes, over the {allowed}-byte bound"
             ),
             Self::InvalidInput(message) => formatter.write_str(message),
-            Self::Processor(error) => write!(formatter, "text preparation failed: {error}"),
+            Self::Processor(error) => write!(formatter, "model text processing failed: {error}"),
             Self::Admission(error) => write!(formatter, "request not admitted: {error}"),
             Self::Decode { token, source } => {
                 write!(formatter, "token {token} could not be decoded: {source}")
@@ -114,7 +122,7 @@ impl fmt::Display for TextError {
 impl Error for TextError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
-            Self::Processor(error) | Self::Decode { source: error, .. } => Some(error),
+            Self::Processor(error) | Self::Decode { source: error, .. } => Some(error.as_ref()),
             Self::Admission(error) | Self::Owner(error) => Some(error),
             Self::Encoding { source, .. } => Some(source),
             Self::Engine(error) => Some(error),

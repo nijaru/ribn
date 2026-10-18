@@ -16,7 +16,7 @@ pub use continuation::{AttentionSpan, KvOwnerStep, KvStep, RetainedSpan};
 pub use parameters::{LayerParameter, ParameterId, ParameterSpec};
 pub use processor::{Gemma4TextProcessor, TextLimits, TextMessage};
 pub use source::{ExcludedParameter, Exclusion, Gemma4Source, StoredParameter};
-pub use text_decode::Gemma4TextDecoder;
+pub use text_decode::{DecodeLimits, Gemma4TextDecoder};
 
 use std::fmt;
 

@@ -14,8 +14,13 @@ cuda = ["dep:engine-qwen", "engine-qwen/cuda"]
 [dependencies]
 ribn = { path = "../runtime" }
 engine-gguf = { path = "../gguf" }
+engine-gemma4 = { path = "../gemma4" }
+ribn-hf = { path = "../hf" }
 engine-qwen = { path = "../qwen", optional = true }
 flume = { version = "0.12", default-features = false, features = ["async"] }
+
+[dev-dependencies]
+serde_json = "1.0.149"
 
 [[example]]
 name = "concurrent_text"

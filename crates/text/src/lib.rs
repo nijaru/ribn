@@ -8,6 +8,8 @@
 #[cfg(feature = "cuda")]
 mod cuda;
 mod error;
+mod gemma4;
+mod gguf;
 mod input;
 mod model;
 mod process;
@@ -16,8 +18,10 @@ mod stream;
 #[cfg(feature = "cuda")]
 pub use cuda::{LoadOptions, MemoryReport};
 pub use error::TextError;
+pub use gemma4::GemmaProcessor;
+pub use gguf::GgufProcessor;
 pub use input::{Message, TextInput};
 pub use model::{TextBatch, TextConfig, TextModel, TextOwner, TextRequest, TextResponse};
-pub use process::{EncodedInput, GgufProcessor, ProcessorLimits, TextProcessor};
+pub use process::{EncodedInput, ProcessorLimits, TextDecoder, TextProcessor};
 pub use ribn::{FinishReason, GenerationOptions, Sampling, Usage};
 pub use stream::{TextEvent, TextStream};

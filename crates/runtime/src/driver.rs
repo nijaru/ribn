@@ -465,7 +465,11 @@ impl GenerationHandle {
             .map_err(|_| DriverError::Overloaded)?;
         Ok(RequestPermit {
             handle: self.clone(),
-            lease: Lease(self.permits_tx.clone()),
+            interest: Arc::new(Interest {
+                _lease: Lease(self.permits_tx.clone()),
+                cancel: AtomicBool::new(false),
+                discard: AtomicBool::new(false),
+            }),
         })
     }
 
@@ -490,12 +494,23 @@ impl GenerationHandle {
 /// Dropping an unused permit returns capacity. This is not a device reservation.
 pub struct RequestPermit {
     handle: GenerationHandle,
-    lease: Lease,
+    interest: Arc<Interest>,
 }
 
 type PendingStream = (GenerationStream, Receiver<Result<RequestId, DriverError>>);
 
 impl RequestPermit {
+    /// Extend this existing grant through bounded frontend processing, including
+    /// failed/cancelled submission and terminal finalization. Keep the lease with
+    /// that state and drop it only after releasing the state; this grants no new
+    /// submission or device reservation.
+    #[must_use]
+    pub fn retain_delivery(&self) -> DeliveryLease {
+        DeliveryLease {
+            _interest: self.interest.clone(),
+        }
+    }
+
     /// Check encoded tokens and retained stop storage, including the runtime copy,
     /// against this permit's input envelope without submitting work. Preprocessing
     /// can use zero tokens to reject impossible options before queue insertion, then
@@ -523,11 +538,7 @@ impl RequestPermit {
         self.check_input(input.tokens.len(), &input.options)?;
         let (events, rx) = flume::bounded(self.handle.config.events_per_request);
         let (accepted, ack) = flume::bounded(1);
-        let interest = Arc::new(Interest {
-            _lease: self.lease,
-            cancel: AtomicBool::new(false),
-            discard: AtomicBool::new(false),
-        });
+        let interest = self.interest;
         let stream = GenerationStream {
             shared: self.handle.shared.clone(),
             interest: Some(interest.clone()),
@@ -573,6 +584,13 @@ impl RequestPermit {
         stream.request = Some(ack.recv().map_err(|_| stream.shared.error())??);
         Ok(stream)
     }
+}
+
+/// Extends one existing request permit through frontend postprocessing. Dropping
+/// this lease returns capacity only after other delivery/execution interests retire.
+/// It grants no cancellation controls, extra submission or device-memory reservation.
+pub struct DeliveryLease {
+    _interest: Arc<Interest>,
 }
 
 /// Ordered, owned token stream. Drop abandons delivery without waiting for device

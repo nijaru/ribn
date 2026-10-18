@@ -2,37 +2,64 @@
 //! be emitted early: one invalid trailing byte invalidates the entire run in HF.
 
 use crate::{Gemma4Error, Gemma4TextProcessor};
+use std::sync::Arc;
+use tokenizers::Tokenizer;
 
-/// Request-local irrevocable text decoding, preserving special markers. Callers
-/// choose which stop/control tokens to ingest, and must finish at every terminal
-/// (including a stop token they do not ingest) to flush a trailing fallback run.
-/// This does not adapt the existing GGUF stateless frontend codec.
-pub struct Gemma4TextDecoder<'a> {
-    processor: &'a Gemma4TextProcessor,
+/// Request-local token budget, retained fallback bytes and emitted fragment bytes.
+/// These are independent of input/chat limits and caller-collected output.
+#[derive(Clone, Copy, Debug)]
+pub struct DecodeLimits {
+    pub tokens: usize,
+    /// Decoded vocabulary piece bytes, before a delayed run is joined to it.
+    pub token_bytes: usize,
+    pub pending_bytes: usize,
+    pub delta_bytes: usize,
+}
+
+/// Owned irrevocable decoding, sharing only immutable vocabulary. Callers choose
+/// stop/control ingestion and must finish at every normal/cancelled terminal.
+pub struct Gemma4TextDecoder {
+    tokenizer: Arc<Tokenizer>,
     pending: Vec<u8>,
+    limits: DecodeLimits,
     tokens: usize,
-    emitted: usize,
     failed: bool,
 }
 
 impl Gemma4TextProcessor {
-    #[must_use]
-    pub const fn decoder(&self) -> Gemma4TextDecoder<'_> {
-        Gemma4TextDecoder {
-            processor: self,
-            pending: Vec::new(),
-            tokens: 0,
-            emitted: 0,
-            failed: false,
+    /// Reserve the worst-case fallback run before accepting generation. No model
+    /// or processor borrow is retained; the decoder can outlive both.
+    /// # Errors
+    /// Rejects zero bounds or a token budget exceeding the pending-byte envelope.
+    pub fn decoder(&self, limits: DecodeLimits) -> Result<Gemma4TextDecoder, Gemma4Error> {
+        if limits.tokens == 0
+            || limits.token_bytes == 0
+            || limits.delta_bytes == 0
+            || limits.tokens > limits.pending_bytes
+        {
+            return Err(Gemma4Error::new(
+                "decode limits",
+                "positive bounds and pending bytes covering the token budget are required",
+            ));
         }
+        let mut pending = Vec::new();
+        pending
+            .try_reserve_exact(limits.tokens)
+            .map_err(|e| Gemma4Error::new("decode allocation", e.to_string()))?;
+        Ok(Gemma4TextDecoder {
+            tokenizer: self.tokenizer.clone(),
+            pending,
+            limits,
+            tokens: 0,
+            failed: false,
+        })
     }
 }
 
-impl Gemma4TextDecoder<'_> {
-    /// Returns newly irrevocable text, possibly empty while collecting bytes.
+impl Gemma4TextDecoder {
+    /// Newly irrevocable text, possibly empty while collecting fallback bytes.
     /// # Errors
-    /// Rejects unknown IDs, token/output limits and all calls after an error.
-    /// An error permanently invalidates this decoder; do not retry the token.
+    /// Rejects unknown IDs, token/delta limits and all calls after an error.
     pub fn push(&mut self, id: u32) -> Result<String, Gemma4Error> {
         if self.failed {
             return Err(Gemma4Error::new(
@@ -50,35 +77,44 @@ impl Gemma4TextDecoder<'_> {
         self.tokens = self
             .tokens
             .checked_add(1)
-            .filter(|&n| n <= self.processor.limits.tokens)
+            .filter(|&n| n <= self.limits.tokens)
             .ok_or_else(|| Gemma4Error::new("decode", "token limit exceeded"))?;
         let token = self
-            .processor
             .tokenizer
             .id_to_token(id)
             .ok_or_else(|| Gemma4Error::new("decode", "unknown token ID"))?;
         if let Some(byte) = fallback(&token) {
+            // One byte per token, with the entire token budget reserved at construction.
             self.pending.push(byte);
             return Ok(String::new());
         }
-        // Replace runs before ByteFallback, so decoded fallback bytes containing
-        // U+2581 must not be subjected to replacement a second time.
+        // Replace precedes ByteFallback: fallback-encoded U+2581 stays literal.
         let piece = if token.contains('▁') {
             token.replace('▁', " ")
         } else {
             token
         };
+        if piece.len() > self.limits.token_bytes {
+            return Err(Gemma4Error::new(
+                "decoded token bytes",
+                "piece limit exceeded",
+            ));
+        }
+        let length = self
+            .pending_output_len()?
+            .checked_add(piece.len())
+            .ok_or_else(|| Gemma4Error::new("decoded bytes", "length overflow"))?;
+        self.check_delta(length)?;
         let mut output = self.flush()?;
-        self.charge(piece.len())?;
         if output.is_empty() {
             return Ok(piece);
         }
         output.push_str(&piece);
         Ok(output)
     }
-    /// Consume the decoder and finalize a trailing run exactly once.
+    /// Consume and finalize a trailing run exactly once.
     /// # Errors
-    /// Rejects failed decoders or final output that exceeds its byte limit.
+    /// Rejects failed decoders or final output exceeding the delta bound.
     pub fn finish(mut self) -> Result<String, Gemma4Error> {
         if self.failed {
             return Err(Gemma4Error::new(
@@ -88,31 +124,35 @@ impl Gemma4TextDecoder<'_> {
         }
         self.flush()
     }
-    fn charge(&mut self, bytes: usize) -> Result<(), Gemma4Error> {
-        self.emitted = self
-            .emitted
-            .checked_add(bytes)
-            .filter(|&n| n <= self.processor.limits.rendered_bytes)
-            .ok_or_else(|| Gemma4Error::new("decoded bytes", "limit exceeded"))?;
+    fn check_delta(&self, bytes: usize) -> Result<(), Gemma4Error> {
+        if bytes > self.limits.delta_bytes {
+            return Err(Gemma4Error::new("decoded bytes", "delta limit exceeded"));
+        }
         Ok(())
     }
-    fn flush(&mut self) -> Result<String, Gemma4Error> {
-        let valid = std::str::from_utf8(&self.pending).is_ok();
-        let length = if valid {
-            self.pending.len()
+    fn pending_output_len(&self) -> Result<usize, Gemma4Error> {
+        if std::str::from_utf8(&self.pending).is_ok() {
+            Ok(self.pending.len())
         } else {
             self.pending
                 .len()
                 .checked_mul(3)
-                .ok_or_else(|| Gemma4Error::new("decoded bytes", "length overflow"))?
-        };
-        self.charge(length)?;
-        let bytes = std::mem::take(&mut self.pending);
-        if valid {
-            String::from_utf8(bytes).map_err(|e| Gemma4Error::new("decode", e.to_string()))
-        } else {
-            Ok("\u{fffd}".repeat(bytes.len()))
+                .ok_or_else(|| Gemma4Error::new("decoded bytes", "length overflow"))
         }
+    }
+    fn flush(&mut self) -> Result<String, Gemma4Error> {
+        let length = self.pending_output_len()?;
+        self.check_delta(length)?;
+        let output = if std::str::from_utf8(&self.pending).is_ok() {
+            // Keep the pre-reserved run storage across boundaries, not a new growing Vec.
+            std::str::from_utf8(&self.pending)
+                .expect("validated UTF-8")
+                .to_owned()
+        } else {
+            "\u{fffd}".repeat(self.pending.len())
+        };
+        self.pending.clear();
+        Ok(output)
     }
 }
 

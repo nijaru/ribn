@@ -406,12 +406,14 @@ The canonical host text processor now matches 291 independent cases: exact raw/c
 token IDs, rendered chat, whole/finalized decoding and all generation stops. It rejects
 unsupported media placeholders in both encoded and direct-token input. Its stateful
 decoder retains whole byte-fallback runs because a later malformed byte invalidates
-the entire run in HF. The current facade's stateless per-token codec cannot preserve
-that behavior; request-local decoder ownership, bounded pending state and terminal
-finalization must be integrated before binding Gemma to text streams.
+the entire run in HF. The text facade now creates an owned, bounded decoder during
+permit-backed preprocessing, before runtime enqueue. Gemma's adapter preserves its
+metadata stop policy; GGUF retains strict UTF-8 and its existing control policy.
+Host lifecycle tests cover interleaved streams, cancellation, owner failure, and
+request-local push/finalization failures, including immediate scratch release.
+These are host delivery checks, not Gemma execution or CUDA lifecycle qualification.
 
-Next gates: integrate that decoder boundary without changing qualified GGUF behavior;
-preserve native BF16 and tied allocation ownership during device preparation; implement mixed-width local/global KV with donor
+Next gates: preserve native BF16 and tied allocation ownership during device preparation; implement mixed-width local/global KV with donor
 spans pinned through shared-tail device reads. Use strongly typed model/backend state
 behind `GenerationExecutor`, not the current first-`kv()`/homogeneous-cache convenience
 or family branches in routing/scheduling. Qualified physical allocation/retirement and

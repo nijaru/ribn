@@ -948,10 +948,13 @@ dependencies = [
 name = "ribn-text"
 version = "0.0.0"
 dependencies = [
+ "engine-gemma4",
  "engine-gguf",
  "engine-qwen",
  "flume",
  "ribn",
+ "ribn-hf",
+ "serde_json",
 ]
 
 [[package]]

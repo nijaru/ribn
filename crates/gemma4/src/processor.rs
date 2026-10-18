@@ -1,12 +1,14 @@
 //! Text-only processor loaded from one unchanged local package. This does not
 //! execute a model, process media or provide a frontend submission/retention bound.
 
+use crate::DecodeLimits;
 use crate::{Gemma4Config, Gemma4Error, config::token_id};
 use minijinja::{Environment, context};
 use ribn_hf::LocalModelPackage;
 use serde::Serialize;
 use serde_json::Value;
 use std::io::{Read, Write};
+use std::sync::Arc;
 use tokenizers::Tokenizer;
 
 /// Per-call bounds, also enforced for direct callers. Rendered bytes bounds both
@@ -31,7 +33,7 @@ pub struct TextMessage<'a> {
 
 pub struct Gemma4TextProcessor {
     config: Gemma4Config,
-    pub(crate) tokenizer: Tokenizer,
+    pub(crate) tokenizer: Arc<Tokenizer>,
     template: Environment<'static>,
     stops: Vec<u32>,
     pub(crate) limits: TextLimits,
@@ -127,7 +129,7 @@ impl Gemma4TextProcessor {
         let template = load_template(package, bos)?;
         Ok(Self {
             config,
-            tokenizer,
+            tokenizer: Arc::new(tokenizer),
             template,
             stops,
             limits,
@@ -205,12 +207,33 @@ impl Gemma4TextProcessor {
     /// # Errors
     /// Rejects unknown IDs, excessive token count/decoded bytes or codec errors.
     pub fn decode(&self, ids: &[u32]) -> Result<String, Gemma4Error> {
-        let mut decoder = self.decoder();
+        check(ids.len(), self.limits.tokens, "decoded tokens")?;
+        if ids.is_empty() {
+            return Ok(String::new());
+        }
+        let mut decoder = self.decoder(DecodeLimits {
+            tokens: ids.len(),
+            token_bytes: self.limits.rendered_bytes,
+            pending_bytes: ids.len(),
+            delta_bytes: self.limits.rendered_bytes,
+        })?;
         let mut output = String::new();
         for &id in ids {
-            output.push_str(&decoder.push(id)?);
+            let piece = decoder.push(id)?;
+            check(
+                output.len().saturating_add(piece.len()),
+                self.limits.rendered_bytes,
+                "decoded bytes",
+            )?;
+            output.push_str(&piece);
         }
-        output.push_str(&decoder.finish()?);
+        let trailing = decoder.finish()?;
+        check(
+            output.len().saturating_add(trailing.len()),
+            self.limits.rendered_bytes,
+            "decoded bytes",
+        )?;
+        output.push_str(&trailing);
         Ok(output)
     }
 }

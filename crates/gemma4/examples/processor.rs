@@ -56,7 +56,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     for row in corpus["decode"].as_array().ok_or("missing decode corpus")? {
         let ids: Vec<u32> = serde_json::from_value(row["ids"].clone())?;
         require(processor.decode(&ids)? == row["text"], "whole decode")?;
-        let mut stream = processor.decoder();
+        let mut stream = processor.decoder(engine_gemma4::DecodeLimits {
+            tokens: ids.len().max(1),
+            token_bytes: 131_072,
+            pending_bytes: ids.len().max(1),
+            delta_bytes: 131_072,
+        })?;
         let mut text = String::new();
         for id in ids {
             text.push_str(&stream.push(id)?);
