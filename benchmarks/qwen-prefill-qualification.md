@@ -400,8 +400,8 @@ completely different seam, which is a useful cross-check on both benches.
 ### Long-prompt finding, and why it is not a chunking effect
 
 The 257-token fixture diverges from llama.cpp at generated step 18, where llama.cpp's
-own top-2 margin was 0.2242 nats and ribn prefers the runner-up token; the later
-disagreements are that changed context, not additional flips. The item is pre-existing
+own top-2 margin was 0.2242 nats and ribn prefers the runner-up token. Later
+free-running disagreements use changed contexts and cannot identify additional flips. The item is pre-existing
 and independent of this work: with chunking disabled the token stream is byte-identical
 to the chunked stream, and both diverge at the same step. The earlier harness could not
 see it because its five-token prompt gave drift far less room, which is why "200 greedy
@@ -412,9 +412,11 @@ the long-prompt path, not a scheduling or ownership defect.
 Margins were then measured rather than assumed, because two engines can pick the same
 token for different reasons. `--logit-margins=N` reads the vocabulary logits back
 through `CudaQwen35Decode::copy_logits` and prints each step's top five log-probabilities
-and top-1/top-2 margin; `benchmarks/llama_reference_margins.py` prints the same rows from
-llama.cpp's `n_probs` for the fixture's own prompt, fed as token IDs with `add_special`
-disabled. Same 257-token prompt, serial prefill for the reference comparison:
+and top-1/top-2 margin. The old `benchmarks/llama_reference_margins.py` free-ran
+llama.cpp from the same fixture prompt, with token IDs and `add_special` disabled.
+The histories agree through step 18, so the rows below compare the same input history;
+later rows of those historical logs must not be compared across engines. Same
+257-token prompt, serial Ribn prefill for this historical comparison:
 
 | step | llama.cpp margin | ribn margin | margin error | worst shared top-5 error |
 | --- | --- | --- | --- | --- |
@@ -425,13 +427,12 @@ disabled. Same 257-token prompt, serial prefill for the reference comparison:
 | 17 | 2.9102 | 2.8642 | 0.0460 | 0.1040 |
 | 18 | 0.2242 | 0.0088 | 0.2154 | 0.1953 |
 
-Two things follow. First, the flip is not a discontinuity: ribn's log-probabilities
-sit 0.08-0.26 nats from llama.cpp's throughout, so a step whose reference margin is
-0.2242 is inside that band and either token is consistent with ribn's own
-distribution. ribn's margin at that step, 0.0088 nats, is what a nearly-tied
-preference looks like. Second, the deviation is slow and roughly flat in step index
-rather than compounding, which is the signature of a systematic kernel-order difference
-in the quantized paths rather than a state or position error.
+The 0.0088-nat Ribn margin confirms a near-tie in its own distribution, but does not
+justify the cross-engine error or establish its cause. The shared-top-five
+discrepancies recorded above are not an acceptance tolerance. Their roughly flat
+step profile cannot distinguish quantized kernel ordering from state, position or
+other numerical defects; common-history and intermediate-state comparisons remain
+necessary. No error budget follows from the reference's margin.
 
 That pass also produced a stronger statement about the integration than token equality:
 **chunked and serial prefill emitted identical log-probability tables for all 20 steps**
@@ -446,16 +447,50 @@ above are unchanged.
 
 ### Margin probe procedure
 
+The collector now requests one prediction at each exact Ribn token history, including
+after a disagreement. It requires the artifact/prompt context emitted by the current
+Ribn bench; old logs without that context must be regenerated. It never starts or stops
+a model server. On an available device, serialize these model processes under the existing
+qualification lock and confirm the GPU is idle before each launch:
+
 ```sh
-python3 benchmarks/llama_reference_margins.py 20 > /tmp/llama-margins.txt
-
+# Run Ribn first, then stop it before starting the reference.
 ENGINE_QWEN_GGUF=/path/Qwen3.8-27B-UD-Q4_K_M.gguf \
-target/release/examples/qwen_decode_bench \
+cargo run --release -p engine-nvidia --features cuda --example qwen_decode_bench -- \
   --prompt-fixture=crates/qwen/tests/fixtures/qwen38-code-fill4096-257.tokens \
-  --tokens=20 --logit-margins=20 [--prefill-chunk=8] > /tmp/ribn-margins.txt
+  --tokens=20 --logit-margins=20 > /tmp/ribn-margins.txt
 
-diff <(grep '^margins' /tmp/llama-margins.txt) <(grep '^margins' /tmp/ribn-margins.txt)
+# In an owned process, start the independently pinned reference and wait for /health.
+llama-server -m /path/Qwen3.8-27B-UD-Q4_K_M.gguf -c 1024 -np 1 -ngl all \
+  -fa on --host 127.0.0.1 --port 8099
+
+# In another shell, after readiness; output directory must not already exist.
+python3 benchmarks/llama_reference_margins.py \
+  --ribn-margins /tmp/ribn-margins.txt --url http://127.0.0.1:8099 \
+  --reference-build 'llama.cpp 4e416ee73; independently checked server build' \
+  --output /tmp/qwen-common-history
 ```
+
+The native API contract was checked against llama.cpp
+[`4e416ee73`'s server README](https://github.com/ggml-org/llama.cpp/blob/4e416ee73/tools/server/README.md)
+and [response serializer](https://github.com/ggml-org/llama.cpp/blob/4e416ee73/tools/server/server-task.cpp).
+Negative temperature requests greedy selection with raw-logit softmax probabilities;
+only the temperature sampler is enabled, post-sampling probabilities and EOS bias are
+disabled, and special tokens are not inserted. Each prefix is fully recomputed with
+prompt reuse disabled. That is a different reference evaluation schedule from one
+continuous AR session and must remain identified in the evidence, not interpreted as
+bit-identical execution. Unexpected settings, cache reuse, truncation, malformed/nonfinite
+probabilities or a failed request leave an incomplete report and a nonzero exit.
+
+`comparison.json` reports winner disagreements and log-probability differences only
+where both top-five lists contain the token; missing support is `null`, not zero error.
+Ribn's printed values have four decimal places. Exact requests/responses, source-log
+hashes and partial evidence are retained, including after failure; existing output
+is never replaced. Server build/model identity remains a caller assertion, so preserve
+its command, artifact hash and logs separately. These files contain prompt/response
+content; use public fixtures and keep them outside version control. No numerical or
+task-quality threshold is inferred. The new collector is host-tested with a CPU HTTP
+fixture; it has not yet collected new real-model evidence.
 
 ### Decision
 

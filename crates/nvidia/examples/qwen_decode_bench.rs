@@ -15,7 +15,9 @@
 //! `--logit-margins=N` prints the first `N` steps' top-five log-probabilities and
 //! top-1/top-2 margin, which is what a comparison against another engine's recorded
 //! log-probabilities needs: agreeing on the winning token says nothing about how
-//! close the runners-up were.
+//! close the runners-up were. Margin output includes the exact artifact/prompt
+//! context for `benchmarks/llama_reference_margins.py`, which replays each chosen
+//! history independently instead of comparing free-running divergent sequences.
 //!
 //! ```text
 //! ENGINE_QWEN_GGUF=/path/to/Qwen3.8-27B-UD-Q4_K_M.gguf \
@@ -128,6 +130,17 @@ fn main() {
         .expect("set ENGINE_QWEN_GGUF or pass --model=/path/to/model.gguf");
 
     let provider = QwenGguf::open(&model_path).expect("open Qwen GGUF");
+    if margin_steps > 0 {
+        println!(
+            "margins-context artifact={} prompt={}",
+            provider.artifact_id(),
+            prompt
+                .iter()
+                .map(u32::to_string)
+                .collect::<Vec<_>>()
+                .join(",")
+        );
+    }
     let context = CudaContext::new(0).expect("CUDA context");
     let stream = context.default_stream();
 
@@ -314,6 +327,10 @@ fn main() {
 /// generation step, in the same shape as a reference engine's `n_probs` output
 /// so the two can be compared directly.
 fn print_logit_margins(index: usize, chosen: u32, logits: &[f32]) {
+    assert!(
+        logits.len() >= 5 && logits.iter().all(|value| value.is_finite()),
+        "margin logits must have finite top-five support"
+    );
     let maximum = logits.iter().copied().fold(f32::NEG_INFINITY, f32::max);
     let sum = logits
         .iter()
