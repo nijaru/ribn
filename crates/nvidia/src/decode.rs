@@ -2904,11 +2904,21 @@ impl CudaQwen35BatchDecode {
             self.stream
                 .memcpy_dtod(&conv_k, &mut gdn_k)
                 .map_err(|error| CudaDecodeError::Driver(error.to_string()))?;
-            self.ops
-                .l2_norm_heads_views(&mut gdn_q, GDN_K_HEADS, GDN_HEAD_DIM, self.epsilon)?;
-            self.ops
-                .l2_norm_heads_views(&mut gdn_k, GDN_K_HEADS, GDN_HEAD_DIM, self.epsilon)?;
         }
+        // One launch per normalized buffer rather than two per member: these
+        // loads were the single largest source of per-step host launches.
+        self.ops.l2_norm_heads_batch(
+            &mut self.scratch.gdn_q,
+            GDN_K_HEADS,
+            GDN_HEAD_DIM,
+            self.epsilon,
+        )?;
+        self.ops.l2_norm_heads_batch(
+            &mut self.scratch.gdn_k,
+            GDN_K_HEADS,
+            GDN_HEAD_DIM,
+            self.epsilon,
+        )?;
 
         // One batched state-update launch for every member: each member's
         // matrix is a distinct per-request allocation, gathered into a
