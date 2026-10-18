@@ -108,7 +108,7 @@ retain original completion order and whole-batch completion. Bounded device gate
 passed, but the mixed trace showed no measurable benefit and failed-drain ownership
 qualification remains open; ordinary text/CLI loading retains whole-batch selection.
 
-## Encoder and artifact paths
+## Model sources, encoder and artifact paths
 
 `ribn-safetensors` validates bounded headers/layouts with the upstream metadata
 validator. File-backed artifacts retain one opened file, not encoded payloads in heap;
@@ -128,6 +128,13 @@ BERT decodes through a fixed 16-KiB byte buffer directly into each final F32 par
 Source-cache counts do not bound metadata, caller-retained readers, decoded host weights,
 OS page cache or upload staging. The [host comparison](../benchmarks/loader-memory/README.md)
 and full E4B artifact probe qualify this I/O path, not Gemma execution or device peaks.
+
+`engine-gemma4` owns dense causal Gemma 4 text configuration and logical parameter
+mapping. Its host source preflight validates the whole HF-resolved inventory, retains
+BF16 parameter readers, aliases the output head to the input embedding and explicitly
+excludes inactive shared-tail projections and non-text weights. It does not materialize
+weights on a device or execute a decoder. Unknown text semantics or parameters reject;
+see the [real-package gate](../benchmarks/gemma4-reference/README.md#ribn-text-source-preflight).
 
 `engine-bert` owns configuration, parameter mapping, masked bidirectional attention,
 embedding/LayerNorm/GELU/pooler semantics and a CUDA executor through `ribn-batch`.
@@ -159,6 +166,7 @@ Shared CUDA physical retirement and downstream-workspace progress remain unprove
 | `crates/qwen` / `engine-qwen` | Qwen config, GGUF mapping, CUDA assembly and AR adapter; serving benchmark |
 | `crates/nvidia` / `engine-nvidia` | NVIDIA storage, completion, dispatch and kernels |
 | `crates/bert` / `engine-bert` | BERT semantics, preparation, executor binding and device retirement |
+| `crates/gemma4` / `engine-gemma4` | Gemma 4 text config, logical parameter mapping and retained source preflight; no decoder execution |
 | `crates/core` / `engine-core` | Prepared batch, backend submission, continuation state and weight contracts; no scheduler, plan or model description |
 | `crates/gguf` / `engine-gguf` | GGUF artifact access and current tokenizer/chat-template implementation |
 | `crates/safetensors` / `ribn-safetensors` | Validated SafeTensors metadata and bounded payload readers |

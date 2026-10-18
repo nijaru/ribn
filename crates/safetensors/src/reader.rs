@@ -18,6 +18,9 @@ pub(super) struct FileCursor {
 /// Reader owning the selected artifact and a bounded independent cursor.
 /// Reads borrow caller storage; there is no internal payload buffering/prefetch.
 /// Dropping an artifact or evicting its cache entry does not invalidate a reader.
+/// Cloning retains the same selected source with an independent cursor beginning
+/// at the current position; it does not reopen a pathname or copy payload bytes.
+#[derive(Clone)]
 pub struct ArtifactReader {
     artifact: SafeTensorArtifact,
     position: usize,

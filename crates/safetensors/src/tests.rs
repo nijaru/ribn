@@ -346,3 +346,30 @@ fn premature_file_eof_is_an_error_not_successful_short_tensor() {
         std::io::ErrorKind::UnexpectedEof
     );
 }
+
+#[test]
+fn cloned_readers_keep_the_selected_source_and_independent_current_cursors() {
+    let dir = TestDir::new();
+    std::fs::write(dir.file(), fixture()).unwrap();
+    let expected: Vec<u8> = [1_f32, 2.0, 3.0, 4.0]
+        .into_iter()
+        .flat_map(f32::to_le_bytes)
+        .collect();
+    for artifact in [
+        SafeTensorArtifact::open(dir.file()).unwrap(),
+        SafeTensorArtifact::from_bytes(fixture()).unwrap(),
+    ] {
+        let mut reader = artifact.tensor("weight").unwrap().reader();
+        let mut prefix = [0; 5];
+        reader.read_exact(&mut prefix).unwrap();
+        assert_eq!(prefix, expected[..5]);
+        let mut cloned = reader.clone();
+        drop(artifact);
+        let mut first = Vec::new();
+        cloned.read_to_end(&mut first).unwrap();
+        let mut second = Vec::new();
+        reader.read_to_end(&mut second).unwrap();
+        assert_eq!(first, expected[5..]);
+        assert_eq!(second, expected[5..]);
+    }
+}

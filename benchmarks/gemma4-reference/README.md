@@ -110,6 +110,37 @@ and every tensor's encoded bytes without loading the checkpoint into application
 This does not implement Gemma: native BF16 device preparation, tied allocation ownership,
 mixed-window KV ownership and donor-span lifetimes remain prerequisites for execution.
 
+## Ribn text-source preflight
+
+`engine-gemma4` now owns the dense causal text configuration and parameter schema.
+The checked-in [config fixture](config.json) is the exact publisher file pinned by
+`model.toml`, not a reduced handwritten E4B approximation. Unknown text configuration
+fields, unsupported attention/MLP/precision variants, missing active tensors, wrong
+shapes/dtypes, inconsistent shard indices and untied output tensors reject.
+
+```sh
+cargo run --release -p engine-gemma4 --example preflight -- \
+  /path/to/pinned/snapshot --hash-parameters > /tmp/gemma4-source.json
+```
+
+On the same M3 Max host as the [artifact gate](../loader-memory/README.md), the real
+package yielded **665 active BF16 parameters**, **54 excluded shared-tail parameters**
+and **1,411 excluded non-text parameters**. Every active shape/dtype matched the stock
+catalog; every payload SHA256 matched the independently audited artifact reader.
+Unique active encoded bytes were **14,926,026,836**. The output projection is the exact
+same logical source as the unscaled input embedding, not another allocation.
+
+The hash probe used a 1-MiB caller buffer and peaked at **7,028,736 bytes process RSS**.
+This measures retained metadata/readers, I/O and the diagnostic report, not a loaded
+model, GPU preparation, physical VRAM or a process-wide byte guarantee. Omit
+`--hash-parameters` for header-only preflight. Keep package members unchanged while
+opening and never mutate selected files in place through aliases while readers live.
+
+Host tests cover a second geometry with hidden width not divisible by query-head count,
+single/sharded inventories, optional inactive tail weights, wrong/dangling shard routes,
+missing/malformed/unknown active parameters, exact BF16 payload preservation and retained
+readers after package drop/path replacement. These checks do not qualify execution.
+
 Primary sources:
 
 - [Pinned model config](https://huggingface.co/google/gemma-4-E4B-it/blob/ee0ef6023621cff504d758262d4e04895a5af4a2/config.json)

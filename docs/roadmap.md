@@ -388,7 +388,14 @@ checks the complete artifact and every encoded tensor against the independent so
 plus BERT F32 bit preservation and a matched host-memory comparison. This is artifact
 I/O evidence, not Gemma execution, whole-loader byte accounting or device preparation.
 
-Next gates: preserve native BF16 and tied allocation ownership during preparation;
+The model-local `engine-gemma4` host preflight now validates this real package's
+665 active BF16 parameters, preserves their encoded bytes and represents the output
+head as the same logical embedding parameter. The 54 inactive shared-tail tensors
+and 1,411 non-text tensors are explicitly excluded. Host fixtures also exercise a
+second, reduced geometry and sharded loading without new family branches. This is
+source selection, not prepared device storage or the second-decoder exit gate.
+
+Next gates: preserve native BF16 and tied allocation ownership during device preparation;
 define model/backend-owned mixed-width local/global KV and donor spans retained through
 shared-tail prefill. The current first-`kv()`/homogeneous-cache conveniences do not establish
 that ownership. Resolve it before CUDA integration; do not add model-family branches

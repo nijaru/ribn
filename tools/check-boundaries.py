@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Check production dependency direction; development-only oracles may cross it."""
+
 import pathlib
 import sys
 import tomllib
@@ -56,14 +57,37 @@ FORBIDDEN = {
         "ribn-text",
         "ribn-cli",
     },
-    "runtime": {"engine-core", "engine-gguf", "engine-nvidia", "engine-qwen", "ribn-text", "ribn-cli"},
-    "core": {"engine-gguf", "engine-nvidia", "engine-qwen", "ribn", "ribn-text", "ribn-cli"},
+    "runtime": {
+        "engine-core",
+        "engine-gguf",
+        "engine-nvidia",
+        "engine-qwen",
+        "ribn-text",
+        "ribn-cli",
+    },
+    "core": {
+        "engine-gguf",
+        "engine-nvidia",
+        "engine-qwen",
+        "ribn",
+        "ribn-text",
+        "ribn-cli",
+    },
     "gguf": {"engine-nvidia", "engine-qwen", "ribn", "ribn-text", "ribn-cli"},
     "qwen": {"ribn-text", "ribn-cli"},
+    "gemma4": {"engine-gguf", "engine-bert", "engine-qwen", "ribn-text", "ribn-cli"},
     "cli": {"engine-core", "engine-nvidia", "engine-qwen"},
-    "server": {"engine-core", "engine-nvidia", "engine-qwen", "engine-gguf", "ribn-cli"},
+    "server": {
+        "engine-core",
+        "engine-nvidia",
+        "engine-qwen",
+        "engine-gguf",
+        "ribn-cli",
+    },
 }
 for crate, forbidden in FORBIDDEN.items():
+    if crate != "gemma4":
+        forbidden.add("engine-gemma4")
     if crate not in {"cli", "server"}:
         forbidden.add("ribn-server")
 
@@ -85,7 +109,9 @@ def main() -> int:
         manifest = tomllib.loads(path.read_text())
         invalid = dependency_names(manifest) & forbidden
         if invalid:
-            errors.append(f"{path.relative_to(ROOT)}: reversed dependency: {sorted(invalid)}")
+            errors.append(
+                f"{path.relative_to(ROOT)}: reversed dependency: {sorted(invalid)}"
+            )
     for obsolete in (
         "crates/core/src/nvidia.rs",
         "crates/gguf/src/qwen.rs",

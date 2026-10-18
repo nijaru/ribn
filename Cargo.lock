@@ -168,6 +168,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "engine-gemma4"
+version = "0.0.0"
+dependencies = [
+ "ribn-foundation",
+ "ribn-hf",
+ "ribn-safetensors",
+ "serde_json",
+ "sha2 0.10.9",
+]
+
+[[package]]
 name = "engine-gguf"
 version = "0.0.0"
 dependencies = [

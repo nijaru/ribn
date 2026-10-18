@@ -5,6 +5,7 @@ members = [
     "crates/hf",
     "crates/batch",
     "crates/bert",
+    "crates/gemma4",
     "crates/core",
     "crates/runtime",
     "crates/text",
