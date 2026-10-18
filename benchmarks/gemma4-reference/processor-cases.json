@@ -1,0 +1,2604 @@
+{
+  "schema_version": 1,
+  "model_manifest": "model.toml",
+  "reference": {
+    "transformers": "5.20.0",
+    "tokenizers": "0.23.3",
+    "jinja2": "3.1.6"
+  },
+  "raw": [
+    {
+      "text": "Hello",
+      "ids": [
+        9259
+      ],
+      "decoded": "Hello"
+    },
+    {
+      "text": " hello  world \n",
+      "ids": [
+        29104,
+        138,
+        12392,
+        236743,
+        107
+      ],
+      "decoded": " hello  world \n"
+    },
+    {
+      "text": "\t\r\n",
+      "ids": [
+        255968,
+        251,
+        107
+      ],
+      "decoded": "\t\r\n"
+    },
+    {
+      "text": "café é 🧵",
+      "ids": [
+        123125,
+        236859,
+        545,
+        238288,
+        236743,
+        250769
+      ],
+      "decoded": "café é 🧵"
+    },
+    {
+      "text": "中文 العربية देवनागरी",
+      "ids": [
+        55041,
+        87595,
+        28038,
+        1238,
+        39085
+      ],
+      "decoded": "中文 العربية देवनागरी"
+    },
+    {
+      "text": "▁",
+      "ids": [
+        236743
+      ],
+      "decoded": " "
+    },
+    {
+      "text": "é",
+      "ids": [
+        236859
+      ],
+      "decoded": "é"
+    },
+    {
+      "text": "</s><s>",
+      "ids": [
+        954,
+        236751,
+        1798,
+        236751,
+        236813
+      ],
+      "decoded": "</s><s>"
+    },
+    {
+      "text": "<bos><eos><turn|><|channel>thought\nx<channel|>",
+      "ids": [
+        2,
+        1,
+        106,
+        100,
+        45518,
+        107,
+        236781,
+        101
+      ],
+      "decoded": "<bos><eos><turn|><|channel>thought\nx<channel|>"
+    },
+    {
+      "text": "<0xFF>",
+      "ids": [
+        236820,
+        236771,
+        29414,
+        236813
+      ],
+      "decoded": "<0xFF>"
+    },
+    {
+      "text": "\u0000\u001f  ",
+      "ids": [
+        238,
+        253998,
+        464,
+        366,
+        406,
+        432,
+        398
+      ],
+      "decoded": "\u0000\u001f  "
+    },
+    {
+      "text": "A mutex protects shared mutable state by allowing one owner to access it at a time. Ownership, cancellation, and completion are separate concerns. A request must retain its resources until the operation that uses them has completed.\nA mutex protects shared mutable state by allowing one owner to access it at a time. Ownership, cancellation, and completion are separate concerns. A request must retain its resources until the operation that uses them has completed.\nA mutex protects shared mutable state by allowing one owner to access it at a time. Ownership, cancellation, and completion are separate concerns. A request must retain its resources until the operation that uses them has completed.\nA mutex protects shared mutable state by allowing one owner to access it at a time. Ownership, cancellation, and completion are separate concerns. A request must retain its resources until the operation that uses them has completed.\nA mutex protects shared mutable state by allowing one owner to access it at a time. Ownership, cancellation, and completion are separate concerns. A request must retain its resources until the operation that uses them has completed.\nA mutex protects shared mutable state by allowing one owner to access it at a time. Ownership, cancellation, and completion are separate concerns. A request must retain its resources until the operation that uses them has completed.\nA mutex protects shared mutable state by allowing one owner to access it at a time. Ownership, cancellation, and completion are separate concerns. A request must retain its resources until the operation that uses them has completed.\nA mutex protects shared mutable state by allowing one owner to access it at a time. Ownership, cancellation, and completion are separate concerns. A request must retain its resources until the operation that uses them has completed.\nA mutex protects shared mutable state by allowing one owner to access it at a time. Ownership, cancellation, and completion are separate concerns. A request must retain its resources until the operation that uses them has completed.\nA mutex protects shared mutable state by allowing one owner to access it at a time. Ownership, cancellation, and completion are separate concerns. A request must retain its resources until the operation that uses them has completed.\nA mutex protects shared mutable state by allowing one owner to access it at a time. Ownership, cancellation, and completion are separate concerns. A request must retain its resources until the operation that uses them has completed.\nA mutex protects shared mutable state by allowing one owner to access it at a time. Ownership, cancellation, and completion are separate concerns. A request must retain its resources until the operation that uses them has completed.\n",
+      "ids": [
+        236776,
+        126641,
+        36501,
+        7659,
+        83213,
+        1883,
+        684,
+        10678,
+        886,
+        8123,
+        531,
+        2802,
+        625,
+        657,
+        496,
+        990,
+        236761,
+        100596,
+        236764,
+        32735,
+        236764,
+        532,
+        15323,
+        659,
+        7732,
+        10928,
+        236761,
+        562,
+        2864,
+        1921,
+        11015,
+        1061,
+        5405,
+        3097,
+        506,
+        5585,
+        600,
+        6178,
+        1091,
+        815,
+        7723,
+        236761,
+        107,
+        236776,
+        126641,
+        36501,
+        7659,
+        83213,
+        1883,
+        684,
+        10678,
+        886,
+        8123,
+        531,
+        2802,
+        625,
+        657,
+        496,
+        990,
+        236761,
+        100596,
+        236764,
+        32735,
+        236764,
+        532,
+        15323,
+        659,
+        7732,
+        10928,
+        236761,
+        562,
+        2864,
+        1921,
+        11015,
+        1061,
+        5405,
+        3097,
+        506,
+        5585,
+        600,
+        6178,
+        1091,
+        815,
+        7723,
+        236761,
+        107,
+        236776,
+        126641,
+        36501,
+        7659,
+        83213,
+        1883,
+        684,
+        10678,
+        886,
+        8123,
+        531,
+        2802,
+        625,
+        657,
+        496,
+        990,
+        236761,
+        100596,
+        236764,
+        32735,
+        236764,
+        532,
+        15323,
+        659,
+        7732,
+        10928,
+        236761,
+        562,
+        2864,
+        1921,
+        11015,
+        1061,
+        5405,
+        3097,
+        506,
+        5585,
+        600,
+        6178,
+        1091,
+        815,
+        7723,
+        236761,
+        107,
+        236776,
+        126641,
+        36501,
+        7659,
+        83213,
+        1883,
+        684,
+        10678,
+        886,
+        8123,
+        531,
+        2802,
+        625,
+        657,
+        496,
+        990,
+        236761,
+        100596,
+        236764,
+        32735,
+        236764,
+        532,
+        15323,
+        659,
+        7732,
+        10928,
+        236761,
+        562,
+        2864,
+        1921,
+        11015,
+        1061,
+        5405,
+        3097,
+        506,
+        5585,
+        600,
+        6178,
+        1091,
+        815,
+        7723,
+        236761,
+        107,
+        236776,
+        126641,
+        36501,
+        7659,
+        83213,
+        1883,
+        684,
+        10678,
+        886,
+        8123,
+        531,
+        2802,
+        625,
+        657,
+        496,
+        990,
+        236761,
+        100596,
+        236764,
+        32735,
+        236764,
+        532,
+        15323,
+        659,
+        7732,
+        10928,
+        236761,
+        562,
+        2864,
+        1921,
+        11015,
+        1061,
+        5405,
+        3097,
+        506,
+        5585,
+        600,
+        6178,
+        1091,
+        815,
+        7723,
+        236761,
+        107,
+        236776,
+        126641,
+        36501,
+        7659,
+        83213,
+        1883,
+        684,
+        10678,
+        886,
+        8123,
+        531,
+        2802,
+        625,
+        657,
+        496,
+        990,
+        236761,
+        100596,
+        236764,
+        32735,
+        236764,
+        532,
+        15323,
+        659,
+        7732,
+        10928,
+        236761,
+        562,
+        2864,
+        1921,
+        11015,
+        1061,
+        5405,
+        3097,
+        506,
+        5585,
+        600,
+        6178,
+        1091,
+        815,
+        7723,
+        236761,
+        107,
+        236776,
+        126641,
+        36501,
+        7659,
+        83213,
+        1883,
+        684,
+        10678,
+        886,
+        8123,
+        531,
+        2802,
+        625,
+        657,
+        496,
+        990,
+        236761,
+        100596,
+        236764,
+        32735,
+        236764,
+        532,
+        15323,
+        659,
+        7732,
+        10928,
+        236761,
+        562,
+        2864,
+        1921,
+        11015,
+        1061,
+        5405,
+        3097,
+        506,
+        5585,
+        600,
+        6178,
+        1091,
+        815,
+        7723,
+        236761,
+        107,
+        236776,
+        126641,
+        36501,
+        7659,
+        83213,
+        1883,
+        684,
+        10678,
+        886,
+        8123,
+        531,
+        2802,
+        625,
+        657,
+        496,
+        990,
+        236761,
+        100596,
+        236764,
+        32735,
+        236764,
+        532,
+        15323,
+        659,
+        7732,
+        10928,
+        236761,
+        562,
+        2864,
+        1921,
+        11015,
+        1061,
+        5405,
+        3097,
+        506,
+        5585,
+        600,
+        6178,
+        1091,
+        815,
+        7723,
+        236761,
+        107,
+        236776,
+        126641,
+        36501,
+        7659,
+        83213,
+        1883,
+        684,
+        10678,
+        886,
+        8123,
+        531,
+        2802,
+        625,
+        657,
+        496,
+        990,
+        236761,
+        100596,
+        236764,
+        32735,
+        236764,
+        532,
+        15323,
+        659,
+        7732,
+        10928,
+        236761,
+        562,
+        2864,
+        1921,
+        11015,
+        1061,
+        5405,
+        3097,
+        506,
+        5585,
+        600,
+        6178,
+        1091,
+        815,
+        7723,
+        236761,
+        107,
+        236776,
+        126641,
+        36501,
+        7659,
+        83213,
+        1883,
+        684,
+        10678,
+        886,
+        8123,
+        531,
+        2802,
+        625,
+        657,
+        496,
+        990,
+        236761,
+        100596,
+        236764,
+        32735,
+        236764,
+        532,
+        15323,
+        659,
+        7732,
+        10928,
+        236761,
+        562,
+        2864,
+        1921,
+        11015,
+        1061,
+        5405,
+        3097,
+        506,
+        5585,
+        600,
+        6178,
+        1091,
+        815,
+        7723,
+        236761,
+        107,
+        236776,
+        126641,
+        36501,
+        7659,
+        83213,
+        1883,
+        684,
+        10678,
+        886,
+        8123,
+        531,
+        2802,
+        625,
+        657,
+        496,
+        990,
+        236761,
+        100596,
+        236764,
+        32735,
+        236764,
+        532,
+        15323,
+        659,
+        7732,
+        10928,
+        236761,
+        562,
+        2864,
+        1921,
+        11015,
+        1061,
+        5405,
+        3097,
+        506,
+        5585,
+        600,
+        6178,
+        1091,
+        815,
+        7723,
+        236761,
+        107,
+        236776,
+        126641,
+        36501,
+        7659,
+        83213,
+        1883,
+        684,
+        10678,
+        886,
+        8123,
+        531,
+        2802,
+        625,
+        657,
+        496,
+        990,
+        236761,
+        100596,
+        236764,
+        32735,
+        236764,
+        532,
+        15323,
+        659,
+        7732,
+        10928,
+        236761,
+        562,
+        2864,
+        1921,
+        11015,
+        1061,
+        5405,
+        3097,
+        506,
+        5585,
+        600,
+        6178,
+        1091,
+        815,
+        7723,
+        236761,
+        107
+      ],
+      "decoded": "A mutex protects shared mutable state by allowing one owner to access it at a time. Ownership, cancellation, and completion are separate concerns. A request must retain its resources until the operation that uses them has completed.\nA mutex protects shared mutable state by allowing one owner to access it at a time. Ownership, cancellation, and completion are separate concerns. A request must retain its resources until the operation that uses them has completed.\nA mutex protects shared mutable state by allowing one owner to access it at a time. Ownership, cancellation, and completion are separate concerns. A request must retain its resources until the operation that uses them has completed.\nA mutex protects shared mutable state by allowing one owner to access it at a time. Ownership, cancellation, and completion are separate concerns. A request must retain its resources until the operation that uses them has completed.\nA mutex protects shared mutable state by allowing one owner to access it at a time. Ownership, cancellation, and completion are separate concerns. A request must retain its resources until the operation that uses them has completed.\nA mutex protects shared mutable state by allowing one owner to access it at a time. Ownership, cancellation, and completion are separate concerns. A request must retain its resources until the operation that uses them has completed.\nA mutex protects shared mutable state by allowing one owner to access it at a time. Ownership, cancellation, and completion are separate concerns. A request must retain its resources until the operation that uses them has completed.\nA mutex protects shared mutable state by allowing one owner to access it at a time. Ownership, cancellation, and completion are separate concerns. A request must retain its resources until the operation that uses them has completed.\nA mutex protects shared mutable state by allowing one owner to access it at a time. Ownership, cancellation, and completion are separate concerns. A request must retain its resources until the operation that uses them has completed.\nA mutex protects shared mutable state by allowing one owner to access it at a time. Ownership, cancellation, and completion are separate concerns. A request must retain its resources until the operation that uses them has completed.\nA mutex protects shared mutable state by allowing one owner to access it at a time. Ownership, cancellation, and completion are separate concerns. A request must retain its resources until the operation that uses them has completed.\nA mutex protects shared mutable state by allowing one owner to access it at a time. Ownership, cancellation, and completion are separate concerns. A request must retain its resources until the operation that uses them has completed.\n"
+    }
+  ],
+  "chat": [
+    {
+      "messages": [
+        {
+          "role": "user",
+          "content": "Explain why a mutex protects shared mutable state."
+        }
+      ],
+      "rendered": "<bos><|turn>user\nExplain why a mutex protects shared mutable state.<turn|>\n<|turn>model\n",
+      "ids": [
+        2,
+        105,
+        2364,
+        107,
+        155122,
+        3217,
+        496,
+        126641,
+        36501,
+        7659,
+        83213,
+        1883,
+        236761,
+        106,
+        107,
+        105,
+        4368,
+        107
+      ],
+      "decoded": "<bos><|turn>user\nExplain why a mutex protects shared mutable state.<turn|>\n<|turn>model\n"
+    },
+    {
+      "messages": [
+        {
+          "role": "system",
+          "content": "  Be concise.  "
+        },
+        {
+          "role": "user",
+          "content": "Hi!"
+        }
+      ],
+      "rendered": "<bos><|turn>system\nBe concise.<turn|>\n<|turn>user\nHi!<turn|>\n<|turn>model\n",
+      "ids": [
+        2,
+        105,
+        9731,
+        107,
+        3912,
+        63510,
+        236761,
+        106,
+        107,
+        105,
+        2364,
+        107,
+        10979,
+        236888,
+        106,
+        107,
+        105,
+        4368,
+        107
+      ],
+      "decoded": "<bos><|turn>system\nBe concise.<turn|>\n<|turn>user\nHi!<turn|>\n<|turn>model\n"
+    },
+    {
+      "messages": [
+        {
+          "role": "developer",
+          "content": "  Keep names.\n"
+        },
+        {
+          "role": "user",
+          "content": "café 🧵"
+        }
+      ],
+      "rendered": "<bos><|turn>system\nKeep names.<turn|>\n<|turn>user\ncafé 🧵<turn|>\n<|turn>model\n",
+      "ids": [
+        2,
+        105,
+        9731,
+        107,
+        27252,
+        5618,
+        236761,
+        106,
+        107,
+        105,
+        2364,
+        107,
+        123125,
+        236859,
+        236743,
+        250769,
+        106,
+        107,
+        105,
+        4368,
+        107
+      ],
+      "decoded": "<bos><|turn>system\nKeep names.<turn|>\n<|turn>user\ncafé 🧵<turn|>\n<|turn>model\n"
+    },
+    {
+      "messages": [
+        {
+          "role": "user",
+          "content": "a"
+        },
+        {
+          "role": "assistant",
+          "content": " one "
+        },
+        {
+          "role": "assistant",
+          "content": " two "
+        },
+        {
+          "role": "user",
+          "content": "b"
+        }
+      ],
+      "rendered": "<bos><|turn>user\na<turn|>\n<|turn>model\nonetwo<turn|>\n<|turn>user\nb<turn|>\n<|turn>model\n",
+      "ids": [
+        2,
+        105,
+        2364,
+        107,
+        236746,
+        106,
+        107,
+        105,
+        4368,
+        107,
+        90002,
+        1014,
+        106,
+        107,
+        105,
+        2364,
+        107,
+        236763,
+        106,
+        107,
+        105,
+        4368,
+        107
+      ],
+      "decoded": "<bos><|turn>user\na<turn|>\n<|turn>model\nonetwo<turn|>\n<|turn>user\nb<turn|>\n<|turn>model\n"
+    },
+    {
+      "messages": [
+        {
+          "role": "user",
+          "content": "a"
+        },
+        {
+          "role": "assistant",
+          "content": "lead<|channel>thought\nsecret<channel|>tail"
+        },
+        {
+          "role": "user",
+          "content": "b"
+        }
+      ],
+      "rendered": "<bos><|turn>user\na<turn|>\n<|turn>model\nleadtail<turn|>\n<|turn>user\nb<turn|>\n<|turn>model\n",
+      "ids": [
+        2,
+        105,
+        2364,
+        107,
+        236746,
+        106,
+        107,
+        105,
+        4368,
+        107,
+        40227,
+        14170,
+        106,
+        107,
+        105,
+        2364,
+        107,
+        236763,
+        106,
+        107,
+        105,
+        4368,
+        107
+      ],
+      "decoded": "<bos><|turn>user\na<turn|>\n<|turn>model\nleadtail<turn|>\n<|turn>user\nb<turn|>\n<|turn>model\n"
+    },
+    {
+      "messages": [
+        {
+          "role": "assistant",
+          "content": "lead<|channel>unfinished"
+        }
+      ],
+      "rendered": "<bos><|turn>model\nlead<turn|>\n<|turn>model\n",
+      "ids": [
+        2,
+        105,
+        4368,
+        107,
+        40227,
+        106,
+        107,
+        105,
+        4368,
+        107
+      ],
+      "decoded": "<bos><|turn>model\nlead<turn|>\n<|turn>model\n"
+    },
+    {
+      "messages": [
+        {
+          "role": "user",
+          "content": " \t\n "
+        }
+      ],
+      "rendered": "<bos><|turn>user\n<turn|>\n<|turn>model\n",
+      "ids": [
+        2,
+        105,
+        2364,
+        107,
+        106,
+        107,
+        105,
+        4368,
+        107
+      ],
+      "decoded": "<bos><|turn>user\n<turn|>\n<|turn>model\n"
+    },
+    {
+      "messages": [
+        {
+          "role": "user",
+          "content": "Hi"
+        },
+        {
+          "role": "system",
+          "content": "later"
+        },
+        {
+          "role": "assistant",
+          "content": "closing<channel|>tail"
+        }
+      ],
+      "rendered": "<bos><|turn>user\nHi<turn|>\n<|turn>system\nlater<turn|>\n<|turn>model\nclosingtail<turn|>\n<|turn>model\n",
+      "ids": [
+        2,
+        105,
+        2364,
+        107,
+        10979,
+        106,
+        107,
+        105,
+        9731,
+        107,
+        64011,
+        106,
+        107,
+        105,
+        4368,
+        107,
+        48515,
+        14170,
+        106,
+        107,
+        105,
+        4368,
+        107
+      ],
+      "decoded": "<bos><|turn>user\nHi<turn|>\n<|turn>system\nlater<turn|>\n<|turn>model\nclosingtail<turn|>\n<|turn>model\n"
+    },
+    {
+      "messages": [
+        {
+          "role": "user",
+          "content": "\u001c\u001d\u001e\u001fHi\u001f\u001e\u001d\u001c"
+        },
+        {
+          "role": "assistant",
+          "content": "\u001c\u001d x \u001f"
+        }
+      ],
+      "rendered": "<bos><|turn>user\nHi<turn|>\n<|turn>model\nx<turn|>\n<|turn>model\n",
+      "ids": [
+        2,
+        105,
+        2364,
+        107,
+        10979,
+        106,
+        107,
+        105,
+        4368,
+        107,
+        236781,
+        106,
+        107,
+        105,
+        4368,
+        107
+      ],
+      "decoded": "<bos><|turn>user\nHi<turn|>\n<|turn>model\nx<turn|>\n<|turn>model\n"
+    }
+  ],
+  "decode": [
+    {
+      "ids": [],
+      "text": ""
+    },
+    {
+      "ids": [
+        433,
+        407
+      ],
+      "text": "é"
+    },
+    {
+      "ids": [
+        335,
+        493
+      ],
+      "text": "��"
+    },
+    {
+      "ids": [
+        433,
+        407,
+        493
+      ],
+      "text": "���"
+    },
+    {
+      "ids": [
+        433
+      ],
+      "text": "�"
+    },
+    {
+      "ids": [
+        464,
+        388,
+        367
+      ],
+      "text": "▁"
+    },
+    {
+      "ids": [
+        433,
+        2,
+        407
+      ],
+      "text": "�<bos>�"
+    },
+    {
+      "ids": [
+        2,
+        1,
+        106,
+        50
+      ],
+      "text": "<bos><eos><turn|><|tool_response>"
+    },
+    {
+      "ids": [
+        236743
+      ],
+      "text": " "
+    },
+    {
+      "ids": [
+        238
+      ],
+      "text": "\u0000"
+    },
+    {
+      "ids": [
+        239
+      ],
+      "text": "\u0001"
+    },
+    {
+      "ids": [
+        240
+      ],
+      "text": "\u0002"
+    },
+    {
+      "ids": [
+        241
+      ],
+      "text": "\u0003"
+    },
+    {
+      "ids": [
+        242
+      ],
+      "text": "\u0004"
+    },
+    {
+      "ids": [
+        243
+      ],
+      "text": "\u0005"
+    },
+    {
+      "ids": [
+        244
+      ],
+      "text": "\u0006"
+    },
+    {
+      "ids": [
+        245
+      ],
+      "text": "\u0007"
+    },
+    {
+      "ids": [
+        246
+      ],
+      "text": "\b"
+    },
+    {
+      "ids": [
+        247
+      ],
+      "text": "\t"
+    },
+    {
+      "ids": [
+        248
+      ],
+      "text": "\n"
+    },
+    {
+      "ids": [
+        249
+      ],
+      "text": "\u000b"
+    },
+    {
+      "ids": [
+        250
+      ],
+      "text": "\f"
+    },
+    {
+      "ids": [
+        251
+      ],
+      "text": "\r"
+    },
+    {
+      "ids": [
+        252
+      ],
+      "text": "\u000e"
+    },
+    {
+      "ids": [
+        253
+      ],
+      "text": "\u000f"
+    },
+    {
+      "ids": [
+        254
+      ],
+      "text": "\u0010"
+    },
+    {
+      "ids": [
+        255
+      ],
+      "text": "\u0011"
+    },
+    {
+      "ids": [
+        256
+      ],
+      "text": "\u0012"
+    },
+    {
+      "ids": [
+        257
+      ],
+      "text": "\u0013"
+    },
+    {
+      "ids": [
+        258
+      ],
+      "text": "\u0014"
+    },
+    {
+      "ids": [
+        259
+      ],
+      "text": "\u0015"
+    },
+    {
+      "ids": [
+        260
+      ],
+      "text": "\u0016"
+    },
+    {
+      "ids": [
+        261
+      ],
+      "text": "\u0017"
+    },
+    {
+      "ids": [
+        262
+      ],
+      "text": "\u0018"
+    },
+    {
+      "ids": [
+        263
+      ],
+      "text": "\u0019"
+    },
+    {
+      "ids": [
+        264
+      ],
+      "text": "\u001a"
+    },
+    {
+      "ids": [
+        265
+      ],
+      "text": "\u001b"
+    },
+    {
+      "ids": [
+        266
+      ],
+      "text": "\u001c"
+    },
+    {
+      "ids": [
+        267
+      ],
+      "text": "\u001d"
+    },
+    {
+      "ids": [
+        268
+      ],
+      "text": "\u001e"
+    },
+    {
+      "ids": [
+        269
+      ],
+      "text": "\u001f"
+    },
+    {
+      "ids": [
+        270
+      ],
+      "text": " "
+    },
+    {
+      "ids": [
+        271
+      ],
+      "text": "!"
+    },
+    {
+      "ids": [
+        272
+      ],
+      "text": "\""
+    },
+    {
+      "ids": [
+        273
+      ],
+      "text": "#"
+    },
+    {
+      "ids": [
+        274
+      ],
+      "text": "$"
+    },
+    {
+      "ids": [
+        275
+      ],
+      "text": "%"
+    },
+    {
+      "ids": [
+        276
+      ],
+      "text": "&"
+    },
+    {
+      "ids": [
+        277
+      ],
+      "text": "'"
+    },
+    {
+      "ids": [
+        278
+      ],
+      "text": "("
+    },
+    {
+      "ids": [
+        279
+      ],
+      "text": ")"
+    },
+    {
+      "ids": [
+        280
+      ],
+      "text": "*"
+    },
+    {
+      "ids": [
+        281
+      ],
+      "text": "+"
+    },
+    {
+      "ids": [
+        282
+      ],
+      "text": ","
+    },
+    {
+      "ids": [
+        283
+      ],
+      "text": "-"
+    },
+    {
+      "ids": [
+        284
+      ],
+      "text": "."
+    },
+    {
+      "ids": [
+        285
+      ],
+      "text": "/"
+    },
+    {
+      "ids": [
+        286
+      ],
+      "text": "0"
+    },
+    {
+      "ids": [
+        287
+      ],
+      "text": "1"
+    },
+    {
+      "ids": [
+        288
+      ],
+      "text": "2"
+    },
+    {
+      "ids": [
+        289
+      ],
+      "text": "3"
+    },
+    {
+      "ids": [
+        290
+      ],
+      "text": "4"
+    },
+    {
+      "ids": [
+        291
+      ],
+      "text": "5"
+    },
+    {
+      "ids": [
+        292
+      ],
+      "text": "6"
+    },
+    {
+      "ids": [
+        293
+      ],
+      "text": "7"
+    },
+    {
+      "ids": [
+        294
+      ],
+      "text": "8"
+    },
+    {
+      "ids": [
+        295
+      ],
+      "text": "9"
+    },
+    {
+      "ids": [
+        296
+      ],
+      "text": ":"
+    },
+    {
+      "ids": [
+        297
+      ],
+      "text": ";"
+    },
+    {
+      "ids": [
+        298
+      ],
+      "text": "<"
+    },
+    {
+      "ids": [
+        299
+      ],
+      "text": "="
+    },
+    {
+      "ids": [
+        300
+      ],
+      "text": ">"
+    },
+    {
+      "ids": [
+        301
+      ],
+      "text": "?"
+    },
+    {
+      "ids": [
+        302
+      ],
+      "text": "@"
+    },
+    {
+      "ids": [
+        303
+      ],
+      "text": "A"
+    },
+    {
+      "ids": [
+        304
+      ],
+      "text": "B"
+    },
+    {
+      "ids": [
+        305
+      ],
+      "text": "C"
+    },
+    {
+      "ids": [
+        306
+      ],
+      "text": "D"
+    },
+    {
+      "ids": [
+        307
+      ],
+      "text": "E"
+    },
+    {
+      "ids": [
+        308
+      ],
+      "text": "F"
+    },
+    {
+      "ids": [
+        309
+      ],
+      "text": "G"
+    },
+    {
+      "ids": [
+        310
+      ],
+      "text": "H"
+    },
+    {
+      "ids": [
+        311
+      ],
+      "text": "I"
+    },
+    {
+      "ids": [
+        312
+      ],
+      "text": "J"
+    },
+    {
+      "ids": [
+        313
+      ],
+      "text": "K"
+    },
+    {
+      "ids": [
+        314
+      ],
+      "text": "L"
+    },
+    {
+      "ids": [
+        315
+      ],
+      "text": "M"
+    },
+    {
+      "ids": [
+        316
+      ],
+      "text": "N"
+    },
+    {
+      "ids": [
+        317
+      ],
+      "text": "O"
+    },
+    {
+      "ids": [
+        318
+      ],
+      "text": "P"
+    },
+    {
+      "ids": [
+        319
+      ],
+      "text": "Q"
+    },
+    {
+      "ids": [
+        320
+      ],
+      "text": "R"
+    },
+    {
+      "ids": [
+        321
+      ],
+      "text": "S"
+    },
+    {
+      "ids": [
+        322
+      ],
+      "text": "T"
+    },
+    {
+      "ids": [
+        323
+      ],
+      "text": "U"
+    },
+    {
+      "ids": [
+        324
+      ],
+      "text": "V"
+    },
+    {
+      "ids": [
+        325
+      ],
+      "text": "W"
+    },
+    {
+      "ids": [
+        326
+      ],
+      "text": "X"
+    },
+    {
+      "ids": [
+        327
+      ],
+      "text": "Y"
+    },
+    {
+      "ids": [
+        328
+      ],
+      "text": "Z"
+    },
+    {
+      "ids": [
+        329
+      ],
+      "text": "["
+    },
+    {
+      "ids": [
+        330
+      ],
+      "text": "\\"
+    },
+    {
+      "ids": [
+        331
+      ],
+      "text": "]"
+    },
+    {
+      "ids": [
+        332
+      ],
+      "text": "^"
+    },
+    {
+      "ids": [
+        333
+      ],
+      "text": "_"
+    },
+    {
+      "ids": [
+        334
+      ],
+      "text": "`"
+    },
+    {
+      "ids": [
+        335
+      ],
+      "text": "a"
+    },
+    {
+      "ids": [
+        336
+      ],
+      "text": "b"
+    },
+    {
+      "ids": [
+        337
+      ],
+      "text": "c"
+    },
+    {
+      "ids": [
+        338
+      ],
+      "text": "d"
+    },
+    {
+      "ids": [
+        339
+      ],
+      "text": "e"
+    },
+    {
+      "ids": [
+        340
+      ],
+      "text": "f"
+    },
+    {
+      "ids": [
+        341
+      ],
+      "text": "g"
+    },
+    {
+      "ids": [
+        342
+      ],
+      "text": "h"
+    },
+    {
+      "ids": [
+        343
+      ],
+      "text": "i"
+    },
+    {
+      "ids": [
+        344
+      ],
+      "text": "j"
+    },
+    {
+      "ids": [
+        345
+      ],
+      "text": "k"
+    },
+    {
+      "ids": [
+        346
+      ],
+      "text": "l"
+    },
+    {
+      "ids": [
+        347
+      ],
+      "text": "m"
+    },
+    {
+      "ids": [
+        348
+      ],
+      "text": "n"
+    },
+    {
+      "ids": [
+        349
+      ],
+      "text": "o"
+    },
+    {
+      "ids": [
+        350
+      ],
+      "text": "p"
+    },
+    {
+      "ids": [
+        351
+      ],
+      "text": "q"
+    },
+    {
+      "ids": [
+        352
+      ],
+      "text": "r"
+    },
+    {
+      "ids": [
+        353
+      ],
+      "text": "s"
+    },
+    {
+      "ids": [
+        354
+      ],
+      "text": "t"
+    },
+    {
+      "ids": [
+        355
+      ],
+      "text": "u"
+    },
+    {
+      "ids": [
+        356
+      ],
+      "text": "v"
+    },
+    {
+      "ids": [
+        357
+      ],
+      "text": "w"
+    },
+    {
+      "ids": [
+        358
+      ],
+      "text": "x"
+    },
+    {
+      "ids": [
+        359
+      ],
+      "text": "y"
+    },
+    {
+      "ids": [
+        360
+      ],
+      "text": "z"
+    },
+    {
+      "ids": [
+        361
+      ],
+      "text": "{"
+    },
+    {
+      "ids": [
+        362
+      ],
+      "text": "|"
+    },
+    {
+      "ids": [
+        363
+      ],
+      "text": "}"
+    },
+    {
+      "ids": [
+        364
+      ],
+      "text": "~"
+    },
+    {
+      "ids": [
+        365
+      ],
+      "text": ""
+    },
+    {
+      "ids": [
+        366
+      ],
+      "text": "�"
+    },
+    {
+      "ids": [
+        367
+      ],
+      "text": "�"
+    },
+    {
+      "ids": [
+        368
+      ],
+      "text": "�"
+    },
+    {
+      "ids": [
+        369
+      ],
+      "text": "�"
+    },
+    {
+      "ids": [
+        370
+      ],
+      "text": "�"
+    },
+    {
+      "ids": [
+        371
+      ],
+      "text": "�"
+    },
+    {
+      "ids": [
+        372
+      ],
+      "text": "�"
+    },
+    {
+      "ids": [
+        373
+      ],
+      "text": "�"
+    },
+    {
+      "ids": [
+        374
+      ],
+      "text": "�"
+    },
+    {
+      "ids": [
+        375
+      ],
+      "text": "�"
+    },
+    {
+      "ids": [
+        376
+      ],
+      "text": "�"
+    },
+    {
+      "ids": [
+        377
+      ],
+      "text": "�"
+    },
+    {
+      "ids": [
+        378
+      ],
+      "text": "�"
+    },
+    {
+      "ids": [
+        379
+      ],
+      "text": "�"
+    },
+    {
+      "ids": [
+        380
+      ],
+      "text": "�"
+    },
+    {
+      "ids": [
+        381
+      ],
+      "text": "�"
+    },
+    {
+      "ids": [
+        382
+      ],
+      "text": "�"
+    },
+    {
+      "ids": [
+        383
+      ],
+      "text": "�"
+    },
+    {
+      "ids": [
+        384
+      ],
+      "text": "�"
+    },
+    {
+      "ids": [
+        385
+      ],
+      "text": "�"
+    },
+    {
+      "ids": [
+        386
+      ],
+      "text": "�"
+    },
+    {
+      "ids": [
+        387
+      ],
+      "text": "�"
+    },
+    {
+      "ids": [
+        388
+      ],
+      "text": "�"
+    },
+    {
+      "ids": [
+        389
+      ],
+      "text": "�"
+    },
+    {
+      "ids": [
+        390
+      ],
+      "text": "�"
+    },
+    {
+      "ids": [
+        391
+      ],
+      "text": "�"
+    },
+    {
+      "ids": [
+        392
+      ],
+      "text": "�"
+    },
+    {
+      "ids": [
+        393
+      ],
+      "text": "�"
+    },
+    {
+      "ids": [
+        394
+      ],
+      "text": "�"
+    },
+    {
+      "ids": [
+        395
+      ],
+      "text": "�"
+    },
+    {
+      "ids": [
+        396
+      ],
+      "text": "�"
+    },
+    {
+      "ids": [
+        397
+      ],
+      "text": "�"
+    },
+    {
+      "ids": [
+        398
+      ],
+      "text": "�"
+    },
+    {
+      "ids": [
+        399
+      ],
+      "text": "�"
+    },
+    {
+      "ids": [
+        400
+      ],
+      "text": "�"
+    },
+    {
+      "ids": [
+        401
+      ],
+      "text": "�"
+    },
+    {
+      "ids": [
+        402
+      ],
+      "text": "�"
+    },
+    {
+      "ids": [
+        403
+      ],
+      "text": "�"
+    },
+    {
+      "ids": [
+        404
+      ],
+      "text": "�"
+    },
+    {
+      "ids": [
+        405
+      ],
+      "text": "�"
+    },
+    {
+      "ids": [
+        406
+      ],
+      "text": "�"
+    },
+    {
+      "ids": [
+        407
+      ],
+      "text": "�"
+    },
+    {
+      "ids": [
+        408
+      ],
+      "text": "�"
+    },
+    {
+      "ids": [
+        409
+      ],
+      "text": "�"
+    },
+    {
+      "ids": [
+        410
+      ],
+      "text": "�"
+    },
+    {
+      "ids": [
+        411
+      ],
+      "text": "�"
+    },
+    {
+      "ids": [
+        412
+      ],
+      "text": "�"
+    },
+    {
+      "ids": [
+        413
+      ],
+      "text": "�"
+    },
+    {
+      "ids": [
+        414
+      ],
+      "text": "�"
+    },
+    {
+      "ids": [
+        415
+      ],
+      "text": "�"
+    },
+    {
+      "ids": [
+        416
+      ],
+      "text": "�"
+    },
+    {
+      "ids": [
+        417
+      ],
+      "text": "�"
+    },
+    {
+      "ids": [
+        418
+      ],
+      "text": "�"
+    },
+    {
+      "ids": [
+        419
+      ],
+      "text": "�"
+    },
+    {
+      "ids": [
+        420
+      ],
+      "text": "�"
+    },
+    {
+      "ids": [
+        421
+      ],
+      "text": "�"
+    },
+    {
+      "ids": [
+        422
+      ],
+      "text": "�"
+    },
+    {
+      "ids": [
+        423
+      ],
+      "text": "�"
+    },
+    {
+      "ids": [
+        424
+      ],
+      "text": "�"
+    },
+    {
+      "ids": [
+        425
+      ],
+      "text": "�"
+    },
+    {
+      "ids": [
+        426
+      ],
+      "text": "�"
+    },
+    {
+      "ids": [
+        427
+      ],
+      "text": "�"
+    },
+    {
+      "ids": [
+        428
+      ],
+      "text": "�"
+    },
+    {
+      "ids": [
+        429
+      ],
+      "text": "�"
+    },
+    {
+      "ids": [
+        430
+      ],
+      "text": "�"
+    },
+    {
+      "ids": [
+        431
+      ],
+      "text": "�"
+    },
+    {
+      "ids": [
+        432
+      ],
+      "text": "�"
+    },
+    {
+      "ids": [
+        433
+      ],
+      "text": "�"
+    },
+    {
+      "ids": [
+        434
+      ],
+      "text": "�"
+    },
+    {
+      "ids": [
+        435
+      ],
+      "text": "�"
+    },
+    {
+      "ids": [
+        436
+      ],
+      "text": "�"
+    },
+    {
+      "ids": [
+        437
+      ],
+      "text": "�"
+    },
+    {
+      "ids": [
+        438
+      ],
+      "text": "�"
+    },
+    {
+      "ids": [
+        439
+      ],
+      "text": "�"
+    },
+    {
+      "ids": [
+        440
+      ],
+      "text": "�"
+    },
+    {
+      "ids": [
+        441
+      ],
+      "text": "�"
+    },
+    {
+      "ids": [
+        442
+      ],
+      "text": "�"
+    },
+    {
+      "ids": [
+        443
+      ],
+      "text": "�"
+    },
+    {
+      "ids": [
+        444
+      ],
+      "text": "�"
+    },
+    {
+      "ids": [
+        445
+      ],
+      "text": "�"
+    },
+    {
+      "ids": [
+        446
+      ],
+      "text": "�"
+    },
+    {
+      "ids": [
+        447
+      ],
+      "text": "�"
+    },
+    {
+      "ids": [
+        448
+      ],
+      "text": "�"
+    },
+    {
+      "ids": [
+        449
+      ],
+      "text": "�"
+    },
+    {
+      "ids": [
+        450
+      ],
+      "text": "�"
+    },
+    {
+      "ids": [
+        451
+      ],
+      "text": "�"
+    },
+    {
+      "ids": [
+        452
+      ],
+      "text": "�"
+    },
+    {
+      "ids": [
+        453
+      ],
+      "text": "�"
+    },
+    {
+      "ids": [
+        454
+      ],
+      "text": "�"
+    },
+    {
+      "ids": [
+        455
+      ],
+      "text": "�"
+    },
+    {
+      "ids": [
+        456
+      ],
+      "text": "�"
+    },
+    {
+      "ids": [
+        457
+      ],
+      "text": "�"
+    },
+    {
+      "ids": [
+        458
+      ],
+      "text": "�"
+    },
+    {
+      "ids": [
+        459
+      ],
+      "text": "�"
+    },
+    {
+      "ids": [
+        460
+      ],
+      "text": "�"
+    },
+    {
+      "ids": [
+        461
+      ],
+      "text": "�"
+    },
+    {
+      "ids": [
+        462
+      ],
+      "text": "�"
+    },
+    {
+      "ids": [
+        463
+      ],
+      "text": "�"
+    },
+    {
+      "ids": [
+        464
+      ],
+      "text": "�"
+    },
+    {
+      "ids": [
+        465
+      ],
+      "text": "�"
+    },
+    {
+      "ids": [
+        466
+      ],
+      "text": "�"
+    },
+    {
+      "ids": [
+        467
+      ],
+      "text": "�"
+    },
+    {
+      "ids": [
+        468
+      ],
+      "text": "�"
+    },
+    {
+      "ids": [
+        469
+      ],
+      "text": "�"
+    },
+    {
+      "ids": [
+        470
+      ],
+      "text": "�"
+    },
+    {
+      "ids": [
+        471
+      ],
+      "text": "�"
+    },
+    {
+      "ids": [
+        472
+      ],
+      "text": "�"
+    },
+    {
+      "ids": [
+        473
+      ],
+      "text": "�"
+    },
+    {
+      "ids": [
+        474
+      ],
+      "text": "�"
+    },
+    {
+      "ids": [
+        475
+      ],
+      "text": "�"
+    },
+    {
+      "ids": [
+        476
+      ],
+      "text": "�"
+    },
+    {
+      "ids": [
+        477
+      ],
+      "text": "�"
+    },
+    {
+      "ids": [
+        478
+      ],
+      "text": "�"
+    },
+    {
+      "ids": [
+        479
+      ],
+      "text": "�"
+    },
+    {
+      "ids": [
+        480
+      ],
+      "text": "�"
+    },
+    {
+      "ids": [
+        481
+      ],
+      "text": "�"
+    },
+    {
+      "ids": [
+        482
+      ],
+      "text": "�"
+    },
+    {
+      "ids": [
+        483
+      ],
+      "text": "�"
+    },
+    {
+      "ids": [
+        484
+      ],
+      "text": "�"
+    },
+    {
+      "ids": [
+        485
+      ],
+      "text": "�"
+    },
+    {
+      "ids": [
+        486
+      ],
+      "text": "�"
+    },
+    {
+      "ids": [
+        487
+      ],
+      "text": "�"
+    },
+    {
+      "ids": [
+        488
+      ],
+      "text": "�"
+    },
+    {
+      "ids": [
+        489
+      ],
+      "text": "�"
+    },
+    {
+      "ids": [
+        490
+      ],
+      "text": "�"
+    },
+    {
+      "ids": [
+        491
+      ],
+      "text": "�"
+    },
+    {
+      "ids": [
+        492
+      ],
+      "text": "�"
+    },
+    {
+      "ids": [
+        493
+      ],
+      "text": "�"
+    },
+    {
+      "ids": [
+        478,
+        382,
+        366,
+        366
+      ],
+      "text": "𐀀"
+    },
+    {
+      "ids": [
+        475,
+        398,
+        366
+      ],
+      "text": "���"
+    },
+    {
+      "ids": [
+        430,
+        413
+      ],
+      "text": "��"
+    },
+    {
+      "ids": [
+        464,
+        368,
+        410,
+        493
+      ],
+      "text": "����"
+    },
+    {
+      "ids": [
+        335,
+        433,
+        407
+      ],
+      "text": "aé"
+    }
+  ],
+  "stops": [
+    1,
+    106,
+    50
+  ]
+}

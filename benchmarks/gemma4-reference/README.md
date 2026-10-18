@@ -173,6 +173,57 @@ storage, append/trim layout, staging/workspace and uncertain retirement remain u
 The [owning contract](../../docs/resource-protocol.md#mixed-retention-and-shared-kv)
 defines preparation, last-consumer retention, commitment and failure scope.
 
+## Canonical text-processor gate
+
+The model-owned processor loads `tokenizer.json`, `tokenizer_config.json`,
+`chat_template.jinja` and `generation_config.json` through the local package.
+It uses the package's retained config, not a second config open. Assets must remain
+unchanged while loading; afterward the processor owns them in memory. Alternate
+`chat_templates/` directories reject rather than override the selected template.
+
+The frozen [canonical template](chat_template.jinja) matches the publisher checksum
+in `model.toml`. The [processor corpus](processor-cases.json) was collected with the
+pinned Transformers/tokenizers versions and records the Jinja version. It covers
+12 raw inputs, nine chat histories and 270 decode cases, including all 256 individual
+fallback bytes, malformed/truncated runs, whitespace, Unicode, literal special tokens,
+system/developer roles, consecutive assistant turns, channel stripping and Python's
+extra control-whitespace trimming.
+
+```sh
+cargo run --release -p engine-gemma4 --example processor -- \
+  /path/to/pinned/snapshot benchmarks/gemma4-reference/processor-cases.json
+```
+
+**All 291 cases passed**, using Rust `tokenizers 0.23.2` (pure-Rust regex, no Hub/network
+features) against Python `tokenizers 0.23.3`. Raw prompts add no BOS/EOS; chat uses the
+actual non-thinking template with its BOS and generation prompt. Special markers are
+preserved on decode, without whitespace cleanup. Stops come from generation metadata:
+**1, 106, 50**, not only the model config's EOS. The chat prompt and first 511/513 raw
+prefix IDs also match the numerical reference inputs above.
+
+A request-local decoder retains each consecutive fallback run until a non-fallback
+token or terminal finalization. This is necessary for exact HF behavior:
+`<0x61><0xFF>` decodes to two replacement characters, not `a�`. Emitting the valid
+prefix early would require retracting already-delivered text. Pending bytes and tokens
+are bounded; errors poison the decoder, and consuming finalization flushes at most once.
+The current text facade's stateless codec is not yet adapted to this model-local API.
+
+Input bytes/message count, rendered/decoded bytes and token counts have per-call bounds.
+Rendering has a fuel limit; tokenizer assets are limited to 64 MiB and other processor
+assets to 1 MiB each. These do not bound Jinja/tokenizer intermediate allocations, process RSS or aggregate
+frontend retention.
+The three root media-placeholder IDs reject after encoding and in direct-token input;
+the conditional reference masks them to PAD before main/PLE embedding, so ordinary
+text embedding would be incorrect. Other media boundary markers are not blanket-rejected.
+
+To audit the corpus independently, load the pinned tokenizer with
+`AutoTokenizer.from_pretrained(snapshot, local_files_only=True, trust_remote_code=False)`.
+For each raw row compare `encode(text, add_special_tokens=False)` and
+`decode(ids, skip_special_tokens=False)`; for each chat row compare
+`apply_chat_template(messages, tokenize=False, add_generation_prompt=True,
+enable_thinking=False)` and encode the result without added specials. Decode rows
+compare the same whole-sequence decode. No weights or model execution are needed.
+
 Primary sources:
 
 - [Pinned model config](https://huggingface.co/google/gemma-4-E4B-it/blob/ee0ef6023621cff504d758262d4e04895a5af4a2/config.json)

@@ -32,6 +32,9 @@ pub struct LayerGeometry {
 #[derive(Clone, Debug, PartialEq)]
 pub struct Gemma4Config {
     pub(crate) vocab: usize,
+    pub(crate) bos: u32,
+    pub(crate) pad: u32,
+    media: [u32; 3],
     pub(crate) hidden: usize,
     pub(crate) intermediate: usize,
     pub(crate) heads: usize,
@@ -63,6 +66,13 @@ impl Gemma4Config {
             .ok_or_else(|| Gemma4Error::new("PLE", "dimension overflow"))?;
         let config = Self {
             vocab: positive(text, "vocab_size")?,
+            bos: token_id(text, "bos_token_id")?,
+            pad: token_id(text, "pad_token_id")?,
+            media: [
+                token_id(root, "image_token_id")?,
+                token_id(root, "audio_token_id")?,
+                token_id(root, "video_token_id")?,
+            ],
             hidden: positive(text, "hidden_size")?,
             intermediate: positive(text, "intermediate_size")?,
             heads: positive(text, "num_attention_heads")?,
@@ -76,6 +86,14 @@ impl Gemma4Config {
             softcap: positive_float(text, "final_logit_softcapping")?,
             layers,
         };
+        if usize::try_from(config.bos).map_or(true, |n| n >= config.vocab)
+            || usize::try_from(config.pad).map_or(true, |n| n >= config.vocab)
+        {
+            return Err(Gemma4Error::new(
+                "special tokens",
+                "BOS and PAD must be text vocabulary IDs",
+            ));
+        }
         if config.ple_vocab < config.vocab {
             return Err(Gemma4Error::new(
                 "vocab_size_per_layer_input",
@@ -103,6 +121,30 @@ impl Gemma4Config {
             spec.byte_len()?;
         }
         Ok(config)
+    }
+
+    /// Validate direct text-decoder input, including pre-tokenized callers.
+    /// The conditional wrapper masks these three media placeholders to PAD before
+    /// both main and per-layer embeddings; treating them as ordinary tokens is
+    /// not equivalent. Media processing is outside this text-only implementation.
+    /// # Errors
+    /// Rejects out-of-vocabulary IDs and unsupported media placeholders.
+    pub fn validate_text_tokens(&self, tokens: &[u32]) -> Result<(), Gemma4Error> {
+        for &token in tokens {
+            if self.media.contains(&token) {
+                return Err(Gemma4Error::new(
+                    "text input",
+                    "media placeholders require the multimodal processor",
+                ));
+            }
+            if usize::try_from(token).map_or(true, |n| n >= self.vocab) {
+                return Err(Gemma4Error::new(
+                    "text input",
+                    "token ID outside model vocabulary",
+                ));
+            }
+        }
+        Ok(())
     }
 
     #[must_use]
@@ -389,6 +431,13 @@ fn unsigned(root: &Value, key: &str) -> Result<usize, Gemma4Error> {
         .and_then(|n| usize::try_from(n).ok())
         .ok_or_else(|| Gemma4Error::new(key, "expected an unsigned platform-sized integer"))
 }
+pub(crate) fn token_id(root: &Value, key: &str) -> Result<u32, Gemma4Error> {
+    root.get(key)
+        .and_then(Value::as_u64)
+        .and_then(|n| u32::try_from(n).ok())
+        .ok_or_else(|| Gemma4Error::new(key, "expected a nonnegative u32 token ID"))
+}
+
 fn positive(root: &Value, key: &str) -> Result<usize, Gemma4Error> {
     let n = unsigned(root, key)?;
     if n == 0 {
