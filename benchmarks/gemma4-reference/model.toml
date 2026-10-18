@@ -1,0 +1,60 @@
+schema_version = 1
+
+[checkpoint]
+id = "google/gemma-4-E4B-it"
+revision = "ee0ef6023621cff504d758262d4e04895a5af4a2"
+architecture = "Gemma4ForConditionalGeneration"
+weights = "model.safetensors"
+tensor_count = 2130
+scalar_type = "BF16"
+
+[reference]
+transformers = "5.20.0"
+torch = "2.14.0"
+safetensors = "0.8.0"
+tokenizers = "0.23.3"
+transformers_commit = "48e4bcd72362ff4887651112dbfa8227211a393a"
+
+[files."config.json"]
+sha256 = "33b10c02df3c2e8536cf323d29d53262aaa2f4d11dbe19bc729373fbe90295d4"
+size_bytes = 5145
+
+[files."generation_config.json"]
+sha256 = "d4226bbe3117d2d253ba4609720ba82c6c4ce4627a9a6ae05387c78983ac03de"
+size_bytes = 208
+
+[files."processor_config.json"]
+sha256 = "32bdf45d2ad4cc29a0822ddd157a182de76644f0419a6228d151495256e9813c"
+size_bytes = 1689
+
+[files."tokenizer.json"]
+sha256 = "cc8d3a0ce36466ccc1278bf987df5f71db1719b9ca6b4118264f45cb627bfe0f"
+size_bytes = 32169626
+
+[files."tokenizer_config.json"]
+sha256 = "9f4fec4b1dc6ecddf8f4a92e9caea5971c0e67d81309f3f9066a2bee8c362633"
+size_bytes = 3082
+
+[files."chat_template.jinja"]
+sha256 = "0a2c8073c878ab1da004bee933a998606537bbb62016310352c7285c3f01c5b5"
+size_bytes = 18569
+
+[files."model.safetensors"]
+sha256 = "cfbd3d2f1cd71bd471c37fe2bf8546d5028d41e5736f64e1ca6c6b8893125503"
+size_bytes = 15992595884
+[files."README.md"]
+sha256 = "b21e4f69614ccd77baa2f3797d05311040dee07b989cb9f0d25111aa4b605b2c"
+size_bytes = 27956
+
+[files.".gitattributes"]
+sha256 = "34448b82c17d60fec9b65b1f093c115ddbaadc04beb1b0140b6bfed2e012a930"
+size_bytes = 1570
+
+[reference.source_sha256]
+"models/gemma4/modeling_gemma4.py" = "d42819dd9a2e5627da35a056e44b3c4c7b778e11c2067dcdd8312ee17ddc52f3"
+"models/gemma4/configuration_gemma4.py" = "6ab5142b25e7b282833deda196617bfff5e8fcbe37539ade6e76e5db55bdd144"
+"modeling_rope_utils.py" = "6a0727073e080e163d0287e15fc1acb90035e9a9df9cb19a13b632a40abfac24"
+"cache_utils.py" = "17b4aff340ca287cd248d179819db77e775f857678f17088528f1e14227773c2"
+"masking_utils.py" = "ef6f77df4c9bd9bbe93e21c8fe03c830b461d21dc1c6013cc2690f248cf1dee8"
+"models/gemma/tokenization_gemma.py" = "ff2481e06983015188575dc62bd2fa0e6f33ed2d01165d940efe77b80ee8d419"
+"tokenization_utils_tokenizers.py" = "afabf78cdb832aacead1ec6d553888d07b6d27fa188a9b15ce34492e9b15aca6"

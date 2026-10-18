@@ -78,6 +78,8 @@ records the primary sources and their scope.
 - [Qwen prefill qualification](qwen-prefill-qualification.md) — chunked same-sequence prefill.
 - [Runtime alignment](runtime-alignment/README.md) — host and CUDA frontend overhead.
 - [Loader memory](loader-memory/README.md) — sharded BERT host-loading peak and bit preservation.
+- [Gemma 4 reference](gemma4-reference/README.md) — pinned E4B CPU numerical inputs/tensors
+  for the second decoder; not executable Ribn model support or GPU qualification.
 
 ## Unqualified historical tools
 

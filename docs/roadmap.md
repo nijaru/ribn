@@ -374,6 +374,21 @@ descriptions. Start after applicable baseline contracts; it need
 not wait for prefix-cache or overlap promotion. Pin independent numerical references and
 measure integration effort and loading/physical peaks, not just compilation.
 
+The selected second-decoder workload is **Gemma 4 E4B instruction-tuned, BF16,
+text-first**. Its
+[manifest](../benchmarks/gemma4-reference/model.toml) pins the real package and independent
+reference; [CPU reference collection](../benchmarks/gemma4-reference/README.md) covers
+FP32/BF16 operands and the 511/512/513-position local-window transition. These are
+integration prerequisites, not executable Ribn support, multimodal qualification or
+GPU-fit evidence.
+
+This package supplies concrete next gates: preserve native BF16 and tied weights;
+stream its single approximately 16-GB SafeTensors artifact without whole-file transient
+copies; and define model/backend-owned mixed-width local/global KV plus the donor spans
+retained through shared-tail prefill. The current first-`kv()`/homogeneous-cache
+conveniences do not establish that ownership. Resolve it before CUDA integration;
+do not add model-family branches to routing or scheduling.
+
 A byte-aware streaming loader must bound concurrent reads, decoded weights, retained shard
 clones and upload staging before large-model memory claims. Remote resolution and package
 processors follow a concrete integration need; a registry alone is not day-zero support.
