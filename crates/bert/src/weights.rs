@@ -5,6 +5,7 @@
 //! [`ribn_hf`]; interpreting those bytes as this model's parameters belongs here.
 
 use std::fmt;
+use std::io::{self, Read};
 
 use ribn_hf::{LocalModelPackage, LocalWeightSet, PackageError};
 
@@ -259,6 +260,10 @@ impl Dense {
 pub enum WeightError {
     Config(ConfigError),
     Package(PackageError),
+    Read {
+        parameter: String,
+        source: io::Error,
+    },
     SizeOverflow {
         parameter: String,
     },
@@ -283,6 +288,9 @@ impl fmt::Display for WeightError {
         match self {
             Self::Config(error) => write!(f, "invalid parameter geometry: {error}"),
             Self::Package(error) => write!(f, "package resolution failed: {error}"),
+            Self::Read { parameter, source } => {
+                write!(f, "could not read parameter {parameter}: {source}")
+            }
             Self::SizeOverflow { parameter } => write!(
                 f,
                 "parameter {parameter} dimensions overflow the address space"
@@ -319,6 +327,7 @@ impl std::error::Error for WeightError {
         match self {
             Self::Config(error) => Some(error),
             Self::Package(error) => Some(error),
+            Self::Read { source, .. } => Some(source),
             _ => None,
         }
     }
@@ -376,15 +385,28 @@ impl<'a> Reader<'a> {
                 found: tensor.shape().to_vec(),
             });
         }
-        let (chunks, remainder) = tensor.data().as_chunks::<4>();
-        debug_assert!(
-            remainder.is_empty(),
-            "validated F32 payload is 4-byte aligned"
-        );
-        let values = chunks
-            .iter()
-            .map(|chunk| f32::from_le_bytes(*chunk))
-            .collect::<Vec<f32>>();
+        let count = element_count(parameter, expected)?;
+        let mut values = Vec::with_capacity(count);
+        let mut reader = tensor.reader();
+        // Decode directly into the final parameter owner. Only this fixed byte
+        // buffer overlaps the output; no encoded tensor/shard cache is retained.
+        let mut buffer = [0_u8; 16 * 1024];
+        while values.len() < count {
+            let bytes = (count - values.len()).min(buffer.len() / 4) * 4;
+            reader
+                .read_exact(&mut buffer[..bytes])
+                .map_err(|source| WeightError::Read {
+                    parameter: parameter.to_owned(),
+                    source,
+                })?;
+            values.extend(
+                buffer[..bytes]
+                    .as_chunks::<4>()
+                    .0
+                    .iter()
+                    .map(|chunk| f32::from_le_bytes(*chunk)),
+            );
+        }
         validate_length(parameter, &values, expected)?;
         Ok(values)
     }

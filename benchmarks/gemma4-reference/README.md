@@ -104,10 +104,11 @@ existing qualification-GPU use; replace that estimate with measured free VRAM ra
 than treating it as a fixed OS charge. In particular, converting the active text weights wholesale
 to FP32 exceeds 24 GiB before any KV or scratch allocation.
 
-The current Ribn SafeTensors adapter owns whole-artifact host bytes, including transient
-read/conversion copies. A shard-count limit cannot make this single-file checkpoint
-byte-bounded. Streaming BF16 preparation, tied allocation ownership, mixed-window KV
-ownership and donor-span lifetimes need real implementations before enabling the path.
+Ribn's file-backed SafeTensors path now uses retained metadata/files and caller-buffered
+payload readers. The [host I/O gate](../loader-memory/README.md) checks the full artifact
+and every tensor's encoded bytes without loading the checkpoint into application heap.
+This does not implement Gemma: native BF16 device preparation, tied allocation ownership,
+mixed-window KV ownership and donor-span lifetimes remain prerequisites for execution.
 
 Primary sources:
 

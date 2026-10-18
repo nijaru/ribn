@@ -265,7 +265,10 @@ fn decode_f32_tensor(
             "{name} shape overflows usize"
         )));
     };
-    let (values, remainder) = tensor.data().as_chunks::<4>();
+    let mut payload = Vec::new();
+    std::io::Read::read_to_end(&mut tensor.reader(), &mut payload)
+        .map_err(|error| ModelError::UnsupportedTensor(format!("{name} read failed: {error}")))?;
+    let (values, remainder) = payload.as_chunks::<4>();
     if !remainder.is_empty() || values.len() != expected_elements {
         return Err(ModelError::UnsupportedTensor(format!(
             "{name} payload length does not match its shape"

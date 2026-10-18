@@ -776,6 +776,18 @@ a copied or filesystem-enforced immutable snapshot; publish updates by replacing
 the pathname, not by mutating the selected file in place. Prepare the executor and
 processor together before exposing the application handle.
 
+SafeTensors file access validates a bounded header and the complete payload layout
+against the selected file's length, then retains that opened file for independent,
+bounded readers. File-backed artifacts retain no encoded payload in application heap;
+reads use caller-provided buffers with no hidden prefetch or background queue. An explicit
+in-memory artifact instead owns its supplied bytes. Readers and clones retain their
+source after cache eviction or artifact drop. The same no-in-place-mutation requirement
+applies to file sources. Package config/index and shards not yet opened must remain
+unchanged throughout loading; retaining individual files is not an atomic package snapshot.
+Shard-count limits bound cache entries, not caller-retained descriptors, metadata bytes,
+decoded model weights, OS page cache or upload staging. Model/backend owners must budget
+those separately before claiming a whole-loader or device-memory bound.
+
 Start with one loaded execution owner's lifetime pinning one snapshot. Implement
 **drain-and-replace** first: stop new admission, finish/cancel old work, establish
 completion, release old resources, then publish the replacement. Concurrent old/new

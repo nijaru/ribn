@@ -120,8 +120,16 @@ fn sharded_package_preserves_every_decoded_parameter() {
         }
     }
     let package = LocalModelPackage::open(fixture()).unwrap();
-    let config = BertConfig::from_json(package.config()).unwrap();
-    let expected = HostWeights::load(&package, &config).unwrap();
+    let mut config = BertConfig::from_json(package.config()).unwrap();
+    let mut expected = HostWeights::load(&package, &config).unwrap();
+    // Exercise a complete 16-KiB decoder buffer and a partial tail, unlike the
+    // tiny fixture. Preserve signed zero and a subnormal's exact encoded bits.
+    config.vocab_size = 343;
+    expected.word_embeddings = (0..config.vocab_size * config.hidden_size)
+        .map(|i| f32::from_bits(0x3f80_0000 + u32::try_from(i).unwrap()))
+        .collect();
+    expected.word_embeddings[0] = -0.0;
+    expected.word_embeddings[1] = f32::from_bits(1);
     let artifact = package
         .open_weights_for("embeddings.word_embeddings.weight")
         .unwrap();
@@ -135,7 +143,9 @@ fn sharded_package_preserves_every_decoded_parameter() {
     ));
     std::fs::create_dir(&root).unwrap();
     let _cleanup = Cleanup(root.clone());
-    std::fs::write(root.join("config.json"), package.config().to_string()).unwrap();
+    let mut config_json = package.config().clone();
+    config_json["vocab_size"] = serde_json::json!(config.vocab_size);
+    std::fs::write(root.join("config.json"), config_json.to_string()).unwrap();
     let mut shards: [(serde_json::Map<String, serde_json::Value>, Vec<u8>); 3] =
         std::array::from_fn(|_| (serde_json::Map::new(), Vec::new()));
     let mut weight_map = serde_json::Map::new();
@@ -146,10 +156,21 @@ fn sharded_package_preserves_every_decoded_parameter() {
         let tensor = artifact.tensor(&name).unwrap();
         let (header, payload) = &mut shards[shard];
         let start = payload.len();
-        payload.extend_from_slice(tensor.data());
+        let shape = if name == "embeddings.word_embeddings.weight" {
+            payload.extend(
+                expected
+                    .word_embeddings
+                    .iter()
+                    .flat_map(|v| v.to_le_bytes()),
+            );
+            vec![config.vocab_size, config.hidden_size]
+        } else {
+            std::io::Read::read_to_end(&mut tensor.reader(), payload).unwrap();
+            tensor.shape().to_vec()
+        };
         header.insert(
             name.clone(),
-            serde_json::json!({"dtype": "F32", "shape": tensor.shape(), "data_offsets": [start, payload.len()]}),
+            serde_json::json!({"dtype": "F32", "shape": shape, "data_offsets": [start, payload.len()]}),
         );
         weight_map.insert(
             name,
@@ -170,7 +191,20 @@ fn sharded_package_preserves_every_decoded_parameter() {
     )
     .unwrap();
     let sharded = LocalModelPackage::open(root).unwrap();
-    assert_eq!(HostWeights::load(&sharded, &config).unwrap(), expected);
+    let actual = HostWeights::load(&sharded, &config).unwrap();
+    assert_eq!(
+        actual
+            .word_embeddings
+            .iter()
+            .map(|v| v.to_bits())
+            .collect::<Vec<_>>(),
+        expected
+            .word_embeddings
+            .iter()
+            .map(|v| v.to_bits())
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(actual, expected);
 }
 
 #[test]

@@ -1,40 +1,44 @@
-//! `SafeTensors` artifact adapter for Ribn's model-loading pressure tests.
+//! Validated `SafeTensors` metadata and bounded encoded-payload readers.
 //!
-//! This crate validates artifact bytes and exposes borrowed tensor payloads plus
-//! format metadata. It does not allocate execution tensors, choose parameter
-//! semantics, decide placement, or materialize backend storage. Those
-//! responsibilities belong to model integration and preparation.
+//! File-backed artifacts retain one opened file, not its payload in host heap.
+//! In-memory artifacts explicitly retain supplied bytes. Both use the upstream
+//! metadata validator and expose identical format-level access; models own
+//! parameter interpretation, decoding, placement and backend materialization.
 //!
-//! Validation and metadata extraction happen once, when the artifact is
-//! constructed. Tensor lookups afterwards are index lookups into retained
-//! metadata, so reading every tensor in a shard does not reparse the header or
-//! rescan the tensor names.
-//!
-//! Artifact bytes are owned in host memory. Mapping an immutable local file
-//! instead would avoid that copy, but mapping needs an `unsafe` call that this
-//! workspace forbids, so owned bytes remain the only storage here. Callers that
-//! cannot afford whole-artifact residency should bound how many artifacts stay
-//! open rather than expecting this layer to stream.
+//! Files must remain unmodified in place through every alias while any artifact
+//! or reader exists. Path replacement/unlink cannot redirect an opened source.
+//! This is descriptor retention, not an enforced immutable filesystem snapshot.
+
+mod index;
+mod reader;
 
 use std::collections::BTreeMap;
 use std::fmt;
-use std::fs;
+use std::fs::File;
+use std::io::Read;
 use std::ops::Range;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use ribn_foundation::ScalarType;
-use safetensors::tensor::{Dtype, SafeTensors};
+use safetensors::tensor::Dtype;
 
-/// Validated `SafeTensors` bytes owned independently of any execution backend.
+pub use reader::ArtifactReader;
+use reader::{FileCursor, Storage};
+
+/// Validated artifact with shared metadata and one retained byte/file source.
 #[derive(Clone)]
 pub struct SafeTensorArtifact {
-    bytes: Arc<[u8]>,
-    index: Arc<BTreeMap<String, TensorEntry>>,
-    source: Option<PathBuf>,
+    inner: Arc<ArtifactData>,
 }
 
-#[derive(Clone)]
+struct ArtifactData {
+    storage: Storage,
+    index: BTreeMap<String, TensorEntry>,
+    source: Option<PathBuf>,
+    len: usize,
+}
+
 struct TensorEntry {
     scalar_type: ScalarType,
     shape: Vec<usize>,
@@ -42,147 +46,161 @@ struct TensorEntry {
 }
 
 impl SafeTensorArtifact {
-    /// Validate and retain an in-memory `SafeTensors` artifact.
+    /// Validate and retain supplied in-memory bytes, including their full payload.
     ///
     /// # Errors
-    /// Returns [`ArtifactError::InvalidFormat`] when the bytes are not a valid
-    /// `SafeTensors` artifact.
+    /// Rejects invalid `SafeTensors` metadata, layout or payload length.
     pub fn from_bytes(bytes: impl Into<Arc<[u8]>>) -> Result<Self, ArtifactError> {
         let bytes = bytes.into();
-        let parsed = SafeTensors::deserialize(bytes.as_ref()).map_err(ArtifactError::format)?;
-        let index = index_tensors(bytes.as_ref(), &parsed)?;
+        let prefix = bytes
+            .get(..8)
+            .ok_or_else(|| ArtifactError::format("header too short"))?;
+        let header_len = index::header_len(prefix, bytes.len())?;
+        let index = index::parse(&bytes[8..8 + header_len], bytes.len())?;
         Ok(Self {
-            bytes,
-            index: Arc::new(index),
-            source: None,
+            inner: Arc::new(ArtifactData {
+                len: bytes.len(),
+                storage: Storage::Bytes(bytes),
+                index,
+                source: None,
+            }),
         })
     }
 
-    /// Read and validate a `SafeTensors` artifact from a local file.
-    ///
-    /// The whole file is read into owned host memory and stays resident for the
-    /// lifetime of the artifact.
+    /// Open and validate only the header, retaining the selected file for reads.
+    /// Header length is capped at the upstream format limit of 100,000,000 bytes.
+    /// Payload reads allocate no internal buffers. Clones/readers share the file
+    /// but have independent cursors and keep it alive after this owner is dropped.
     ///
     /// # Errors
-    /// Returns an I/O error when the file cannot be read, or a format error when
-    /// its contents are not a valid `SafeTensors` artifact.
+    /// Rejects I/O failures, invalid metadata/layout and incomplete/trailing payloads.
     pub fn open(path: impl Into<PathBuf>) -> Result<Self, ArtifactError> {
         let path = path.into();
-        let bytes = fs::read(&path).map_err(|error| ArtifactError::Io {
+        let io_error = |error: std::io::Error| ArtifactError::Io {
             path: path.clone(),
             message: error.to_string(),
-        })?;
-        let mut artifact = Self::from_bytes(bytes)?;
-        artifact.source = Some(path);
-        Ok(artifact)
+        };
+        let mut file = File::open(&path).map_err(io_error)?;
+        let metadata = file.metadata().map_err(io_error)?;
+        if !metadata.is_file() {
+            return Err(ArtifactError::format("source is not a regular file"));
+        }
+        let len = usize::try_from(metadata.len()).map_err(ArtifactError::format)?;
+        if len < 8 {
+            return Err(ArtifactError::format("header too short"));
+        }
+        let mut prefix = [0; 8];
+        file.read_exact(&mut prefix).map_err(io_error)?;
+        let header_len = index::header_len(&prefix, len)?;
+        let mut header = vec![0; header_len];
+        file.read_exact(&mut header).map_err(io_error)?;
+        let index = index::parse(&header, len)?;
+        Ok(Self {
+            inner: Arc::new(ArtifactData {
+                storage: Storage::File(Mutex::new(FileCursor {
+                    file,
+                    position: Some(u64::try_from(8 + header_len).map_err(ArtifactError::format)?),
+                })),
+                index,
+                source: Some(path),
+                len,
+            }),
+        })
     }
 
     #[must_use]
     pub fn source(&self) -> Option<&Path> {
-        self.source.as_deref()
+        self.inner.source.as_deref()
     }
 
-    /// Tensor names in the artifact, read from retained metadata.
+    /// Tensor names in lexical order, from retained metadata.
     #[must_use]
     pub fn names(&self) -> Vec<String> {
-        self.index.keys().cloned().collect()
+        self.inner.index.keys().cloned().collect()
     }
 
-    /// Borrow one tensor payload from the owned artifact bytes.
+    /// Borrow format metadata; call [`ArtifactTensor::reader`] to access bytes.
     ///
     /// # Errors
     /// Returns [`ArtifactError::MissingTensor`] when `name` is absent.
     pub fn tensor(&self, name: &str) -> Result<ArtifactTensor<'_>, ArtifactError> {
         let entry = self
+            .inner
             .index
             .get(name)
             .ok_or_else(|| ArtifactError::MissingTensor(name.to_owned()))?;
-        let data = self
-            .bytes
-            .get(entry.range.clone())
-            .ok_or_else(|| ArtifactError::format("retained tensor payload is out of range"))?;
         Ok(ArtifactTensor {
-            scalar_type: entry.scalar_type.clone(),
-            shape: entry.shape.clone(),
-            data,
+            artifact: self,
+            entry,
         })
     }
 
-    /// Payload bytes this artifact keeps in host memory.
+    /// Read the complete selected artifact, including its header, e.g. for hashing.
     #[must_use]
-    pub fn heap_bytes(&self) -> usize {
-        self.bytes.len()
+    pub fn reader(&self) -> ArtifactReader {
+        ArtifactReader::new(self.clone(), 0..self.len())
     }
 
-    /// Payload bytes the artifact exposes, regardless of storage.
+    /// Encoded artifact bytes retained in application heap, excluding metadata,
+    /// allocator overhead and OS page cache. File-backed artifacts return zero.
+    #[must_use]
+    pub fn resident_payload_bytes(&self) -> usize {
+        match &self.inner.storage {
+            Storage::Bytes(bytes) => bytes.len(),
+            Storage::File(_) => 0,
+        }
+    }
+
+    /// Complete encoded artifact length, regardless of backing storage.
     #[must_use]
     pub fn len(&self) -> usize {
-        self.bytes.len()
+        self.inner.len
     }
 
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.bytes.is_empty()
+        self.inner.len == 0
     }
 
-    /// Number of tensors described by the retained metadata.
     #[must_use]
     pub fn tensor_count(&self) -> usize {
-        self.index.len()
+        self.inner.index.len()
     }
 }
 
-/// Retain validated metadata and payload offsets for every tensor once.
-fn index_tensors(
-    bytes: &[u8],
-    parsed: &SafeTensors<'_>,
-) -> Result<BTreeMap<String, TensorEntry>, ArtifactError> {
-    let base = bytes.as_ptr() as usize;
-    let mut index = BTreeMap::new();
-    for name in parsed.names() {
-        let view = parsed.tensor(name).map_err(ArtifactError::format)?;
-        let data = view.data();
-        let start = (data.as_ptr() as usize)
-            .checked_sub(base)
-            .ok_or_else(|| ArtifactError::format("tensor payload precedes the artifact"))?;
-        let end = start
-            .checked_add(data.len())
-            .filter(|end| *end <= bytes.len())
-            .ok_or_else(|| ArtifactError::format("tensor payload exceeds the artifact"))?;
-        index.insert(
-            name.to_owned(),
-            TensorEntry {
-                scalar_type: scalar_type(view.dtype()),
-                shape: view.shape().to_vec(),
-                range: start..end,
-            },
-        );
-    }
-    Ok(index)
-}
-
-/// Format-level tensor view. Shape and bytes describe the artifact representation,
-/// not a prepared device tensor or serving parameter materialization.
+/// Format metadata and access to encoded bytes, not an execution tensor.
+/// The payload reader owns its source independently of this borrowed view.
 pub struct ArtifactTensor<'a> {
-    scalar_type: ScalarType,
-    shape: Vec<usize>,
-    data: &'a [u8],
+    artifact: &'a SafeTensorArtifact,
+    entry: &'a TensorEntry,
 }
 
 impl ArtifactTensor<'_> {
     #[must_use]
     pub fn scalar_type(&self) -> &ScalarType {
-        &self.scalar_type
+        &self.entry.scalar_type
     }
 
     #[must_use]
     pub fn shape(&self) -> &[usize] {
-        &self.shape
+        &self.entry.shape
+    }
+
+    /// Encoded payload length; this does not allocate or read it.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.entry.range.len()
     }
 
     #[must_use]
-    pub const fn data(&self) -> &[u8] {
-        self.data
+    pub fn is_empty(&self) -> bool {
+        self.entry.range.is_empty()
+    }
+
+    /// Independent, owning reader bounded to this tensor's encoded payload.
+    #[must_use]
+    pub fn reader(&self) -> ArtifactReader {
+        ArtifactReader::new(self.artifact.clone(), self.entry.range.clone())
     }
 }
 
@@ -221,13 +239,11 @@ impl ArtifactError {
 impl fmt::Display for ArtifactError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Io { path, message } => {
-                write!(
-                    f,
-                    "could not read SafeTensors artifact {}: {message}",
-                    path.display()
-                )
-            }
+            Self::Io { path, message } => write!(
+                f,
+                "could not read SafeTensors artifact {}: {message}",
+                path.display()
+            ),
             Self::InvalidFormat(message) => write!(f, "invalid SafeTensors artifact: {message}"),
             Self::MissingTensor(name) => write!(f, "SafeTensors artifact has no tensor {name:?}"),
         }
@@ -237,138 +253,4 @@ impl fmt::Display for ArtifactError {
 impl std::error::Error for ArtifactError {}
 
 #[cfg(test)]
-mod tests {
-    use std::fmt::Write as _;
-
-    use super::*;
-
-    fn fixture() -> Vec<u8> {
-        let values = [1.0_f32, 2.0, 3.0, 4.0];
-        let mut data = Vec::new();
-        for value in values {
-            data.extend_from_slice(&value.to_le_bytes());
-        }
-        let mut header = format!(
-            r#"{{"weight":{{"dtype":"F32","shape":[2,2],"data_offsets":[0,{}]}}}}"#,
-            data.len()
-        )
-        .into_bytes();
-        while header.len() % 8 != 0 {
-            header.push(b' ');
-        }
-        let mut artifact = Vec::new();
-        artifact.extend_from_slice(
-            &u64::try_from(header.len())
-                .expect("fixture header length")
-                .to_le_bytes(),
-        );
-        artifact.extend_from_slice(&header);
-        artifact.extend_from_slice(&data);
-        artifact
-    }
-
-    /// Several tensors with different shapes, so index offsets are exercised
-    /// beyond a single leading payload.
-    fn multi_tensor_fixture() -> Vec<u8> {
-        let payloads: [(&str, &[usize], Vec<f32>); 3] = [
-            ("first.weight", &[2, 2], vec![1.0, 2.0, 3.0, 4.0]),
-            ("second.weight", &[3], vec![5.0, 6.0, 7.0]),
-            ("third.weight", &[1, 1], vec![8.0]),
-        ];
-        let mut data = Vec::new();
-        let mut header = String::from("{");
-        for (position, (name, shape, values)) in payloads.iter().enumerate() {
-            let start = data.len();
-            for value in values {
-                data.extend_from_slice(&value.to_le_bytes());
-            }
-            if position > 0 {
-                header.push(',');
-            }
-            let shape = shape
-                .iter()
-                .map(ToString::to_string)
-                .collect::<Vec<_>>()
-                .join(",");
-            let _ = write!(
-                header,
-                r#""{name}":{{"dtype":"F32","shape":[{shape}],"data_offsets":[{start},{}]}}"#,
-                data.len()
-            );
-        }
-        header.push('}');
-        let mut header = header.into_bytes();
-        while header.len() % 8 != 0 {
-            header.push(b' ');
-        }
-        let mut artifact = Vec::new();
-        artifact.extend_from_slice(
-            &u64::try_from(header.len())
-                .expect("fixture header length")
-                .to_le_bytes(),
-        );
-        artifact.extend_from_slice(&header);
-        artifact.extend_from_slice(&data);
-        artifact
-    }
-
-    #[test]
-    fn exposes_format_metadata_and_borrowed_payload() {
-        let artifact = SafeTensorArtifact::from_bytes(fixture()).expect("artifact");
-        assert_eq!(artifact.names(), vec!["weight"]);
-        let tensor = artifact.tensor("weight").expect("weight");
-        assert_eq!(tensor.scalar_type(), &ScalarType::F32);
-        assert_eq!(tensor.shape(), [2, 2]);
-        assert_eq!(tensor.data().len(), 16);
-        assert!(matches!(
-            artifact.tensor("missing"),
-            Err(ArtifactError::MissingTensor(name)) if name == "missing"
-        ));
-    }
-
-    /// Every tensor keeps its own payload after the metadata is indexed once, so a
-    /// wrong retained offset cannot pass as a lookup miss.
-    #[test]
-    fn retained_offsets_address_each_tensor_payload() {
-        let artifact = SafeTensorArtifact::from_bytes(multi_tensor_fixture()).expect("artifact");
-        assert_eq!(
-            artifact.names(),
-            vec!["first.weight", "second.weight", "third.weight"]
-        );
-        assert_eq!(artifact.tensor_count(), 3);
-        assert_eq!(artifact.heap_bytes(), artifact.len());
-
-        let read = |name: &str| {
-            artifact
-                .tensor(name)
-                .expect("tensor")
-                .data()
-                .as_chunks::<4>()
-                .0
-                .iter()
-                .map(|chunk| f32::from_le_bytes(*chunk))
-                .collect::<Vec<_>>()
-        };
-        assert_eq!(read("first.weight"), vec![1.0, 2.0, 3.0, 4.0]);
-        assert_eq!(read("second.weight"), vec![5.0, 6.0, 7.0]);
-        assert_eq!(read("third.weight"), vec![8.0]);
-        assert_eq!(
-            artifact.tensor("second.weight").expect("shape").shape(),
-            [3]
-        );
-    }
-
-    #[test]
-    fn rejects_truncated_and_malformed_artifacts() {
-        let mut truncated = fixture();
-        truncated.truncate(truncated.len() - 4);
-        assert!(matches!(
-            SafeTensorArtifact::from_bytes(truncated),
-            Err(ArtifactError::InvalidFormat(_))
-        ));
-        assert!(matches!(
-            SafeTensorArtifact::from_bytes(vec![0_u8; 8]),
-            Err(ArtifactError::InvalidFormat(_))
-        ));
-    }
-}
+mod tests;

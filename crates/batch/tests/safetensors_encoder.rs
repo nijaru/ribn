@@ -95,10 +95,13 @@ impl ArtifactEncoder {
             .checked_mul(width)
             .ok_or(EncoderError::ShapeOverflow)?;
         let expected_bytes = elements.checked_mul(4).ok_or(EncoderError::ShapeOverflow)?;
-        if tensor.data().len() != expected_bytes {
+        if tensor.len() != expected_bytes {
             return Err(EncoderError::InvalidPayload);
         }
-        let (encoded_values, remainder) = tensor.data().as_chunks::<4>();
+        let mut payload = Vec::new();
+        std::io::Read::read_to_end(&mut tensor.reader(), &mut payload)
+            .map_err(|error| EncoderError::Artifact(error.to_string()))?;
+        let (encoded_values, remainder) = payload.as_chunks::<4>();
         if !remainder.is_empty() {
             return Err(EncoderError::InvalidPayload);
         }

@@ -5,6 +5,10 @@
 //! implementation, or processor behavior. Network download/cache/auth are also
 //! intentionally outside this first local-directory pressure test.
 
+mod shared_blobs;
+
+use shared_blobs::SharedBlobs;
+
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::ffi::OsStr;
 use std::fmt;
@@ -27,9 +31,12 @@ const REPOSITORY_PREFIX: &str = "models--";
 /// Face cache snapshot directory additionally authorizes that repository's
 /// immutable `blobs` directory, because a cache snapshot is a symlink farm whose
 /// entries point at content-addressed blobs beside the `snapshots` directory.
-/// Nothing else outside the root is ever authorized, and the trusted shape is
-/// narrow on purpose: the root must be `<repository>/snapshots/<revision>` under a
-/// `models--` repository directory that contains a `blobs` directory.
+/// The v1 cache-wide shared store is also recognized at `<repository-parent>/blobs`,
+/// but only with its exact layout marker and canonical `<hh>/<64-hex-Xet-ID>`
+/// regular files. No other hub paths are authorized. This permits cache-wide blob
+/// data, not arbitrary host files; it does not establish repository membership,
+/// content authenticity or tenant isolation. The root must still be
+/// `<repository>/snapshots/<revision>` under a `models--` repository with `blobs`.
 ///
 /// Only the directories are trusted here, not the file names. A member still has
 /// to be reached through a relative path inside the package root and to name an
@@ -38,7 +45,11 @@ const REPOSITORY_PREFIX: &str = "models--";
 #[derive(Clone, Debug, Eq, PartialEq)]
 enum MemberPolicy {
     Directory(PathBuf),
-    Snapshot { snapshot: PathBuf, blobs: PathBuf },
+    Snapshot {
+        snapshot: PathBuf,
+        blobs: PathBuf,
+        shared: Option<SharedBlobs>,
+    },
 }
 
 impl MemberPolicy {
@@ -56,10 +67,19 @@ impl MemberPolicy {
             .map(|repository| repository.join(BLOBS_DIR))
             .filter(|blobs| blobs.is_dir());
         match trusted_blobs {
-            Some(blobs) => Self::Snapshot {
-                snapshot: root,
-                blobs,
-            },
+            Some(blobs) => {
+                // Only the sibling store at the canonical repository ancestry.
+                // Never search ancestors or canonicalize an external symlink root.
+                let shared = blobs
+                    .parent()
+                    .and_then(Path::parent)
+                    .and_then(|hub| SharedBlobs::discover(hub.join(BLOBS_DIR)));
+                Self::Snapshot {
+                    snapshot: root,
+                    blobs,
+                    shared,
+                }
+            }
             None => Self::Directory(root),
         }
     }
@@ -74,8 +94,16 @@ impl MemberPolicy {
     fn allows(&self, canonical: &Path) -> bool {
         match self {
             Self::Directory(root) => canonical.starts_with(root),
-            Self::Snapshot { snapshot, blobs } => {
-                canonical.starts_with(snapshot) || canonical.starts_with(blobs)
+            Self::Snapshot {
+                snapshot,
+                blobs,
+                shared,
+            } => {
+                canonical.starts_with(snapshot)
+                    || canonical.starts_with(blobs)
+                    || shared
+                        .as_ref()
+                        .is_some_and(|store| store.contains(canonical))
             }
         }
     }
@@ -115,11 +143,10 @@ enum Weights {
 /// Lazy reusable view over the `SafeTensors` files resolved by one local package.
 ///
 /// The first tensor requested from a shard opens and validates that artifact; later
-/// tensors from the same shard reuse the owned bytes. The set still does not assign
-/// model semantics to parameter names or materialize tensors for a backend.
-///
-/// A resident artifact owns its whole file, so the set's residency policy decides
-/// how much host memory a multi-shard model costs. See [`ResidencyPolicy`].
+/// tensors from the same shard reuse the retained file and metadata without
+/// retaining encoded payloads in heap. Models choose their read buffers and own
+/// decoding/materialization. Package config/index and unopened shards must remain
+/// unchanged throughout loading; this is not an atomic package snapshot.
 pub struct LocalWeightSet<'a> {
     weights: &'a Weights,
     artifacts: BTreeMap<PathBuf, SafeTensorArtifact>,
@@ -129,14 +156,11 @@ pub struct LocalWeightSet<'a> {
 
 /// How many opened `SafeTensors` shards a [`LocalWeightSet`] keeps resident.
 ///
-/// Bounding residency is how a loader over many large shards avoids holding every
-/// host artifact at once, because each resident artifact owns its complete file.
-/// Eviction happens only on a call that mutably borrows the set, so an artifact a
-/// caller currently borrows is never dropped underneath it; a caller that needs a
-/// shard to outlive that borrow should keep the returned artifact (it is cheap to
-/// clone and shares the same bytes). Eviction precedes opening incoming shards,
-/// even if the open fails. Counts cover this set, not caller-held clones or
-/// transient copies while reading and validating a shard; they are not byte bounds.
+/// Artifacts retain metadata and one descriptor, not the payload. Eviction precedes
+/// opening an incoming shard, even when that open fails. Owning readers/clones keep
+/// their selected sources alive independently of eviction. Counts cover cache
+/// entries, not caller-retained descriptors, metadata bytes, decoded weights or read
+/// and upload buffers. They are not a whole-loader byte bound.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ResidencyPolicy {
     /// Keep every shard opened so far for the set's lifetime.
@@ -260,10 +284,9 @@ impl LocalModelPackage {
     /// Create a lazy reusable weight-set view that keeps at most
     /// `max_open_shards` shard files resident.
     ///
-    /// Use this for models whose shards are individually large: a resident artifact
-    /// owns its whole file, so retaining every shard a multi-shard model touches
-    /// costs the sum of the model's shard sizes in host memory. A shard evicted by
-    /// residency is reread from disk if a later parameter needs it again.
+    /// Limits cached metadata/open descriptors, not payload bytes. Revisiting an
+    /// evicted shard reopens its pathname and revalidates its header. Owning
+    /// readers/clones may outlive cache eviction.
     ///
     /// # Errors
     /// Returns [`PackageError::InvalidConfig`] when `max_open_shards` is zero.
@@ -288,7 +311,7 @@ impl LocalModelPackage {
     ///
     /// This one-shot helper is useful for inspection. Model loaders reading many
     /// tensors should use [`Self::weight_set`] so repeated parameters in one shard
-    /// do not reread the whole artifact.
+    /// reuse the selected source and metadata.
     ///
     /// # Errors
     /// Returns [`PackageError::UnknownParameter`] for a name absent from a
@@ -318,12 +341,13 @@ impl LocalWeightSet<'_> {
         self.artifacts.len()
     }
 
-    /// Payload bytes currently held by resident artifacts.
+    /// Encoded bytes held in application heap by cached artifacts, excluding
+    /// metadata, caller buffers and OS page cache. File-backed artifacts return zero.
     #[must_use]
-    pub fn resident_bytes(&self) -> usize {
+    pub fn resident_payload_bytes(&self) -> usize {
         self.artifacts
             .values()
-            .map(SafeTensorArtifact::heap_bytes)
+            .map(SafeTensorArtifact::resident_payload_bytes)
             .sum()
     }
 
@@ -990,8 +1014,8 @@ mod tests {
         ));
     }
 
-    /// A resident artifact owns its whole file, so residency policy decides how
-    /// much host memory a multi-shard model costs. Reading across three shards
+    /// Cache-entry counts and owning readers remain distinct; eviction never
+    /// invalidates an existing reader or makes its descriptor reusable. Reading across three shards
     /// under a bound of one must not accumulate three artifacts.
     #[test]
     fn bounded_residency_keeps_one_shard_open_across_a_sharded_model() {
@@ -1021,20 +1045,14 @@ mod tests {
         .expect("index");
 
         let package = LocalModelPackage::open(dir.path()).expect("package");
-        let shard_bytes = usize::try_from(
-            fs::metadata(dir.path().join(shards[0].0))
-                .expect("shard metadata")
-                .len(),
-        )
-        .expect("shard size fits usize");
-
         let mut retained = package.weight_set();
         for (_, parameter) in shards {
             assert!(retained.tensor(parameter).is_ok());
         }
         assert_eq!(retained.residency(), ResidencyPolicy::Retain);
         assert_eq!(retained.opened_shard_count(), 3);
-        assert_eq!(retained.resident_bytes(), shard_bytes * 3);
+        assert_eq!(retained.resident_payload_bytes(), 0);
+        drop(retained);
 
         let mut bounded = package.weight_set_resident(1).expect("bounded set");
         assert_eq!(
@@ -1045,11 +1063,11 @@ mod tests {
             assert!(bounded.tensor(parameter).is_ok());
             assert_eq!(bounded.opened_shard_count(), 1, "residency stays bounded");
         }
-        assert_eq!(bounded.resident_bytes(), shard_bytes);
-        // Revisiting the evicted shard rereads it instead of growing residency.
+        assert_eq!(bounded.resident_payload_bytes(), 0);
+        // Revisiting the evicted shard revalidates its header without growing residency.
         assert!(bounded.tensor("first.weight").is_ok());
         assert_eq!(bounded.opened_shard_count(), 1);
-        assert_eq!(bounded.resident_bytes(), shard_bytes);
+        assert_eq!(bounded.resident_payload_bytes(), 0);
 
         // An incoming shard must not overlap this cache's old backing, even
         // when opening/validation fails. A caller-held clone remains valid.
@@ -1057,13 +1075,158 @@ mod tests {
         fs::write(dir.path().join(shards[1].0), b"invalid artifact").unwrap();
         assert!(bounded.tensor("second.weight").is_err());
         assert_eq!(bounded.opened_shard_count(), 0);
-        assert_eq!(bounded.resident_bytes(), 0);
-        assert_eq!(clone.tensor("first.weight").unwrap().data().len(), 12);
+        assert_eq!(bounded.resident_payload_bytes(), 0);
+        let mut payload = Vec::new();
+        std::io::Read::read_to_end(
+            &mut clone.tensor("first.weight").unwrap().reader(),
+            &mut payload,
+        )
+        .unwrap();
+        assert_eq!(
+            payload,
+            [1.0_f32, 2.0, 3.0]
+                .iter()
+                .flat_map(|v| v.to_le_bytes())
+                .collect::<Vec<_>>()
+        );
         assert!(bounded.tensor("first.weight").is_ok());
 
         assert!(matches!(
             package.weight_set_resident(0),
             Err(PackageError::InvalidConfig(_))
         ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn resolves_single_and_sharded_snapshots_through_versioned_shared_blobs() {
+        for sharded in [false, true] {
+            let dir = TestDir::new();
+            let mut entries = vec![
+                ("config-etag", CONFIG_FILE, CONFIG_BYTES.to_vec()),
+                ("tokenizer-etag", "tokenizer.json", b"{}\n".to_vec()),
+            ];
+            let first = if sharded {
+                "part-1.safetensors"
+            } else {
+                SINGLE_WEIGHTS
+            };
+            entries.push((
+                "weights-etag",
+                first,
+                safetensors_fixture("embeddings.weight", &[1.0, 2.0, 3.0], &[1, 3]),
+            ));
+            if sharded {
+                entries.push((
+                    "second-etag",
+                    "part-2.safetensors",
+                    safetensors_fixture("projection.weight", &[4.0, 5.0, 6.0], &[1, 3]),
+                ));
+                entries.push(("index-etag", WEIGHT_INDEX,
+                    br#"{"weight_map":{"embeddings.weight":"part-1.safetensors","projection.weight":"part-2.safetensors"}}"#.to_vec()));
+            }
+            let (snapshot, repository_blobs) = cache_repository(dir.path(), "revision", &entries);
+            let shared = dir.path().join("blobs");
+            fs::create_dir_all(shared.join("00")).unwrap();
+            fs::write(shared.join(".huggingface-shared-blobs"), b"1\n").unwrap();
+            let mut canonical_members = BTreeMap::new();
+            for (i, (etag, member, data)) in entries.iter().enumerate() {
+                // ETag/LFS names and Xet object IDs are deliberately unrelated.
+                let object = shared.join("00").join(format!("{i:064x}"));
+                fs::write(&object, data).unwrap();
+                fs::remove_file(repository_blobs.join(etag)).unwrap();
+                symlink(&object, repository_blobs.join(etag)).unwrap();
+                canonical_members.insert(*member, fs::canonicalize(object).unwrap());
+            }
+            let package = LocalModelPackage::open(&snapshot).unwrap();
+            assert_eq!(
+                package.config(),
+                &serde_json::from_slice::<Value>(CONFIG_BYTES).unwrap()
+            );
+            assert_eq!(package.config_path(), canonical_members[CONFIG_FILE]);
+            assert_eq!(
+                package.package_file("tokenizer.json").unwrap(),
+                canonical_members["tokenizer.json"]
+            );
+            let artifact = package.open_weights_for("embeddings.weight").unwrap();
+            assert_eq!(
+                artifact.tensor("embeddings.weight").unwrap().shape(),
+                [1, 3]
+            );
+            if sharded {
+                assert_eq!(
+                    package
+                        .open_weights_for("projection.weight")
+                        .unwrap()
+                        .tensor("projection.weight")
+                        .unwrap()
+                        .shape(),
+                    [1, 3]
+                );
+            }
+            // Unmarked/unsupported stores are never a reason to widen the root.
+            for marker in [b"".as_slice(), b"1", b"2\n", b"1\njunk"] {
+                fs::write(shared.join(".huggingface-shared-blobs"), marker).unwrap();
+                assert!(matches!(
+                    LocalModelPackage::open(&snapshot),
+                    Err(PackageError::UnsafePackagePath(_))
+                ));
+            }
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn shared_blob_policy_rejects_spoofed_stores_and_non_blob_targets() {
+        let dir = TestDir::new();
+        let root = dir.path().join("blobs");
+        fs::create_dir_all(root.join("00")).unwrap();
+        let marker = root.join(".huggingface-shared-blobs");
+        fs::write(&marker, b"1\n").unwrap();
+        let valid = root.join("00").join("0".repeat(64));
+        fs::write(&valid, b"data").unwrap();
+        let canonical_root = fs::canonicalize(&root).unwrap();
+        let store = SharedBlobs::discover(canonical_root.clone()).unwrap();
+        assert!(store.contains(&fs::canonicalize(&valid).unwrap()));
+        for relative in [
+            format!("00/{}", "0".repeat(63)),
+            format!("00/{}", "A".repeat(64)),
+            format!("01/{}", "0".repeat(64)),
+            format!("00/{}.refs", "0".repeat(64)),
+            format!("00/{}.lock", "0".repeat(64)),
+            format!("00/nested/{}", "0".repeat(64)),
+            "unrelated.json".to_owned(),
+        ] {
+            let candidate = root.join(relative);
+            fs::create_dir_all(candidate.parent().unwrap()).unwrap();
+            fs::write(&candidate, b"not an authorized blob").unwrap();
+            assert!(!store.contains(&fs::canonicalize(candidate).unwrap()));
+        }
+        let outside = dir.path().join("outside");
+        fs::create_dir(&outside).unwrap();
+        fs::write(outside.join(format!("11{}", "0".repeat(62))), b"host file").unwrap();
+        symlink(&outside, root.join("11")).unwrap();
+        let escape = root.join("11").join(format!("11{}", "0".repeat(62)));
+        assert!(!store.contains(&fs::canonicalize(escape).unwrap()));
+        fs::create_dir_all(root.join("02").join(format!("02{}", "0".repeat(62)))).unwrap();
+        assert!(
+            !store.contains(
+                &canonical_root
+                    .join("02")
+                    .join(format!("02{}", "0".repeat(62)))
+            )
+        );
+        let alias = dir.path().join("store-link");
+        symlink(&root, &alias).unwrap();
+        assert!(SharedBlobs::discover(alias).is_none());
+        fs::remove_file(&marker).unwrap();
+        assert!(SharedBlobs::discover(canonical_root.clone()).is_none());
+        let external_marker = outside.join("marker");
+        fs::write(&external_marker, b"1\n").unwrap();
+        symlink(&external_marker, &marker).unwrap();
+        assert!(SharedBlobs::discover(canonical_root.clone()).is_none());
+        fs::remove_file(&marker).unwrap();
+        fs::create_dir(marker).unwrap();
+        assert!(SharedBlobs::discover(canonical_root).is_none());
     }
 }

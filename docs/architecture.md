@@ -110,14 +110,24 @@ qualification remains open; ordinary text/CLI loading retains whole-batch select
 
 ## Encoder and artifact paths
 
-`ribn-safetensors` validates artifact bytes once and exposes indexed tensor views.
+`ribn-safetensors` validates bounded headers/layouts with the upstream metadata
+validator. File-backed artifacts retain one opened file, not encoded payloads in heap;
+in-memory artifacts explicitly retain supplied bytes. Independent bounded readers
+retain the source after artifact drop or cache eviction. Files must remain unmodified
+in place; pathname replacement cannot redirect an opened reader.
+
 `ribn-hf` resolves local config and unsharded/sharded weights without choosing model
-semantics. It lazily caches whole owned shards, evicting before opening incoming
-shards under a resident policy. Entry limits do not bound total peak bytes: caller
-clones and transient read/validation copies can retain storage. BERT loads with one
-resident source shard and moves each decoded parameter into its host owner without
-a duplicate tensor cache; host weights and device-upload staging still consume memory.
-See the [loader-memory comparison](../benchmarks/loader-memory/README.md).
+semantics. It caches metadata/open files and recognizes legacy repository blobs plus
+Hub shared-blob layout v1. Only canonical, well-formed shared blob files beneath a
+version-marked cache store are authorized, not arbitrary hub files. This is path
+confinement, not repository membership, content authentication or tenant isolation.
+Cache config/index and unopened members must stay unchanged throughout loading;
+individual descriptor retention is not an atomic package snapshot.
+
+BERT decodes through a fixed 16-KiB byte buffer directly into each final F32 parameter.
+Source-cache counts do not bound metadata, caller-retained readers, decoded host weights,
+OS page cache or upload staging. The [host comparison](../benchmarks/loader-memory/README.md)
+and full E4B artifact probe qualify this I/O path, not Gemma execution or device peaks.
 
 `engine-bert` owns configuration, parameter mapping, masked bidirectional attention,
 embedding/LayerNorm/GELU/pooler semantics and a CUDA executor through `ribn-batch`.
@@ -151,7 +161,7 @@ Shared CUDA physical retirement and downstream-workspace progress remain unprove
 | `crates/bert` / `engine-bert` | BERT semantics, preparation, executor binding and device retirement |
 | `crates/core` / `engine-core` | Prepared batch, backend submission, continuation state and weight contracts; no scheduler, plan or model description |
 | `crates/gguf` / `engine-gguf` | GGUF artifact access and current tokenizer/chat-template implementation |
-| `crates/safetensors` / `ribn-safetensors` | Generic validated SafeTensors views |
+| `crates/safetensors` / `ribn-safetensors` | Validated SafeTensors metadata and bounded payload readers |
 | `crates/hf` / `ribn-hf` | Local HF-style config/shard resolution and residency |
 | `crates/foundation` / `ribn-foundation` | Byte accounting, readiness and consumed version/scalar types |
 | `crates/batch` / `ribn-batch` | Non-AR batching, leased results and cancellation |

@@ -84,7 +84,10 @@ impl PackageEncoder {
         }
         let vocab = tensor.shape()[0];
         let width = tensor.shape()[1];
-        let (values, remainder) = tensor.data().as_chunks::<4>();
+        let mut payload = Vec::new();
+        std::io::Read::read_to_end(&mut tensor.reader(), &mut payload)
+            .map_err(|error| ModelError::Package(error.to_string()))?;
+        let (values, remainder) = payload.as_chunks::<4>();
         if !remainder.is_empty() || values.len() != vocab.saturating_mul(width) {
             return Err(ModelError::InvalidPayload);
         }
