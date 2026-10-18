@@ -471,6 +471,30 @@ impl CudaQwen35ServingDispatcher {
         self
     }
 
+    /// Opt into unqualified member-descriptor decode kernels. Single-row and
+    /// prefill fallbacks stay unchanged. Kernel compilation is shared by lanes.
+    ///
+    /// # Errors
+    /// Returns an execution error if candidate compilation or allocation fails.
+    pub fn with_member_descriptors(mut self, enabled: bool) -> Result<Self, BackendError> {
+        if enabled && !self.batched.is_empty() {
+            let ops = Arc::new(
+                crate::model_ops::member::MemberOps::new(Arc::clone(&self.stream))
+                    .map_err(|error| BackendError::ExecutionFailed(error.to_string()))?,
+            );
+            for lane in self.batched.values_mut() {
+                lane.prepare_member_descriptors(Arc::clone(&ops))
+                    .map_err(|error| BackendError::ExecutionFailed(error.to_string()))?;
+            }
+        } else if !enabled {
+            for lane in self.batched.values_mut() {
+                lane.set_member_descriptors(false)
+                    .map_err(|error| BackendError::ExecutionFailed(error.to_string()))?;
+            }
+        }
+        Ok(self)
+    }
+
     /// Enable same-sequence prefill chunking with `members` tokens per chunk.
     ///
     /// The lane is a copy of the single-row executor's model bindings: it

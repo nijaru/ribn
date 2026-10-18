@@ -15,6 +15,7 @@ pub(super) struct Options {
     pub fixture_prompt: bool,
     pub gemv_mode: GemvMode,
     pub grouped_decode: bool,
+    pub member_descriptors: bool,
     pub dispatch_diagnostics: bool,
     pub prefill_chunk: Option<usize>,
     pub print_tokens: bool,
@@ -106,6 +107,9 @@ impl Options {
             grouped_decode: arguments
                 .iter()
                 .any(|argument| argument == "--grouped-decode"),
+            member_descriptors: arguments
+                .iter()
+                .any(|argument| argument == "--member-descriptors"),
             dispatch_diagnostics: arguments
                 .iter()
                 .any(|argument| argument == "--dispatch-diagnostics"),
@@ -158,6 +162,7 @@ fn validate_arguments(arguments: &[String]) -> Result<(), String> {
                     "--print-tokens",
                     "--divergence-probe",
                     "--grouped-decode",
+                    "--member-descriptors",
                     "--dispatch-diagnostics",
                 ]
                 .into_iter()

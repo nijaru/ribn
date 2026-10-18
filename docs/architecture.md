@@ -75,18 +75,23 @@ a sequence holds whole pages, and its capacity is `pages * page_tokens` — and 
 decode addresses state through a device page table, so appends and attention both resolve
 logical tokens to physical ones. Each sequence still owns its own run of pages, so the
 table is identity-bound: sharing a resident arena, non-identity pages and page growth are
-not implemented. There is no paged write/growth consumer, prefix cache, restore operation
+not implemented. There is no shared-arena page-grant/growth consumer, prefix cache, restore operation
 or recomputation preemption. The surviving `engine-core` contracts are the prepared batch
 a backend executes, continuation state declarations and accounting, and artifact weight
 descriptions; they are not a model or execution-plan layer. A plan/description/capability
 layer that nothing read was removed, so a model now describes only what its backend and its
 own state accounting consume.
-its duplicate scheduler, serving runtime and `ribn local` frontend have been removed.
+The former duplicate scheduler, serving runtime and `ribn local` frontend have been removed.
 Whole decode offers of two through eight rows can now batch across different positive
 KV capacities/positions when model geometry/dtype match. Attention remains per-member
 on one stream, sharing executor-owned score scratch without padding caches; mixed
 prefill/decode and larger offers retain their fallbacks. See the
 [qualification](../benchmarks/runtime-contract.md#heterogeneous-capacity-decode-2026-10-16).
+The default-off member-descriptor candidate lowers state access through
+`nvidia/src/decode/member_state.rs`, with host packet layout in `member_descriptor.rs`
+and CUDA binding/guards in `state/descriptor.rs`. Its member-dimension kernels are not
+device-qualified; the [pending gates](../benchmarks/runtime-contract.md#member-descriptor-candidate-device-gates-pending)
+own numerical, retirement and performance acceptance.
 The eight-token same-sequence prefill lane samples its final chunk row by default, so a
 prompt that is an exact whole number of chunks never re-runs its last token; partial
 prompts, the scalar projection mode and the chunk scan keep the serial final step. See the

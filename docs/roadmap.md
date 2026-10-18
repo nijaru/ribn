@@ -60,6 +60,19 @@ eight-row decode step; 0.94-1.5 s host enqueue per eight-row short prefill). Sli
 and part of 4 are implementable and host-testable without a device; every acceptance
 below that names device evidence stays unproven until the RTX 4090 suites run.
 
+**Slices 1–2 have a default-off decode candidate, not a promotion.**
+`QwenLoadOptions::member_descriptors` and the native benchmark's `--member-descriptors`
+select a single uploaded packet and member-dimension convolution, recurrent update,
+KV append and attention kernels. A gather kernel replaces the per-member q/k copies.
+Packet assembly/bounds are host-tested; Rust CUDA-feature checks cover the binding and
+access-guard lifetimes, not device completion. Publication explicitly waits for the H2D
+copy before reusing its host packet; uncertain copies retain or quarantine that packet.
+The qualified per-member path remains the default; prefill, arenas and graphs are unchanged.
+[Numerical/retirement and timing gates remain pending](../benchmarks/runtime-contract.md#member-descriptor-candidate-device-gates-pending).
+The launch target below remains unproven: projections, norms and residual operations
+already batch members, so removing state loops alone cannot imply a batch-width reduction
+of the entire step. Profile the remaining fixed layer chain before choosing further fusion.
+
 1. **Member descriptor.** One device descriptor per step: per-member KV layer pointers and
    page-table pointers, per-member recurrent matrix and convolution-history pointers, and
    the member count, published in a single host-to-device copy. Host-tested assembly,
@@ -82,8 +95,9 @@ below that names device evidence stays unproven until the RTX 4090 suites run.
    step, bit-identical outputs, and cancellation/retirement semantics preserved through
    replay. This is the slice vLLM and llama.cpp both rely on.
 
-Slices 4 and 5 are prerequisites for each other with 2: graphs need stable addresses, and
-the arena is only worth its accounting when descriptors address it. Do not claim any
+Slice 2 precedes arena integration; graph capture requires stable captured storage and
+completion-safe descriptor updates. A resident arena is the planned storage increment,
+not evidence that descriptors alone eliminate the fixed per-layer launch chain. Do not claim any
 throughput figure from this sequence without the device suites; the c1 path stays the
 correctness oracle throughout.
 

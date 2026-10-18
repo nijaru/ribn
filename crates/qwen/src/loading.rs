@@ -36,6 +36,9 @@ pub struct QwenLoadOptions {
     /// Experimental compatible decode subgroups. Disabled until device and
     /// mixed-workload performance gates pass; does not change continuation policy.
     pub grouped_decode: bool,
+    /// Unqualified member-dimension continuation kernels. Explicitly opt-in;
+    /// preserves serial/same-sequence prefill and the ordinary single-row path.
+    pub member_descriptors: bool,
     /// Same-sequence prefill chunk size, or `None` for the serial prefill
     /// path. Enabled by default: the lane is backend-local, and its parity and
     /// serving-effect gates are recorded in
@@ -66,6 +69,7 @@ impl Default for QwenLoadOptions {
             max_sequences: 1,
             gemv_mode: GemvMode::default(),
             grouped_decode: false,
+            member_descriptors: false,
             prefill_chunk_members: Some(DEFAULT_PREFILL_CHUNK_MEMBERS),
             sampled_prefill_final: true,
             weight_budget_bytes: None,
@@ -198,6 +202,9 @@ fn prepare_dispatcher(
     dispatcher: CudaQwen35ServingDispatcher,
     options: &QwenLoadOptions,
 ) -> Result<CudaQwen35ServingDispatcher, ExecutionError> {
+    let dispatcher = dispatcher
+        .with_member_descriptors(options.member_descriptors)
+        .map_err(model_error)?;
     let Some(members) = options.prefill_chunk_members else {
         return Ok(dispatcher);
     };

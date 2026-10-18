@@ -776,7 +776,49 @@ member-dimension kernels that take a device array of per-member state pointers (
 per op per step, cutting the count by roughly the batch width), and CUDA graph capture of
 the decode step, which vLLM and llama.cpp both rely on and which requires a resident arena
 so the captured pointers do not move. Prefill needs the same treatment at chunk
-granularity. None of that is implemented.
+granularity. A default-off decode descriptor candidate is now available below; prefill,
+arenas and graphs remain unimplemented. Most projection/norm/residual operations already
+batch members, so eliminating the state loops does not imply an eightfold reduction in
+all launches. Re-profile the candidate before attributing its residual cost or revising
+the roadmap's launch target.
+
+#### Member-descriptor candidate (device gates pending)
+
+`QwenLoadOptions::member_descriptors` (default `false`) and native benchmark flag
+`--member-descriptors` select the candidate only for cross-request decode lanes.
+The text/HTTP defaults, single-row dispatcher fallback and same-sequence prefill path
+are unchanged. One member-major u64 packet holds layer pointer pairs and page metadata;
+convolution, recurrent update, KV append and attention consume it, with disjoint score
+scratch for concurrently executing members. Q/k gathering changes copies, not normalization.
+The eager candidate explicitly waits for metadata publication, retaining its host packet
+through failed copies/drains. This wait is part of its future timing, not hidden overhead.
+
+Host evidence: packet assembly, missing/misaligned addresses, page reach and count bounds
+pass without CUDA. Rust CUDA-feature checks compile the binding and optional load/benchmark
+path. A local C++ syntax probe with CUDA built-ins stubbed also passes; it does **not**
+compile GPU code or substitute for NVRTC, numerical or lifetime qualification.
+Actual allocation lengths/dtypes now validate for every row before any model launch,
+including allocations replaced through a public mutable state accessor.
+
+The new ignored gate
+`heterogeneous_decode::member_descriptors_preserve_hidden_and_all_continuation_bits`
+compares the existing batched path on common histories at widths 1/3/8, nonadjacent reaches,
+page crossings and score growth/reuse. It checks finite, bit-identical hidden state, all KV,
+recurrent matrices and convolution history, plus greedy selections. It also replaces a
+late member's matrix with an undersized allocation and requires rejection without peer
+mutation. The existing heterogeneous-capacity gate now uses one-token pages to exercise
+multiple table entries without rounding its exact-capacity cases. **Neither device gate
+has been run for these changes.**
+
+When device access returns, serialize the isolated new gate, the full reference suite,
+Qwen runtime/HTTP, in-flight retirement and memcheck under the existing idle-GPU lock.
+Before promotion also exercise descriptor reuse/disable, partial enqueue and failed drain
+through the asynchronous serving owner; host tests do not qualify those lifetimes.
+Then repeat matched native c1/c4/c8 runs with identical prompt/chunk/token/diagnostic
+settings, toggling only `--member-descriptors`, followed by the endpoint comparison if
+that scope is enabled. Count launches and host enqueue time as well as device/total time,
+retained descriptor/score bytes and output agreement. No speedup, NVRTC acceptance or
+competitive improvement is claimed from this host-only work.
 
 ## Experimental CLI
 

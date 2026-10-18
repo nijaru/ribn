@@ -1,3 +1,5 @@
+pub(crate) mod descriptor;
+
 use std::collections::HashMap;
 use std::fmt;
 use std::sync::Arc;

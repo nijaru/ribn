@@ -25,13 +25,19 @@ use engine_core::DataType;
 
 use crate::activation::CudaQ8_1Quantizer;
 use crate::cuda::{CudaF32Weight, CudaQuantizedWeight};
+use crate::member_descriptor::DescriptorLayout;
+use crate::model_ops::member::MemberOps;
 use crate::model_ops::{CudaModelKernelError, CudaQwen35Ops};
 use crate::quantized::{
     CudaIq4XsQ8_1Gemv, CudaQ4KEmbedding, CudaQ4KQ8_1Gemv, CudaQ5KQ8_1Gemv, CudaQ6KQ8_1Gemv,
     CudaQ8_0Q8_1Gemv, CudaQuantizedKernelError, MAX_BATCH_MEMBERS,
 };
 use crate::staging::{CudaQwen35Weights, QwenGemvKernel};
+use crate::state::descriptor::DescriptorWorkspace;
+
+mod member_state;
 use crate::state::{CudaHybridState, CudaStateError};
+use member_state::BatchStates;
 
 use crate::{
     ATTN_HEAD_DIM, ATTN_KV_HEADS, ATTN_Q_HEADS, ATTN_ROPE_BASE, ATTN_ROT_DIMS, GDN_D_CONV,
@@ -1148,28 +1154,49 @@ fn validate_state(
     }
     for layer in 0..u32::try_from(full_count).expect("validated layer count") {
         let kv = state.kv().ok_or(missing_kv())?;
+        let elements = usize::try_from(kv.spec().capacity_tokens())
+            .ok()
+            .and_then(|capacity| capacity.checked_mul(ATTN_KV_HEADS * ATTN_HEAD_DIM))
+            .ok_or_else(|| {
+                CudaDecodeError::InvalidPlan("KV allocation shape overflows usize".to_owned())
+            })?;
         for buffer in [kv.layer_keys(layer), kv.layer_values(layer)] {
-            validate_buffer_context(context, buffer)?;
+            validate_state_buffer(context, buffer, DataType::F16, elements)?;
         }
     }
     for layer in 0..u32::try_from(recurrent_count).expect("validated layer count") {
         let recurrent = state.recurrent().ok_or(missing_recurrent())?;
-        for buffer in [
+        validate_state_buffer(
+            context,
             recurrent.layer_matrix(layer),
+            DataType::F32,
+            GDN_V_HEADS * GDN_HEAD_DIM * GDN_HEAD_DIM,
+        )?;
+        validate_state_buffer(
+            context,
             recurrent.layer_convolution(layer),
-        ] {
-            validate_buffer_context(context, buffer)?;
-        }
+            DataType::F32,
+            GDN_QKV_DIM * (GDN_D_CONV - 1),
+        )?;
     }
     Ok(())
 }
 
-fn validate_buffer_context(
+fn validate_state_buffer(
     context: &Arc<CudaContext>,
     buffer: Option<&crate::state::CudaStateBuffer>,
+    dtype: DataType,
+    elements: usize,
 ) -> Result<(), CudaDecodeError> {
     let buffer = buffer
         .ok_or_else(|| CudaDecodeError::InvalidPlan("state lacks a layer buffer".to_owned()))?;
+    if buffer.dtype() != dtype || buffer.len() != elements {
+        return Err(CudaDecodeError::InvalidPlan(format!(
+            "state allocation must contain {elements} {dtype:?} elements, got {} {:?}",
+            buffer.len(),
+            buffer.dtype()
+        )));
+    }
     let actual = match buffer {
         crate::state::CudaStateBuffer::F16(buffer) => buffer.context(),
         crate::state::CudaStateBuffer::F32(buffer) => buffer.context(),
@@ -1665,6 +1692,12 @@ struct BatchScratch {
     scores: Option<CudaSlice<f32>>,
 }
 
+struct MemberDecode {
+    workspace: DescriptorWorkspace,
+    ops: Arc<MemberOps>,
+    enabled: bool,
+}
+
 /// Multi-member Qwen3.8 decode executor over shared staged weights.
 ///
 /// `decode_step_batch` advances every member's model state by one token and
@@ -1699,6 +1732,8 @@ pub struct CudaQwen35BatchDecode {
     /// with [`GemvMode::Warp`] and [`Self::gdn_chunk_scan`] disabled, whose
     /// rows are bit-identical to the batch-1 warp rows.
     sampled_final_chunk: bool,
+    /// Experimental indirect state access; absent on the qualified path.
+    member_decode: Option<MemberDecode>,
     /// Lazily built integer-dot state for [`GemvMode::IntegerDot`], shared
     /// shape with the batch-1 projector but holding batch-major scratch:
     /// one packed `[members][K/32*9]` buffer per distinct projection width.
@@ -1856,6 +1891,7 @@ impl CudaQwen35BatchDecode {
             gemv_mode,
             gdn_chunk_scan,
             sampled_final_chunk: false,
+            member_decode: None,
             int_dot: None,
         })
     }
@@ -1868,6 +1904,47 @@ impl CudaQwen35BatchDecode {
     /// step and never mutate in-flight launches.
     pub fn set_gemv_mode(&mut self, mode: GemvMode) {
         self.gemv_mode = mode;
+    }
+
+    /// Opt into unqualified member-dimension state kernels for decode only.
+    /// Same-sequence prefill retains the qualified path. No automatic selection
+    /// is allowed until numerical, retirement and workload gates pass on device.
+    ///
+    /// # Errors
+    /// Returns a compilation/allocation error without changing the selected path.
+    pub fn set_member_descriptors(&mut self, enabled: bool) -> Result<(), CudaDecodeError> {
+        if enabled && self.member_decode.is_none() {
+            self.prepare_member_descriptors(Arc::new(MemberOps::new(Arc::clone(&self.stream))?))?;
+        }
+        if let Some(member) = self.member_decode.as_mut() {
+            // Keep allocated workspace/kernels resident when disabled: prior
+            // asynchronous enqueues may still refer to them.
+            member.enabled = enabled;
+        }
+        Ok(())
+    }
+
+    pub(crate) fn prepare_member_descriptors(
+        &mut self,
+        ops: Arc<MemberOps>,
+    ) -> Result<(), CudaDecodeError> {
+        if let Some(member) = self.member_decode.as_mut() {
+            member.enabled = true;
+            return Ok(());
+        }
+        let kv = self
+            .layer_kinds
+            .iter()
+            .filter(|&&kind| kind == QwenLayerKind::FullAttention)
+            .count();
+        let layout = DescriptorLayout::new(self.members, kv, self.layer_kinds.len() - kv)
+            .map_err(|message| CudaDecodeError::InvalidPlan(message.to_owned()))?;
+        self.member_decode = Some(MemberDecode {
+            ops,
+            workspace: DescriptorWorkspace::new(&self.stream, layout)?,
+            enabled: true,
+        });
+        Ok(())
     }
 
     /// Whether this lane routes its recurrent layers through the
@@ -2118,115 +2195,142 @@ impl CudaQwen35BatchDecode {
                 return Err(CudaDecodeError::PositionOverflow { position, capacity });
             }
         }
-        // Each member's attention finishes before the next member uses these
-        // scores on the same stream. Only the largest member's row is needed;
-        // caches themselves keep their independently granted capacities.
+        let descriptor_mode = self
+            .member_decode
+            .as_ref()
+            .is_some_and(|member| member.enabled);
+        // The qualified path reuses one row on this stream; the candidate
+        // executes members concurrently and needs a disjoint score row each.
+        // Neither path pads continuation allocations to the largest capacity.
         if let Some(capacity) = states
             .iter()
             .filter_map(|state| state.kv().map(|kv| kv.spec().capacity_tokens() as usize))
             .max()
         {
-            self.ensure_attention_scores(1, capacity)?;
+            self.ensure_attention_scores(if descriptor_mode { self.members } else { 1 }, capacity)?;
         }
         for &token in tokens {
             validate_token(token, self.scratch.logits.len() / self.members)?;
         }
-        self.upload_tokens(tokens, positions)?;
+        // Keep the workspace outside `self` while its binding exclusively
+        // borrows state. Restore it even after a partial enqueue error; the
+        // lane and serving retirement owner retain all device-visible storage.
+        let mut member_decode = if descriptor_mode {
+            self.member_decode.take()
+        } else {
+            None
+        };
+        let stream = Arc::clone(&self.stream);
+        let result = (|| {
+            let mut states = if let Some(member) = member_decode.as_mut() {
+                BatchStates::Descriptor(
+                    member.workspace.bind(states, positions, &stream)?,
+                    &member.ops,
+                )
+            } else {
+                BatchStates::PerMember(states)
+            };
+            self.upload_tokens(tokens, positions)?;
 
-        let embedding_weight = self
-            .weights
-            .quantized_tensor("token_embd.weight")
-            .ok_or_else(|| CudaDecodeError::MissingTensor("token_embd.weight".to_owned()))?;
-        self.embedding.execute_batch(
-            embedding_weight,
-            &self.scratch.tokens,
-            &mut self.scratch.hidden,
-        )?;
-
-        let tensor_names = Arc::clone(&self.tensor_names);
-        for (layer, names) in tensor_names.iter().enumerate() {
-            self.ops.rms_norm_batch(
-                &self.scratch.hidden,
-                f32_slice(&self.weights, &names.common.attn_norm)?,
-                &mut self.scratch.normed,
-                N_EMBD,
-                self.epsilon,
+            let embedding_weight = self
+                .weights
+                .quantized_tensor("token_embd.weight")
+                .ok_or_else(|| CudaDecodeError::MissingTensor("token_embd.weight".to_owned()))?;
+            self.embedding.execute_batch(
+                embedding_weight,
+                &self.scratch.tokens,
+                &mut self.scratch.hidden,
             )?;
-            match &names.attention {
-                AttentionLayerTensorNames::Recurrent(attention) => {
-                    self.recurrent_layer_batch(states, layer, attention)?;
+
+            let tensor_names = Arc::clone(&self.tensor_names);
+            for (layer, names) in tensor_names.iter().enumerate() {
+                self.ops.rms_norm_batch(
+                    &self.scratch.hidden,
+                    f32_slice(&self.weights, &names.common.attn_norm)?,
+                    &mut self.scratch.normed,
+                    N_EMBD,
+                    self.epsilon,
+                )?;
+                match &names.attention {
+                    AttentionLayerTensorNames::Recurrent(attention) => {
+                        self.recurrent_layer_batch(&mut states, layer, attention)?;
+                    }
+                    AttentionLayerTensorNames::FullAttention(attention) => {
+                        self.full_attention_layer_batch(&mut states, layer, attention, positions)?;
+                    }
                 }
-                AttentionLayerTensorNames::FullAttention(attention) => {
-                    self.full_attention_layer_batch(states, layer, attention, positions)?;
-                }
+                self.ops.rms_norm_batch(
+                    &self.scratch.hidden,
+                    f32_slice(&self.weights, &names.common.post_attention_norm)?,
+                    &mut self.scratch.normed,
+                    N_EMBD,
+                    self.epsilon,
+                )?;
+                gemv_batch(
+                    &self.weights,
+                    &names.common.ffn_gate,
+                    &self.scratch.normed,
+                    &mut self.scratch.ffn_gate_buf,
+                    self.members,
+                    N_EMBD,
+                    self.gemv_mode,
+                    self.int_dot.as_mut(),
+                )?;
+                gemv_batch(
+                    &self.weights,
+                    &names.common.ffn_up,
+                    &self.scratch.normed,
+                    &mut self.scratch.ffn_up_buf,
+                    self.members,
+                    N_EMBD,
+                    self.gemv_mode,
+                    self.int_dot.as_mut(),
+                )?;
+                self.ops.silu_mul(
+                    &self.scratch.ffn_gate_buf,
+                    &self.scratch.ffn_up_buf,
+                    &mut self.scratch.ffn_act,
+                )?;
+                gemv_batch(
+                    &self.weights,
+                    &names.common.ffn_down,
+                    &self.scratch.ffn_act,
+                    &mut self.scratch.ffn_incr,
+                    self.members,
+                    N_FF,
+                    self.gemv_mode,
+                    self.int_dot.as_mut(),
+                )?;
+                self.ops
+                    .residual_add(&mut self.scratch.hidden, &self.scratch.ffn_incr)?;
             }
+
+            // Output head over all members, then one batched argmax.
             self.ops.rms_norm_batch(
                 &self.scratch.hidden,
-                f32_slice(&self.weights, &names.common.post_attention_norm)?,
+                f32_slice(&self.weights, "output_norm.weight")?,
                 &mut self.scratch.normed,
                 N_EMBD,
                 self.epsilon,
             )?;
             gemv_batch(
                 &self.weights,
-                &names.common.ffn_gate,
+                "output.weight",
                 &self.scratch.normed,
-                &mut self.scratch.ffn_gate_buf,
+                &mut self.scratch.logits,
                 self.members,
                 N_EMBD,
-                self.gemv_mode,
-                self.int_dot.as_mut(),
-            )?;
-            gemv_batch(
-                &self.weights,
-                &names.common.ffn_up,
-                &self.scratch.normed,
-                &mut self.scratch.ffn_up_buf,
-                self.members,
-                N_EMBD,
-                self.gemv_mode,
-                self.int_dot.as_mut(),
-            )?;
-            self.ops.silu_mul(
-                &self.scratch.ffn_gate_buf,
-                &self.scratch.ffn_up_buf,
-                &mut self.scratch.ffn_act,
-            )?;
-            gemv_batch(
-                &self.weights,
-                &names.common.ffn_down,
-                &self.scratch.ffn_act,
-                &mut self.scratch.ffn_incr,
-                self.members,
-                N_FF,
                 self.gemv_mode,
                 self.int_dot.as_mut(),
             )?;
             self.ops
-                .residual_add(&mut self.scratch.hidden, &self.scratch.ffn_incr)?;
+                .argmax_into_batch(&self.scratch.logits, &mut self.scratch.selected)?;
+            Ok(())
+        })();
+        if let Some(member) = member_decode {
+            self.member_decode = Some(member);
         }
-
-        // Output head over all members, then one batched argmax.
-        self.ops.rms_norm_batch(
-            &self.scratch.hidden,
-            f32_slice(&self.weights, "output_norm.weight")?,
-            &mut self.scratch.normed,
-            N_EMBD,
-            self.epsilon,
-        )?;
-        gemv_batch(
-            &self.weights,
-            "output.weight",
-            &self.scratch.normed,
-            &mut self.scratch.logits,
-            self.members,
-            N_EMBD,
-            self.gemv_mode,
-            self.int_dot.as_mut(),
-        )?;
-        self.ops
-            .argmax_into_batch(&self.scratch.logits, &mut self.scratch.selected)?;
-        Ok(())
+        result
     }
 
     fn ensure_attention_scores(
@@ -2788,7 +2892,7 @@ impl CudaQwen35BatchDecode {
     )]
     fn recurrent_layer_batch(
         &mut self,
-        states: &mut [&mut CudaHybridState],
+        states: &mut BatchStates<'_, '_>,
         layer: usize,
         names: &RecurrentLayerTensorNames,
     ) -> Result<(), CudaDecodeError> {
@@ -2848,63 +2952,15 @@ impl CudaQwen35BatchDecode {
             GDN_V_HEADS,
         )?;
 
-        // Per member: conv history + recurrent matrix live in the member's
-        // state; scratch rows are sliced views of the batch buffers.
-        for member in 0..m {
-            let slot = self.recurrent_slot[layer];
-            let state = states
-                .get_mut(member)
-                .ok_or_else(|| CudaDecodeError::InvalidPlan("missing member state".to_owned()))?;
-            let recurrent = state.recurrent_mut().ok_or(missing_recurrent())?;
-            let (matrix_buffer, conv_buffer) = recurrent.layer_mut(slot).ok_or_else(|| {
-                CudaDecodeError::InvalidPlan(format!("recurrent state lacks slot {slot}"))
-            })?;
-            // Validate the matrix buffer eagerly; the state-update loop below
-            // re-borrows it for the actual update.
-            let matrix = matrix_buffer.as_f32_mut().ok_or_else(|| {
-                CudaDecodeError::InvalidPlan("recurrent matrix must be F32".to_owned())
-            })?;
-            let _ = matrix.len();
-            let history = conv_buffer.as_f32_mut().ok_or_else(|| {
-                CudaDecodeError::InvalidPlan("recurrent convolution history must be F32".to_owned())
-            })?;
-
-            let qkv = member_row(&self.scratch.qkv_mixed, member, GDN_QKV_DIM)
-                .ok_or_else(|| CudaDecodeError::Driver("qkv row out of range".to_owned()))?;
-            let mut conv_out = member_row_mut(&mut self.scratch.conv_out, member, GDN_QKV_DIM)
-                .ok_or_else(|| CudaDecodeError::Driver("conv_out row out of range".to_owned()))?;
-            self.ops
-                .gdn_conv_silu_views(&qkv, conv_weight, history, &mut conv_out, GDN_QKV_DIM)?;
-        }
+        let slot = self.recurrent_slot[layer];
+        states.convolve(&self.ops, &mut self.scratch, slot, conv_weight)?;
 
         // Q/k normalization, mirroring the batch-1 flow exactly: copy each
         // member's conv_out q section [0, K_OFFSET) into gdn_q and k
         // section [K_OFFSET, V_OFFSET) into gdn_k, then l2-normalize those
         // buffers. conv_out itself stays untouched because the state update
         // consumes its full row (silu-activated v channels included).
-        for member in 0..m {
-            let row = member * GDN_QKV_DIM;
-            let conv_q = self
-                .scratch
-                .conv_out
-                .try_slice(row..row + GDN_K_OFFSET)
-                .ok_or_else(|| CudaDecodeError::Driver("conv q slice out of range".to_owned()))?;
-            let mut gdn_q = member_row_mut(&mut self.scratch.gdn_q, member, GDN_K_OFFSET)
-                .ok_or_else(|| CudaDecodeError::Driver("gdn_q row out of range".to_owned()))?;
-            self.stream
-                .memcpy_dtod(&conv_q, &mut gdn_q)
-                .map_err(|error| CudaDecodeError::Driver(error.to_string()))?;
-            let conv_k = self
-                .scratch
-                .conv_out
-                .try_slice(row + GDN_K_OFFSET..row + GDN_V_OFFSET)
-                .ok_or_else(|| CudaDecodeError::Driver("conv k slice out of range".to_owned()))?;
-            let mut gdn_k = member_row_mut(&mut self.scratch.gdn_k, member, GDN_K_OFFSET)
-                .ok_or_else(|| CudaDecodeError::Driver("gdn_k row out of range".to_owned()))?;
-            self.stream
-                .memcpy_dtod(&conv_k, &mut gdn_k)
-                .map_err(|error| CudaDecodeError::Driver(error.to_string()))?;
-        }
+        states.gather_qk(&self.stream, &mut self.scratch, slot)?;
         // One launch per normalized buffer rather than two per member: these
         // loads were the single largest source of per-step host launches.
         self.ops.l2_norm_heads_batch(
@@ -2924,34 +2980,7 @@ impl CudaQwen35BatchDecode {
         // matrix is a distinct per-request allocation, gathered into a
         // mutable slice of borrows. Unused pointer slots are filled by the
         // kernel wrapper from the scratch pad.
-        {
-            let slot = self.recurrent_slot[layer];
-            let mut matrices: Vec<&mut CudaSlice<f32>> = Vec::with_capacity(m);
-            for state in states.iter_mut() {
-                let recurrent = state.recurrent_mut().ok_or(missing_recurrent())?;
-                let (matrix_buffer, _conv_buffer) = recurrent.layer_mut(slot).ok_or_else(|| {
-                    CudaDecodeError::InvalidPlan(format!("recurrent state lacks slot {slot}"))
-                })?;
-                let matrix = matrix_buffer.as_f32_mut().ok_or_else(|| {
-                    CudaDecodeError::InvalidPlan("recurrent matrix must be F32".to_owned())
-                })?;
-                matrices.push(matrix);
-            }
-            self.ops.gdn_state_update_batch(
-                &mut matrices,
-                &mut self.scratch.gdn_matrix_pads,
-                &self.scratch.gdn_q,
-                &self.scratch.gdn_k,
-                &self.scratch.conv_out,
-                &self.scratch.decay,
-                &self.scratch.beta,
-                &mut self.scratch.state_out,
-                GDN_V_HEADS,
-                GDN_K_HEADS,
-                GDN_HEAD_DIM,
-                GDN_V_OFFSET,
-            )?;
-        }
+        states.update_recurrent(&self.ops, &mut self.scratch, slot)?;
 
         self.ops.gdn_gated_norm_batch(
             &self.scratch.state_out,
@@ -2985,7 +3014,7 @@ impl CudaQwen35BatchDecode {
     )]
     fn full_attention_layer_batch(
         &mut self,
-        states: &mut [&mut CudaHybridState],
+        states: &mut BatchStates<'_, '_>,
         layer: usize,
         names: &FullAttentionLayerTensorNames,
         positions: &[u32],
@@ -3058,105 +3087,7 @@ impl CudaQwen35BatchDecode {
             ATTN_ROPE_BASE,
         )?;
 
-        // Per member: append to this member's KV cache, then score attention
-        // against it, using member views of the batch scratch.
-        for (member, &position_u32) in positions.iter().enumerate().take(m) {
-            let slot = self.kv_slot[layer];
-            let position = usize::try_from(position_u32)
-                .map_err(|_| CudaDecodeError::Driver("position overflowed".to_owned()))?;
-            let state = states
-                .get_mut(member)
-                .ok_or_else(|| CudaDecodeError::InvalidPlan("missing member state".to_owned()))?;
-            // Read the capacity and this row's physical page before borrowing
-            // the cache mutably.
-            let capacity = state
-                .kv()
-                .map_or(usize::MAX, |kv| kv.spec().capacity_tokens() as usize);
-            let stride = capacity;
-            let tokens = position + 1;
-            let kv = state.kv_mut().ok_or(missing_kv())?;
-            let page_tokens = usize::try_from(kv.spec().page_tokens()).map_err(|_| {
-                CudaDecodeError::InvalidPlan("KV page size overflows usize".to_owned())
-            })?;
-            let physical = kv.physical_token(position_u32).ok_or_else(|| {
-                CudaDecodeError::InvalidPlan("KV page table lacks the row's page".to_owned())
-            })?;
-            let (table, keys_buffer, values_buffer) =
-                kv.layer_paged_mut(slot).ok_or_else(|| {
-                    CudaDecodeError::InvalidPlan(format!("KV state lacks slot {slot}"))
-                })?;
-            let cache_keys = keys_buffer
-                .as_f16_mut()
-                .ok_or_else(|| CudaDecodeError::InvalidPlan("KV cache must be F16".to_owned()))?;
-            let cache_values = values_buffer
-                .as_f16_mut()
-                .ok_or_else(|| CudaDecodeError::InvalidPlan("KV cache must be F16".to_owned()))?;
-            let k_member = member_row(
-                &self.scratch.k_normed,
-                member,
-                ATTN_KV_HEADS * ATTN_HEAD_DIM,
-            )
-            .ok_or_else(|| CudaDecodeError::Driver("k_normed row out of range".to_owned()))?;
-            let v_member =
-                member_row(&self.scratch.v_raw, member, ATTN_KV_HEADS * ATTN_HEAD_DIM)
-                    .ok_or_else(|| CudaDecodeError::Driver("v_raw row out of range".to_owned()))?;
-            self.ops.kv_append_f16_views(
-                &k_member,
-                &v_member,
-                cache_keys,
-                cache_values,
-                physical,
-                ATTN_KV_HEADS,
-                ATTN_HEAD_DIM,
-            )?;
-            let cache_keys = keys_buffer
-                .as_f16()
-                .ok_or_else(|| CudaDecodeError::InvalidPlan("KV cache must be F16".to_owned()))?;
-            let cache_values = values_buffer
-                .as_f16()
-                .ok_or_else(|| CudaDecodeError::InvalidPlan("KV cache must be F16".to_owned()))?;
-
-            let q_member = member_row(&self.scratch.q_packed, member, ATTN_Q_HEADS * ATTN_HEAD_DIM)
-                .ok_or_else(|| CudaDecodeError::Driver("q_packed row out of range".to_owned()))?;
-            let gate_member = member_row(
-                &self.scratch.q_raw,
-                member,
-                ATTN_Q_HEADS * 2 * ATTN_HEAD_DIM,
-            )
-            .ok_or_else(|| CudaDecodeError::Driver("q_raw row out of range".to_owned()))?;
-            let scores =
-                self.scratch.scores.as_mut().ok_or_else(|| {
-                    CudaDecodeError::InvalidPlan("score scratch is unset".to_owned())
-                })?;
-            // No member-major offset: score/softmax/weighted-sum for this
-            // member are queued before the next member overwrites the buffer.
-            // The full allocation remains executor-owned through completion.
-            let mut scores_member = scores
-                .try_slice_mut(..ATTN_Q_HEADS * stride)
-                .ok_or_else(|| CudaDecodeError::Driver("scores row out of range".to_owned()))?;
-            let mut out_member = member_row_mut(
-                &mut self.scratch.attn_out,
-                member,
-                ATTN_Q_HEADS * ATTN_HEAD_DIM,
-            )
-            .ok_or_else(|| CudaDecodeError::Driver("attn_out row out of range".to_owned()))?;
-            self.ops.attn_score_gqa_paged_views(
-                &q_member,
-                cache_keys,
-                cache_values,
-                table,
-                page_tokens,
-                &gate_member,
-                &mut scores_member,
-                &mut out_member,
-                tokens,
-                1,
-                stride,
-                ATTN_Q_HEADS,
-                ATTN_KV_HEADS,
-                ATTN_HEAD_DIM,
-            )?;
-        }
+        states.attend(&self.ops, &mut self.scratch, self.kv_slot[layer], positions)?;
 
         gemv_batch(
             &self.weights,

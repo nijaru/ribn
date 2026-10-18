@@ -31,6 +31,8 @@ mod staging;
 mod state;
 
 #[cfg(any(feature = "cuda", test))]
+mod member_descriptor;
+#[cfg(any(feature = "cuda", test))]
 mod submissions;
 
 mod profile;

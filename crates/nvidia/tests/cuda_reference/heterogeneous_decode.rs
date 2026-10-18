@@ -21,7 +21,9 @@ fn fresh_state(
     position: u32,
     member: usize,
 ) -> CudaHybridState {
-    let kv = KvStateSpec::new(16, 4, 256, capacity, DataType::F16).unwrap();
+    // One-token pages preserve exact requested capacities while exercising
+    // page-table traversal at every append/attention position.
+    let kv = KvStateSpec::with_pages(16, 4, 256, 1, capacity, DataType::F16).unwrap();
     let recurrent = RecurrentStateSpec::new(
         48,
         RecurrentMatrixShape::new(48, 128, 128).unwrap(),
@@ -114,6 +116,20 @@ fn assert_state_bits(
 #[test]
 #[ignore = "requires an idle CUDA GPU and the pinned ENGINE_QWEN_GGUF"]
 fn different_capacities_preserve_hidden_and_all_continuation_bits() {
+    capacity_parity(false);
+}
+
+#[test]
+#[ignore = "requires an idle CUDA GPU and the pinned ENGINE_QWEN_GGUF"]
+fn member_descriptors_preserve_hidden_and_all_continuation_bits() {
+    capacity_parity(true);
+}
+
+#[expect(
+    clippy::too_many_lines,
+    reason = "reuse one staged model across width, capacity and malformed-state cases"
+)]
+fn capacity_parity(member_descriptors: bool) {
     let path = std::env::var("ENGINE_QWEN_GGUF").expect("pinned GGUF path");
     let provider = QwenGguf::open(path).unwrap();
     assert_eq!(
@@ -138,7 +154,12 @@ fn different_capacities_preserve_hidden_and_all_continuation_bits() {
         epsilon,
     )
     .unwrap();
-    for members in [1, 2, 4, 8] {
+    let widths: &[usize] = if member_descriptors {
+        &[1, 3, 8]
+    } else {
+        &[1, 2, 4, 8]
+    };
+    for &members in widths {
         let build_lane = || {
             CudaQwen35BatchDecode::new(
                 &context,
@@ -152,6 +173,9 @@ fn different_capacities_preserve_hidden_and_all_continuation_bits() {
         };
         let mut control = build_lane();
         let mut candidate = build_lane();
+        candidate
+            .set_member_descriptors(member_descriptors)
+            .unwrap();
         // Reuse the same lanes across growth and smaller subsequent capacities.
         // Small cases fill each cache exactly; large cases exercise score strides
         // through 4096 with real short histories and nonadjacent row capacities.
@@ -180,6 +204,44 @@ fn different_capacities_preserve_hidden_and_all_continuation_bits() {
                     )
                 })
                 .collect();
+            if member_descriptors && members == 3 && capacities[0] == 2 {
+                // A public layer accessor can replace storage without changing
+                // its declaration. Reject a malformed late member before any
+                // peer's continuation is mutated by an indirect kernel.
+                let short =
+                    engine_nvidia::CudaStateBuffer::F32(stream.alloc_zeros::<f32>(1).unwrap());
+                let (matrix, _) = actual[members - 1]
+                    .recurrent_mut()
+                    .unwrap()
+                    .layer_mut(0)
+                    .unwrap();
+                let original = std::mem::replace(matrix, short);
+                let tokens: Vec<_> = starts[..members]
+                    .iter()
+                    .enumerate()
+                    .map(|(member, &position)| token(member, position))
+                    .collect();
+                let error = candidate
+                    .decode_step_batch(
+                        &mut actual.iter_mut().collect::<Vec<_>>(),
+                        &tokens,
+                        &starts[..members],
+                    )
+                    .unwrap_err();
+                assert!(matches!(
+                    error,
+                    engine_nvidia::CudaDecodeError::InvalidPlan(_)
+                ));
+                let (matrix, _) = actual[members - 1]
+                    .recurrent_mut()
+                    .unwrap()
+                    .layer_mut(0)
+                    .unwrap();
+                *matrix = original;
+                for member in 0..members {
+                    assert_state_bits(&stream, &reference[member], &actual[member]);
+                }
+            }
             for step in 0..2 {
                 let positions: Vec<_> =
                     starts[..members].iter().map(|start| start + step).collect();

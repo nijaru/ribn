@@ -119,6 +119,7 @@ fn run() -> Result<(), String> {
             max_sequences: options.concurrency,
             gemv_mode: options.gemv_mode,
             grouped_decode: options.grouped_decode,
+            member_descriptors: options.member_descriptors,
             // Burst probes preserve their serial baseline; trace traffic uses
             // the production prefill default unless explicitly set to off.
             prefill_chunk_members: options.prefill_chunk,
@@ -232,6 +233,7 @@ fn report_trace(
             "batch_token_budget": policy.max_batch_tokens, "prefill_token_budget": policy.prefill_chunk_tokens,
             "prefill_chunk_members": options.prefill_chunk, "gemv_mode": format!("{:?}", options.gemv_mode),
             "grouped_decode": options.grouped_decode,
+            "member_descriptors": options.member_descriptors,
             "continuation_capacity_bytes": memory.reserved_sequence_bytes,
             "free_before_preparation_bytes": memory.free_before_preparation_bytes,
             "free_after_preparation_bytes": memory.free_after_preparation_bytes,
@@ -405,6 +407,10 @@ fn report(
         }
     );
     println!(
+        "  experimental member descriptors: {}",
+        options.member_descriptors
+    );
+    println!(
         "  prepared model (load/staging/kernels): {:.2} s",
         load_elapsed.as_secs_f64()
     );
@@ -556,6 +562,13 @@ mod tests {
         assert_eq!(defaults.context_tokens, 37);
         assert_eq!(defaults.prefill_chunk, None);
         assert!(!defaults.grouped_decode);
+        assert!(!defaults.member_descriptors);
+        assert!(!QwenLoadOptions::default().member_descriptors);
+        assert!(
+            options(&["--member-descriptors"])
+                .unwrap()
+                .member_descriptors
+        );
         assert!(!defaults.dispatch_diagnostics);
         let observed = options(&["--dispatch-diagnostics"]).unwrap();
         assert!(observed.dispatch_diagnostics);
