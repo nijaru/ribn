@@ -766,6 +766,16 @@ adapters, processor configuration and execution resources. A numeric version is 
 an owner. Mutable request state stays in the runtime, not inside a shared mutable
 snapshot object protected by one global lock.
 
+Local GGUF preparation selects one open source for metadata, processor/template,
+complete-artifact identity and streamed weights. Pathnames are diagnostics, not
+source identity: replacing or unlinking the pathname must not redirect existing
+readers. Readers retain the source independently and share its descriptor without
+sharing logical cursors. The selected file must not be overwritten or truncated
+through any alias while artifact owners/readers live. Descriptor retention is not
+a copied or filesystem-enforced immutable snapshot; publish updates by replacing
+the pathname, not by mutating the selected file in place. Prepare the executor and
+processor together before exposing the application handle.
+
 Start with one loaded execution owner's lifetime pinning one snapshot. Implement
 **drain-and-replace** first: stop new admission, finish/cancel old work, establish
 completion, release old resources, then publish the replacement. Concurrent old/new

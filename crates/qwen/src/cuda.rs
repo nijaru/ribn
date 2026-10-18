@@ -20,7 +20,9 @@ pub struct QwenCuda {
 }
 
 impl QwenCuda {
-    /// Load weights, prepare kernels, and reserve logical sequence capacity.
+    /// Load one source's weights and tokenizer, prepare kernels, and reserve
+    /// logical sequence capacity. The processor and executor are returned together
+    /// so frontends do not reopen a pathname to assemble a different snapshot.
     ///
     /// # Errors
     /// Reports unsupported artifacts, invalid options, memory budget failure,
@@ -28,13 +30,16 @@ impl QwenCuda {
     pub fn load_gguf(
         path: impl Into<PathBuf>,
         options: QwenLoadOptions,
-    ) -> Result<Self, ExecutionError> {
-        let (execution, memory) = loading::load(path.into(), options)?;
-        Ok(Self {
-            info: execution.info().clone(),
-            execution: Some(execution),
-            memory,
-        })
+    ) -> Result<(Self, engine_gguf::GgufTokenizer), ExecutionError> {
+        let (execution, memory, tokenizer) = loading::load(path.into(), options)?;
+        Ok((
+            Self {
+                info: execution.info().clone(),
+                execution: Some(execution),
+                memory,
+            },
+            tokenizer,
+        ))
     }
 
     #[must_use]

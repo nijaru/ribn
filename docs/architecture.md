@@ -57,7 +57,12 @@ discard works across that boundary, without frontend orphan queues.
 
 Qwen's GGUF adapter normalizes required normalization epsilon, reference RoPE defaults,
 identity scaling, text-equivalent MRoPE sections and supported regular layer catalogs.
-Model configuration owns the resulting numerical semantics. Loading rejects disagreement
+Model configuration owns the resulting numerical semantics. GGUF metadata, full-artifact
+hashing and bounded tensor readers retain one shared opened source, with independent
+reader cursors; pathname replacement/unlink cannot redirect it. The source file must not
+be modified in place through any alias while artifact owners/readers live. Qwen CUDA
+preparation returns its tokenizer with the executor, so text assembly no longer reopens
+the pathname or builds a second tokenizer. Loading rejects disagreement
 with the CUDA executor's declared geometry/numerical profile before tokenizer or device
 access; the profile is data in `engine-nvidia`, not a list of comparisons here. The pinned artifact's real header and existing bounded CUDA gates passed
 re-execution; this does not establish broader artifact or context support.

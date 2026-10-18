@@ -112,7 +112,7 @@ fn run() -> Result<(), String> {
     let (config, mut policy) = runtime_settings(&options)?;
 
     let load_started = Instant::now();
-    let mut prepared = QwenCuda::load_gguf(
+    let (mut prepared, _) = QwenCuda::load_gguf(
         &model_path,
         QwenLoadOptions {
             context_tokens: options.context_tokens,

@@ -209,11 +209,17 @@ kernel specialization. [Host preflight evidence](../benchmarks/runtime-contract.
 covers normalization/RoPE and same-width head decompositions. The actual pinned header
 and affected Qwen/HTTP/BERT device gates [passed at `dc4aed0`](../benchmarks/runtime-contract.md#device-re-execution-2026-10-16-dc4aed0),
 within their existing bounded reference scope—not broad-context qualification.
-Loading still needs one immutable geometry/template/weight source owner. The staging budget
-now charges every F32-materialized source at its four-bytes-per-element device footprint
+Qwen preparation now binds geometry, tokenizer/template, complete-artifact identity and
+weight streams to one pinned GGUF source, and returns the tokenizer with its prepared
+executor instead of reopening the text frontend's pathname. Host regressions cover
+replacement/unlink, retained readers and independent cursors; the path-replacement test
+fails on the old implementation. The selected file must remain unmodified in place
+through every alias while artifact owners/readers live: this is descriptor retention,
+not a copied or filesystem-enforced immutable snapshot. The staging budget now charges
+every F32-materialized source at its four-bytes-per-element device footprint
 instead of its encoded length, with host cases covering the mixed set, quantization and
 overflow; host arithmetic is not device evidence, so no loader byte bound is claimed yet.
-Resolve the remaining source-owner boundary before expanding artifact support.
+Device loading/retirement qualification and physical byte bounds remain separate gates.
 The known long-prompt reference divergence after the eighteen-token agreed prefix is an
 active baseline fidelity question, not indefinite conditional work. Classify it with
 common-history distributions/state and independent task-quality evidence; do not infer

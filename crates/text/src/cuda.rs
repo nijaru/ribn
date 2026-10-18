@@ -11,7 +11,6 @@ mod tests;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use engine_gguf::{GgufError, GgufFile, MetadataValue};
 use engine_qwen::{QwenCuda, QwenLoadOptions};
 use ribn::driver::{Driver, DriverConfig};
 use ribn::{Engine, EngineConfig, GenerationExecutor, SchedulePolicy};
@@ -128,23 +127,6 @@ impl TextOwner {
         options: LoadOptions,
     ) -> Result<(Self, MemoryReport), TextError> {
         let config = engine_config(options.max_sequences)?;
-        let path = path.into();
-        let file = GgufFile::open(&path).map_err(TextError::Processor)?;
-        let architecture = file
-            .metadata("general.architecture")
-            .and_then(MetadataValue::as_str)
-            .ok_or_else(|| {
-                TextError::Processor(GgufError::MissingMetadata(
-                    "general.architecture".to_owned(),
-                ))
-            })?;
-        if architecture != "qwen35" {
-            return Err(TextError::Processor(GgufError::UnsupportedArchitecture(
-                format!("{architecture}; this build executes qwen35 GGUF only"),
-            )));
-        }
-        let tokenizer = file.tokenizer().map_err(TextError::Processor)?;
-        drop(file);
         let limits = ProcessorLimits {
             max_prompt_tokens: options
                 .limits
@@ -157,8 +139,9 @@ impl TextOwner {
                 "text preprocessing bounds and context length must be nonzero",
             ));
         }
+        let (executor, tokenizer) =
+            QwenCuda::load_gguf(path, options.into()).map_err(TextError::Execution)?;
         let processor = Arc::new(GgufProcessor::new(tokenizer, limits));
-        let executor = QwenCuda::load_gguf(path, options.into()).map_err(TextError::Execution)?;
         let memory = executor.memory_report();
         let engine = configured_engine(executor, config)?;
         let driver = DriverConfig::for_engine(&engine);

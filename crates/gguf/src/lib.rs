@@ -8,11 +8,15 @@ use std::collections::BTreeMap;
 use std::fs::File;
 use std::io::{self, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 
 use engine_core::{DataType, F32BlockStream, WeightTensorSpec};
 
 mod iq3_s;
+mod source;
 mod tokenizer;
+pub use source::GgufReader;
+use source::Source;
 pub use tokenizer::{
     ChatMessage, ChatTemplateOptions, GgufTokenizer, byte_token_symbol, token_symbol_byte,
 };
@@ -163,8 +167,9 @@ impl TensorInfo {
     }
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug)]
 pub struct GgufFile {
+    source: Arc<Mutex<Source>>,
     path: PathBuf,
     version: u32,
     tensor_count: u64,
@@ -177,18 +182,22 @@ pub struct GgufFile {
 impl GgufFile {
     /// Open and parse the GGUF header, metadata, and tensor directory.
     ///
-    /// Bulk tensor data is not read into memory.
+    /// Bulk tensor data is not read into memory. One descriptor pins the selected
+    /// source for metadata and all readers, even if the path is replaced or removed.
+    /// The selected file must not be modified in place while owners/readers live;
+    /// this is not a copied or filesystem-enforced immutable snapshot.
     ///
     /// # Errors
     ///
     /// Returns [`GgufError`] for an invalid or unsupported GGUF file.
     pub fn open(path: impl Into<PathBuf>) -> Result<Self, GgufError> {
         let path = path.into();
-        let mut file = File::open(&path).map_err(|error| GgufError::io(&path, &error))?;
-        Self::read_from(&mut file, path)
+        let file = File::open(&path).map_err(|error| GgufError::io(&path, &error))?;
+        Self::read_from(file, path)
     }
 
-    fn read_from<R: Read + Seek>(reader: &mut R, path: PathBuf) -> Result<Self, GgufError> {
+    fn read_from(mut file: File, path: PathBuf) -> Result<Self, GgufError> {
+        let reader = &mut file;
         let file_len = reader
             .seek(SeekFrom::End(0))
             .map_err(|error| GgufError::io(&path, &error))?;
@@ -269,6 +278,10 @@ impl GgufFile {
         }
 
         Ok(Self {
+            source: Arc::new(Mutex::new(Source {
+                file,
+                position: Some(directory_end),
+            })),
             path,
             version,
             tensor_count,
@@ -342,14 +355,22 @@ impl GgufFile {
         Ok(start..end)
     }
 
+    /// Read the complete artifact from the same source that supplied its metadata.
+    /// Each reader has an independent cursor and retains the source after this
+    /// metadata owner is dropped. No descriptor is opened per reader.
+    #[must_use]
+    pub fn reader(&self) -> GgufReader {
+        GgufReader::new(Arc::clone(&self.source), 0..self.file_len)
+    }
+
     /// Open a bounded streaming reader for one encoded tensor. This keeps bulk
     /// weights out of the metadata object and lets a backend choose its own
     /// chunking or mapping strategy.
     ///
     /// # Errors
     ///
-    /// Returns an error when the tensor range is invalid or the file cannot be
-    /// opened at that range.
+    /// Returns an error when the tensor range is invalid. Payload I/O errors
+    /// are reported by the reader.
     pub fn open_tensor(&self, name: &str) -> Result<TensorDataReader, GgufError> {
         let tensor = self
             .tensor(name)
@@ -361,9 +382,7 @@ impl GgufFile {
             .map_err(|error| GgufError::InvalidTensorSpec(error.to_string()))?;
         Ok(TensorDataReader {
             path: self.path.clone(),
-            offset: range.start,
-            file: None,
-            remaining: range.end - range.start,
+            reader: GgufReader::new(Arc::clone(&self.source), range),
             spec,
             value_type,
         })
@@ -392,36 +411,17 @@ impl GgufFile {
 /// Sequential reader over one encoded tensor payload. The reader stops exactly
 /// at the tensor's encoded byte length and cannot consume the next tensor.
 ///
-/// The file is opened on first read and released once the payload is exhausted
-/// or the reader is dropped. Opening a reader is therefore cheap in descriptors,
-/// which matters when a caller opens one per tensor: a large checkpoint has
-/// hundreds of tensors, and holding a descriptor for each of them at once can
-/// exceed a process's open-file limit before any execution starts.
+/// All readers retain the same opened source descriptor, even after the metadata
+/// owner is dropped. A checkpoint's hundreds of tensors do not need hundreds of
+/// descriptors, and interleaved readers cannot disturb each other's cursor.
 pub struct TensorDataReader {
     path: PathBuf,
-    /// Absolute file offset of the next unread byte.
-    offset: u64,
-    file: Option<File>,
-    remaining: u64,
+    reader: GgufReader,
     spec: WeightTensorSpec,
     value_type: u32,
 }
 
 impl TensorDataReader {
-    /// Open the payload lazily and position it at the current offset.
-    fn open(&mut self) -> io::Result<&mut File> {
-        if self.file.is_none() {
-            let mut file = File::open(&self.path)?;
-            file.seek(SeekFrom::Start(self.offset))?;
-            self.file = Some(file);
-        }
-        Ok(self.file.as_mut().expect("payload file was just opened"))
-    }
-
-    /// Release the descriptor; a later read reopens at `offset`.
-    fn close(&mut self) {
-        self.file = None;
-    }
     /// Read and dequantize the next complete block in this tensor payload.
     /// `None` means the bounded tensor range is exhausted. The GGML value type
     /// is captured when the reader is opened, so callers cannot decode a block
@@ -434,15 +434,15 @@ impl TensorDataReader {
     /// complete block, or an I/O/dequantization error.
     pub fn read_dequantized_block(&mut self) -> Result<Option<Vec<f32>>, GgufError> {
         let (_, block_bytes) = tensor_layout(self.value_type)?;
-        if self.remaining == 0 {
+        if self.remaining() == 0 {
             return Ok(None);
         }
         let block_bytes_u64 = block_bytes;
-        if self.remaining < block_bytes_u64 {
+        if self.remaining() < block_bytes_u64 {
             return Err(GgufError::TensorPayloadTruncated {
                 value_type: self.value_type,
                 expected: block_bytes_u64,
-                remaining: self.remaining,
+                remaining: self.remaining(),
             });
         }
         let block_bytes =
@@ -465,7 +465,7 @@ impl TensorDataReader {
 
     #[must_use]
     pub const fn remaining(&self) -> u64 {
-        self.remaining
+        self.reader.remaining
     }
 
     #[must_use]
@@ -488,19 +488,7 @@ impl F32BlockStream for TensorDataReader {
 
 impl Read for TensorDataReader {
     fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
-        if self.remaining == 0 || buffer.is_empty() {
-            return Ok(0);
-        }
-        let requested = usize::try_from(self.remaining)
-            .unwrap_or(usize::MAX)
-            .min(buffer.len());
-        let read = self.open()?.read(&mut buffer[..requested])?;
-        self.remaining -= read as u64;
-        self.offset += read as u64;
-        if self.remaining == 0 {
-            self.close();
-        }
-        Ok(read)
+        self.reader.read(buffer)
     }
 }
 
@@ -1201,7 +1189,19 @@ fn align(value: u64, alignment: u64) -> Result<u64, GgufError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::Cursor;
+
+    fn parse_fixture(bytes: &[u8]) -> Result<GgufFile, GgufError> {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let id = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let path = std::env::temp_dir().join(format!(
+            "engine-gguf-{}-parse-{id}.gguf",
+            std::process::id()
+        ));
+        std::fs::write(&path, bytes).expect("write fixture");
+        let result = GgufFile::open(&path);
+        std::fs::remove_file(path).expect("remove fixture path");
+        result
+    }
 
     fn push_u32(bytes: &mut Vec<u8>, value: u32) {
         bytes.extend(value.to_le_bytes());
@@ -1248,9 +1248,7 @@ mod tests {
 
     #[test]
     fn parses_metadata_and_tensor_directory_without_loading_tensor_data() {
-        let mut reader = Cursor::new(fixture());
-        let parsed =
-            GgufFile::read_from(&mut reader, PathBuf::from("fixture.gguf")).expect("valid fixture");
+        let parsed = parse_fixture(&fixture()).expect("valid fixture");
         assert_eq!(parsed.version(), 3);
         assert_eq!(parsed.tensor_count(), 1);
         assert_eq!(
@@ -1275,48 +1273,44 @@ mod tests {
         assert_eq!(range.end - range.start, 64);
     }
 
-    /// Open descriptors in this process, including the one this directory read
-    /// holds while counting.
+    /// Count only this test's source, not unrelated concurrently running tests.
     #[cfg(target_os = "linux")]
-    fn open_descriptors() -> usize {
+    fn source_descriptors(path: &Path) -> usize {
+        let path = std::fs::canonicalize(path).expect("canonical source path");
         std::fs::read_dir("/proc/self/fd")
-            .map(Iterator::count)
-            .unwrap_or(0)
+            .expect("enumerate process descriptors")
+            .filter_map(|entry| std::fs::read_link(entry.ok()?.path()).ok())
+            .filter(|target| target == &path)
+            .count()
     }
 
     /// A checkpoint has hundreds of tensors and a caller may open a reader for
     /// each before reading any. Holding a descriptor per reader exhausted this
     /// process's 1024-descriptor limit on a real 27B artifact, so opening a
-    /// reader must not cost a descriptor until it is read, and an exhausted
-    /// reader must release the one it held.
+    /// reader must not cost another descriptor, whether unread, active or exhausted.
     #[cfg(target_os = "linux")]
     #[test]
-    fn opening_readers_costs_no_descriptor_until_they_are_read() {
+    fn tensor_readers_share_one_source_descriptor() {
         let path = std::env::temp_dir().join(format!("engine-gguf-{}-fd.gguf", std::process::id()));
         std::fs::write(&path, fixture()).expect("write fixture");
         let parsed = GgufFile::open(&path).expect("open fixture");
-        let before = open_descriptors();
+        assert_eq!(source_descriptors(&path), 1);
 
         let mut readers = (0..512)
             .map(|_| parsed.open_tensor("token_embd.weight").expect("reader"))
             .collect::<Vec<_>>();
-        let after_open = open_descriptors();
-        assert!(
-            after_open <= before + 4,
-            "opening {} readers held {} descriptors (baseline {before})",
-            readers.len(),
-            after_open
-        );
+        assert_eq!(source_descriptors(&path), 1);
 
-        // Reading streams the payload and releases the descriptor at the end.
+        // Partially reading every tensor must not open a descriptor per reader.
+        for reader in &mut readers {
+            reader.read_exact(&mut [0; 1]).expect("partial payload");
+        }
+        assert_eq!(source_descriptors(&path), 1);
+        // Exhausting a reader still needs no additional descriptor.
         let mut payload = Vec::new();
         readers[0].read_to_end(&mut payload).expect("read payload");
-        assert_eq!(payload.len(), 64);
-        let after_read = open_descriptors();
-        assert!(
-            after_read <= before + 4,
-            "an exhausted reader still held a descriptor: {after_read} (baseline {before})"
-        );
+        assert_eq!(payload.len(), 63);
+        assert_eq!(source_descriptors(&path), 1);
 
         // Chunked reads over a fresh reader return the same bytes.
         let mut chunked = Vec::new();
@@ -1329,7 +1323,13 @@ mod tests {
             }
             chunked.extend_from_slice(&chunk[..read]);
         }
-        assert_eq!(chunked, payload);
+        assert_eq!(&chunked[1..], payload);
+        drop(parsed);
+        assert_eq!(source_descriptors(&path), 1);
+        drop(readers);
+        drop(reader);
+        assert_eq!(source_descriptors(&path), 0);
+        std::fs::remove_file(path).expect("remove fixture");
     }
 
     #[test]
@@ -1364,6 +1364,116 @@ mod tests {
                 .is_none()
         );
         std::fs::remove_file(path).expect("remove fixture");
+    }
+
+    // Distinct bytes expose wrong offsets that all-zero payloads would hide.
+    fn nonuniform_fixture() -> (Vec<u8>, Vec<u8>) {
+        let mut bytes = fixture();
+        let data_start = (bytes.len() - 256).next_multiple_of(32);
+        let payload = (0_u8..64).map(|value| value * 3 + 1).collect::<Vec<_>>();
+        bytes[data_start..data_start + payload.len()].copy_from_slice(&payload);
+        (bytes, payload)
+    }
+
+    #[test]
+    fn readers_stay_on_selected_source_after_path_replacement() {
+        let path =
+            std::env::temp_dir().join(format!("engine-gguf-{}-replace.gguf", std::process::id()));
+        let incoming = path.with_extension("incoming");
+        let (original, expected) = nonuniform_fixture();
+        std::fs::write(&path, &original).unwrap();
+        let selected = GgufFile::open(&path).unwrap();
+        let mut early = selected.open_tensor("token_embd.weight").unwrap();
+        let mut prefix = [0; 13];
+        early.read_exact(&mut prefix).unwrap();
+        assert_eq!(prefix.as_slice(), &expected[..13]);
+
+        let mut replacement = original;
+        let offset = replacement
+            .windows(5)
+            .position(|value| value == b"qwen3")
+            .unwrap();
+        replacement[offset..offset + 5].copy_from_slice(b"llama");
+        let range = selected.tensor_data_range("token_embd.weight").unwrap();
+        replacement[usize::try_from(range.start).unwrap()..usize::try_from(range.end).unwrap()]
+            .fill(0xDD);
+        std::fs::write(&incoming, replacement).unwrap();
+        std::fs::rename(incoming, &path).unwrap();
+        assert_eq!(
+            selected
+                .metadata("general.architecture")
+                .and_then(MetadataValue::as_str),
+            Some("qwen3")
+        );
+        assert_eq!(
+            GgufFile::open(&path)
+                .unwrap()
+                .metadata("general.architecture")
+                .and_then(MetadataValue::as_str),
+            Some("llama")
+        );
+        let mut late = selected.open_tensor("token_embd.weight").unwrap();
+        let mut late_prefix = [0; 5];
+        late.read_exact(&mut late_prefix).unwrap();
+        assert_eq!(late_prefix.as_slice(), &expected[..5]);
+        drop(selected);
+        // Readers must retain the original source, even after neither the source
+        // nor the replacement is reachable by the pathname.
+        std::fs::remove_file(path).unwrap();
+        let mut tail = Vec::new();
+        early.read_to_end(&mut tail).unwrap();
+        assert_eq!(tail, expected[13..]);
+        let mut complete = Vec::new();
+        late.read_to_end(&mut complete).unwrap();
+        assert_eq!(complete, expected[5..]);
+        assert_eq!(late.read(&mut [0; 1]).unwrap(), 0);
+    }
+
+    #[test]
+    fn interleaved_and_threaded_readers_keep_independent_bounded_cursors() {
+        let (bytes, payload) = nonuniform_fixture();
+        let file = parse_fixture(&bytes).unwrap();
+        let mut whole = file.reader();
+        let mut a = file.open_tensor("token_embd.weight").unwrap();
+        let mut b = file.open_tensor("token_embd.weight").unwrap();
+        let mut header = [0; 17];
+        let mut a_prefix = [0; 7];
+        let mut b_prefix = [0; 23];
+        whole.read_exact(&mut header).unwrap();
+        a.read_exact(&mut a_prefix).unwrap();
+        b.read_exact(&mut b_prefix).unwrap();
+        let mut whole_tail = Vec::new();
+        whole.read_to_end(&mut whole_tail).unwrap();
+        let readers = [a, b, file.open_tensor("token_embd.weight").unwrap()];
+        drop(file);
+        assert_eq!(header.as_slice(), &bytes[..17]);
+        assert_eq!(whole_tail, bytes[17..]);
+        assert_eq!(a_prefix.as_slice(), &payload[..7]);
+        assert_eq!(b_prefix.as_slice(), &payload[..23]);
+        std::thread::scope(|scope| {
+            let tasks = readers
+                .into_iter()
+                .zip([1, 3, 7])
+                .map(|(mut reader, chunk_size)| {
+                    scope.spawn(move || {
+                        let mut result = Vec::new();
+                        let mut chunk = [0; 7];
+                        loop {
+                            let count = reader.read(&mut chunk[..chunk_size]).unwrap();
+                            if count == 0 {
+                                break;
+                            }
+                            result.extend_from_slice(&chunk[..count]);
+                        }
+                        assert_eq!(reader.remaining(), 0);
+                        result
+                    })
+                })
+                .collect::<Vec<_>>();
+            for (task, offset) in tasks.into_iter().zip([7, 23, 0]) {
+                assert_eq!(task.join().unwrap(), payload[offset..]);
+            }
+        });
     }
 
     #[test]
@@ -1517,9 +1627,8 @@ mod tests {
     fn rejects_invalid_magic_and_duplicate_metadata() {
         let mut invalid = fixture();
         invalid[0] = 0;
-        let mut reader = Cursor::new(invalid);
         assert!(matches!(
-            GgufFile::read_from(&mut reader, PathBuf::from("fixture.gguf")),
+            parse_fixture(&invalid),
             Err(GgufError::InvalidMagic(_))
         ));
 
@@ -1537,9 +1646,8 @@ mod tests {
             .checked_sub(8)
             .expect("tensor name length");
         duplicate.splice(position..position, duplicate_entry);
-        let mut reader = Cursor::new(duplicate);
         assert!(matches!(
-            GgufFile::read_from(&mut reader, PathBuf::from("fixture.gguf")),
+            parse_fixture(&duplicate),
             Err(GgufError::DuplicateMetadata(key)) if key == "general.architecture"
         ));
     }

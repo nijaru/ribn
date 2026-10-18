@@ -5,7 +5,6 @@ use engine_core::{
     RecurrentStateSpec, StateRequirement, WeightBinding,
 };
 use engine_gguf::{GgufError, GgufFile, MetadataValue, TensorDataReader};
-use std::fs::File;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 
@@ -135,8 +134,9 @@ const QWEN35_FULL_LAYER_TENSORS: &[&str] = &[
 /// A provider for the text-only Qwen3.8 language artifact carried by GGUF.
 /// It owns validated format metadata, artifact identity and the model's declared continuation
 /// components; tensor execution remains a separate backend/dispatcher responsibility.
-/// Opening hashes the complete file in bounded memory to identify its contents.
-/// The artifact must remain immutable while the provider and tensor readers live.
+/// Opening hashes the complete pinned source in bounded memory to identify its contents.
+/// Path replacement cannot change its metadata or readers. The selected file must
+/// remain unmodified in place while the provider and tensor readers live.
 pub struct QwenGguf {
     file: GgufFile,
     config: QwenConfig,
@@ -178,7 +178,7 @@ impl QwenGguf {
         for tensor in file.tensors() {
             file.tensor_data_range(tensor.name())?;
         }
-        let artifact_id = artifact_identity(file.path())?;
+        let artifact_id = artifact_identity(file.reader(), file.path())?;
         let quantization = artifact_quantization(&file);
         let state_requirements = qwen35_state_requirements(&config, kv_block_tokens)?;
         Ok(Self {
@@ -297,16 +297,12 @@ impl QwenGguf {
 /// Hash the complete artifact in bounded memory, including actual weight bytes.
 /// This deliberately pays a startup read instead of treating a model family or
 /// file name as proof that two prepared artifacts contain the same weights.
-fn artifact_identity(path: &Path) -> Result<String, GgufError> {
+fn artifact_identity(mut reader: impl Read, path: &Path) -> Result<String, GgufError> {
     use sha2::{Digest, Sha256};
-    let mut file = File::open(path).map_err(|error| GgufError::Io {
-        path: path.to_path_buf(),
-        message: error.to_string(),
-    })?;
     let mut digest = Sha256::new();
     let mut buffer = vec![0; 1024 * 1024];
     loop {
-        let count = file.read(&mut buffer).map_err(|error| GgufError::Io {
+        let count = reader.read(&mut buffer).map_err(|error| GgufError::Io {
             path: path.to_path_buf(),
             message: error.to_string(),
         })?;
@@ -350,14 +346,90 @@ mod tests {
     fn artifact_identity_tracks_bytes_instead_of_model_names() {
         let path =
             std::env::temp_dir().join(format!("engine-artifact-identity-{}", std::process::id()));
-        std::fs::write(&path, b"abc").unwrap();
-        let first = artifact_identity(&path).unwrap();
+        let first = artifact_identity(b"abc".as_slice(), &path).unwrap();
         assert_eq!(
             first.as_str(),
             "gguf:sha256:ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
         );
-        std::fs::write(&path, b"abd").unwrap();
-        assert_ne!(first, artifact_identity(&path).unwrap());
+        assert_ne!(first, artifact_identity(b"abd".as_slice(), &path).unwrap());
+    }
+
+    #[test]
+    fn geometry_tokenizer_template_and_hash_keep_the_selected_source() {
+        use config::tests::{encode, metadata};
+        let path =
+            std::env::temp_dir().join(format!("engine-qwen-{}-source.gguf", std::process::id()));
+        let mut metadata = metadata();
+        for (key, value) in [
+            ("tokenizer.ggml.model", MetadataValue::String("gpt2".into())),
+            ("tokenizer.ggml.pre", MetadataValue::String("qwen35".into())),
+            (
+                "tokenizer.chat_template",
+                MetadataValue::String("original template".into()),
+            ),
+            (
+                "tokenizer.ggml.tokens",
+                MetadataValue::Array(
+                    ["a", "b", "ab"]
+                        .map(|value| MetadataValue::String(value.into()))
+                        .to_vec(),
+                ),
+            ),
+            (
+                "tokenizer.ggml.merges",
+                MetadataValue::Array(vec![MetadataValue::String("a b".into())]),
+            ),
+            (
+                "tokenizer.ggml.token_type",
+                MetadataValue::Array(vec![MetadataValue::I32(1); 3]),
+            ),
+            ("tokenizer.ggml.bos_token_id", MetadataValue::U32(1)),
+            ("tokenizer.ggml.eos_token_id", MetadataValue::U32(2)),
+        ] {
+            metadata.insert(key.into(), value);
+        }
+        let original = encode(&metadata);
+        std::fs::write(&path, &original).unwrap();
+        let selected = QwenGguf::open(&path).unwrap();
+        let expected_id = artifact_identity(original.as_slice(), &path).unwrap();
+        metadata.insert("qwen35.context_length".into(), MetadataValue::U64(4096));
+        metadata.insert(
+            "tokenizer.chat_template".into(),
+            MetadataValue::String("replacement template".into()),
+        );
+        metadata.insert(
+            "tokenizer.ggml.tokens".into(),
+            MetadataValue::Array(
+                ["x", "y", "xy"]
+                    .map(|value| MetadataValue::String(value.into()))
+                    .to_vec(),
+            ),
+        );
+        metadata.insert(
+            "tokenizer.ggml.merges".into(),
+            MetadataValue::Array(vec![MetadataValue::String("x y".into())]),
+        );
+        let incoming = path.with_extension("incoming");
+        std::fs::write(&incoming, encode(&metadata)).unwrap();
+        std::fs::rename(incoming, &path).unwrap();
+        let replacement = QwenGguf::open(&path).unwrap();
+        assert_eq!(replacement.config().context_length(), 4096);
+        assert_ne!(replacement.artifact_id(), selected.artifact_id());
+        assert_eq!(selected.config().context_length(), 262_144);
+        assert_eq!(selected.artifact_id(), expected_id);
+        let tokenizer = selected.file().tokenizer().unwrap();
+        assert_eq!(tokenizer.tokens(), &["a", "b", "ab"]);
+        assert_eq!(
+            selected
+                .file()
+                .metadata("tokenizer.chat_template")
+                .and_then(MetadataValue::as_str),
+            Some("original template")
+        );
+        assert_eq!(
+            artifact_identity(selected.file().reader(), &path).unwrap(),
+            expected_id
+        );
         std::fs::remove_file(path).unwrap();
     }
 

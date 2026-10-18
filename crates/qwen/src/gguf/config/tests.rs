@@ -51,7 +51,7 @@ pub(crate) fn metadata() -> BTreeMap<String, MetadataValue> {
     metadata
 }
 
-/// Metadata-only GGUF: any attempt to proceed to tokenizer/weights is an error.
+/// GGUF without tensors. Default metadata deliberately omits the tokenizer.
 pub(crate) fn encode(metadata: &BTreeMap<String, MetadataValue>) -> Vec<u8> {
     let mut bytes = b"GGUF".to_vec();
     bytes.extend(3_u32.to_le_bytes());
@@ -87,6 +87,7 @@ pub(crate) fn encode(metadata: &BTreeMap<String, MetadataValue>) -> Vec<u8> {
             MetadataValue::Array(values) => {
                 bytes.extend(9_u32.to_le_bytes());
                 let element_type = match values.first() {
+                    Some(MetadataValue::String(_)) => 8_u32,
                     Some(MetadataValue::Bool(_)) => 7_u32,
                     Some(MetadataValue::I32(_)) => 5_u32,
                     Some(MetadataValue::U32(_)) => 4_u32,
@@ -96,6 +97,9 @@ pub(crate) fn encode(metadata: &BTreeMap<String, MetadataValue>) -> Vec<u8> {
                 bytes.extend((values.len() as u64).to_le_bytes());
                 for value in values {
                     match value {
+                        MetadataValue::String(value) if element_type == 8 => {
+                            string(&mut bytes, value);
+                        }
                         MetadataValue::Bool(value) if element_type == 7 => {
                             bytes.push(u8::from(*value));
                         }

@@ -4,7 +4,6 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use engine_gguf::GgufFile;
 use engine_qwen::{QwenCuda, QwenLoadOptions};
 use ribn::driver::{Driver, DriverConfig};
 use ribn::{
@@ -146,14 +145,7 @@ fn matched_frontend_overhead() {
         } else {
             [true, false]
         } {
-            let processor: Arc<dyn TextProcessor> = Arc::new(GgufProcessor::new(
-                GgufFile::open(&model).unwrap().tokenizer().unwrap(),
-                ProcessorLimits {
-                    max_prompt_tokens: 1024,
-                    ..ProcessorLimits::default()
-                },
-            ));
-            let executor = QwenCuda::load_gguf(
+            let (executor, tokenizer) = QwenCuda::load_gguf(
                 &model,
                 QwenLoadOptions {
                     context_tokens: 1024,
@@ -162,6 +154,13 @@ fn matched_frontend_overhead() {
                 },
             )
             .unwrap();
+            let processor: Arc<dyn TextProcessor> = Arc::new(GgufProcessor::new(
+                tokenizer,
+                ProcessorLimits {
+                    max_prompt_tokens: 1024,
+                    ..ProcessorLimits::default()
+                },
+            ));
             println!(
                 "artifact={} pair={pair} handled={handled_mode}",
                 executor.info().name

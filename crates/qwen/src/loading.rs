@@ -5,6 +5,7 @@ use std::sync::Arc;
 use crate::{QwenGguf, QwenLayerKind as GgufQwenLayerKind};
 use cudarc::driver::{CudaContext, CudaStream};
 use engine_core::{DeviceId, StateRequirement, WeightBinding};
+use engine_gguf::GgufTokenizer;
 use engine_nvidia::NvidiaBackend;
 use engine_nvidia::{
     CudaQwen35Decode, CudaQwen35ServingDispatcher, CudaQwen35Weights, GemvMode, QwenCudaProfile,
@@ -92,7 +93,7 @@ pub(crate) type Backend = NvidiaBackend<CudaQwen35ServingDispatcher>;
 pub(crate) fn load(
     path: PathBuf,
     options: QwenLoadOptions,
-) -> Result<(QwenExecution<Backend>, MemoryReport), ExecutionError> {
+) -> Result<(QwenExecution<Backend>, MemoryReport, GgufTokenizer), ExecutionError> {
     if options.context_tokens == 0 || options.max_sequences == 0 {
         return Err(ExecutionError::new(
             "Qwen context and sequence limits must be nonzero",
@@ -106,15 +107,8 @@ pub(crate) fn load(
             "requested context exceeds the Qwen artifact limit",
         ));
     }
-    let vocabulary_size = u32::try_from(
-        provider
-            .file()
-            .tokenizer()
-            .map_err(model_error)?
-            .tokens()
-            .len(),
-    )
-    .map_err(model_error)?;
+    let tokenizer = provider.file().tokenizer().map_err(model_error)?;
+    let vocabulary_size = u32::try_from(tokenizer.tokens().len()).map_err(model_error)?;
     let device = DeviceId::new(options.device);
     let continuation_capacity_bytes =
         continuation_capacity(provider.state_requirements(), &options)?;
@@ -191,6 +185,7 @@ pub(crate) fn load(
             reserved_sequence_bytes: continuation_capacity_bytes,
             free_after_preparation_bytes,
         },
+        tokenizer,
     ))
 }
 

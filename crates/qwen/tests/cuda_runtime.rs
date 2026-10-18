@@ -125,7 +125,7 @@ fn owned_driver_preserves_reference_with_stalled_and_abandoned_peers() {
     let model = std::env::var("RIBN_MODEL").expect("RIBN_MODEL GGUF path");
     let fixture = std::env::var("RIBN_REFERENCE").expect("RIBN_REFERENCE fixture path");
     let reference = reference(&std::fs::read_to_string(fixture).unwrap()).unwrap();
-    let prepared = QwenCuda::load_gguf(
+    let (prepared, _) = QwenCuda::load_gguf(
         model,
         QwenLoadOptions {
             context_tokens: u32::try_from(reference.prompt.len() + reference.output.len()).unwrap(),
@@ -263,7 +263,7 @@ fn run_case(
         .max()
         .unwrap();
     let context_tokens = prompt_tokens.checked_add(reach).unwrap();
-    let prepared = QwenCuda::load_gguf(
+    let (prepared, _) = QwenCuda::load_gguf(
         model,
         QwenLoadOptions {
             context_tokens,
@@ -426,7 +426,7 @@ fn continuation_capacity_admits_concurrent_requests_a_context_charge_cannot() {
         "the authority ({capacity} bytes) must hold fewer than two context-sized charges \
          ({context_charge} bytes each) for the concurrency claim to be about capacity"
     );
-    let prepared = QwenCuda::load_gguf(
+    let (prepared, _) = QwenCuda::load_gguf(
         model,
         QwenLoadOptions {
             context_tokens: declared_bound,
