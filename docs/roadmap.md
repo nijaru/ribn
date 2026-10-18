@@ -53,6 +53,40 @@ kernels until their replacements pass. The [CUDA Rust gate-2 candidate](cuda-rus
 remains deferred: arithmetic/sanitizer results do not offset its single-row projection
 and GDN regressions. Do not start gate 3 or build a compiler project around it.
 
+### Planned slices: batch-width launch reduction
+
+Ordered from the 2026-10-18 measurement (3,862 launches and 32.5 ms host enqueue per
+eight-row decode step; 0.94-1.5 s host enqueue per eight-row short prefill). Slices 1-2
+and part of 4 are implementable and host-testable without a device; every acceptance
+below that names device evidence stays unproven until the RTX 4090 suites run.
+
+1. **Member descriptor.** One device descriptor per step: per-member KV layer pointers and
+   page-table pointers, per-member recurrent matrix and convolution-history pointers, and
+   the member count, published in a single host-to-device copy. Host-tested assembly,
+   bounds and lifetime; replaces the per-member view arguments that make every op a
+   separate launch.
+2. **Member-dimension kernels.** KV append, paged attention, GDN convolution and state
+   update, and per-member copies consume the descriptor. Acceptance (device): launches per
+   eight-row step fall from 3,862 to below ~600, with bit-identical hidden state, KV and
+   sampled tokens against the current path on `cuda_reference` and the Qwen reference gate.
+   Keep the per-member path until that passes.
+3. **Prefill descriptor.** The same descriptor at chunk granularity. Acceptance (device):
+   eight-row 30-token prefill host enqueue below ~100 ms (from 0.94-1.5 s) with unchanged
+   outputs.
+4. **Resident KV arena.** Pages granted by the one authority and materialized from a
+   resident arena, so descriptor entries and cache pointers stop moving; non-identity page
+   tables exercised by the heterogeneous decode suite. Host-tested accounting; device
+   evidence for the mapping.
+5. **CUDA graph capture.** Decode step captured per (member count, position bucket) with
+   device-resident positions and counts. Acceptance (device): host enqueue under 5 ms per
+   step, bit-identical outputs, and cancellation/retirement semantics preserved through
+   replay. This is the slice vLLM and llama.cpp both rely on.
+
+Slices 4 and 5 are prerequisites for each other with 2: graphs need stable addresses, and
+the arena is only worth its accounting when descriptors address it. Do not claim any
+throughput figure from this sequence without the device suites; the c1 path stays the
+correctness oracle throughout.
+
 ## Decision milestones
 
 Work should produce evidence that changes the next engineering decision, or remove a
