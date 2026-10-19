@@ -1,8 +1,13 @@
 //! Gemma 4 dense, causal, BF16 text semantics and source preparation.
 //!
 //! Configuration, parameter interpretation and continuation semantics belong here,
-//! not in HF/SafeTensors adapters or token scheduling. This is host preflight, not
-//! an executable decoder, multimodal processor or qualified CUDA implementation.
+//! not in HF/SafeTensors adapters or token scheduling. Includes native BF16 CUDA
+//! weight preparation, but no executable decoder or multimodal execution.
+
+#[cfg(feature = "cuda")]
+mod cuda;
+#[cfg(feature = "cuda")]
+pub use cuda::{Gemma4CudaError, Gemma4CudaLoadError, Gemma4CudaWeights};
 
 mod config;
 mod continuation;

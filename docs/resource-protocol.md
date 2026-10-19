@@ -847,6 +847,42 @@ Shard-count limits bound cache entries, not caller-retained descriptors, metadat
 decoded model weights, OS page cache or upload staging. Model/backend owners must budget
 those separately before claiming a whole-loader or device-memory bound.
 
+### Native BF16 weight preparation
+
+The next Gemma 4 loading slice materializes the already-validated text inventory,
+not an executable model. Keep its BF16 bytes and row ordering unchanged; the raw
+input embedding and output head borrow the same physical region. No whole-model
+F32 conversion, duplicate tied allocation or GGUF value-type tag represents this path.
+
+- Validate the complete shape/dtype/name inventory and checked aligned layout before
+  allocation. One supplied `BytePool` grants the entire allocation request, including
+  inter-tensor padding. A single immutable weight allocation avoids per-tensor partial
+  construction and grants no permission to omit workspace or continuation charges.
+- The NVIDIA owner captures a synchronous raw CUDA allocation immediately on success,
+  without a fallible tracking-event step that can lose the pointer. All access belongs
+  to its associated stream. Publish immutable weights only after every parameter's
+  exact-length upload and completion; a failed set cannot be partly used or repaired
+  by mixing another source into it.
+- Stream one parameter at a time through one explicitly bounded owner-held host buffer.
+  Establish copy completion before buffer reuse. Failed/partial copy or failed drain
+  retains allocation, charge, stream/context and staging together. Readback uses the
+  same ownership rule: do not return an unowned borrowed destination after uncertain DMA.
+- Cleanup drains the associated stream, acknowledges synchronous deallocation, then
+  releases the charge. Failed drain retains a retry owner. If a failed free leaves
+  allocation identity uncertain, quarantine rather than blindly retry a possibly
+  released/reused pointer. Defensive Drop must not refund an unresolved allocation or
+  free staging the device may still access; explicit cleanup is the observable path.
+- The model's load failure carries that cleanup ownership until settlement. Loader
+  publication is separate from request submission; cancellation of a load future does
+  not establish completion. A loaded weight set alone is not Gemma execution support.
+
+These are the accepted requirements for the device-loading increment, not qualification
+of a current implementation. Requested bytes plus layout padding do not measure driver
+rounding, context/library storage or full inference peaks. Keep those margins and actual
+load/unload measurements separate from encoded payload totals and logical grants.
+
+### Snapshot replacement
+
 Start with one loaded execution owner's lifetime pinning one snapshot. Implement
 **drain-and-replace** first: stop new admission, finish/cancel old work, establish
 completion, release old resources, then publish the replacement. Concurrent old/new
