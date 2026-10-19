@@ -157,12 +157,15 @@ theta, decoder binding and mixed-KV lifetime remain absent.
 A host CPU path now materializes the same 665-parameter BF16 inventory into ordinary
 heap buffers and implements row-major linear, Gemma RMS, split-half rotary, residual
 and layer-scalar algebra, tanh-GELU gating, the per-layer embedding combine, the tied
-output head and the final soft cap with the pinned eager arithmetic. Its ignored
+output head the final soft cap and causal grouped-query attention (with an optional sliding
+window) with the pinned eager arithmetic. Its ignored
 reference test compares real captures at layers 0/5/22/23: linear, head and
 normalization elements stay inside FP32 accumulation/variance bounds plus the
 reference BF16 rounding slack; GELU stays inside its FP32 evaluation bound; residual,
 gated-product and per-layer-combine cases are bit-exact; and rotary application is
-bit-exact with supplied stock factors. This is a correctness-first execution primitive for the second
+bit-exact with supplied stock factors, and attention weights/outputs match the pinned
+CPU attention boundary with zero error at the captured positions. This is a
+correctness-first execution primitive for the second
 decoder, not a performance claim, a portable tensor layer or a selected hardware
 priority; attention, KV, the remaining layer math and an executor are still absent.
 Model-local KV range calculations distinguish

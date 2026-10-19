@@ -165,6 +165,31 @@ kernels, relax a device tolerance or establish model quality. Matrix products st
 need their own numerical acceptance; only the elementwise and normalization
 relations are checked here.
 
+## Attention operand taps
+
+`benchmarks/gemma4_attention_reference.py` captures the attention boundary of the
+pinned CPU model on one ten-token prompt for layers 0/5/22/23: per-position queries,
+keys and values (after Q/K/V normalization and rotary), the BF16 scores before the
+additive mask, the post-softmax weights and the pre-`o_proj` output. It wraps the
+module-level eager function while keeping `attn_implementation="eager"`, because
+selecting a custom implementation name makes the model skip mask construction and
+silently produce unmasked attention.
+
+```sh
+python benchmarks/gemma4_attention_reference.py --snapshot SNAPSHOT --output /new/path
+```
+
+The host CPU attention primitive reproduces the pinned policy: BF16 dot-product
+scores, FP32 softmax cast to BF16 weights, one FP32 output accumulation and one final
+BF16 rounding, causal masks with an optional sliding window and grouped-query head
+mapping. Its ignored audit checks masked weights are exactly zero, visible weights
+stay inside twice the visible score encoding step plus BF16 rounding slack, and
+outputs stay inside the visible-key FP32 reduction bound plus the propagated weight
+shift. On 2026-10-19 all four captures matched with zero error. The primitive checks
+query containment, not history coverage; callers must pass the complete span their
+cache policy requires. This is host operand evidence, not a decoder, KV lifetime or
+Ribn device claim.
+
 ## Stock CUDA fit, 2026-10-18
 
 The pinned stock Transformers model completed BF16 eager text execution on an

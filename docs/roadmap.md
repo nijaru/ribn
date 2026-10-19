@@ -462,9 +462,10 @@ Next gates: qualify the remaining layer math — residual and PLE combination, M
 gating, final normalization and soft-capped logits. Exact CPU stage references for
 those boundaries now exist, including per-layer residuals, all four norms, MLP and
 PLE stages and the final normalization; device implementation and acceptance remain.
-Host CPU primitives for weights, linear, RMS and rotary now reproduce those captures
-inside declared FP32 bounds, giving the decoder a host-testable arithmetic path while
-attention, KV, the remaining layer math and an executor stay open.
+Host CPU primitives for weights, linear, RMS, rotary, the remaining layer math and
+causal/sliding grouped-query attention now reproduce those captures inside declared
+FP32 bounds, giving the decoder a host-testable arithmetic path; attention now needs
+only explicit KV spans, cache wiring and an executor to become a full host decoder.
 Then mixed-width local/global KV with donor spans pinned through shared-tail device reads. Use strongly typed model/backend state
 behind `GenerationExecutor`, not the current first-`kv()`/homogeneous-cache convenience
 or family branches in routing/scheduling. Qualified physical allocation/retirement and
