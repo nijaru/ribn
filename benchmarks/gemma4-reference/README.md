@@ -173,6 +173,37 @@ allocated/reserved; this is not a zero-allocation teardown claim.
 Ribn forward execution, concurrent serving capacity, arbitrary-context fit, task
 quality or performance. The CPU collector above remains CPU-only.
 
+### Offline CPU/CUDA logit diagnostic
+
+A 2026-10-18 offline audit matched the exact history and submitted token IDs for all
+12 archived rows across CPU FP32, CPU BF16 and CUDA BF16. Input report/archive hashes,
+package/source pins and the CUDA probe's link to its CPU input report were checked.
+The CUDA JSON does not independently record positions: the hash-verified probe passes
+the linked CPU row's exact positions and all-ones history mask. No model was rerun.
+
+Every pair agreed on all 12 greedy winners, but **no full logit vector was bit-identical**.
+The table reports maxima over those 12 rows, using complete 262,144-element
+**post-softcap** vectors and FP64 metric arithmetic:
+
+| Reference → candidate | Max absolute logit delta | Max centered logit RMSE | Max KL(ref ∥ candidate), nats | Max total variation |
+| --- | ---: | ---: | ---: | ---: |
+| CPU BF16 → CUDA BF16 | 1.265625 | 0.120362 | 0.000965690 | 0.0138979 |
+| CPU FP32 → CUDA BF16 | 0.855922 | 0.107663 | 0.00188854 | 0.0239722 |
+| CPU FP32 → CPU BF16 | 0.750395 | 0.106215 | 0.00474907 | 0.0348529 |
+
+Probabilities are full-vocabulary softmax values. KL is `sum(p_ref * (log p_ref -
+log p_candidate))`; total variation is half their L1 distance. Centered RMSE removes
+the mean logit delta, since a uniform shift leaves softmax unchanged. A separate
+stdlib `math.fsum` implementation checked the metric calculations. The 32 CUDA-only
+4096-token-workload predictions have no CPU counterpart and were excluded.
+
+These observations do not rank accuracy against an ideal model, establish task quality,
+explain the differences' causes, or define a Ribn error budget. CPU references remain
+useful diagnostics, not bitwise CUDA targets. Native device/model acceptance still needs
+an independently specified reference scope and numerical/quality policy; existing
+stock-reference differences grant no extra tolerance. Hidden states, cache contents
+and raw pre-softcap logits were not retained by this CUDA probe.
+
 ## Integration constraints established by the real package
 
 The verified artifact has **2,130 BF16 tensors**. Its stored text namespace has 719;
