@@ -155,19 +155,18 @@ the backend prepares cosine/sine factors from the model's FP32 inverse frequenci
 positions, then applies them with eager per-product rounding. Frequency derivation from
 theta, decoder binding and mixed-KV lifetime remain absent.
 A host CPU path now materializes the same 665-parameter BF16 inventory into ordinary
-heap buffers and implements row-major linear, Gemma RMS, split-half rotary, residual
-and layer-scalar algebra, tanh-GELU gating, the per-layer embedding combine, the tied
-output head the final soft cap and causal grouped-query attention (with an optional sliding
-window) with the pinned eager arithmetic. Its ignored
-reference test compares real captures at layers 0/5/22/23: linear, head and
-normalization elements stay inside FP32 accumulation/variance bounds plus the
-reference BF16 rounding slack; GELU stays inside its FP32 evaluation bound; residual,
-gated-product and per-layer-combine cases are bit-exact; and rotary application is
-bit-exact with supplied stock factors, and attention weights/outputs match the pinned
-CPU attention boundary with zero error at the captured positions. This is a
-correctness-first execution primitive for the second
-decoder, not a performance claim, a portable tensor layer or a selected hardware
-priority; attention, KV, the remaining layer math and an executor are still absent.
+heap buffers and composes a complete decoder step: scaled embeddings, the per-layer
+embedding pipeline, all 42 hybrid layers with owner/shared-tail KV, causal and
+sliding-window grouped-query attention, the residual/norm/MLP/PLE sequence with the
+layer scalar, and the tied head with the final soft cap. Reference tests against real
+CPU captures keep linear, head and normalization inside FP32 bounds, GELU inside its
+evaluation bound, residual/gated/combine cases bit-exact, rotary bit-exact and
+attention matching with zero error; the archived 18-token chat row reproduces all four
+greedy tokens. The CPU cache keeps complete per-owner history and masks local spans
+instead of evicting them. Cache eviction, donor trimming, long-context behaviour,
+sampling, a serving executor, device parity and performance remain unqualified; this
+is a correctness-first host path, not a portable tensor layer or a selected hardware
+priority.
 Model-local KV range calculations distinguish
 persistent suffixes from untrimmed donor spans, with routing/last consumers resolved at
 configuration load; they do not prove live state, grants or safe physical lifetimes.

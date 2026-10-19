@@ -6,6 +6,7 @@
 //! caller; the backend only sees shapes and native BF16 encodings.
 
 mod attention;
+mod decoder;
 mod elementwise;
 mod linear;
 mod norm;
@@ -13,8 +14,9 @@ mod rotary;
 mod weights;
 
 pub use attention::{AttentionConfig, attention, attention_with_weights};
+pub use decoder::{Gemma4CpuDecoder, argmax};
 pub use elementwise::{add, gelu_tanh, multiply, ple_combine, scale, softcap};
-pub use linear::{bf16, linear, linear_f32};
+pub use linear::{bf16, linear, linear_f32, project};
 
 /// Fallible host allocation, so a model-sized request returns an error instead of aborting.
 pub(crate) fn try_vector<T: Clone>(length: usize, value: T) -> Result<Vec<T>, crate::Gemma4Error> {
@@ -25,6 +27,6 @@ pub(crate) fn try_vector<T: Clone>(length: usize, value: T) -> Result<Vec<T>, cr
     vector.resize(length, value);
     Ok(vector)
 }
-pub use norm::rms_norm;
+pub use norm::{rms_norm, rms_norm_scale_free};
 pub use rotary::{apply_rotary, factors, inverse_frequencies};
 pub use weights::{CpuParameter, Gemma4CpuWeights};

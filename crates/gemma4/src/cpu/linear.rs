@@ -15,6 +15,56 @@ pub fn bf16(value: f32) -> u16 {
     (bits.wrapping_add(0x7fff + ((bits >> 16) & 1)) >> 16) as u16
 }
 
+/// Row-major projection without the audit magnitude vector.
+///
+/// Same arithmetic and single rounding as [`linear`], for decoder hot paths.
+/// # Errors
+/// As [`linear`].
+pub fn project(input: &[u16], rows: usize, weight: &CpuParameter) -> Result<Vec<u16>, Gemma4Error> {
+    let shape = weight.shape();
+    if shape.len() != 2 || rows == 0 {
+        return Err(Gemma4Error::new(
+            "CPU linear",
+            "weight must be [n,k] and rows positive",
+        ));
+    }
+    let (columns, inner) = (shape[0], shape[1]);
+    let input_length = rows
+        .checked_mul(inner)
+        .ok_or_else(|| Gemma4Error::new("CPU linear", "input dimensions overflow"))?;
+    let weight_length = columns
+        .checked_mul(inner)
+        .ok_or_else(|| Gemma4Error::new("CPU linear", "weight dimensions overflow"))?;
+    let output_length = rows
+        .checked_mul(columns)
+        .ok_or_else(|| Gemma4Error::new("CPU linear", "output dimensions overflow"))?;
+    if columns == 0
+        || inner == 0
+        || input.len() != input_length
+        || weight.values().len() != weight_length
+    {
+        return Err(Gemma4Error::new(
+            "CPU linear",
+            "input, weight and output dimensions disagree",
+        ));
+    }
+    let mut output = try_vector(output_length, 0_u16)?;
+    for row in 0..rows {
+        let row_values = &input[row * inner..(row + 1) * inner];
+        for column in 0..columns {
+            let slice = &weight.values()[column * inner..(column + 1) * inner];
+            let mut sum = 0.0_f32;
+            for (&left, &right) in row_values.iter().zip(slice) {
+                let left = f32::from_bits(u32::from(left) << 16);
+                let right = f32::from_bits(u32::from(right) << 16);
+                sum += left * right;
+            }
+            output[row * columns + column] = bf16(sum);
+        }
+    }
+    Ok(output)
+}
+
 /// Row-major `output[m,n] = input[m,k] · weight[n,k]` with native BF16 operands.
 ///
 /// Accumulation is FP32 in source order and the single output rounding is BF16

@@ -462,10 +462,12 @@ Next gates: qualify the remaining layer math — residual and PLE combination, M
 gating, final normalization and soft-capped logits. Exact CPU stage references for
 those boundaries now exist, including per-layer residuals, all four norms, MLP and
 PLE stages and the final normalization; device implementation and acceptance remain.
-Host CPU primitives for weights, linear, RMS, rotary, the remaining layer math and
-causal/sliding grouped-query attention now reproduce those captures inside declared
-FP32 bounds, giving the decoder a host-testable arithmetic path; attention now needs
-only explicit KV spans, cache wiring and an executor to become a full host decoder.
+The host CPU path now composes a full Gemma decoder step — embeddings, PLE, all 42
+hybrid layers with owner/shared-tail KV, attention, the remaining layer math and the
+tied head — and reproduces all four greedy tokens of the archived 18-token chat row.
+It keeps complete per-owner history and masks local spans rather than evicting them.
+KV span policy, donor trimming, a serving executor, long-context behaviour and device
+parity remain open; no performance or serving claim follows.
 Then mixed-width local/global KV with donor spans pinned through shared-tail device reads. Use strongly typed model/backend state
 behind `GenerationExecutor`, not the current first-`kv()`/homogeneous-cache convenience
 or family branches in routing/scheduling. Qualified physical allocation/retirement and

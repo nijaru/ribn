@@ -58,6 +58,7 @@ impl CpuParameter {
 pub struct Gemma4CpuWeights {
     parameters: BTreeMap<ParameterId, CpuParameter>,
     bytes: u64,
+    config: crate::Gemma4Config,
 }
 
 impl Gemma4CpuWeights {
@@ -126,7 +127,17 @@ impl Gemma4CpuWeights {
                 "materialized bytes differ from the validated inventory",
             ));
         }
-        Ok(Self { parameters, bytes })
+        Ok(Self {
+            parameters,
+            bytes,
+            config: source.config().clone(),
+        })
+    }
+
+    /// Source configuration this inventory was validated against.
+    #[must_use]
+    pub const fn config(&self) -> &crate::Gemma4Config {
+        &self.config
     }
 
     #[must_use]
