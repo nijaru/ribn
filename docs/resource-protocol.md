@@ -909,6 +909,23 @@ That component gate is not whole-model parity or a performance claim. Real model
 execution still requires independently justified numerical acceptance and mixed-KV
 lifetime qualification.
 
+### Native BF16 normalization
+
+Grouped RMS uses the same completion-owned matrix storage as linear execution.
+The model selects epsilon, direct learned scales and contiguous group widths;
+NVIDIA validates equal input/output shapes, whole groups and live BF16 scale ranges
+before invalidating output. Scale-free RMS does not allocate an all-ones parameter.
+Gemma normalizes Q/K per head and PLE per layer slice. Fresh V is normalized without
+scale at its KV owner; shared-tail consumers must not normalize cached V again.
+
+Possible kernel enqueue retains compiled code/module, associated stable stream,
+optional scale allocation and both matrices together. Successful stream completion
+publishes output; failure or unwind follows the same retirement/quarantine rule as
+linear execution. Kernel code/context overhead is not an application buffer grant;
+this operation adds no global device workspace or application submission protocol.
+The [RMS component gate](../benchmarks/gemma4-reference/README.md#native-bf16-rms-component-gate)
+owns its bounded numerical policy, not a whole-model error budget.
+
 ### Snapshot replacement
 
 Start with one loaded execution owner's lifetime pinning one snapshot. Implement

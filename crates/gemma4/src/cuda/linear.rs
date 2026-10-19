@@ -1,6 +1,6 @@
 use super::Gemma4CudaWeights;
 use crate::ParameterId;
-use engine_nvidia::{CudaBf16Error, CudaBf16Gemm, CudaBf16GemmError, CudaBf16Matrix};
+use engine_nvidia::{CudaBf16ComputeError, CudaBf16Error, CudaBf16Gemm, CudaBf16Matrix};
 
 impl Gemma4CudaWeights {
     /// Bind one active logical projection to native BF16 linear execution.
@@ -18,7 +18,7 @@ impl Gemma4CudaWeights {
         execution: &mut CudaBf16Gemm,
         input: &mut CudaBf16Matrix,
         output: &mut CudaBf16Matrix,
-    ) -> Result<(), CudaBf16GemmError> {
+    ) -> Result<(), CudaBf16ComputeError> {
         let slot = self
             .parameter_slot(parameter)
             .ok_or(CudaBf16Error::Invalid(

@@ -1,11 +1,11 @@
-//! CUDA-specific BF16 linear algebra; model roles remain above this boundary.
+//! CUDA-specific BF16 compute; model roles remain above this boundary.
 
 mod pending;
 
 #[cfg(feature = "cuda")]
 mod cuda;
 #[cfg(feature = "cuda")]
-pub use cuda::{CudaBf16Gemm, CudaBf16GemmError, CudaBf16Matrix};
+pub use cuda::{CudaBf16ComputeError, CudaBf16Gemm, CudaBf16Matrix, CudaBf16RmsNorm};
 
 use crate::cuda_allocation::CudaBf16Error;
 use engine_core::{DataType, WeightTensorSpec};
@@ -51,6 +51,25 @@ impl MatrixShape {
         i32::try_from(self.cols).expect("validated matrix columns")
     }
 
+    fn validate_rms(self, output: Self, width: usize, epsilon: f32) -> Result<u32, CudaBf16Error> {
+        if self != output || width == 0 || !self.cols.is_multiple_of(width) {
+            return Err(CudaBf16Error::Invalid(
+                "RMS requires equal shapes and whole groups",
+            ));
+        }
+        if !epsilon.is_finite() || epsilon <= 0.0 {
+            return Err(CudaBf16Error::Invalid(
+                "RMS epsilon must be finite and positive",
+            ));
+        }
+        let groups = self
+            .rows
+            .checked_mul(self.cols / width)
+            .and_then(|n| i32::try_from(n).ok())
+            .ok_or(CudaBf16Error::Invalid("RMS grid exceeds CUDA limit"))?;
+        Ok(groups.unsigned_abs())
+    }
+
     fn validate_linear(self, weight: &WeightTensorSpec, output: Self) -> Result<(), CudaBf16Error> {
         if weight.dtype() != DataType::BF16
             || weight.dimensions() != [output.cols as u64, self.cols as u64]
@@ -67,6 +86,25 @@ impl MatrixShape {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rms_validates_groups_epsilon_and_grid_before_launch() {
+        let shape = MatrixShape::new(3, 512).unwrap();
+        assert_eq!(shape.validate_rms(shape, 256, 1e-6).unwrap(), 6);
+        for width in [0, 3, 1024] {
+            assert!(shape.validate_rms(shape, width, 1e-6).is_err());
+        }
+        for epsilon in [0.0, -1.0, f32::NAN, f32::INFINITY] {
+            assert!(shape.validate_rms(shape, 256, epsilon).is_err());
+        }
+        assert!(
+            shape
+                .validate_rms(MatrixShape::new(1, 1536).unwrap(), 256, 1e-6)
+                .is_err()
+        );
+        let huge = MatrixShape::new(i32::MAX as usize, 2).unwrap();
+        assert!(huge.validate_rms(huge, 1, 1e-6).is_err());
+    }
 
     #[test]
     fn linear_shape_checks_transposition_and_checked_dimensions() {

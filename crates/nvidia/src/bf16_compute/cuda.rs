@@ -13,6 +13,9 @@ use std::{error::Error, fmt, io::Cursor, sync::Arc};
 #[path = "blas.rs"]
 mod blas;
 use blas::{Blas, error};
+#[path = "rms.rs"]
+mod rms;
+pub use rms::CudaBf16RmsNorm;
 
 type DeviceAllocation = Arc<Allocation<CudaTransport>>;
 static ALPHA: f32 = 1.0;
@@ -145,18 +148,30 @@ impl CudaBf16Matrix {
     }
 }
 
+enum Program {
+    Blas(Arc<Blas>),
+    Rms(Arc<rms::RmsKernels>),
+}
+impl Program {
+    fn stream(&self) -> &Arc<CudaStream> {
+        match self {
+            Self::Blas(blas) => blas.stream(),
+            Self::Rms(kernels) => &kernels.stream,
+        }
+    }
+}
 struct Access {
-    blas: Arc<Blas>,
-    _weights: DeviceAllocation,
+    program: Program,
+    _weights: Option<DeviceAllocation>,
     _input: DeviceAllocation,
     _output: DeviceAllocation,
 }
 fn drain(access: &Access) -> Result<(), CudaBf16Error> {
     access
-        .blas
+        .program
         .stream()
         .synchronize()
-        .map_err(|e| error("BF16 linear completion", e))
+        .map_err(|e| error("BF16 compute completion", e))
 }
 enum Retirement {
     Preparation(Box<Blas>),
@@ -165,11 +180,11 @@ enum Retirement {
 
 /// A validation/library error plus any ownership needed after possible enqueue.
 /// Dropping an unretired error drains or quarantines its complete access envelope.
-pub struct CudaBf16GemmError {
+pub struct CudaBf16ComputeError {
     cause: CudaBf16Error,
     retirement: Option<Retirement>,
 }
-impl CudaBf16GemmError {
+impl CudaBf16ComputeError {
     #[must_use]
     pub const fn cause(&self) -> &CudaBf16Error {
         &self.cause
@@ -193,7 +208,7 @@ impl CudaBf16GemmError {
         Ok(())
     }
 }
-impl From<CudaBf16Error> for CudaBf16GemmError {
+impl From<CudaBf16Error> for CudaBf16ComputeError {
     fn from(cause: CudaBf16Error) -> Self {
         Self {
             cause,
@@ -201,20 +216,20 @@ impl From<CudaBf16Error> for CudaBf16GemmError {
         }
     }
 }
-impl fmt::Display for CudaBf16GemmError {
+impl fmt::Display for CudaBf16ComputeError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         self.cause.fmt(f)
     }
 }
-impl fmt::Debug for CudaBf16GemmError {
+impl fmt::Debug for CudaBf16ComputeError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("CudaBf16GemmError")
+        f.debug_struct("CudaBf16ComputeError")
             .field("cause", &self.cause)
             .field("retirement_pending", &self.retirement_pending())
             .finish_non_exhaustive()
     }
 }
-impl Error for CudaBf16GemmError {
+impl Error for CudaBf16ComputeError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         Some(&self.cause)
     }
@@ -239,10 +254,10 @@ impl CudaBf16Gemm {
         stream: Arc<CudaStream>,
         pool: &Arc<BytePool>,
         workspace_bytes: usize,
-    ) -> Result<Self, CudaBf16GemmError> {
+    ) -> Result<Self, CudaBf16ComputeError> {
         let mut owner = Box::new(Blas::prepare(stream, pool, workspace_bytes)?);
         if let Err(cause) = owner.initialize() {
-            return Err(CudaBf16GemmError {
+            return Err(CudaBf16ComputeError {
                 cause,
                 retirement: Some(Retirement::Preparation(owner)),
             });
@@ -265,7 +280,7 @@ impl CudaBf16Gemm {
         slot: usize,
         input: &mut CudaBf16Matrix,
         output: &mut CudaBf16Matrix,
-    ) -> Result<(), CudaBf16GemmError> {
+    ) -> Result<(), CudaBf16ComputeError> {
         if self.closed {
             return Err(CudaBf16Error::Closed.into());
         }
@@ -315,8 +330,8 @@ impl CudaBf16Gemm {
             .map_err(|e| error("BF16 linear bind", e))?;
         let mut pending = Pending::new(
             Access {
-                blas: Arc::clone(&self.blas),
-                _weights: allocation,
+                program: Program::Blas(Arc::clone(&self.blas)),
+                _weights: Some(allocation),
                 _input: Arc::clone(&input.allocation),
                 _output: Arc::clone(&output.allocation),
             },
@@ -355,7 +370,7 @@ impl CudaBf16Gemm {
         }
         .map_err(|e| error("BF16 linear enqueue", e));
         if let Err(cause) = enqueue.and_then(|()| pending.retire()) {
-            return Err(CudaBf16GemmError {
+            return Err(CudaBf16ComputeError {
                 cause,
                 retirement: Some(Retirement::Execution(pending)),
             });

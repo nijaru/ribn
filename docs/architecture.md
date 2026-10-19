@@ -145,7 +145,10 @@ full byte readback and explicit unload at `1d4a7fb`; this is not an executable d
 The subsequent shared allocation owner and BF16 cuBLAS linear binding pass their
 [device component gates](../benchmarks/gemma4-reference/README.md#native-bf16-linear-component-gate),
 including exact dyadic arithmetic, memcheck and repeated real-package weight readback/unload.
-The NVIDIA operation owns physical storage/completion; Gemma binds logical projections.
+Native grouped BF16 RMS also passes its
+[component gate](../benchmarks/gemma4-reference/README.md#native-bf16-rms-component-gate).
+NVIDIA owns physical storage/completion; Gemma binds logical projections, epsilon,
+learned normalization scales, grouping and owner-only scale-free V.
 Model-local KV range calculations distinguish
 persistent suffixes from untrimmed donor spans, with routing/last consumers resolved at
 configuration load; they do not prove live state, grants or safe physical lifetimes.
@@ -188,7 +191,7 @@ Shared CUDA physical retirement and downstream-workspace progress remain unprove
 | `crates/qwen` / `engine-qwen` | Qwen config, GGUF mapping, CUDA assembly and AR adapter; serving benchmark |
 | `crates/nvidia` / `engine-nvidia` | NVIDIA storage, completion, dispatch and kernels |
 | `crates/bert` / `engine-bert` | BERT semantics, preparation, executor binding and device retirement |
-| `crates/gemma4` / `engine-gemma4` | Gemma 4 text processing, config, source/KV preflight and native BF16 CUDA weights; no model execution |
+| `crates/gemma4` / `engine-gemma4` | Gemma 4 text processing, config, source/KV preflight and native BF16 CUDA weight/compute bindings; no decoder |
 | `crates/core` / `engine-core` | Prepared batch, backend submission, continuation state and weight contracts; no scheduler, plan or model description |
 | `crates/gguf` / `engine-gguf` | GGUF artifact access and current tokenizer/chat-template implementation |
 | `crates/safetensors` / `ribn-safetensors` | Validated SafeTensors metadata and bounded payload readers |

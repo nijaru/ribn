@@ -1,6 +1,7 @@
-//! Model-owned BF16 materialization and linear bindings. No decoder or token executor.
+//! Model-owned BF16 materialization and compute bindings. No decoder or token executor.
 
 mod linear;
+mod norm;
 
 use crate::{Gemma4Config, Gemma4Error, Gemma4Source, ParameterId};
 use cudarc::driver::CudaStream;

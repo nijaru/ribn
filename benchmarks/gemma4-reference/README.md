@@ -352,6 +352,49 @@ per-thread pseudo-streams on their originating thread and after a cross-thread m
 Failed-completion/unwind retention remains deterministic host-injection evidence.
 No full forward pass, mixed-KV lifetime, serving or speedup is qualified by this slice.
 
+## Native BF16 RMS component gate
+
+On 2026-10-19 (UTC), native grouped RMS passed its backend and model-binding gates
+on the RTX 4090 with driver 615.71.09 / CUDA 13.3. The backend normalizes contiguous
+BF16 groups using FP32 variance and normalization, optional direct learned scale,
+and final BF16 RNE. Gemma binds its epsilon, hidden/per-head/packed-PLE grouping
+and scale-free V at KV owners; shared tails reject fresh V normalization.
+
+```sh
+cargo test --release -p engine-nvidia --features cuda --test cuda_bf16_rms --locked -- --ignored --test-threads=1
+cargo test --release -p engine-gemma4 --features cuda --test cuda_norm --locked -- --ignored --test-threads=1
+```
+
+The backend gate covers widths 7/63/256/512/2560, multiple rows/groups, mixed input
+exponents, negative/zero learned scales, scale-free RMS, signed zeros and reused
+output. It rejects uninitialized input, invalid groups/epsilon/scale and foreign
+streams without changing output. Model fixtures cover local/global Q/K, hidden
+and packed-PLE norms, inactive scales, missing query heads and shared-tail V rejection.
+The per-thread pseudo-stream rejection gate now covers the normalizer too.
+
+Acceptance was declared before device execution: finite, correctly shaped output,
+exact signed zeros, otherwise at most **one adjacent BF16 encoding** from an independent
+FP64 RMS equation with direct nearest-BF16 selection. For these bounded finite
+vectors, the FP32 positive-energy sum bound at width 2560 is approximately 1.53e-4;
+inverse square root reduces its relative effect, far below BF16 spacing. FP32
+multiplications and the documented `powf` error are also finer than BF16 spacing.
+The [CUDA 13.3 math guide](https://docs.nvidia.com/cuda/archive/13.3.0/cuda-programming-guide/05-appendices/mathematical-functions.html)
+states observed, not guaranteed, transcendental error bounds. This policy permits a
+rounding-boundary difference for these component cases, not arbitrary-input accuracy,
+real-model RMS parity or a whole-model/logit budget. No fast-math mode is enabled.
+
+Both new tests passed normally and under unfiltered memcheck; the backend also
+passed racecheck (zero hazards/warnings) and synccheck (zero errors). All six prior
+native BF16 tests and their four memcheck binaries passed again after the shared
+completion-error/access-owner changes. Two further real-package diagnostics matched
+all 665 source/device hashes against the independent host audit and again restored
+free VRAM exactly on unload with zero remaining pool charge. These are weight
+regressions, not real-package forward or RMS numerical execution. Linux workspace
+and CUDA-feature NVIDIA unit tests passed; failed-completion/unwind retention remains
+host fault-injection evidence. Device gates were serialized and bounded, with no
+interrupted test counted as a pass. No complete decoder, mixed-KV lifetime, serving
+or performance is qualified here.
+
 ## Host rotary-frequency gate
 
 `Gemma4Config::rotary_inverse_frequency` prepares individual FP32 factors without

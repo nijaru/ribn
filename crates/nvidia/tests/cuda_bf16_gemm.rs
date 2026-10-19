@@ -3,7 +3,9 @@
 
 use cudarc::driver::CudaContext;
 use engine_core::{DataType, WeightTensorSpec};
-use engine_nvidia::{CudaBf16Error, CudaBf16Gemm, CudaBf16Matrix, CudaBf16Weights};
+use engine_nvidia::{
+    CudaBf16Error, CudaBf16Gemm, CudaBf16Matrix, CudaBf16RmsNorm, CudaBf16Weights,
+};
 use ribn_foundation::BytePool;
 use std::{io::Cursor, sync::Arc};
 
@@ -161,12 +163,17 @@ fn per_thread_default_stream_is_rejected_even_after_cross_thread_move() {
             let matrix = CudaBf16Matrix::allocate(1, 1, Arc::clone(&stream), &pool, 3);
             assert!(matches!(matrix, Err(CudaBf16Error::Invalid(_))));
             assert_eq!(pool.granted(), 0);
-            let error = CudaBf16Gemm::new(stream, &pool, 8 * 1024 * 1024)
+            let error = CudaBf16Gemm::new(Arc::clone(&stream), &pool, 8 * 1024 * 1024)
                 .err()
                 .expect("reject unstable stream before handle creation");
             assert!(matches!(error.cause(), CudaBf16Error::Invalid(_)));
             assert!(!error.retirement_pending());
             assert_eq!(pool.granted(), 0);
+            let error = CudaBf16RmsNorm::new(Arc::clone(&stream))
+                .err()
+                .expect("reject unstable stream before module loading");
+            assert!(matches!(error.cause(), CudaBf16Error::Invalid(_)));
+            assert!(!error.retirement_pending());
         };
         if cross_thread {
             std::thread::spawn(check).join().unwrap();

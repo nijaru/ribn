@@ -436,7 +436,12 @@ shared-allocation refactor and arithmetic now pass the
 [device component gates](../benchmarks/gemma4-reference/README.md#native-bf16-linear-component-gate)
 at `53c8aed`: six tests normally and under memcheck, plus two real-package
 665-parameter byte/readback/unload regressions against the independent source audit.
-These qualify the linear building block, not a second executable decoder or model support. Separately, the
+These qualify the linear building block, not a second executable decoder or model support.
+Native grouped BF16 RMS now also passes its
+[device component gate](../benchmarks/gemma4-reference/README.md#native-bf16-rms-component-gate),
+including direct learned scales, per-head/packed-PLE grouping, owner-only scale-free V,
+memcheck, racecheck and synccheck. Shared completion ownership and full weight readback/unload
+were requalified; neither component establishes full-model numerical acceptance. Separately, the
 model-owned [host rotary-frequency gate](../benchmarks/gemma4-reference/README.md#host-rotary-frequency-gate)
 now checks the padded proportional/global and ordinary/local factors against pinned
 Transformers and an independent FP64 equation. This is preparation evidence, not
@@ -447,8 +452,8 @@ using the archived real-model hidden inputs under both CPU precision policies.
 Their one-token processing schedule is distinct from original prefill taps; no new
 Ribn device slice or full-model qualification follows.
 
-Next gates: implement and qualify the remaining model math, starting with native
-BF16 normalization and rotary execution, and mixed-width local/global KV with donor
+Next gates: implement and qualify rotary execution and remaining layer math, then
+mixed-width local/global KV with donor
 spans pinned through shared-tail device reads. Use strongly typed model/backend state
 behind `GenerationExecutor`, not the current first-`kv()`/homogeneous-cache convenience
 or family branches in routing/scheduling. Qualified physical allocation/retirement and
