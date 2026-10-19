@@ -309,7 +309,7 @@ cargo test --release -p engine-gemma4 --features cuda --test cuda_weights --lock
 This qualifies the weight preparation slice, **not Gemma model execution**, mixed-KV
 retirement, concurrent loading/serving capacity or task quality.
 
-## Native BF16 linear component: device gates pending
+## Native BF16 linear component gate
 
 `CudaBf16Gemm` now binds prepared BF16 weights and row-major `CudaBf16Matrix`
 inputs/outputs to cuBLAS; `Gemma4CudaWeights::linear_into` owns the logical-role
@@ -319,19 +319,31 @@ retains every accessed allocation and the handle until an acknowledged drain.
 CUDA's per-thread default pseudo-stream is rejected because these owners/errors can
 move between threads. This is an execution building block, not a Gemma decoder.
 
-The shared-allocation/access-owner refactor and new linear operations have passed
-host tests and CUDA-feature compilation/lints, **not device qualification**. The
-weight evidence above belongs to `1d4a7fb`; it does not qualify these later changes.
-Before using the new projection path, rerun weight byte/readback/unload gates and the
-full real-package diagnostic, then the new component and logical-binding gates:
+At `53c8aed` on 2026-10-19, the shared-allocation/access-owner refactor and linear
+operations passed all six device tests on the RTX 4090 (driver 615.71.09), both
+normally and under unfiltered Compute Sanitizer memcheck, with zero reported errors:
+one storage test, two model-weight tests, two linear tests and one logical-binding
+test. These rerun the weight byte/readback/unload and partial-source cleanup protection
+rather than inheriting it from the earlier `1d4a7fb` result.
+
+Two fresh real-package diagnostics also matched every byte, shape, dtype and source
+SHA256 for all 665 parameters against the independent host audit. Both explicit
+unloads refunded the pool to zero. CUDA free memory was 24,885,723,136 bytes before
+allocation and after unload, and 9,958,195,200 bytes while weights were resident.
+Requested weight allocation, driver rounding and 14,664-MiB sampled weight-only peaks
+were unchanged from the table above. The 18.5/15.6-second runs include loading,
+hashing and readback; they are not inference timings. Linux workspace tests passed.
+
+Reproduce with the weight gates and real-package diagnostic above, then:
 
 ```sh
 cargo test --release -p engine-nvidia --features cuda --test cuda_bf16_gemm --locked -- --ignored --test-threads=1
 cargo test --release -p engine-gemma4 --features cuda --test cuda_linear --locked -- --ignored --test-threads=1
 ```
 
-Run the new device binaries under Compute Sanitizer memcheck as well, serialized
-with other full-model work. The component reference uses exact integer dot products
+Run these device binaries under Compute Sanitizer memcheck as well, serialized
+with other full-model work. The recorded runs used a 180-second process-group timeout
+per small gate and completed without interruption. The component reference uses exact integer dot products
 scaled by 1/64 and independent BF16 round-to-nearest-even, with widths 7, 63, 256,
 512 and 2560, odd output widths, multiple rows and output reuse. The model gate uses
 selected-source dyadic operands for four logical projections. Both require exact

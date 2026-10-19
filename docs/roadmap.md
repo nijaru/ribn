@@ -20,8 +20,8 @@ and prefill-host-cost experiments; they do not attribute the entire endpoint def
 to the host or prove descriptors, arenas or graph capture will close it. Measure
 remaining projection/device costs and the fixed batched layer chain as well.
 The member-descriptor candidate remains off pending its remaining lifetime, sanitizer
-and performance gates. Gemma's native BF16 linear component needs device qualification
-before dependent device math is added.
+and performance gates. Gemma's native BF16 linear and shared-allocation component gates
+have passed; proceed with the remaining model math and mixed-retention continuation.
 
 Qualify the cross-engine numerical comparison and target remaining prefill/projection
 costs on the contiguous path. The [first endpoint diagnostic](../benchmarks/runtime-contract.md#first-equal-artifact-endpoint-diagnostic-2026-10-16)
@@ -432,10 +432,11 @@ this does not establish Ribn's eventual workspace/serving peak.
 
 The first native BF16 linear component now binds model projections to cuBLAS with
 preallocated output, charged workspace and completion-owned failure guards. Its
-shared-allocation refactor and arithmetic have host checks only; run the
-[pending device gates](../benchmarks/gemma4-reference/README.md#native-bf16-linear-component-device-gates-pending),
-including weight readback/unload regression, before building dependent device slices.
-It is not a second executable decoder or qualified model support. Separately, the
+shared-allocation refactor and arithmetic now pass the
+[device component gates](../benchmarks/gemma4-reference/README.md#native-bf16-linear-component-gate)
+at `53c8aed`: six tests normally and under memcheck, plus two real-package
+665-parameter byte/readback/unload regressions against the independent source audit.
+These qualify the linear building block, not a second executable decoder or model support. Separately, the
 model-owned [host rotary-frequency gate](../benchmarks/gemma4-reference/README.md#host-rotary-frequency-gate)
 now checks the padded proportional/global and ordinary/local factors against pinned
 Transformers and an independent FP64 equation. This is preparation evidence, not
@@ -446,8 +447,8 @@ using the archived real-model hidden inputs under both CPU precision policies.
 Their one-token processing schedule is distinct from original prefill taps; no new
 Ribn device slice or full-model qualification follows.
 
-Next gates: qualify native BF16 linear execution, then implement the remaining model
-math and mixed-width local/global KV with donor
+Next gates: implement and qualify the remaining model math, starting with native
+BF16 normalization and rotary execution, and mixed-width local/global KV with donor
 spans pinned through shared-tail device reads. Use strongly typed model/backend state
 behind `GenerationExecutor`, not the current first-`kv()`/homogeneous-cache convenience
 or family branches in routing/scheduling. Qualified physical allocation/retirement and

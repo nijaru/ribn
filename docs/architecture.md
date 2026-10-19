@@ -142,8 +142,9 @@ excludes inactive shared-tail projections and non-text weights. Its optional CUD
 materializes native BF16 weights through one charged NVIDIA allocation, preserving tied
 head identity and retaining partial-load cleanup ownership. All 665 real parameters pass
 full byte readback and explicit unload at `1d4a7fb`; this is not an executable decoder.
-The subsequent shared allocation owner and BF16 cuBLAS linear binding have host checks
-but [pending device gates](../benchmarks/gemma4-reference/README.md#native-bf16-linear-component-device-gates-pending).
+The subsequent shared allocation owner and BF16 cuBLAS linear binding pass their
+[device component gates](../benchmarks/gemma4-reference/README.md#native-bf16-linear-component-gate),
+including exact dyadic arithmetic, memcheck and repeated real-package weight readback/unload.
 The NVIDIA operation owns physical storage/completion; Gemma binds logical projections.
 Model-local KV range calculations distinguish
 persistent suffixes from untrimmed donor spans, with routing/last consumers resolved at
