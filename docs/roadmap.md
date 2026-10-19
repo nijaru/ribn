@@ -467,7 +467,9 @@ hybrid layers with owner/shared-tail KV, attention, the remaining layer math and
 tied head — and reproduces all four greedy tokens of the archived 18-token chat row.
 It keeps complete per-owner history and masks local spans rather than evicting them.
 KV span policy, donor trimming, a serving executor, long-context behaviour and device
-parity remain open; no performance or serving claim follows.
+parity remain open; no performance or serving claim follows. On Apple silicon, a first
+Metal (GPU, not ANE) slice now runs BF16 linear and RMS on real hardware with
+independent-reference tests; attention, decoder wiring and measurement are next.
 Then mixed-width local/global KV with donor spans pinned through shared-tail device reads. Use strongly typed model/backend state
 behind `GenerationExecutor`, not the current first-`kv()`/homogeneous-cache convenience
 or family branches in routing/scheduling. Qualified physical allocation/retirement and

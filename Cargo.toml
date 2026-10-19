@@ -13,6 +13,7 @@ members = [
     "crates/qwen",
     "crates/gguf",
     "crates/nvidia",
+    "crates/metal",
     "crates/cli",
 ]
 # Hardware-gated CUDA Rust probes: their own workspace, so the toolchain-free

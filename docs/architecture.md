@@ -167,6 +167,16 @@ instead of evicting them. Cache eviction, donor trimming, long-context behaviour
 sampling, a serving executor, device parity and performance remain unqualified; this
 is a correctness-first host path, not a portable tensor layer or a selected hardware
 priority.
+An Apple GPU path has started in `engine-metal`: macOS-only Metal compute pipelines
+for BF16 linear and grouped RMS, compiled at runtime from checked-in MSL and driven by
+one device plus command queue. Tests on the M3 Max compare against an independent host
+reference, including exact dyadic products and one-encoding bounds for general
+operands; they are real device evidence for those primitives. Metal, not the Neural
+Engine, is the Apple decode target: batch decode is bandwidth-bound and needs dynamic
+shapes and custom kernels, while the ANE is reachable only through CoreML. Attention,
+decoder wiring, an executor and performance measurement are absent, and the CPU
+decoder remains the correctness oracle.
+
 Model-local KV range calculations distinguish
 persistent suffixes from untrimmed donor spans, with routing/last consumers resolved at
 configuration load; they do not prove live state, grants or safe physical lifetimes.
@@ -209,7 +219,8 @@ Shared CUDA physical retirement and downstream-workspace progress remain unprove
 | `crates/qwen` / `engine-qwen` | Qwen config, GGUF mapping, CUDA assembly and AR adapter; serving benchmark |
 | `crates/nvidia` / `engine-nvidia` | NVIDIA storage, completion, dispatch and kernels |
 | `crates/bert` / `engine-bert` | BERT semantics, preparation, executor binding and device retirement |
-| `crates/gemma4` / `engine-gemma4` | Gemma 4 text processing, config, source/KV preflight, host CPU BF16 primitives and native BF16 CUDA weight/compute bindings; no decoder |
+| `crates/gemma4` / `engine-gemma4` | Gemma 4 text processing, config, source/KV preflight, host CPU BF16 decoder and native BF16 CUDA weight/compute bindings |
+| `crates/metal` / `engine-metal` | Apple Metal BF16 linear/RMS compute primitives; macOS-gated, no decoder |
 | `crates/core` / `engine-core` | Prepared batch, backend submission, continuation state and weight contracts; no scheduler, plan or model description |
 | `crates/gguf` / `engine-gguf` | GGUF artifact access and current tokenizer/chat-template implementation |
 | `crates/safetensors` / `ribn-safetensors` | Validated SafeTensors metadata and bounded payload readers |
