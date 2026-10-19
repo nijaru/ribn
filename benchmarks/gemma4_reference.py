@@ -178,7 +178,10 @@ def cases(tokenizer):
     ]
 
 
-def capture_cases(model, tokenizer, report, tensors, output):
+STAGE_LAYERS = (0, 5, 22, 23)
+
+
+def capture_cases(model, tokenizer, report, tensors, output, stages=False):
     import torch
 
     config = model.config.get_text_config()
@@ -230,6 +233,182 @@ def capture_cases(model, tokenizer, report, tensors, output):
                 donor_tap, with_kwargs=True
             )
         )
+
+    stage_specs = []
+    if stages:
+        hidden = config.hidden_size
+        ple = config.hidden_size_per_layer_input
+        inter = config.intermediate_size
+        require(ple > 0, "layer-math stages require per-layer embeddings")
+        for layer in STAGE_LAYERS:
+            block = language.layers[layer]
+            stage_specs.extend(
+                [
+                    (
+                        f"layer.{layer}.input_norm",
+                        block.input_layernorm,
+                        "output",
+                        hidden,
+                    ),
+                    (
+                        f"layer.{layer}.attention_output",
+                        block.post_attention_layernorm,
+                        "input",
+                        hidden,
+                    ),
+                    (
+                        f"layer.{layer}.post_attention_norm",
+                        block.post_attention_layernorm,
+                        "output",
+                        hidden,
+                    ),
+                    (
+                        f"layer.{layer}.post_attention_residual",
+                        block.pre_feedforward_layernorm,
+                        "input",
+                        hidden,
+                    ),
+                    (
+                        f"layer.{layer}.pre_feedforward_norm",
+                        block.pre_feedforward_layernorm,
+                        "output",
+                        hidden,
+                    ),
+                    (f"layer.{layer}.mlp_gate", block.mlp.gate_proj, "output", inter),
+                    (f"layer.{layer}.mlp_up", block.mlp.up_proj, "output", inter),
+                    (
+                        f"layer.{layer}.mlp_gate_activation",
+                        block.mlp.act_fn,
+                        "output",
+                        inter,
+                    ),
+                    (
+                        f"layer.{layer}.mlp_gate_product",
+                        block.mlp.down_proj,
+                        "input",
+                        inter,
+                    ),
+                    (f"layer.{layer}.mlp_down", block.mlp.down_proj, "output", hidden),
+                    (
+                        f"layer.{layer}.mlp_output",
+                        block.post_feedforward_layernorm,
+                        "input",
+                        hidden,
+                    ),
+                    (
+                        f"layer.{layer}.post_feedforward_norm",
+                        block.post_feedforward_layernorm,
+                        "output",
+                        hidden,
+                    ),
+                    (
+                        f"layer.{layer}.post_feedforward_residual",
+                        block.per_layer_input_gate,
+                        "input",
+                        hidden,
+                    ),
+                    (
+                        f"layer.{layer}.ple_gate",
+                        block.per_layer_input_gate,
+                        "output",
+                        ple,
+                    ),
+                    (f"layer.{layer}.ple_activation", block.act_fn, "output", ple),
+                    (
+                        f"layer.{layer}.ple_product",
+                        block.per_layer_projection,
+                        "input",
+                        ple,
+                    ),
+                    (
+                        f"layer.{layer}.ple_projection",
+                        block.per_layer_projection,
+                        "output",
+                        hidden,
+                    ),
+                    (
+                        f"layer.{layer}.ple_projection_raw",
+                        block.post_per_layer_input_norm,
+                        "input",
+                        hidden,
+                    ),
+                    (
+                        f"layer.{layer}.ple_norm",
+                        block.post_per_layer_input_norm,
+                        "output",
+                        hidden,
+                    ),
+                ]
+            )
+        stage_specs.extend(
+            [
+                ("final_norm_input", language.norm, "input", hidden),
+                ("final_norm", language.norm, "output", hidden),
+            ]
+        )
+
+        def output_tap(name):
+            def hook(_module, _inputs, value):
+                require(
+                    tuple(value.shape) == tap_shapes[name],
+                    f"wrong layer-math stage shape: {name}",
+                )
+                seen_taps.add(name)
+                retain(tensors, f"{tap_prefix}.{name}", value[0, -1])
+
+            return hook
+
+        def input_tap(name):
+            def hook(_module, inputs, _value):
+                require(
+                    tuple(inputs[0].shape) == tap_shapes[name],
+                    f"wrong layer-math stage input: {name}",
+                )
+                seen_taps.add(name)
+                retain(tensors, f"{tap_prefix}.{name}", inputs[0][0, -1])
+
+            return hook
+
+        def layer_tap(name):
+            def hook(module, args, _kwargs, value):
+                hidden_in, per_layer_input = args[0], args[1]
+                require(
+                    tuple(hidden_in.shape) == tap_shapes[f"{name}.input"]
+                    and tuple(per_layer_input.shape)
+                    == tap_shapes[f"{name}.per_layer_input"]
+                    and tuple(value.shape) == tap_shapes[f"{name}.output"],
+                    f"wrong {name} boundary shapes",
+                )
+                require(
+                    tuple(module.layer_scalar.shape)
+                    == tap_shapes[f"{name}.layer_scalar"],
+                    f"wrong {name} layer scalar",
+                )
+                for suffix, tensor in (
+                    ("input", hidden_in),
+                    ("per_layer_input", per_layer_input),
+                    ("output", value),
+                ):
+                    seen_taps.add(f"{name}.{suffix}")
+                    retain(tensors, f"{tap_prefix}.{name}.{suffix}", tensor[0, -1])
+                seen_taps.add(f"{name}.layer_scalar")
+                retain(
+                    tensors,
+                    f"{tap_prefix}.{name}.layer_scalar",
+                    module.layer_scalar,
+                )
+
+            return hook
+
+        for name, module, kind, _width in stage_specs:
+            hook = output_tap(name) if kind == "output" else input_tap(name)
+            hooks.append(module.register_forward_hook(hook))
+        for layer in STAGE_LAYERS:
+            hooks.append(
+                language.layers[layer].register_forward_hook(
+                    layer_tap(f"layer.{layer}"), with_kwargs=True
+                )
+            )
     try:
         with torch.inference_mode():
             for case in cases(tokenizer):
@@ -258,6 +437,25 @@ def capture_cases(model, tokenizer, report, tensors, output):
                         ),
                         "raw_logits": (1, 1, config.vocab_size),
                     }
+                    for name, _module, _kind, width in stage_specs:
+                        tap_shapes[name] = (1, len(inputs), width)
+                    for layer in STAGE_LAYERS:
+                        tap_shapes[f"layer.{layer}.input"] = (
+                            1,
+                            len(inputs),
+                            config.hidden_size,
+                        )
+                        tap_shapes[f"layer.{layer}.per_layer_input"] = (
+                            1,
+                            len(inputs),
+                            config.hidden_size_per_layer_input,
+                        )
+                        tap_shapes[f"layer.{layer}.output"] = (
+                            1,
+                            len(inputs),
+                            config.hidden_size,
+                        )
+                        tap_shapes[f"layer.{layer}.layer_scalar"] = (1,)
                     span_shapes.clear()
                     span_lengths["sliding_attention"] = min(
                         len(history) - len(inputs), config.sliding_window - 1
@@ -346,7 +544,7 @@ def capture_cases(model, tokenizer, report, tensors, output):
             hook.remove()
 
 
-def collect(snapshot, output, precision, threads):
+def collect(snapshot, output, precision, threads, stages=False):
     manifest = tomllib.loads(MANIFEST.read_text())
     require(threads > 0, "thread count must be positive")
     require(precision in ("fp32", "bf16"), "unsupported reference precision")
@@ -370,6 +568,7 @@ def collect(snapshot, output, precision, threads):
         "platform": platform.platform(),
         "python": sys.version,
         "scope": "text-only independent reference; no Ribn, GPU-fit, numerical or task-quality acceptance",
+        "stages": list(STAGE_LAYERS) if stages else [],
         "cases": [],
     }
     write_json(output / "reference.json", report)
@@ -438,7 +637,7 @@ def collect(snapshot, output, precision, threads):
         )
         report["tokenizer_class"] = type(tokenizer).__name__
 
-        capture_cases(model, tokenizer, report, tensors, output)
+        capture_cases(model, tokenizer, report, tensors, output, stages)
         save_file(tensors, output / "tensors.safetensors")
         report["tensor_file"] = {
             "sha256": sha256(output / "tensors.safetensors"),
@@ -461,6 +660,11 @@ def main():
     parser.add_argument("--precision", choices=("fp32", "bf16"), default="fp32")
     parser.add_argument("--threads", type=int, default=8)
     parser.add_argument(
+        "--stages",
+        action="store_true",
+        help="also tap decoder-layer residual, MLP, PLE and final-normalization stages on selected layers",
+    )
+    parser.add_argument(
         "--components-from",
         type=Path,
         help="recompute RMS/QKV/RoPE components from an existing full-model CPU corpus, not a new full-model run",
@@ -468,7 +672,9 @@ def main():
     args = parser.parse_args()
     try:
         if args.components_from is None:
-            collect(args.snapshot, args.output, args.precision, args.threads)
+            collect(
+                args.snapshot, args.output, args.precision, args.threads, args.stages
+            )
         else:
             from gemma4_reference_components import collect_components
 

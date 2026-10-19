@@ -459,8 +459,10 @@ Their one-token processing schedule is distinct from original prefill taps; no n
 Ribn device slice or full-model qualification follows.
 
 Next gates: qualify the remaining layer math — residual and PLE combination, MLP
-gating, final normalization and soft-capped logits — then mixed-width local/global KV with donor
-spans pinned through shared-tail device reads. Use strongly typed model/backend state
+gating, final normalization and soft-capped logits. Exact CPU stage references for
+those boundaries now exist, including per-layer residuals, all four norms, MLP and
+PLE stages and the final normalization; device implementation and acceptance remain.
+Then mixed-width local/global KV with donor spans pinned through shared-tail device reads. Use strongly typed model/backend state
 behind `GenerationExecutor`, not the current first-`kv()`/homogeneous-cache convenience
 or family branches in routing/scheduling. Qualified physical allocation/retirement and
 numerical execution remain device-gated.

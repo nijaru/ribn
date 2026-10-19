@@ -132,6 +132,39 @@ This qualifies collection/instrumentation only. Native BF16 linear device accept
 still precedes dependent device math; mixed-KV lifetimes and full-model acceptance
 remain separate gates.
 
+## Layer-math stage taps
+
+`benchmarks/gemma4_reference.py --stages` records the remaining decoder-layer
+arithmetic from a real full-model CPU forward: the residual boundaries and four
+norms, MLP gate/up/activation/product/down, per-layer PLE gate/activation/product/
+projection/norm, each layer's per-layer input and scalar, and the final
+normalization. Taps come from layers 0, 5, 22 and 23 at the last token of every row.
+Nothing is recomputed from synthetic hidden inputs, so attention and cache behavior
+stay the model's own.
+
+```sh
+python benchmarks/gemma4_reference.py --snapshot SNAPSHOT --output /new/path \
+    --precision bf16 --stages
+```
+
+The committed fixture remains the small rotary/config evidence; these stage tensors
+are large checkpoint-derived evidence kept outside the repository. An independent
+audit re-derives the relations from the captured taps:
+
+- exact BF16 equality for the residual additions, the layer-scalar multiply, the PLE
+  `(context + token) × 2^-1/2` combine, the gated products, the tap identities
+  (`mlp_output = mlp_down`, `ple_projection_raw = ple_projection`) and the final
+  normalization state;
+- GELU-tanh, RMS normalization and the tanh soft cap within eight FP32 epsilons of
+  the prescribed formula applied to the captured input.
+
+On 2026-10-19 this covered 444 exact and 168 bounded checks over the twelve rows, and
+all 1200 taps shared with the earlier reference reproduced bit-identically. This is
+reference evidence for the remaining layer-math gate: it does not execute Ribn
+kernels, relax a device tolerance or establish model quality. Matrix products still
+need their own numerical acceptance; only the elementwise and normalization
+relations are checked here.
+
 ## Stock CUDA fit, 2026-10-18
 
 The pinned stock Transformers model completed BF16 eager text execution on an
