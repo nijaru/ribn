@@ -11,17 +11,45 @@ use crate::input::TextInput;
 use crate::process::{Pool, PoolClient, Prepared, ProcessorLimits, TextProcessor};
 use crate::stream::{TextEvent, TextStream};
 
-/// One text-generation request: input plus generation options.
+/// One text-generation request: input, execution options and frontend stop text.
+///
+/// Stop strings are matched on decoded text and never reach the token runtime;
+/// stop token IDs stay in [`GenerationOptions`] as model/frontend semantics.
 #[derive(Clone, Debug, PartialEq)]
 pub struct TextRequest {
     pub input: TextInput,
     pub options: GenerationOptions,
+    /// Decoded-text stops, in match order of earliest occurrence then longest.
+    pub stops: Vec<String>,
+    /// Ignore model-provided stop tokens (EOS); explicit stop tokens remain.
+    pub ignore_eos: bool,
 }
 
 impl TextRequest {
     #[must_use]
     pub const fn new(input: TextInput, options: GenerationOptions) -> Self {
-        Self { input, options }
+        Self {
+            input,
+            options,
+            stops: Vec::new(),
+            ignore_eos: false,
+        }
+    }
+
+    #[must_use]
+    pub fn with_stops<I, S>(mut self, stops: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        self.stops = stops.into_iter().map(Into::into).collect();
+        self
+    }
+
+    #[must_use]
+    pub fn with_ignore_eos(mut self, ignore: bool) -> Self {
+        self.ignore_eos = ignore;
+        self
     }
 }
 
@@ -101,24 +129,16 @@ impl TextModel {
     ///
     /// # Errors
     /// Overload, a request-local preparation failure, or a closed owner.
-    async fn prepare(
-        &self,
-        input: TextInput,
-        options: GenerationOptions,
-    ) -> Result<Prepared, TextError> {
+    async fn prepare_request(&self, request: TextRequest) -> Result<Prepared, TextError> {
         let permit = self.handle.try_reserve().map_err(TextError::Admission)?;
-        let reply = self.pool.submit(input, options, permit)?;
+        let reply = self.pool.submit(request, permit)?;
         reply.recv_async().await.map_err(|_| TextError::Closed)?
     }
 
-    /// Blocking counterpart of [`Self::prepare`]. Not for async executor tasks.
-    fn prepare_blocking(
-        &self,
-        input: TextInput,
-        options: GenerationOptions,
-    ) -> Result<Prepared, TextError> {
+    /// Blocking counterpart of [`Self::prepare_request`].
+    fn prepare_request_blocking(&self, request: TextRequest) -> Result<Prepared, TextError> {
         let permit = self.handle.try_reserve().map_err(TextError::Admission)?;
-        let reply = self.pool.submit(input, options, permit)?;
+        let reply = self.pool.submit(request, permit)?;
         reply.recv().map_err(|_| TextError::Closed)?
     }
 
@@ -133,13 +153,20 @@ impl TextModel {
         input: TextInput,
         options: GenerationOptions,
     ) -> Result<TextStream, TextError> {
-        let prepared = self.prepare(input, options).await?;
+        self.stream_request(TextRequest::new(input, options)).await
+    }
+
+    /// Start one request that may carry frontend stop strings or ignore model EOS.
+    /// # Errors
+    /// As [`Self::stream`]; invalid stop bounds reject before enqueue.
+    pub async fn stream_request(&self, request: TextRequest) -> Result<TextStream, TextError> {
+        let prepared = self.prepare_request(request).await?;
         let stream = prepared
             .permit
             .stream(prepared.request)
             .await
             .map_err(TextError::Admission)?;
-        Ok(TextStream::new(prepared.decoder, stream))
+        TextStream::new(prepared.decoder, stream, prepared.stops)
     }
 
     /// Blocking counterpart of [`Self::stream`]. Not for async executor tasks.
@@ -152,12 +179,19 @@ impl TextModel {
         input: TextInput,
         options: GenerationOptions,
     ) -> Result<TextStream, TextError> {
-        let prepared = self.prepare_blocking(input, options)?;
+        self.stream_request_blocking(TextRequest::new(input, options))
+    }
+
+    /// Blocking counterpart of [`Self::stream_request`].
+    /// # Errors
+    /// As [`Self::stream_request`].
+    pub fn stream_request_blocking(&self, request: TextRequest) -> Result<TextStream, TextError> {
+        let prepared = self.prepare_request_blocking(request)?;
         let stream = prepared
             .permit
             .stream_blocking(prepared.request)
             .map_err(TextError::Admission)?;
-        Ok(TextStream::new(prepared.decoder, stream))
+        TextStream::new(prepared.decoder, stream, prepared.stops)
     }
 
     /// Generate one response to completion.
@@ -169,7 +203,15 @@ impl TextModel {
         input: TextInput,
         options: GenerationOptions,
     ) -> Result<TextResponse, TextError> {
-        let mut stream = self.stream(input, options).await?;
+        self.generate_request(TextRequest::new(input, options))
+            .await
+    }
+
+    /// Generate one request to completion, applying its stop strings.
+    /// # Errors
+    /// Stream failures and a missing terminal event.
+    pub async fn generate_request(&self, request: TextRequest) -> Result<TextResponse, TextError> {
+        let mut stream = self.stream_request(request).await?;
         let mut collector = Collector::default();
         while let Some(event) = stream.next_async().await {
             collector.apply(event?);
@@ -186,7 +228,17 @@ impl TextModel {
         input: TextInput,
         options: GenerationOptions,
     ) -> Result<TextResponse, TextError> {
-        let mut stream = self.stream_blocking(input, options)?;
+        self.generate_request_blocking(TextRequest::new(input, options))
+    }
+
+    /// Blocking counterpart of [`Self::generate_request`].
+    /// # Errors
+    /// As [`Self::generate_request`].
+    pub fn generate_request_blocking(
+        &self,
+        request: TextRequest,
+    ) -> Result<TextResponse, TextError> {
+        let mut stream = self.stream_request_blocking(request)?;
         let mut collector = Collector::default();
         while let Some(event) = stream.next_blocking() {
             collector.apply(event?);
@@ -240,7 +292,7 @@ impl TextBatch<'_> {
                 self.drained = true;
                 break;
             };
-            let stream = self.model.stream_blocking(request.input, request.options);
+            let stream = self.model.stream_request_blocking(request);
             self.window.push_back(stream);
         }
     }

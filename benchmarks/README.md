@@ -408,8 +408,9 @@ HF_HUB_OFFLINE=1 aiperf profile \
   --wait-for-model-timeout 30 --output-artifact-dir /tmp/ribn-aiperf-smoke \
   --no-auto-plot --ui none --export-http-trace
 
-# TOKENIZER_PATH is that pinned local snapshot. The random dataset otherwise
-# forces ignore_eos=true; explicitly override it to match the server's policy.
+# TOKENIZER_PATH is that pinned local snapshot. The random dataset sets
+# ignore_eos=true; keep the explicit override so this smoke matches the
+# recorded policy.
 HF_HUB_OFFLINE=1 vllm bench serve \
   --backend openai --base-url http://127.0.0.1:18000 --endpoint /v1/completions \
   --model ribn --tokenizer "$TOKENIZER_PATH" --dataset-name random \

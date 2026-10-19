@@ -31,16 +31,19 @@ POST JSON to `/v1/completions` or `/v1/chat/completions`.
 | `stream_options` | Only `{"include_usage":true/false}`, with `stream:true` |
 | `temperature`, `top_p`, `n` | Only 0, 1 and 1 respectively; decoding is greedy |
 | `repetition_penalty`, `logprobs` | Only 1 and null respectively; neutral defaults, no penalty or logprob output |
-| `ignore_eos` | Only false; artifact and chat control-token stops remain enabled |
+| `stop` | One string or at most four, total 256 bytes; matched on decoded text, excluded from output, terminal reason `stop` |
+| `seed` | Accepted for client compatibility; greedy decoding is unaffected |
+| `ignore_eos` | Boolean; `true` disables artifact and chat control-token stops while explicit `stop` strings still apply |
 
 Encoded prompt plus `max_tokens` must also fit the loaded model's context. An
 impossible combined reach returns 400, not retryable overload.
 
 Unknown fields, query parameters, content encodings and request trailers reject.
-Arrays of prompts, token-ID prompts, multimodal content, tools, stop strings, logprob output,
+Arrays of prompts, token-ID prompts, multimodal content, tools, logprob output,
 structured output, stochastic sampling and alternate operations are unsupported.
-Artifact EOS and rendered chat control-token stops remain model-owned; this subset
-does not override them.
+Streamed stop matching withholds a suffix that could still complete a configured
+stop, so no delta publishes a partial or complete stop sequence. Artifact EOS and
+rendered chat control-token stops remain model-owned unless `ignore_eos` is set.
 
 Non-streaming responses contain one choice, finish reason and token usage.
 Streaming uses SSE `data: <JSON>\n\n` frames: ordered text/content deltas, one finish

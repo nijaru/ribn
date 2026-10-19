@@ -95,7 +95,10 @@ async fn malformed_unsupported_and_oversized_bodies_do_not_poison_peers() {
         r#"{"model":"ribn","prompt":"a","max_tokens":0}"#,
         r#"{"model":"ribn","prompt":"a","repetition_penalty":1.1}"#,
         r#"{"model":"ribn","prompt":"a","logprobs":0}"#,
-        r#"{"model":"ribn","prompt":"a","ignore_eos":true}"#,
+        r#"{"model":"ribn","prompt":"a","stop":""}"#,
+        r#"{"model":"ribn","prompt":"a","stop":["a","b","c","d","e"]}"#,
+        r#"{"model":"ribn","prompt":"a","stop":1}"#,
+        r#"{"model":"ribn","prompt":"a","stop":"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"}"#,
         r#"{"model":"ribn","prompt":"a","stream":false,"stream_options":{"include_usage":true}}"#,
     ] {
         assert_eq!(
@@ -123,10 +126,17 @@ async fn malformed_unsupported_and_oversized_bodies_do_not_poison_peers() {
         running.post("/v1/chat/completions", &body).await.status,
         400
     );
-    assert_eq!(
-        running.post("/v1/completions", r#"{"model":"ribn","prompt":"a","max_tokens":1,"repetition_penalty":1,"logprobs":null,"ignore_eos":false}"#).await.status,
-        200
-    );
+    for body in [
+        r#"{"model":"ribn","prompt":"a","max_tokens":1,"repetition_penalty":1,"logprobs":null,"ignore_eos":false}"#,
+        r#"{"model":"ribn","prompt":"a","max_tokens":1,"stop":"x","seed":7,"ignore_eos":true}"#,
+        r#"{"model":"ribn","prompt":"a","max_tokens":1,"stop":["x","y"]}"#,
+    ] {
+        assert_eq!(
+            running.post("/v1/completions", body).await.status,
+            200,
+            "{body}"
+        );
+    }
     assert!(running.stop().await.1.is_ok());
 }
 
@@ -511,4 +521,44 @@ async fn loading_failed_load_and_shutdown_during_load_are_observable() {
             assert_eq!(server.readiness(), Readiness::Closing);
         }
     }
+}
+
+#[tokio::test]
+async fn stop_sequences_trim_text_and_report_stop_for_both_responses() {
+    let running = Running::start(ServerConfig::default(), Arc::new(Plan::default()), 2).await;
+    // The fixture emits one `x` per token, so a two-character stop matches both
+    // of them and leaves no visible text.
+    let body = json!({"model": "ribn", "prompt": "a", "max_tokens": 5, "stop": "xx"});
+    let reply = running.post("/v1/completions", &body.to_string()).await;
+    assert_eq!(reply.status, 200);
+    let value: Value = serde_json::from_str(&reply.body).unwrap();
+    assert_eq!(value["choices"][0]["text"], "");
+    assert_eq!(value["choices"][0]["finish_reason"], "stop");
+
+    let body = json!({"model": "ribn", "prompt": "a", "max_tokens": 5,
+        "stream": true, "stop": ["xx"]});
+    let reply = running.post("/v1/completions", &body.to_string()).await;
+    assert_eq!(reply.status, 200);
+    let mut text = String::new();
+    let mut finishes = Vec::new();
+    for chunk in reply
+        .body
+        .split("\n\n")
+        .filter_map(|s| s.strip_prefix("data: "))
+    {
+        if chunk == "[DONE]" {
+            continue;
+        }
+        let value: Value = serde_json::from_str(chunk).unwrap();
+        let choice = &value["choices"][0];
+        if let Some(delta) = choice["text"].as_str() {
+            text.push_str(delta);
+        }
+        if let Some(reason) = choice["finish_reason"].as_str() {
+            finishes.push(reason.to_owned());
+        }
+    }
+    assert_eq!(text, "");
+    assert_eq!(finishes, ["stop"]);
+    assert!(running.stop().await.1.is_ok());
 }

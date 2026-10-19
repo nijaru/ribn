@@ -24,4 +24,4 @@ pub use input::{Message, TextInput};
 pub use model::{TextBatch, TextConfig, TextModel, TextOwner, TextRequest, TextResponse};
 pub use process::{EncodedInput, ProcessorLimits, TextDecoder, TextProcessor};
 pub use ribn::{FinishReason, GenerationOptions, Sampling, Usage};
-pub use stream::{TextEvent, TextStream};
+pub use stream::{MAX_STOP_BYTES, MAX_STOP_SEQUENCES, TextEvent, TextStream};

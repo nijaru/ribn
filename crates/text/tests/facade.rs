@@ -1496,3 +1496,174 @@ fn a_dead_preprocessing_pool_fails_requests_instead_of_blocking_them() {
     );
     assert!(matches!(error, TextError::Closed), "{error:?}");
 }
+
+#[test]
+fn stop_strings_trim_decoded_text_and_report_stop() {
+    let harness = Harness::start(limits(), TextConfig::default());
+    harness.plan.script(
+        b'A',
+        &[
+            u32::from(b'a'),
+            u32::from(b'b'),
+            u32::from(b'E'),
+            u32::from(b'N'),
+            u32::from(b'D'),
+            u32::from(b'c'),
+            EOS,
+        ],
+    );
+    let request =
+        ribn_text::TextRequest::new(TextInput::prompt("A"), options()).with_stops(["END"]);
+    let response = harness
+        .model
+        .generate_request_blocking(request)
+        .expect("stopped generation");
+    assert_eq!(response.text, "ab");
+    assert!(
+        matches!(response.reason, FinishReason::Stop),
+        "{:?}",
+        response.reason
+    );
+}
+
+#[test]
+fn stop_strings_flush_an_incomplete_prefix_at_the_terminal_boundary() {
+    let harness = Harness::start(limits(), TextConfig::default());
+    harness.plan.script(
+        b'A',
+        &[
+            u32::from(b'a'),
+            u32::from(b'b'),
+            u32::from(b'E'),
+            u32::from(b'N'),
+            EOS,
+        ],
+    );
+    let request =
+        ribn_text::TextRequest::new(TextInput::prompt("A"), options()).with_stops(["END"]);
+    let response = harness
+        .model
+        .generate_request_blocking(request)
+        .expect("terminal flush");
+    assert_eq!(response.text, "abEN");
+    assert!(
+        matches!(response.reason, FinishReason::Stop),
+        "{:?}",
+        response.reason
+    );
+}
+
+#[test]
+fn multiple_stops_use_the_earliest_then_longest_match() {
+    let harness = Harness::start(limits(), TextConfig::default());
+    harness.plan.script(
+        b'A',
+        &[
+            u32::from(b'a'),
+            u32::from(b'x'),
+            u32::from(b'b'),
+            u32::from(b'y'),
+            EOS,
+        ],
+    );
+    let request =
+        ribn_text::TextRequest::new(TextInput::prompt("A"), options()).with_stops(["by", "y"]);
+    let response = harness
+        .model
+        .generate_request_blocking(request)
+        .expect("earliest stop");
+    assert_eq!(response.text, "ax");
+}
+
+#[test]
+fn streamed_stops_never_publish_a_partial_match() {
+    let harness = Harness::start(limits(), TextConfig::default());
+    harness.plan.script(
+        b'A',
+        &[
+            u32::from(b'a'),
+            u32::from(b'E'),
+            u32::from(b'N'),
+            u32::from(b'D'),
+            u32::from(b'z'),
+            EOS,
+        ],
+    );
+    let request =
+        ribn_text::TextRequest::new(TextInput::prompt("A"), options()).with_stops(["END"]);
+    let mut stream = harness
+        .model
+        .stream_request_blocking(request)
+        .expect("stream with stop");
+    let mut text = String::new();
+    let mut reason = None;
+    while let Some(event) = stream.next_blocking() {
+        match event.expect("stream event") {
+            ribn_text::TextEvent::Delta { text: delta, .. } => {
+                assert!(!delta.contains("EN"), "partial stop leaked: {delta:?}");
+                text.push_str(&delta);
+            }
+            ribn_text::TextEvent::Finished {
+                reason: finished, ..
+            } => {
+                reason = Some(finished);
+            }
+        }
+    }
+    assert_eq!(text, "a");
+    assert!(matches!(reason, Some(FinishReason::Stop)), "{reason:?}");
+}
+
+#[test]
+fn ignore_eos_continues_past_model_stop_tokens() {
+    let harness = Harness::start(limits(), TextConfig::default());
+    harness
+        .plan
+        .script(b'A', &[u32::from(b'a'), EOS, u32::from(b'b'), EOS]);
+    let stopping = harness
+        .model
+        .generate_request_blocking(ribn_text::TextRequest::new(
+            TextInput::prompt("A"),
+            options(),
+        ))
+        .expect("model stop");
+    assert_eq!(stopping.text, "a");
+    assert!(
+        matches!(stopping.reason, FinishReason::Stop),
+        "{:?}",
+        stopping.reason
+    );
+
+    harness
+        .plan
+        .script(b'A', &[u32::from(b'a'), EOS, u32::from(b'b'), EOS]);
+    let continuing = harness
+        .model
+        .generate_request_blocking(
+            ribn_text::TextRequest::new(TextInput::prompt("A"), options()).with_ignore_eos(true),
+        )
+        .expect("ignored stop");
+    assert!(continuing.text.starts_with('a') && continuing.text.contains('b'));
+    assert!(
+        matches!(continuing.reason, FinishReason::Length),
+        "{:?}",
+        continuing.reason
+    );
+}
+
+#[test]
+fn invalid_stop_bounds_reject_before_enqueue() {
+    let harness = Harness::start(limits(), TextConfig::default());
+    for stops in [
+        vec![String::new()],
+        vec!["a".to_owned(); 5],
+        vec!["x".repeat(ribn_text::MAX_STOP_BYTES + 1)],
+    ] {
+        let request =
+            ribn_text::TextRequest::new(TextInput::prompt("A"), options()).with_stops(stops);
+        assert!(matches!(
+            harness.model.stream_request_blocking(request),
+            Err(TextError::InvalidInput(_))
+        ));
+    }
+}

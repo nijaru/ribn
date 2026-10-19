@@ -1,4 +1,4 @@
-use ribn_text::{GenerationOptions, Message, TextInput, Usage};
+use ribn_text::{GenerationOptions, Message, TextInput, TextRequest, Usage};
 use serde::Deserialize;
 use serde::de::{self, SeqAccess, Visitor};
 use serde_json::{Value, json};
@@ -29,8 +29,18 @@ pub(crate) struct Request {
     n: Option<u32>,
     repetition_penalty: Option<f32>,
     logprobs: Option<u32>,
+    stop: Option<StopSequence>,
     ignore_eos: Option<bool>,
+    seed: Option<u64>,
     stream_options: Option<StreamOptions>,
+}
+
+/// `OpenAI` accepts one stop string or a bounded array of them.
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum StopSequence {
+    One(String),
+    Many(Vec<String>),
 }
 
 #[derive(Deserialize)]
@@ -73,7 +83,7 @@ impl Request {
         self,
         operation: Operation,
         config: &ServerConfig,
-    ) -> Result<(TextInput, GenerationOptions, bool), ApiError> {
+    ) -> Result<(TextRequest, bool), ApiError> {
         if self.model != config.model_name {
             return Err(ApiError::bad("unknown model"));
         }
@@ -87,11 +97,6 @@ impl Request {
         {
             return Err(ApiError::bad(
                 "only greedy temperature=0, top_p=1, n=1, repetition_penalty=1 and logprobs=null are supported",
-            ));
-        }
-        if self.ignore_eos == Some(true) {
-            return Err(ApiError::bad(
-                "ignore_eos=true is unsupported; model stops remain enabled",
             ));
         }
         if self.stream_options.is_some() && !self.stream {
@@ -125,13 +130,23 @@ impl Request {
                 ));
             }
         };
-        let options = GenerationOptions {
+        let mut options = GenerationOptions {
             max_output_tokens: max_tokens,
             ..GenerationOptions::default()
         };
+        options.sampling.seed = self.seed;
+        let stops = match self.stop {
+            None => Vec::new(),
+            Some(StopSequence::One(stop)) => vec![stop],
+            Some(StopSequence::Many(stops)) => stops,
+        };
+        // Bounds are enforced by the text layer before enqueue, so an invalid
+        // stop list settles as a request-local 400 rather than a partial run.
+        let request = TextRequest::new(input, options)
+            .with_stops(stops)
+            .with_ignore_eos(self.ignore_eos.unwrap_or(false));
         Ok((
-            input,
-            options,
+            request,
             self.stream_options.is_some_and(|o| o.include_usage),
         ))
     }

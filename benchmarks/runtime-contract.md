@@ -894,11 +894,11 @@ Both use cached `Qwen/Qwen3.8-27B` tokenizer revision
 AIPerf's `--use-server-token-count` exercises usage-only frames. With
 `HF_HUB_OFFLINE=1`, its local-directory argument initially failed before requests;
 `--tokenizer Qwen/Qwen3.8-27B --tokenizer-revision <revision>` resolved the cached snapshot.
-The vLLM random dataset forces EOS suppression: use
-`--extra-body '{"temperature":0,"ignore_eos":false}'` to preserve Ribn's supported policy.
-Earlier native attempts exited 0 despite **zero successes and two HTTP 400 failures**;
-verify exported success/failure counts, not just the client's process exit. Non-neutral
-penalties, requested logprobs and EOS bypass remain explicit rejections.
+The vLLM random dataset sets `ignore_eos=true`, which Ribn now supports; the explicit
+`--extra-body '{"temperature":0,"ignore_eos":false}'` keeps the served policy identical
+to the recorded run. Earlier native attempts exited 0 despite **zero successes and two
+HTTP 400 failures**; verify exported success/failure counts, not just the client's
+process exit. Non-neutral penalties and requested logprobs remain explicit rejections.
 
 Commands, exports and logs are retained outside Git by source revision. No incumbent
 engine was measured in these smokes; there is no representative mixed-load, SLO-goodput,

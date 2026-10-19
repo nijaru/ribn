@@ -15,6 +15,7 @@ use ribn::driver::{DeliveryLease, RequestPermit};
 
 use crate::error::TextError;
 use crate::input::{Message, TextInput};
+use crate::model::TextRequest;
 
 /// Separate bounds for input payload, owned allocations, rendering and decode output.
 ///
@@ -234,11 +235,11 @@ pub(crate) struct Prepared {
     pub(crate) request: TokenRequest,
     pub(crate) permit: RequestPermit,
     pub(crate) decoder: RequestDecoder,
+    pub(crate) stops: Vec<String>,
 }
 
 struct Job {
-    input: TextInput,
-    options: GenerationOptions,
+    request: TextRequest,
     permit: RequestPermit,
     reply: Sender<Result<Prepared, TextError>>,
 }
@@ -382,15 +383,17 @@ impl PoolClient {
     /// one permit.
     pub(crate) fn submit(
         &self,
-        input: TextInput,
-        options: GenerationOptions,
+        request: TextRequest,
         permit: RequestPermit,
     ) -> Result<Receiver<Result<Prepared, TextError>>, TextError> {
-        self.state.limits.check_request(&input, &options)?;
+        self.state
+            .limits
+            .check_request(&request.input, &request.options)?;
+        crate::stream::validate_stops(&request.stops)?;
         // Even without prompt tokens, these options must fit the driver's stop
         // storage plus runtime-copy allowance. Do not queue an impossible job.
         permit
-            .check_input(0, &options)
+            .check_input(0, &request.options)
             .map_err(TextError::Admission)?;
         #[cfg(test)]
         tests::pause(&self.state.hooks.before_submit);
@@ -406,8 +409,7 @@ impl PoolClient {
         self.state
             .jobs
             .try_send(Job {
-                input,
-                options,
+                request,
                 permit,
                 reply,
             })
@@ -431,7 +433,7 @@ fn run_worker(
             // dropping the job reports a closed pool and returns its permit.
             continue;
         }
-        let result = prepare(processor, job.input, job.options, job.permit);
+        let result = prepare(processor, job.request, job.permit);
         // A dropped caller means the result, and its permit, are released here.
         let _ = job.reply.try_send(result);
     }
@@ -439,14 +441,21 @@ fn run_worker(
 
 fn prepare(
     processor: &Arc<dyn TextProcessor>,
-    input: TextInput,
-    mut options: GenerationOptions,
+    request: TextRequest,
     permit: RequestPermit,
 ) -> Result<Prepared, TextError> {
+    let TextRequest {
+        input,
+        mut options,
+        stops,
+        ignore_eos,
+    } = request;
     let (tokens, stop_tokens) = processor.encode(input)?.into_parts();
-    for stop in stop_tokens {
-        if !options.stop_tokens.contains(&stop) {
-            options.stop_tokens.push(stop);
+    if !ignore_eos {
+        for stop in stop_tokens {
+            if !options.stop_tokens.contains(&stop) {
+                options.stop_tokens.push(stop);
+            }
         }
     }
     // Model-added stop IDs can grow the vector. Validate before retaining a
@@ -464,6 +473,7 @@ fn prepare(
         request: TokenRequest::new(tokens, options),
         permit,
         decoder,
+        stops,
     })
 }
 
@@ -603,8 +613,7 @@ mod tests {
         let client = pool.client();
         let submit = |client: &PoolClient| {
             client.submit(
-                TextInput::prompt("input"),
-                GenerationOptions::default(),
+                TextRequest::new(TextInput::prompt("input"), GenerationOptions::default()),
                 handle.try_reserve().unwrap(),
             )
         };
@@ -617,8 +626,7 @@ mod tests {
         let permit = handle.try_reserve().unwrap();
         let racing = thread::spawn(move || {
             peer.submit(
-                TextInput::prompt("racing"),
-                GenerationOptions::default(),
+                TextRequest::new(TextInput::prompt("racing"), GenerationOptions::default()),
                 permit,
             )
         });
