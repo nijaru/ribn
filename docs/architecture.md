@@ -148,7 +148,11 @@ including exact dyadic arithmetic, memcheck and repeated real-package weight rea
 Native grouped BF16 RMS also passes its
 [component gate](../benchmarks/gemma4-reference/README.md#native-bf16-rms-component-gate).
 NVIDIA owns physical storage/completion; Gemma binds logical projections, epsilon,
-learned normalization scales, grouping and owner-only scale-free V.
+learned normalization scales, grouping and owner-only scale-free V. Native BF16
+rotary application with supplied factors passes its
+[component gate](../benchmarks/gemma4-reference/README.md#native-bf16-rotary-application-component-gate)
+while reproducing eager per-product rounding; native factor/phase preparation and
+decoder binding remain absent.
 Model-local KV range calculations distinguish
 persistent suffixes from untrimmed donor spans, with routing/last consumers resolved at
 configuration load; they do not prove live state, grants or safe physical lifetimes.

@@ -16,6 +16,9 @@ use blas::{Blas, error};
 #[path = "rms.rs"]
 mod rms;
 pub use rms::CudaBf16RmsNorm;
+#[path = "rotary.rs"]
+mod rotary;
+pub use rotary::CudaBf16RotaryApply;
 
 type DeviceAllocation = Arc<Allocation<CudaTransport>>;
 static ALPHA: f32 = 1.0;
@@ -148,27 +151,39 @@ impl CudaBf16Matrix {
     }
 }
 
-enum Program {
-    Blas(Arc<Blas>),
-    Rms(Arc<rms::RmsKernels>),
+// Each variant owns exactly the compiled program and parameters it can access.
+enum Operation {
+    Blas {
+        program: Arc<Blas>,
+        _weights: DeviceAllocation,
+    },
+    Rms {
+        program: Arc<rms::RmsKernels>,
+        _scale: Option<DeviceAllocation>,
+    },
+    Rotary {
+        program: Arc<rotary::RotaryKernels>,
+        _cos: DeviceAllocation,
+        _sin: DeviceAllocation,
+    },
 }
-impl Program {
+impl Operation {
     fn stream(&self) -> &Arc<CudaStream> {
         match self {
-            Self::Blas(blas) => blas.stream(),
-            Self::Rms(kernels) => &kernels.stream,
+            Self::Blas { program, .. } => program.stream(),
+            Self::Rms { program, .. } => &program.stream,
+            Self::Rotary { program, .. } => &program.stream,
         }
     }
 }
 struct Access {
-    program: Program,
-    _weights: Option<DeviceAllocation>,
+    operation: Operation,
     _input: DeviceAllocation,
     _output: DeviceAllocation,
 }
 fn drain(access: &Access) -> Result<(), CudaBf16Error> {
     access
-        .program
+        .operation
         .stream()
         .synchronize()
         .map_err(|e| error("BF16 compute completion", e))
@@ -330,8 +345,10 @@ impl CudaBf16Gemm {
             .map_err(|e| error("BF16 linear bind", e))?;
         let mut pending = Pending::new(
             Access {
-                program: Program::Blas(Arc::clone(&self.blas)),
-                _weights: Some(allocation),
+                operation: Operation::Blas {
+                    program: Arc::clone(&self.blas),
+                    _weights: allocation,
+                },
                 _input: Arc::clone(&input.allocation),
                 _output: Arc::clone(&output.allocation),
             },

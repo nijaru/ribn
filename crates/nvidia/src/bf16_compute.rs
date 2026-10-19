@@ -5,7 +5,9 @@ mod pending;
 #[cfg(feature = "cuda")]
 mod cuda;
 #[cfg(feature = "cuda")]
-pub use cuda::{CudaBf16ComputeError, CudaBf16Gemm, CudaBf16Matrix, CudaBf16RmsNorm};
+pub use cuda::{
+    CudaBf16ComputeError, CudaBf16Gemm, CudaBf16Matrix, CudaBf16RmsNorm, CudaBf16RotaryApply,
+};
 
 use crate::cuda_allocation::CudaBf16Error;
 use engine_core::{DataType, WeightTensorSpec};
@@ -70,6 +72,25 @@ impl MatrixShape {
         Ok(groups.unsigned_abs())
     }
 
+    fn validate_rotary(self, cos: Self, sin: Self, output: Self) -> Result<u32, CudaBf16Error> {
+        if self != output
+            || cos != sin
+            || cos.rows != self.rows
+            || !cos.cols.is_multiple_of(2)
+            || !self.cols.is_multiple_of(cos.cols)
+        {
+            return Err(CudaBf16Error::Invalid(
+                "rotary expects [M,H*D], factors [M,D], even D",
+            ));
+        }
+        self.rows
+            .checked_mul(self.cols / 2)
+            .and_then(|n| n.checked_add(255))
+            .and_then(|n| i32::try_from(n / 256).ok())
+            .map(i32::unsigned_abs)
+            .ok_or(CudaBf16Error::Invalid("rotary grid exceeds CUDA limit"))
+    }
+
     fn validate_linear(self, weight: &WeightTensorSpec, output: Self) -> Result<(), CudaBf16Error> {
         if weight.dtype() != DataType::BF16
             || weight.dimensions() != [output.cols as u64, self.cols as u64]
@@ -86,6 +107,30 @@ impl MatrixShape {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rotary_checks_complete_row_head_and_factor_shapes() {
+        let input = MatrixShape::new(3, 24).unwrap();
+        let factors = MatrixShape::new(3, 8).unwrap();
+        assert_eq!(input.validate_rotary(factors, factors, input).unwrap(), 1);
+        for (rows, cols) in [(1, 8), (3, 7), (3, 10), (3, 32)] {
+            let bad = MatrixShape::new(rows, cols).unwrap();
+            assert!(input.validate_rotary(bad, bad, input).is_err());
+        }
+        assert!(
+            input
+                .validate_rotary(factors, MatrixShape::new(1, 24).unwrap(), input)
+                .is_err()
+        );
+        assert!(
+            input
+                .validate_rotary(factors, factors, MatrixShape::new(1, 72).unwrap())
+                .is_err()
+        );
+        let huge = MatrixShape::new(i32::MAX as usize, 1024).unwrap();
+        let factors = MatrixShape::new(i32::MAX as usize, 2).unwrap();
+        assert!(huge.validate_rotary(factors, factors, huge).is_err());
+    }
 
     #[test]
     fn rms_validates_groups_epsilon_and_grid_before_launch() {

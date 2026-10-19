@@ -1,7 +1,7 @@
 //! Grouped BF16 RMS on the same completion-owned storage as linear execution.
 use super::{
     Access, CudaBf16ComputeError, CudaBf16Error, CudaBf16Matrix, CudaBf16Weights, MatrixState,
-    Pending, Program, Retirement, drain, error,
+    Operation, Pending, Retirement, drain, error,
 };
 use cudarc::{
     driver::{CudaFunction, CudaStream, LaunchConfig, PushKernelArg},
@@ -31,8 +31,8 @@ impl CudaBf16RmsNorm {
         if stream.cu_stream().addr() == 0x2 {
             return Err(CudaBf16Error::Invalid("RMS requires a stable stream").into());
         }
-        let ptx =
-            compile_ptx(include_str!("rms.cu")).map_err(|e| error("BF16 RMS compilation", e))?;
+        let ptx = compile_ptx(concat!(include_str!("bf16.cuh"), include_str!("rms.cu")))
+            .map_err(|e| error("BF16 RMS compilation", e))?;
         let module = stream
             .context()
             .load_module(ptx)
@@ -102,8 +102,10 @@ impl CudaBf16RmsNorm {
             u32::try_from(width).map_err(|_| CudaBf16Error::Invalid("RMS width exceeds u32"))?;
         let mut pending = Pending::new(
             Access {
-                program: Program::Rms(Arc::clone(kernels)),
-                _weights: weights,
+                operation: Operation::Rms {
+                    program: Arc::clone(kernels),
+                    _scale: weights,
+                },
                 _input: Arc::clone(&input.allocation),
                 _output: Arc::clone(&output.allocation),
             },

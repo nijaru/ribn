@@ -4,7 +4,8 @@
 use cudarc::driver::CudaContext;
 use engine_core::{DataType, WeightTensorSpec};
 use engine_nvidia::{
-    CudaBf16Error, CudaBf16Gemm, CudaBf16Matrix, CudaBf16RmsNorm, CudaBf16Weights,
+    CudaBf16Error, CudaBf16Gemm, CudaBf16Matrix, CudaBf16RmsNorm, CudaBf16RotaryApply,
+    CudaBf16Weights,
 };
 use ribn_foundation::BytePool;
 use std::{io::Cursor, sync::Arc};
@@ -172,6 +173,11 @@ fn per_thread_default_stream_is_rejected_even_after_cross_thread_move() {
             let error = CudaBf16RmsNorm::new(Arc::clone(&stream))
                 .err()
                 .expect("reject unstable stream before module loading");
+            assert!(matches!(error.cause(), CudaBf16Error::Invalid(_)));
+            assert!(!error.retirement_pending());
+            let error = CudaBf16RotaryApply::new(Arc::clone(&stream))
+                .err()
+                .expect("reject unstable stream before rotary module loading");
             assert!(matches!(error.cause(), CudaBf16Error::Invalid(_)));
             assert!(!error.retirement_pending());
         };

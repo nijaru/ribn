@@ -926,6 +926,22 @@ this operation adds no global device workspace or application submission protoco
 The [RMS component gate](../benchmarks/gemma4-reference/README.md#native-bf16-rms-component-gate)
 owns its bounded numerical policy, not a whole-model error budget.
 
+### Native BF16 rotary application
+
+Rotary application consumes already-prepared BF16 cosine/sine factors rather than
+generating phase. The backend owns the split-half arithmetic and its eager rounding
+boundaries; the model owns factor preparation, position selection and any duplicated
+halves. Inputs and outputs are `[rows, heads × head_dim]`, factors `[rows, head_dim]`.
+
+A call validates dimensions, whole heads, positive even widths, initialized input and
+factors, actual allocation ranges and one common stable stream before output changes.
+The pending completion retains both factors, both matrices, bytecode/module and stream;
+failed or uncertain enqueue/completion quarantines that whole envelope, and retained
+access blocks close or reuse until an acknowledged drain. Compiled code and context
+overhead is not charged as an application buffer. No asynchronous submission,
+cancellation or model-recovery protocol is added here, and frequency/position
+preparation remains a separate gate.
+
 ### Snapshot replacement
 
 Start with one loaded execution owner's lifetime pinning one snapshot. Implement
