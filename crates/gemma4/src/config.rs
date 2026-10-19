@@ -195,6 +195,52 @@ impl Gemma4Config {
     pub fn layers(&self) -> &[LayerGeometry] {
         &self.layers
     }
+
+    /// One FP32 inverse frequency in the layer's half-head vector, without allocation.
+    /// Cosine/sine repeat that vector across both head halves: channel `pair` rotates
+    /// with `pair + head_dim / 2`, including for quarter-proportional global attention.
+    /// Proportional padding is positive zero; its exponent still uses the full head
+    /// width, not a shorter ordinary partial-rotation width.
+    ///
+    /// # Errors
+    /// Rejects invalid layer/pair indices or frequencies not representable as finite,
+    /// positive FP32. Callers preparing a device vector must validate every element
+    /// before publishing it; this scalar accessor establishes no device readiness.
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "reference explicitly converts both frequency indices and head width to FP32 before division"
+    )]
+    pub fn rotary_inverse_frequency(&self, layer: usize, pair: usize) -> Result<f32, Gemma4Error> {
+        let geometry = self
+            .layers
+            .get(layer)
+            .ok_or_else(|| Gemma4Error::new("RoPE layer", "index outside decoder"))?;
+        let pairs = geometry.head_dim / 2;
+        if pair >= pairs {
+            return Err(Gemma4Error::new(
+                "RoPE pair",
+                "index outside half-head vector",
+            ));
+        }
+        let (theta, active_pairs) = match geometry.rope {
+            Rope::Default { theta } => (theta, pairs),
+            Rope::Proportional { theta } => (theta, pairs / 4),
+        };
+        if pair >= active_pairs {
+            return Ok(0.0);
+        }
+        // pair < head_dim / 2 proves the integer product cannot overflow.
+        // Preserve the reference's FP32 exponent, power and reciprocal policy.
+        let exponent = (pair * 2) as f32 / geometry.head_dim as f32;
+        let inverse = 1.0 / theta.powf(exponent);
+        if !inverse.is_finite() || inverse <= 0.0 {
+            return Err(Gemma4Error::new(
+                "RoPE frequency",
+                "not finite and positive in FP32",
+            ));
+        }
+        Ok(inverse)
+    }
 }
 
 fn text_config(root: &Value) -> Result<&Value, Gemma4Error> {

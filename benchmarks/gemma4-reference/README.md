@@ -260,6 +260,35 @@ per-thread pseudo-streams on their originating thread and after a cross-thread m
 Failed-completion/unwind retention remains deterministic host-injection evidence.
 No full forward pass, mixed-KV lifetime, serving or speedup is qualified by this slice.
 
+## Host rotary-frequency gate
+
+`Gemma4Config::rotary_inverse_frequency` prepares individual FP32 factors without
+allocating a table or touching a device. The committed small fixture comes from the
+pinned Transformers rotary module, using the checkpoint config and a second geometry
+with different widths/thetas. It loads **no checkpoint weights**; only config bytes,
+package versions and the seven pinned implementation files are verified.
+
+```sh
+# Use the reference environment pinned in model.toml; output must not exist.
+python benchmarks/gemma4_rotary_reference.py --output /new/path/rotary.json
+cargo test -p engine-gemma4 --test rotary --locked
+```
+
+For E4B, local attention has 128 active frequency pairs. Global attention has 64
+active pairs followed by **192 positive-zero entries**. Its exponents use the full
+512-channel head; cosine/sine repeat the 256-entry vector across both halves, so
+channel `j` pairs with `j + 256`. Ordinary partial rotation over a 128-channel prefix
+is not equivalent. The host test fails when that shorter exponent denominator is
+substituted, and passes after restoring the full-head formula.
+
+Acceptance is exact shape, first frequency and padding, finite positive active
+values, at most four FP32 ULPs from the pinned CPU reference, and relative error at
+most three FP32 epsilons against an independent FP64 equation using the prescribed
+FP32 exponent. These are scalar frequency budgets across power/reciprocal
+implementations, **not tolerances for accumulated phase, rotated tensors or logits**.
+Layer/pair bounds and unrepresentable FP32 factors reject. Device rotation, large-position
+phase accuracy and whole-model numerical acceptance remain separate pending gates.
+
 ## Host continuation-range gate
 
 `Gemma4Config::kv_step` calculates absolute half-open old/current/retained ranges

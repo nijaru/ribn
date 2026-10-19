@@ -87,6 +87,26 @@ class ReferenceEvidenceTests(unittest.TestCase):
             self.assertEqual(sentinel.read_bytes(), b"earlier evidence")
             self.assertEqual(list(output.iterdir()), [sentinel])
 
+    def test_rotary_cli_refuses_existing_output_before_importing_model_runtime(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            output = Path(tmp) / "reference.json"
+            output.write_bytes(b"earlier evidence")
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    str(SCRIPT.with_name("gemma4_rotary_reference.py")),
+                    "--output",
+                    str(output),
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=10,
+            )
+            self.assertEqual(result.returncode, 1)
+            self.assertIn("output already exists", result.stderr)
+            self.assertEqual(output.read_bytes(), b"earlier evidence")
+
     def test_cli_records_incomplete_source_failure_before_importing_model_runtime(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

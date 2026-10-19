@@ -428,7 +428,11 @@ preallocated output, charged workspace and completion-owned failure guards. Its
 shared-allocation refactor and arithmetic have host checks only; run the
 [pending device gates](../benchmarks/gemma4-reference/README.md#native-bf16-linear-component-device-gates-pending),
 including weight readback/unload regression, before building dependent device slices.
-It is not a second executable decoder or qualified model support.
+It is not a second executable decoder or qualified model support. Separately, the
+model-owned [host rotary-frequency gate](../benchmarks/gemma4-reference/README.md#host-rotary-frequency-gate)
+now checks the padded proportional/global and ordinary/local factors against pinned
+Transformers and an independent FP64 equation. This is preparation evidence, not
+large-position phase, device rotation or whole-model acceptance.
 
 Next gates: qualify native BF16 linear execution, then implement the remaining model
 math and mixed-width local/global KV with donor
