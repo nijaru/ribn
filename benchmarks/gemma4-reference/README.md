@@ -83,6 +83,55 @@ These CPU checks validate reference collection and its instrumentation, not nume
 agreement with an unimplemented Ribn decoder. They do not qualify image/audio,
 device lifecycle, GPU memory peaks or serving performance.
 
+## Recomputed attention components
+
+Prepare operands for the next RMS/QKV/RoPE device gates without another full-model
+forward. Use a completed corpus of the **same precision** from above. Keep both the
+package and input corpus unchanged throughout collection:
+
+```sh
+uv run --python 3.13 --script benchmarks/gemma4_reference.py \
+  --snapshot "$SNAPSHOT" --precision bf16 \
+  --components-from /tmp/gemma4-reference-bf16 \
+  --output /tmp/gemma4-components-bf16
+```
+
+The mode checks input provenance, contiguous greedy/forced histories and the input
+archive's size/hash, then re-verifies the full package and pinned runtime. It loads
+only selected layer parameters. All package bytes are still hashed. Existing output
+directories are refused; failures retain an incomplete report.
+
+For layers **0, 5, 22 and 23** (local/global, including both donors), it feeds each
+archived last-position hidden vector through the pinned input RMS and attention
+module. Hooks retain raw Q/K/V projections and their norms; the rotary module supplies
+cos/sin at the actual history position. A capture-only attention boundary retains
+rotated Q/K and normalized V, then raises an internal stop before attention, cache
+updates or output projection. No fabricated attention output is returned.
+
+**This recomputes one token, even for an original multi-token prefill.** Projection
+rounding can depend on processing width. Match exact histories when comparing
+corpora; identical case/step names do not establish identical input tokens. These
+are component reference operands, not original full-model taps, a replayed
+continuation, or evidence of Ribn parity.
+The report links the input report/archive hashes; it does not independently re-run
+or attest the earlier full-model execution. No numerical acceptance threshold follows.
+
+On 2026-10-18 both policies completed **12 rows × four layers × 13 stages = 624
+tensors**. A separate audit checked every tensor's shape/dtype/finiteness, bit-equal
+archived hidden inputs, direct learned RMS and scale-free V RMS equations, split-half
+rotation, transposition and global positive-zero phase padding. The rotation audit
+explicitly rounds each multiply and the final add to the operand dtype; a fused FP32
+implementation must not assume this is identical to eager BF16 arithmetic.
+
+| Policy | Tensor artifact bytes | SHA256 |
+| --- | ---: | --- |
+| FP32 CPU components | 3845656 | `320c5f4eb03027aa2f0d31a33ac302dc4a7231c81f286f53eeeaa75a3de4e73a` |
+| BF16 CPU components | 1953560 | `48debd4ed42f7a2081f632ab62a6ab8d0829e9f8138002ea5daed024d730dc8c` |
+
+This qualifies collection/instrumentation only. Native BF16 linear device acceptance
+still precedes dependent device math; mixed-KV lifetimes and full-model acceptance
+remain separate gates.
+
 ## Stock CUDA fit, 2026-10-18
 
 The pinned stock Transformers model completed BF16 eager text execution on an

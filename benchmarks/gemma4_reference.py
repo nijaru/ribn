@@ -66,6 +66,41 @@ def verify_reference_sources(base, expected):
     return observed
 
 
+def prepare_cpu_reference(report, reference, threads):
+    """Verify the pinned runtime and establish the shared CPU arithmetic policy."""
+    require(threads > 0, "thread count must be positive")
+    report["packages"] = {}
+    for name in ("torch", "transformers", "safetensors", "tokenizers"):
+        version = importlib.metadata.version(name)
+        require(
+            version == reference[name],
+            f"use pinned {name}=={reference[name]}, got {version}",
+        )
+        report["packages"][name] = version
+    os.environ["HF_HUB_OFFLINE"] = "1"
+    os.environ["TRANSFORMERS_OFFLINE"] = "1"
+    os.environ["HF_HUB_DISABLE_PROGRESS_BARS"] = "1"
+    import torch
+    import transformers
+
+    torch.set_num_threads(threads)
+    torch.manual_seed(0)
+    torch.use_deterministic_algorithms(True)
+    report["torch_build"] = torch.__config__.show()
+    report["implementation"] = {
+        "declared_upstream_commit": reference["transformers_commit"],
+        "whole_installation_identity_verified": False,
+        "verified_file_sha256": verify_reference_sources(
+            Path(transformers.__file__).parent, reference["source_sha256"]
+        ),
+    }
+    report["environment"] = sorted(
+        f"{dist.metadata['Name']}=={dist.version}"
+        for dist in importlib.metadata.distributions()
+    )
+    return torch
+
+
 def write_json(path, value):
     path.write_text(json.dumps(value, indent=2, allow_nan=False) + "\n")
 
@@ -342,41 +377,11 @@ def collect(snapshot, output, precision, threads):
     started = time.monotonic()
     try:
         report["files"] = verify_files(snapshot, manifest["files"])
-        report["packages"] = {}
-        for name in ("torch", "transformers", "safetensors", "tokenizers"):
-            version = importlib.metadata.version(name)
-            require(
-                version == manifest["reference"][name],
-                f"use pinned {name}=={manifest['reference'][name]}, got {version}",
-            )
-            report["packages"][name] = version
-        # Local-only loading is explicit as well as enforced in the library calls.
-        os.environ["HF_HUB_OFFLINE"] = "1"
-        os.environ["TRANSFORMERS_OFFLINE"] = "1"
-        os.environ["HF_HUB_DISABLE_PROGRESS_BARS"] = "1"
-        import torch
+        torch = prepare_cpu_reference(report, manifest["reference"], threads)
         from safetensors import safe_open
         from safetensors.torch import save_file
         from transformers import AutoTokenizer, Gemma4ForConditionalGeneration
 
-        torch.set_num_threads(threads)
-        torch.manual_seed(0)
-        torch.use_deterministic_algorithms(True)
-        report["torch_build"] = torch.__config__.show()
-        import transformers
-
-        base = Path(transformers.__file__).parent
-        report["implementation"] = {
-            "declared_upstream_commit": manifest["reference"]["transformers_commit"],
-            "whole_installation_identity_verified": False,
-            "verified_file_sha256": verify_reference_sources(
-                base, manifest["reference"]["source_sha256"]
-            ),
-        }
-        report["environment"] = sorted(
-            f"{dist.metadata['Name']}=={dist.version}"
-            for dist in importlib.metadata.distributions()
-        )
         catalog = {}
         with safe_open(
             snapshot / manifest["checkpoint"]["weights"], framework="pt", device="cpu"
@@ -455,9 +460,25 @@ def main():
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--precision", choices=("fp32", "bf16"), default="fp32")
     parser.add_argument("--threads", type=int, default=8)
+    parser.add_argument(
+        "--components-from",
+        type=Path,
+        help="recompute RMS/QKV/RoPE components from an existing full-model CPU corpus, not a new full-model run",
+    )
     args = parser.parse_args()
     try:
-        collect(args.snapshot, args.output, args.precision, args.threads)
+        if args.components_from is None:
+            collect(args.snapshot, args.output, args.precision, args.threads)
+        else:
+            from gemma4_reference_components import collect_components
+
+            collect_components(
+                args.snapshot,
+                args.components_from,
+                args.output,
+                args.precision,
+                args.threads,
+            )
     except (OSError, ValueError, RuntimeError, ImportError) as error:
         print(f"reference collection failed: {error}", file=sys.stderr)
         return 1

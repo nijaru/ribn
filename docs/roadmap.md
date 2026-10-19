@@ -439,7 +439,12 @@ It is not a second executable decoder or qualified model support. Separately, th
 model-owned [host rotary-frequency gate](../benchmarks/gemma4-reference/README.md#host-rotary-frequency-gate)
 now checks the padded proportional/global and ordinary/local factors against pinned
 Transformers and an independent FP64 equation. This is preparation evidence, not
-large-position phase, device rotation or whole-model acceptance.
+large-position phase, device rotation or whole-model acceptance. Independent
+[recomputed component operands](../benchmarks/gemma4-reference/README.md#recomputed-attention-components)
+now cover input/Q/K/V RMS, projections and RoPE for local/global owners 0/5/22/23,
+using the archived real-model hidden inputs under both CPU precision policies.
+Their one-token processing schedule is distinct from original prefill taps; no new
+Ribn device slice or full-model qualification follows.
 
 Next gates: qualify native BF16 linear execution, then implement the remaining model
 math and mixed-width local/global KV with donor
