@@ -393,7 +393,12 @@ The model-local `engine-gemma4` host preflight now validates this real package's
 head as the same logical embedding parameter. The 54 inactive shared-tail tensors
 and 1,411 non-text tensors are explicitly excluded. Host fixtures also exercise a
 second, reduced geometry and sharded loading without new family branches. This is
-source selection, not prepared device storage or the second-decoder exit gate.
+source selection alone, not the second-decoder exit gate. The optional CUDA loader now
+prepares those native BF16 weights in one charged allocation with a tied head and owned
+partial-load retirement. Two real-package runs matched all 665 source/device hashes and
+restored free VRAM on unload; storage and partial-source cleanup gates passed memcheck. The
+[device weight gate](../benchmarks/gemma4-reference/README.md#native-bf16-device-weight-gate)
+is not numerical forward execution.
 
 Model-local KV range semantics now separate persistent suffixes from full current
 attention spans and resolve shared-owner/last-consumer routing at configuration load.
@@ -413,7 +418,12 @@ Host lifecycle tests cover interleaved streams, cancellation, owner failure, and
 request-local push/finalization failures, including immediate scratch release.
 These are host delivery checks, not Gemma execution or CUDA lifecycle qualification.
 
-Next gates: preserve native BF16 and tied allocation ownership during device preparation; implement mixed-width local/global KV with donor
+An independent stock Transformers BF16 eager run now fits a 4096-token prompt plus
+32 greedy predictions on the 4090: 17.10 GiB peak allocator reservation, 17.62 GiB sampled
+whole-device use. No quantization/offload was needed for that single-request workload;
+this does not establish Ribn's eventual workspace/serving peak.
+
+Next gates: implement native BF16 execution and mixed-width local/global KV with donor
 spans pinned through shared-tail device reads. Use strongly typed model/backend state
 behind `GenerationExecutor`, not the current first-`kv()`/homogeneous-cache convenience
 or family branches in routing/scheduling. Qualified physical allocation/retirement and

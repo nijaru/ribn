@@ -849,7 +849,7 @@ those separately before claiming a whole-loader or device-memory bound.
 
 ### Native BF16 weight preparation
 
-The next Gemma 4 loading slice materializes the already-validated text inventory,
+The Gemma 4 loading slice materializes the already-validated text inventory,
 not an executable model. Keep its BF16 bytes and row ordering unchanged; the raw
 input embedding and output head borrow the same physical region. No whole-model
 F32 conversion, duplicate tied allocation or GGUF value-type tag represents this path.
@@ -876,10 +876,12 @@ F32 conversion, duplicate tied allocation or GGUF value-type tag represents this
   publication is separate from request submission; cancellation of a load future does
   not establish completion. A loaded weight set alone is not Gemma execution support.
 
-These are the accepted requirements for the device-loading increment, not qualification
-of a current implementation. Requested bytes plus layout padding do not measure driver
-rounding, context/library storage or full inference peaks. Keep those margins and actual
-load/unload measurements separate from encoded payload totals and logical grants.
+The [native BF16 device gate](../benchmarks/gemma4-reference/README.md#native-bf16-device-weight-gate)
+qualifies real-package byte preservation, tied ownership and successful load/unload,
+plus bounded partial-source failure cleanup. Failed drain/free and unwind retention
+remain host fault-injection evidence, not injected hardware failures. Requested bytes
+plus padding do not measure driver rounding, context/library storage or full inference
+peaks; keep those margins separate from encoded payload totals and logical grants.
 
 ### Snapshot replacement
 

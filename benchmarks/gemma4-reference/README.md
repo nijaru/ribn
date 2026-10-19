@@ -2,7 +2,8 @@
 
 This prepares the numerical reference for Ribn's second decoder integration:
 **Gemma 4 E4B instruction-tuned, BF16 SafeTensors, text-first**. It does not implement
-Gemma execution in Ribn or qualify image/audio input, GPU memory fit or serving quality.
+Gemma execution in Ribn or qualify image/audio input or serving quality. The stock
+CUDA fit measurement below is separate from Ribn execution.
 The checkpoint, source checksums and reference versions are owned by
 [`model.toml`](model.toml).
 
@@ -78,9 +79,50 @@ bit equality of the recorded pre/post-softcap transform in each policy.
 | FP32 CPU | 135687704 | `78fcdb0522c5dd2836cc75d571bb77eeb6d0a94653fce96bb7085bb1bd7b27de` |
 | BF16 CPU | 67899336 | `46878e19c907f6cb4d2e88ae6077238465612d3bc1aab8441f57bfb4b83772f3` |
 
-These checks validate reference collection and its instrumentation, not numerical
-agreement with an unimplemented Ribn decoder. No image/audio, device-lifecycle, GPU
-memory-peak or serving-performance gates ran.
+These CPU checks validate reference collection and its instrumentation, not numerical
+agreement with an unimplemented Ribn decoder. They do not qualify image/audio,
+device lifecycle, GPU memory peaks or serving performance.
+
+## Stock CUDA fit, 2026-10-18
+
+The pinned stock Transformers model completed BF16 eager text execution on an
+RTX 4090 (driver 615.71.09, PyTorch CUDA runtime 13.0). All model parameters,
+including media weights unused by these inputs, were resident in BF16; the output
+head remained tied. No quantization or CPU offload was used.
+
+| Single-request case | Prediction rows | Peak PyTorch reserved, GiB |
+| --- | ---: | ---: |
+| Archived chat prefix, 18 tokens | 4 | 14.852 |
+| Archived 511-token prefix | 4 | 14.963 |
+| Archived 513-token prefix | 4 | 14.969 |
+| 4096-token full prefill, then greedy continuation | 32 | 17.098 |
+
+The first three cases replayed the exact CPU BF16 histories. All 12 greedy winners
+matched; logits were finite and all 24 persistent KV-owner shapes matched. This is
+not distribution-level numerical acceptance. The larger prompt was BOS followed by
+`FILLER * 110` from `gemma4_reference.py`, tokenized without added specials and
+truncated to 4096 tokens. Generation honored the metadata stops and reached all 32
+requested predictions. It used one 4096-token prefill, not chunked prefill.
+
+The probe used the manifest's exact package/library/source pins, offline loading,
+deterministic algorithms, eight CPU threads, `CUBLAS_WORKSPACE_CONFIG=:4096:8`,
+TF32 disabled and BF16/FP16 reduced-precision reductions disabled. Peak allocator
+counters reset before each case; caches were released between cases. Full-vocabulary
+last-position logits were copied to CPU for recording. The one-off probe's SHA256
+was `e794a728e6026a1f26748a5e352e0e82a2f56ef5ab7061ae1642793355522d46`;
+its 44-row logits artifact was 46,141,320 bytes, SHA256
+`106c4319524df77a9fff3fc72e820536139286a1f5f5bd1cffd9933c6bd15e6b`.
+
+Whole-device sampling every 200 ms peaked at **18,042 MiB used (17.62 GiB)**,
+distinct from PyTorch's 17.10-GiB reserved peak. Before the run, the device reported
+24,564 MiB total, 404 MiB reserved, 33 MiB used and 24,128 MiB free: existing non-free
+use was about 437 MiB, not an assumed GUI workload or a fixed OS charge. The sampler
+can miss shorter peaks. After model/cache release, PyTorch still reported 32 MiB
+allocated/reserved; this is not a zero-allocation teardown claim.
+
+**BF16 fits this measured workload without quantization.** This does not establish
+Ribn forward execution, concurrent serving capacity, arbitrary-context fit, task
+quality or performance. The CPU collector above remains CPU-only.
 
 ## Integration constraints established by the real package
 
@@ -99,16 +141,17 @@ heterogeneous layout.
 Header-derived payload sizes are about **14.9 GiB for the full checkpoint** and
 **13.90 GiB for active text tensors**, excluding unused tail projections and media.
 These are encoded-byte sums, not measured device allocations, repacking peaks or a
-GPU-fit qualification. Capacity planning provisionally reserves roughly 0.5 GiB for
-existing qualification-GPU use; replace that estimate with measured free VRAM rather
-than treating it as a fixed OS charge. In particular, converting the active text weights wholesale
-to FP32 exceeds 24 GiB before any KV or scratch allocation.
+GPU-fit qualification. The stock CUDA measurement above replaces the provisional
+0.5-GiB idle-use estimate for that run; future capacity planning must remeasure free
+VRAM. Converting active text weights wholesale to FP32 still exceeds 24 GiB before
+any KV or scratch allocation.
 
 Ribn's file-backed SafeTensors path now uses retained metadata/files and caller-buffered
 payload readers. The [host I/O gate](../loader-memory/README.md) checks the full artifact
 and every tensor's encoded bytes without loading the checkpoint into application heap.
-This does not implement Gemma: native BF16 device preparation, tied allocation ownership,
-mixed-window KV ownership and donor-span lifetimes remain prerequisites for execution.
+The device weight gate below qualifies native BF16 materialization and tied allocation
+ownership separately. Mixed-window KV, donor-span lifetimes and numerical forward
+execution remain prerequisites for a Ribn decoder.
 
 ## Ribn text-source preflight
 
@@ -140,6 +183,51 @@ Host tests cover a second geometry with hidden width not divisible by query-head
 single/sharded inventories, optional inactive tail weights, wrong/dangling shard routes,
 missing/malformed/unknown active parameters, exact BF16 payload preservation and retained
 readers after package drop/path replacement. These checks do not qualify execution.
+
+## Native BF16 device weight gate
+
+At `1d4a7fb`, the model-owned CUDA loader materialized all **665 active parameters**
+without F32 conversion or a second output-head allocation. On the same RTX 4090,
+two complete load/readback/unload runs matched every parameter's shape, dtype,
+encoded length and SHA256 against the independently audited source. Readback compared
+every byte, not samples. Both explicit unloads returned the pool charge to zero and
+restored the exact pre-allocation CUDA free-memory reading.
+
+```sh
+cargo run --release -p engine-gemma4 --features cuda --example cuda_weights -- \
+  /path/to/pinned/snapshot 17179869184
+```
+
+The final argument supplies a 16-GiB weight pool, not a whole-inference budget.
+The default staging bound is 1 MiB; the diagnostic also owns bounded source/readback
+comparison buffers. The JSON report includes all source/device parameter hashes,
+tied-slot identity, logical charges and device free-memory readings.
+
+| Quantity | Bytes |
+| --- | ---: |
+| Unique encoded text weights | 14,926,026,836 |
+| Requested allocation including 16-byte tensor padding | 14,926,027,424 |
+| Observed CUDA free-memory reduction | 14,927,527,936 |
+
+The difference between requested and observed allocation illustrates driver rounding;
+the logical pool is not a hard physical-VRAM bound. Whole-device 200-ms sampling
+peaked at **14,664 MiB used** for each weight-only run. Neither activations, KV,
+attention workspace nor a decoder forward pass was allocated/executed by this probe.
+
+The NVIDIA storage gate and both model-level device gates also passed under Compute
+Sanitizer memcheck with zero reported errors. They protect arbitrary BF16 bits, odd
+staging/tail sizes, alignment, unload/reload identity, retained readers after pathname
+replacement, budget refusal before allocation, and explicit cleanup of a partially
+uploaded set after injected reader EOF. Failed device drain/free and unwind ownership
+are exercised by deterministic host transport tests, not injected hardware failures.
+
+```sh
+cargo test --release -p engine-nvidia --features cuda --test cuda_bf16_weights --locked -- --ignored --test-threads=1
+cargo test --release -p engine-gemma4 --features cuda --test cuda_weights --locked -- --ignored --test-threads=1
+```
+
+This qualifies the weight preparation slice, **not Gemma model execution**, mixed-KV
+retirement, concurrent loading/serving capacity or task quality.
 
 ## Host continuation-range gate
 

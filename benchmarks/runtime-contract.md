@@ -807,18 +807,29 @@ page crossings and score growth/reuse. It checks finite, bit-identical hidden st
 recurrent matrices and convolution history, plus greedy selections. It also replaces a
 late member's matrix with an undersized allocation and requires rejection without peer
 mutation. The existing heterogeneous-capacity gate now uses one-token pages to exercise
-multiple table entries without rounding its exact-capacity cases. **Neither device gate
-has been run for these changes.**
+multiple table entries without rounding its exact-capacity cases.
 
-When device access returns, serialize the isolated new gate, the full reference suite,
-Qwen runtime/HTTP, in-flight retirement and memcheck under the existing idle-GPU lock.
-Before promotion also exercise descriptor reuse/disable, partial enqueue and failed drain
-through the asynchronous serving owner; host tests do not qualify those lifetimes.
+On 2026-10-18 at `b0c7c2a`, serialized qualification on the RTX 4090 (driver 615.71.09,
+CUDA toolkit 13.3) passed the isolated descriptor gate, all **64 CUDA reference tests**,
+all **five Qwen runtime tests**, all **six text-lifecycle tests** and the HTTP device
+gate. This includes NVRTC compilation, the changed capacity/page gate and in-flight
+retirement coverage. The pinned Qwen artifact above was verified before running.
+
+Two descriptor memcheck attempts were operator-interrupted for excessive qualification
+cost: the unfiltered run exited 15 after 636 seconds; the five-member-kernel-filtered
+attempt was also interrupted. Neither is a pass, regardless of the tool's zero-error
+summary on termination. The cause of sanitizer overhead was not measured. Descriptor
+memory-safety qualification remains pending; do not substitute the successful native
+BF16 copy-only memcheck for this gate.
+
+Before promotion, complete descriptor memcheck and exercise descriptor reuse/disable,
+partial enqueue and failed drain through the asynchronous serving owner; host tests do not qualify those lifetimes.
 Then repeat matched native c1/c4/c8 runs with identical prompt/chunk/token/diagnostic
 settings, toggling only `--member-descriptors`, followed by the endpoint comparison if
 that scope is enabled. Count launches and host enqueue time as well as device/total time,
-retained descriptor/score bytes and output agreement. No speedup, NVRTC acceptance or
-competitive improvement is claimed from this host-only work.
+retained descriptor/score bytes and output agreement. NVRTC acceptance and bounded
+bit equality are established; no speedup or competitive improvement is claimed, and
+the candidate remains default-off.
 
 ## Experimental CLI
 

@@ -99,8 +99,9 @@ prefill/decode and larger offers retain their fallbacks. See the
 [qualification](../benchmarks/runtime-contract.md#heterogeneous-capacity-decode-2026-10-16).
 The default-off member-descriptor candidate lowers state access through
 `nvidia/src/decode/member_state.rs`, with host packet layout in `member_descriptor.rs`
-and CUDA binding/guards in `state/descriptor.rs`. Its member-dimension kernels are not
-device-qualified; the [pending gates](../benchmarks/runtime-contract.md#member-descriptor-candidate-device-gates-pending)
+and CUDA binding/guards in `state/descriptor.rs`. NVRTC and device bit-equality gates
+pass, but sanitizer, asynchronous lifetime and performance qualification remain pending;
+the [pending gates](../benchmarks/runtime-contract.md#member-descriptor-candidate-device-gates-pending)
 own numerical, retirement and performance acceptance.
 The eight-token same-sequence prefill lane samples its final chunk row by default, so a
 prompt that is an exact whole number of chunks never re-runs its last token; partial
@@ -137,15 +138,19 @@ and full E4B artifact probe qualify this I/O path, not Gemma execution or device
 `engine-gemma4` owns dense causal Gemma 4 text configuration, logical parameter
 mapping and canonical HF text processing. Its host source preflight validates the whole HF-resolved inventory, retains
 BF16 parameter readers, aliases the output head to the input embedding and explicitly
-excludes inactive shared-tail projections and non-text weights. It does not materialize
-weights on a device or execute a decoder. Model-local KV range calculations distinguish
+excludes inactive shared-tail projections and non-text weights. Its optional CUDA loader
+materializes native BF16 weights through one charged NVIDIA allocation, preserving tied
+head identity and retaining partial-load cleanup ownership. All 665 real parameters pass
+full byte readback and explicit unload; this is not an executable decoder.
+Model-local KV range calculations distinguish
 persistent suffixes from untrimmed donor spans, with routing/last consumers resolved at
 configuration load; they do not prove live state, grants or safe physical lifetimes.
 Its bounded text processor uses the package's tokenizer/template/generation metadata;
 request-local decoding retains complete byte-fallback runs until a boundary or finalization.
 `ribn-text::GemmaProcessor` binds it to owned text delivery, including bounded delayed
 byte runs and fallible terminal finalization. Host fixtures substitute token execution
-only; there is still no executable Gemma model or device-fit evidence.
+only; there is still no executable Gemma model. A separate stock Transformers CUDA
+probe establishes BF16 fit for one 4096-token prompt and 32 predictions, not Ribn fit.
 Unknown text semantics or parameters reject;
 see the [real-package gate](../benchmarks/gemma4-reference/README.md#ribn-text-source-preflight).
 
@@ -179,7 +184,7 @@ Shared CUDA physical retirement and downstream-workspace progress remain unprove
 | `crates/qwen` / `engine-qwen` | Qwen config, GGUF mapping, CUDA assembly and AR adapter; serving benchmark |
 | `crates/nvidia` / `engine-nvidia` | NVIDIA storage, completion, dispatch and kernels |
 | `crates/bert` / `engine-bert` | BERT semantics, preparation, executor binding and device retirement |
-| `crates/gemma4` / `engine-gemma4` | Gemma 4 text processing, config, logical parameters and source/KV preflight; no model execution |
+| `crates/gemma4` / `engine-gemma4` | Gemma 4 text processing, config, source/KV preflight and native BF16 CUDA weights; no model execution |
 | `crates/core` / `engine-core` | Prepared batch, backend submission, continuation state and weight contracts; no scheduler, plan or model description |
 | `crates/gguf` / `engine-gguf` | GGUF artifact access and current tokenizer/chat-template implementation |
 | `crates/safetensors` / `ribn-safetensors` | Validated SafeTensors metadata and bounded payload readers |
