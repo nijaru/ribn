@@ -13,10 +13,10 @@ cuda = ["dep:cudarc", "cudarc/nvrtc"]
 
 [dependencies]
 engine-core = { path = "../core" }
+ribn-foundation = { path = "../foundation" }
 cudarc = { version = "0.19", optional = true, default-features = false, features = ["std", "cuda-13020", "cublas", "dynamic-loading"] }
 
 [dev-dependencies]
-ribn-foundation = { path = "../foundation" }
 engine-qwen = { path = "../qwen", default-features = false, features = ["gguf"] }
 engine-gguf = { path = "../gguf" }
 
