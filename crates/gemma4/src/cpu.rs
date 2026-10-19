@@ -5,11 +5,13 @@
 //! and are the arithmetic a CPU decoder step composes. Model roles stay in the
 //! caller; the backend only sees shapes and native BF16 encodings.
 
+mod elementwise;
 mod linear;
 mod norm;
 mod rotary;
 mod weights;
 
+pub use elementwise::{add, gelu_tanh, multiply, ple_combine, scale, softcap};
 pub use linear::{bf16, linear, linear_f32};
 
 /// Fallible host allocation, so a model-sized request returns an error instead of aborting.

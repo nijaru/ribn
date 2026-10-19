@@ -20,8 +20,8 @@ mod text_decode;
 pub use config::{AttentionKind, Gemma4Config, LayerGeometry, Rope};
 pub use continuation::{AttentionSpan, KvOwnerStep, KvStep, RetainedSpan};
 pub use cpu::{
-    CpuParameter, Gemma4CpuWeights, apply_rotary, bf16, factors, inverse_frequencies, linear,
-    linear_f32, rms_norm,
+    CpuParameter, Gemma4CpuWeights, add, apply_rotary, bf16, factors, gelu_tanh,
+    inverse_frequencies, linear, linear_f32, multiply, ple_combine, rms_norm, scale, softcap,
 };
 pub use parameters::{LayerParameter, ParameterId, ParameterSpec};
 pub use processor::{Gemma4TextProcessor, TextLimits, TextMessage};

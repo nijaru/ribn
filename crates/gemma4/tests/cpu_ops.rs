@@ -2,7 +2,8 @@
 
 use engine_gemma4::{
     AttentionKind, CpuParameter, Gemma4Config, Gemma4CpuWeights, Gemma4Source, LayerParameter,
-    ParameterId, apply_rotary, bf16, factors, linear, linear_f32, rms_norm,
+    ParameterId, add, apply_rotary, bf16, factors, gelu_tanh, linear, linear_f32, multiply,
+    ple_combine, rms_norm, scale, softcap,
 };
 use ribn_hf::LocalModelPackage;
 use ribn_safetensors::SafeTensorArtifact;
@@ -170,14 +171,21 @@ fn ulp(bits: u16) -> f32 {
     }
 }
 
-fn compare_linear(input: &[u16], weight: &CpuParameter, expected: &[u16]) -> f32 {
+fn compare_linear(
+    input: &[u16],
+    weight: &CpuParameter,
+    expected: &[u16],
+    verify_rounding: bool,
+) -> f32 {
     let (sums, magnitudes) = linear_f32(input, 1, weight).unwrap();
     assert_eq!(sums.len(), expected.len(), "linear reference length");
-    assert_eq!(
-        linear(input, 1, weight).unwrap(),
-        sums.iter().map(|&sum| bf16(sum)).collect::<Vec<_>>(),
-        "linear must round the audited FP32 sums exactly once"
-    );
+    if verify_rounding {
+        assert_eq!(
+            linear(input, 1, weight).unwrap(),
+            sums.iter().map(|&sum| bf16(sum)).collect::<Vec<_>>(),
+            "linear must round the audited FP32 sums exactly once"
+        );
+    }
     #[expect(
         clippy::cast_precision_loss,
         reason = "test shapes are small model dimensions"
@@ -225,13 +233,52 @@ fn compare_norm(actual: &[u16], expected: &[u16], width: usize) -> f32 {
     worst
 }
 
+fn compare_gelu(input: &[u16], expected: &[u16]) -> f32 {
+    assert_eq!(input.len(), expected.len(), "GELU reference length");
+    let actual = gelu_tanh(input).unwrap();
+    let mut worst = 0.0_f32;
+    for (index, (&a, &b)) in actual.iter().zip(expected).enumerate() {
+        let (a, b) = (value(a), value(b));
+        assert!(a.is_finite() && b.is_finite(), "non-finite GELU operand");
+        let bound = 16.0 * f32::EPSILON * value(input[index]).abs() + ulp(expected[index]);
+        let error = (a - b).abs();
+        worst = worst.max(error / bound);
+        assert!(
+            error <= bound,
+            "GELU error {error:e} exceeds the FP32 evaluation bound {bound:e}"
+        );
+    }
+    worst
+}
+
+fn compare_softcap(input: &[u16], expected: &[u16], cap: f32) -> f32 {
+    assert_eq!(input.len(), expected.len(), "soft-cap reference length");
+    let actual = softcap(input, cap).unwrap();
+    let mut worst = 0.0_f32;
+    for (index, (&a, &b)) in actual.iter().zip(expected).enumerate() {
+        let (a, b) = (value(a), value(b));
+        assert!(
+            a.is_finite() && b.is_finite(),
+            "non-finite soft-cap operand"
+        );
+        let bound = 8.0 * f32::EPSILON * cap + 2.0 * ulp(expected[index]);
+        let error = (a - b).abs();
+        worst = worst.max(error / bound);
+        assert!(
+            error <= bound,
+            "soft cap error {error:e} exceeds the tanh bound {bound:e}"
+        );
+    }
+    worst
+}
+
 fn compare_layer(
     config: &Gemma4Config,
     weights: &Gemma4CpuWeights,
     stages: &SafeTensorArtifact,
     components: &SafeTensorArtifact,
     layer: usize,
-) -> (f32, f32) {
+) -> (f32, f32, f32) {
     let prefix = format!("chat.0.layer.{layer}");
     let width = config.hidden_size();
     let epsilon = config.rms_norm_eps();
@@ -250,6 +297,7 @@ fn compare_layer(
         width,
     );
     let residual = tap(stages, &format!("{prefix}.post_attention_residual"));
+    let ffn_reference = tap(stages, &format!("{prefix}.pre_feedforward_norm"));
     let ffn = rms_norm(
         &residual,
         1,
@@ -260,12 +308,7 @@ fn compare_layer(
             .unwrap(),
     )
     .unwrap();
-    norm_worst = norm_worst.max(compare_norm(
-        &ffn,
-        &tap(stages, &format!("{prefix}.pre_feedforward_norm")),
-        width,
-    ));
-    let ffn_reference = tap(stages, &format!("{prefix}.pre_feedforward_norm"));
+    norm_worst = norm_worst.max(compare_norm(&ffn, &ffn_reference, width));
     let mut linear_worst = 0.0_f32;
     for (role, name) in [
         (LayerParameter::Gate, "mlp_gate"),
@@ -275,6 +318,7 @@ fn compare_layer(
             &ffn_reference,
             weights.layer(layer, role).unwrap(),
             &tap(stages, &format!("{prefix}.{name}")),
+            true,
         ));
     }
     let product = tap(stages, &format!("{prefix}.mlp_gate_product"));
@@ -282,10 +326,10 @@ fn compare_layer(
         &product,
         weights.layer(layer, LayerParameter::Down).unwrap(),
         &tap(stages, &format!("{prefix}.mlp_output")),
+        true,
     ));
-    let ple_raw = tap(stages, &format!("{prefix}.ple_projection_raw"));
     let ple = rms_norm(
-        &ple_raw,
+        &tap(stages, &format!("{prefix}.ple_projection_raw")),
         1,
         width,
         epsilon,
@@ -297,43 +341,80 @@ fn compare_layer(
         &tap(stages, &format!("{prefix}.ple_norm")),
         width,
     ));
+    let gelu = compare_layer_gating(stages, layer, &hidden, &residual, &ple);
+    compare_layer_rotary(config, components, layer);
+    (linear_worst, norm_worst, gelu)
+}
 
-    // Exact split-half application with the captured stock factors.
+/// Exact BF16 residual/scale algebra plus the GELU-saturation bound.
+fn compare_layer_gating(
+    stages: &SafeTensorArtifact,
+    layer: usize,
+    hidden: &[u16],
+    residual: &[u16],
+    ple: &[u16],
+) -> f32 {
+    let prefix = format!("chat.0.layer.{layer}");
+    let attention_norm = tap(stages, &format!("{prefix}.post_attention_norm"));
+    assert_eq!(
+        add(hidden, &attention_norm).unwrap(),
+        residual,
+        "layer {layer} attention residual"
+    );
+    let ffn_norm = tap(stages, &format!("{prefix}.post_feedforward_norm"));
+    let ffn_residual = tap(stages, &format!("{prefix}.post_feedforward_residual"));
+    assert_eq!(
+        add(residual, &ffn_norm).unwrap(),
+        ffn_residual,
+        "layer {layer} feed-forward residual"
+    );
+    let scalar = tap(stages, &format!("{prefix}.layer_scalar"));
+    assert_eq!(
+        scale(&add(&ffn_residual, ple).unwrap(), value(scalar[0])).unwrap(),
+        tap(stages, &format!("{prefix}.output")),
+        "layer {layer} layer-scalar output"
+    );
+    let gate = tap(stages, &format!("{prefix}.mlp_gate"));
+    let up = tap(stages, &format!("{prefix}.mlp_up"));
+    let activated = tap(stages, &format!("{prefix}.mlp_gate_activation"));
+    let gelu = compare_gelu(&gate, &activated);
+    assert_eq!(
+        multiply(&activated, &up).unwrap(),
+        tap(stages, &format!("{prefix}.mlp_gate_product")),
+        "layer {layer} gated product"
+    );
+    let projection = tap(stages, "chat.0.ple_projection_norm");
+    let lookup = tap(stages, "chat.0.ple_lookup");
+    let per_layer = tap(stages, &format!("{prefix}.per_layer_input"));
+    let width = per_layer.len();
+    assert_eq!(
+        ple_combine(
+            &projection[layer * width..(layer + 1) * width],
+            &lookup[layer * width..(layer + 1) * width],
+        )
+        .unwrap(),
+        per_layer,
+        "layer {layer} per-layer combine"
+    );
+    gelu
+}
+
+/// Exact split-half application with the captured stock factors.
+fn compare_layer_rotary(config: &Gemma4Config, components: &SafeTensorArtifact, layer: usize) {
+    let prefix = format!("chat.0.layer.{layer}");
     let cosine = tap(components, &format!("{prefix}.cos"));
     let sine = tap(components, &format!("{prefix}.sin"));
-    let factor_width = cosine.len();
-    assert_eq!(config.layers()[layer].head_dim, factor_width);
-    let queries = tap(components, &format!("{prefix}.q_norm"));
-    let rotated = apply_rotary(
-        &queries,
-        1,
-        queries.len() / factor_width,
-        factor_width,
-        &cosine,
-        &sine,
-    )
-    .unwrap();
-    assert_eq!(
-        rotated,
-        tap(components, &format!("{prefix}.rotated_query")),
-        "layer {layer} rotated query"
-    );
-    let keys = tap(components, &format!("{prefix}.k_norm"));
-    let rotated_key = apply_rotary(
-        &keys,
-        1,
-        keys.len() / factor_width,
-        factor_width,
-        &cosine,
-        &sine,
-    )
-    .unwrap();
-    assert_eq!(
-        rotated_key,
-        tap(components, &format!("{prefix}.rotated_key")),
-        "layer {layer} rotated key"
-    );
-    (linear_worst, norm_worst)
+    let width = cosine.len();
+    assert_eq!(config.layers()[layer].head_dim, width);
+    for (stored, rotated) in [("q_norm", "rotated_query"), ("k_norm", "rotated_key")] {
+        let input = tap(components, &format!("{prefix}.{stored}"));
+        let actual = apply_rotary(&input, 1, input.len() / width, width, &cosine, &sine).unwrap();
+        assert_eq!(
+            actual,
+            tap(components, &format!("{prefix}.{rotated}")),
+            "layer {layer} {rotated}"
+        );
+    }
 }
 
 #[test]
@@ -357,10 +438,12 @@ fn host_weights_and_ops_match_the_captured_cpu_reference() {
     let components = SafeTensorArtifact::open(environment("RIBN_GEMMA_COMPONENTS")).unwrap();
     let mut linear_worst = 0.0_f32;
     let mut norm_worst = 0.0_f32;
+    let mut gelu_worst = 0.0_f32;
     for layer in [0_usize, 5, 22, 23] {
-        let (linear, norm) = compare_layer(&config, &weights, &stages, &components, layer);
+        let (linear, norm, gelu) = compare_layer(&config, &weights, &stages, &components, layer);
         linear_worst = linear_worst.max(linear);
         norm_worst = norm_worst.max(norm);
+        gelu_worst = gelu_worst.max(gelu);
     }
     let final_norm = rms_norm(
         &tap(&stages, "chat.0.final_norm_input"),
@@ -375,7 +458,18 @@ fn host_weights_and_ops_match_the_captured_cpu_reference() {
         &tap(&stages, "chat.0.final_norm"),
         config.hidden_size(),
     ));
+    let head = weights.parameter(ParameterId::TokenEmbedding).unwrap();
+    let raw = tap(&stages, "chat.0.raw_logits");
+    let head_worst = compare_linear(&final_norm, head, &raw, false);
+    let cap = config.final_logit_softcapping();
+    let capped = tap(&stages, "chat.0.logits");
+    let softcap_worst = compare_softcap(&raw, &capped, cap);
     assert!(linear_worst <= 1.0, "linear bound usage {linear_worst}");
     assert!(norm_worst <= 1.0, "normalization bound usage {norm_worst}");
-    println!("linear bound usage {linear_worst}, normalization bound usage {norm_worst}");
+    assert!(gelu_worst <= 1.0, "GELU bound usage {gelu_worst}");
+    assert!(head_worst <= 1.0, "head linear bound usage {head_worst}");
+    assert!(softcap_worst <= 1.0, "soft-cap bound usage {softcap_worst}");
+    println!(
+        "linear {linear_worst}, norm {norm_worst}, gelu {gelu_worst}, head {head_worst}, softcap {softcap_worst}"
+    );
 }
