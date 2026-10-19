@@ -395,56 +395,70 @@ host fault-injection evidence. Device gates were serialized and bounded, with no
 interrupted test counted as a pass. No complete decoder, mixed-KV lifetime, serving
 or performance is qualified here.
 
-## Native BF16 rotary-application component gate
+## Native BF16 rotary execution gate
 
-`CudaBf16RotaryApply` rotates prepared BF16 inputs shaped `[rows, heads × head_dim]`
-with supplied BF16 cosine/sine factors shaped `[rows, head_dim]`. It implements the
-split-half application only: `(x * cos) + (rotate_half(x) * sin)` with eager BF16
-rounding after each product and again after the addition. A fused FP32 rotation is
-not equivalent, and this operation does not prepare frequencies, positions or phase.
-Both factor halves are read, so models own any duplication or padding policy.
+Rotary execution is split into two completion-owned device operations.
+`CudaBf16RotaryFactors` consumes the model's padded FP32 inverse frequencies and
+integer positions, evaluates `float(position) × frequency` in FP32, computes cosine
+and sine on the device without fast-math, duplicates the half-head vector across both
+halves and stores BF16 round-to-nearest-even. Scaling is exactly 1.0 in the pinned
+path, so it is not applied. `CudaBf16RotaryApply` then rotates prepared BF16 inputs
+`[rows, heads × head_dim]` with those factors, rounding each product to BF16 before
+the addition. A fused FP32 rotation is not equivalent, and both factor halves are
+read rather than assuming duplication or padding.
 
-A call validates all four matrices, their actual ranges, whole heads, positive even
-widths and matching rows against one stable stream before invalidating output. The
-pending completion retains cosine, sine, input, output, the compiled module and the
-stream together; failed or uncertain enqueue/completion quarantines that envelope
-instead of refunding a guess. CUDA's per-thread default pseudo-stream is rejected
-before module loading because these owners and errors can move between threads.
-Kernel code/context overhead is not an application buffer grant.
+A call validates every matrix, actual allocation range, whole head, positive even
+width, row count and one exact stable stream before invalidating output; positions
+must convert to FP32 exactly and fit the declared row capacity. Frequency and position
+buffers are charged at construction, positions are re-uploaded and drained per call,
+and each pending completion retains exactly the buffers that operation reads or writes
+together with its compiled code. Failed or uncertain enqueue/completion
+quarantines that envelope instead of refunding a guess. CUDA's per-thread default
+pseudo-stream is rejected before module loading because these owners and errors can
+move between threads. Kernel code/context overhead is not an application buffer grant.
 
 ```sh
 cargo test --release -p engine-nvidia --features cuda --test cuda_bf16_rotary --locked -- --ignored --test-threads=1
+cargo test --release -p engine-nvidia --features cuda --test cuda_bf16_factors --locked -- --ignored --test-threads=1
 RIBN_ROTARY_REFERENCE=/path/reference.json \
   cargo test --release -p engine-gemma4 --features cuda --test cuda_rotary_apply --locked -- --ignored --test-threads=1
 ```
 
-The backend gate uses exact dyadic BF16 operands at widths 2/10/126/256/512 and one
-to eight heads, including negative zero, sign flips, non-identical factor halves and
-output reuse. Acceptance is bit equality with an independent FP64 nearest-BF16
+The application gate uses exact dyadic BF16 operands at widths 2/10/126/256/512 and
+one to eight heads, including negative zero, sign flips, non-identical factor halves
+and output reuse. Acceptance is bit equality with an independent FP64 nearest-BF16
 computation that rounds each product before addition; the fixture fails if a single
-final rounding is substituted. The model gate replays a stock-CUDA fixture from
-`--apply-cuda`, which applies pinned Transformers' own CUDA cosine/sine to two
-geometries, two attention kinds and two head counts — eight applications at positions
-including 0, 511, 512, 513, 4095, 65535 and 131071, repeated and non-monotonic.
-Frequencies are prepared in CPU FP32 and moved to CUDA without a dtype cast, matching
-the pinned stock path; native factor generation is not reimplemented.
+final rounding is substituted. The factor gate checks the analytic identities that do
+not need a trig oracle: zero position gives exactly one, zero frequency gives exactly
+one and positive zero, a negative frequency keeps the product's negative zero at
+position zero, opposite frequencies share cosine and negate sine, both halves are
+identical, and capacity/position/stream violations reject without changing factors.
+
+The model gate replays a stock-CUDA fixture from `--apply-cuda`, which applies pinned
+Transformers' own CUDA cosine/sine to two geometries, two attention kinds and two head
+counts — eight applications at positions including 0, 511, 512, 513, 4095, 65535 and
+131071, repeated and non-monotonic. Frequencies are prepared in CPU FP32 and moved to
+CUDA without a dtype cast, matching the pinned stock path. It compares cosine, sine
+and rotated output bits exactly, and requires the fixture's frequency vector to be the
+same bit pattern the host frequency gate qualified. Frequency derivation from theta on
+the device is not implemented; the model-owned FP32 vector remains host-prepared.
 
 ```sh
 python benchmarks/gemma4_rotary_reference.py --apply-cuda --output /new/path/reference.json
 ```
 
 On 2026-10-19 (UTC), the RTX 4090 with driver 615.71.10 (CUDA 13.4 UMD, toolkit and
-NVRTC 13.3.33) passed all ten storage/weight/linear/binding/RMS/rotary device cases
-normally and under eight unfiltered memcheck binaries with zero reported errors. The
-stock fixture recorded 580/2370/346/1259 single-rounding mismatches for E4B and
-12/39/7/13 for the alternate geometry, so exact comparison is not vacuous. Two fresh
-real-package diagnostics matched all 665 parameter names, shapes, dtypes, bytes and
-SHA256 values against the independent host audit and restored free VRAM exactly on
-unload. Linux workspace tests (353) and Python tests (25) passed.
+NVRTC 13.3.33) passed twelve storage/weight/linear/binding/RMS/rotary/factor cases
+across nine device binaries normally and under nine unfiltered memcheck binaries with
+zero reported errors. The stock fixture recorded 580/2370/346/1259 single-rounding
+mismatches for E4B and 12/39/7/13 for the alternate geometry, so exact comparison is
+not vacuous. The two 665-parameter readback/unload probes requalified at `309ac25`
+remain valid because weight storage and allocation are unchanged. Linux workspace
+tests (354) and Python tests (25) passed.
 
-This qualifies the application building block with prepared factors. Native
-frequency/position/phase preparation, Gemma layer binding, a full forward pass,
-mixed-KV lifetime and performance remain unqualified.
+This qualifies rotary execution from a model-owned FP32 inverse-frequency vector with
+supplied integer positions. Native frequency derivation, Gemma layer binding, a full
+forward pass, mixed-KV lifetime and performance remain unqualified.
 
 ## Host rotary-frequency gate
 

@@ -7,6 +7,7 @@ mod cuda;
 #[cfg(feature = "cuda")]
 pub use cuda::{
     CudaBf16ComputeError, CudaBf16Gemm, CudaBf16Matrix, CudaBf16RmsNorm, CudaBf16RotaryApply,
+    CudaBf16RotaryFactors,
 };
 
 use crate::cuda_allocation::CudaBf16Error;
@@ -91,6 +92,22 @@ impl MatrixShape {
             .ok_or(CudaBf16Error::Invalid("rotary grid exceeds CUDA limit"))
     }
 
+    fn validate_factors(self, sine: Self, width: usize) -> Result<u32, CudaBf16Error> {
+        if self != sine || width == 0 || width > i32::MAX as usize || self.cols != width {
+            return Err(CudaBf16Error::Invalid(
+                "rotary factors expect matching [M,D] cosine/sine",
+            ));
+        }
+        self.rows
+            .checked_mul(width / 2)
+            .and_then(|n| n.checked_add(255))
+            .and_then(|n| i32::try_from(n / 256).ok())
+            .map(i32::unsigned_abs)
+            .ok_or(CudaBf16Error::Invalid(
+                "rotary factor grid exceeds CUDA limit",
+            ))
+    }
+
     fn validate_linear(self, weight: &WeightTensorSpec, output: Self) -> Result<(), CudaBf16Error> {
         if weight.dtype() != DataType::BF16
             || weight.dimensions() != [output.cols as u64, self.cols as u64]
@@ -130,6 +147,22 @@ mod tests {
         let huge = MatrixShape::new(i32::MAX as usize, 1024).unwrap();
         let factors = MatrixShape::new(i32::MAX as usize, 2).unwrap();
         assert!(huge.validate_rotary(factors, factors, huge).is_err());
+    }
+
+    #[test]
+    fn factor_shapes_match_duplicated_half_heads_and_bound_the_grid() {
+        let factors = MatrixShape::new(3, 24).unwrap();
+        assert_eq!(factors.validate_factors(factors, 24).unwrap(), 1);
+        for width in [0, 8, 26] {
+            assert!(factors.validate_factors(factors, width).is_err());
+        }
+        assert!(
+            factors
+                .validate_factors(MatrixShape::new(1, 24).unwrap(), 24)
+                .is_err()
+        );
+        let huge = MatrixShape::new(i32::MAX as usize, 1024).unwrap();
+        assert!(huge.validate_factors(huge, 1024).is_err());
     }
 
     #[test]

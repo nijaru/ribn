@@ -101,7 +101,7 @@ impl CudaBf16RmsNorm {
         let width =
             u32::try_from(width).map_err(|_| CudaBf16Error::Invalid("RMS width exceeds u32"))?;
         let mut pending = Pending::new(
-            Access {
+            Access::Matrices {
                 operation: Operation::Rms {
                     program: Arc::clone(kernels),
                     _scale: weights,

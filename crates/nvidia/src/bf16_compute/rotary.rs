@@ -86,7 +86,7 @@ impl CudaBf16RotaryApply {
             .map_err(|_| CudaBf16Error::Invalid("rotary width exceeds u32"))?;
         let pairs = input.shape.rows as u64 * (input.shape.cols as u64 / 2);
         let mut pending = Pending::new(
-            Access {
+            Access::Matrices {
                 operation: Operation::Rotary {
                     program: Arc::clone(kernels),
                     _cos: Arc::clone(&cos.allocation),

@@ -21,8 +21,8 @@ to the host or prove descriptors, arenas or graph capture will close it. Measure
 remaining projection/device costs and the fixed batched layer chain as well.
 The member-descriptor candidate remains off pending its remaining lifetime, sanitizer
 and performance gates. Gemma's native BF16 linear, shared-allocation, RMS and
-rotary-application component gates have passed; proceed with native factor/phase
-preparation, the remaining model math and mixed-retention continuation.
+rotary-execution component gates have passed; proceed with the remaining model math
+and mixed-retention continuation.
 
 Qualify the cross-engine numerical comparison and target remaining prefill/projection
 costs on the contiguous path. The [first endpoint diagnostic](../benchmarks/runtime-contract.md#first-equal-artifact-endpoint-diagnostic-2026-10-16)
@@ -441,13 +441,13 @@ These qualify the linear building block, not a second executable decoder or mode
 Native grouped BF16 RMS now also passes its
 [device component gate](../benchmarks/gemma4-reference/README.md#native-bf16-rms-component-gate),
 including direct learned scales, per-head/packed-PLE grouping, owner-only scale-free V,
-memcheck, racecheck and synccheck. Native BF16 rotary application with prepared
-factors now passes its
-[device component gate](../benchmarks/gemma4-reference/README.md#native-bf16-rotary-application-component-gate)
-with exact per-product rounding, memcheck and eight stock-CUDA applications up to
-position 131071; that application does not generate phase. Shared completion ownership
-and full weight readback/unload were requalified; none of these components establishes
-full-model numerical acceptance. Separately, the
+memcheck, racecheck and synccheck. Native BF16 rotary execution now passes its
+[device component gate](../benchmarks/gemma4-reference/README.md#native-bf16-rotary-execution-gate):
+the backend prepares factors from the model's FP32 inverse frequencies and positions
+and applies them with exact per-product rounding, reproducing stock-CUDA cosine, sine
+and rotated output bits at positions up to 131071. Frequency derivation from theta
+remains host-side. Shared completion ownership and full weight readback/unload were
+requalified; none of these components establishes full-model numerical acceptance. Separately, the
 model-owned [host rotary-frequency gate](../benchmarks/gemma4-reference/README.md#host-rotary-frequency-gate)
 now checks the padded proportional/global and ordinary/local factors against pinned
 Transformers and an independent FP64 equation. This is preparation evidence, not
@@ -458,8 +458,8 @@ using the archived real-model hidden inputs under both CPU precision policies.
 Their one-token processing schedule is distinct from original prefill taps; no new
 Ribn device slice or full-model qualification follows.
 
-Next gates: qualify native rotary factor/phase preparation and the remaining layer
-math, then mixed-width local/global KV with donor
+Next gates: qualify the remaining layer math — residual and PLE combination, MLP
+gating, final normalization and soft-capped logits — then mixed-width local/global KV with donor
 spans pinned through shared-tail device reads. Use strongly typed model/backend state
 behind `GenerationExecutor`, not the current first-`kv()`/homogeneous-cache convenience
 or family branches in routing/scheduling. Qualified physical allocation/retirement and

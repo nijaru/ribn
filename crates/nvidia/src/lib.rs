@@ -18,6 +18,7 @@ mod cuda_allocation;
 #[cfg(feature = "cuda")]
 pub use bf16_compute::{
     CudaBf16ComputeError, CudaBf16Gemm, CudaBf16Matrix, CudaBf16RmsNorm, CudaBf16RotaryApply,
+    CudaBf16RotaryFactors,
 };
 #[cfg(feature = "cuda")]
 pub use bf16_weights::{CudaBf16Error, CudaBf16Weights};

@@ -926,21 +926,25 @@ this operation adds no global device workspace or application submission protoco
 The [RMS component gate](../benchmarks/gemma4-reference/README.md#native-bf16-rms-component-gate)
 owns its bounded numerical policy, not a whole-model error budget.
 
-### Native BF16 rotary application
+### Native BF16 rotary execution
 
-Rotary application consumes already-prepared BF16 cosine/sine factors rather than
-generating phase. The backend owns the split-half arithmetic and its eager rounding
-boundaries; the model owns factor preparation, position selection and any duplicated
-halves. Inputs and outputs are `[rows, heads × head_dim]`, factors `[rows, head_dim]`.
+Rotary execution has two completion-owned operations. Factor preparation consumes the
+model's padded FP32 inverse frequencies and integer positions, evaluates FP32 phase and
+device cosine/sine, duplicates the half-head vector and stores BF16 factors. Application
+owns the split-half arithmetic and its eager rounding boundaries. The model owns the
+frequency values, position selection and any padded halves; the backend does not derive
+frequencies from theta.
 
-A call validates dimensions, whole heads, positive even widths, initialized input and
-factors, actual allocation ranges and one common stable stream before output changes.
-The pending completion retains both factors, both matrices, bytecode/module and stream;
-failed or uncertain enqueue/completion quarantines that whole envelope, and retained
-access blocks close or reuse until an acknowledged drain. Compiled code and context
-overhead is not charged as an application buffer. No asynchronous submission,
-cancellation or model-recovery protocol is added here, and frequency/position
-preparation remains a separate gate.
+Factor storage is charged at construction: one frequency buffer and one position buffer
+sized by the declared row capacity, with positions re-uploaded and drained per call.
+Factor matrices are caller-owned outputs that need not hold earlier results. Application
+validates dimensions, whole heads, positive even widths, initialized input and factors,
+actual allocation ranges and one common stable stream before output changes. Each pending
+completion retains exactly the buffers and code its launch can access, so failed or
+uncertain enqueue/completion quarantines that envelope and retained access blocks close
+or reuse until an acknowledged drain. Compiled code and context overhead is not charged
+as an application buffer. No asynchronous submission, cancellation or model-recovery
+protocol is added here.
 
 ### Snapshot replacement
 

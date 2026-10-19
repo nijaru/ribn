@@ -19,8 +19,11 @@ pub use rms::CudaBf16RmsNorm;
 #[path = "rotary.rs"]
 mod rotary;
 pub use rotary::CudaBf16RotaryApply;
+#[path = "factors.rs"]
+mod factors;
+pub use factors::CudaBf16RotaryFactors;
 
-type DeviceAllocation = Arc<Allocation<CudaTransport>>;
+pub(super) type DeviceAllocation = Arc<Allocation<CudaTransport>>;
 static ALPHA: f32 = 1.0;
 static BETA: f32 = 0.0;
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -176,14 +179,31 @@ impl Operation {
         }
     }
 }
-struct Access {
-    operation: Operation,
-    _input: DeviceAllocation,
-    _output: DeviceAllocation,
+/// Each access shape retains exactly the resources its launch can touch.
+enum Access {
+    Matrices {
+        operation: Operation,
+        _input: DeviceAllocation,
+        _output: DeviceAllocation,
+    },
+    Factors {
+        kernels: Arc<factors::FactorKernels>,
+        _inverse_frequencies: DeviceAllocation,
+        _positions: DeviceAllocation,
+        _cosine: DeviceAllocation,
+        _sine: DeviceAllocation,
+    },
+}
+impl Access {
+    fn stream(&self) -> &Arc<CudaStream> {
+        match self {
+            Self::Matrices { operation, .. } => operation.stream(),
+            Self::Factors { kernels, .. } => &kernels.stream,
+        }
+    }
 }
 fn drain(access: &Access) -> Result<(), CudaBf16Error> {
     access
-        .operation
         .stream()
         .synchronize()
         .map_err(|e| error("BF16 compute completion", e))
@@ -344,7 +364,7 @@ impl CudaBf16Gemm {
             .bind_to_thread()
             .map_err(|e| error("BF16 linear bind", e))?;
         let mut pending = Pending::new(
-            Access {
+            Access::Matrices {
                 operation: Operation::Blas {
                     program: Arc::clone(&self.blas),
                     _weights: allocation,
