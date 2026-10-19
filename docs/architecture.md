@@ -154,6 +154,14 @@ rotary execution passes its
 the backend prepares cosine/sine factors from the model's FP32 inverse frequencies and
 positions, then applies them with eager per-product rounding. Frequency derivation from
 theta, decoder binding and mixed-KV lifetime remain absent.
+A host CPU path now materializes the same 665-parameter BF16 inventory into ordinary
+heap buffers and implements row-major linear, Gemma RMS and split-half rotary with the
+pinned eager arithmetic. Its ignored reference test compares real captures at layers
+0/5/22/23: linear and normalization elements stay inside an FP32 accumulation/variance
+bound plus the reference BF16 rounding slack, and rotary application is bit-exact with
+supplied stock factors. This is a correctness-first execution primitive for the second
+decoder, not a performance claim, a portable tensor layer or a selected hardware
+priority; attention, KV, the remaining layer math and an executor are still absent.
 Model-local KV range calculations distinguish
 persistent suffixes from untrimmed donor spans, with routing/last consumers resolved at
 configuration load; they do not prove live state, grants or safe physical lifetimes.
@@ -196,7 +204,7 @@ Shared CUDA physical retirement and downstream-workspace progress remain unprove
 | `crates/qwen` / `engine-qwen` | Qwen config, GGUF mapping, CUDA assembly and AR adapter; serving benchmark |
 | `crates/nvidia` / `engine-nvidia` | NVIDIA storage, completion, dispatch and kernels |
 | `crates/bert` / `engine-bert` | BERT semantics, preparation, executor binding and device retirement |
-| `crates/gemma4` / `engine-gemma4` | Gemma 4 text processing, config, source/KV preflight and native BF16 CUDA weight/compute bindings; no decoder |
+| `crates/gemma4` / `engine-gemma4` | Gemma 4 text processing, config, source/KV preflight, host CPU BF16 primitives and native BF16 CUDA weight/compute bindings; no decoder |
 | `crates/core` / `engine-core` | Prepared batch, backend submission, continuation state and weight contracts; no scheduler, plan or model description |
 | `crates/gguf` / `engine-gguf` | GGUF artifact access and current tokenizer/chat-template implementation |
 | `crates/safetensors` / `ribn-safetensors` | Validated SafeTensors metadata and bounded payload readers |

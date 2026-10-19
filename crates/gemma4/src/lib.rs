@@ -11,6 +11,7 @@ pub use cuda::{Gemma4CudaError, Gemma4CudaLoadError, Gemma4CudaWeights};
 
 mod config;
 mod continuation;
+mod cpu;
 mod parameters;
 mod processor;
 mod source;
@@ -18,6 +19,10 @@ mod text_decode;
 
 pub use config::{AttentionKind, Gemma4Config, LayerGeometry, Rope};
 pub use continuation::{AttentionSpan, KvOwnerStep, KvStep, RetainedSpan};
+pub use cpu::{
+    CpuParameter, Gemma4CpuWeights, apply_rotary, bf16, factors, inverse_frequencies, linear,
+    linear_f32, rms_norm,
+};
 pub use parameters::{LayerParameter, ParameterId, ParameterSpec};
 pub use processor::{Gemma4TextProcessor, TextLimits, TextMessage};
 pub use source::{ExcludedParameter, Exclusion, Gemma4Source, StoredParameter};
