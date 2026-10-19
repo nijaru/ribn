@@ -7,17 +7,24 @@ open implementation choices and acceptance gates. All v0 interfaces may change.
 
 ## Current execution order
 
-**Next: cut per-step launch count and prefill host cost, the two losses a matched
-cross-engine comparison now attributes.** A same-artifact comparison against llama.cpp
-(2026-10-18) puts ribn at parity single-stream (32.7 vs 39.9 tok/s, better TTFT) but 2.2x
-and 3.3x behind at c4/c8, and the deficit is host-side: 3,862 kernel launches per
-eight-row decode step (32.5 ms host enqueue) and 0.9-1.5 s of host enqueue for an
-eight-row short prefill, dominated by per-member loops that need a device array of state
-pointers plus, later, CUDA graph capture over a resident arena.
+**Next: qualify candidate execution changes and complete the real second decoder;
+choose subsequent optimizations from matched measurements.** The same-artifact
+llama.cpp comparison (2026-10-18) measured 32.7 versus 39.9 tok/s at c1—about 18% lower
+Ribn throughput, with better TTFT—and 2.2x/3.3x throughput gaps at c4/c8. This is not
+single-stream parity or independently quality-qualified competitive acceptance.
 [Baseline](../benchmarks/runtime-contract.md#matched-cross-engine-decode-baseline-2026-10-18)
 
-The prior instruction follows. Qualify the cross-engine numerical comparison and target
-remaining prefill/projection costs on the contiguous path. The [first endpoint diagnostic](../benchmarks/runtime-contract.md#first-equal-artifact-endpoint-diagnostic-2026-10-16)
+Native diagnostics measured 3,862 launches per eight-row decode step, 32.5 ms host
+enqueue, and 0.9–1.5 s host enqueue for an eight-row short prefill. They motivate launch
+and prefill-host-cost experiments; they do not attribute the entire endpoint deficit
+to the host or prove descriptors, arenas or graph capture will close it. Measure
+remaining projection/device costs and the fixed batched layer chain as well.
+The member-descriptor candidate remains off pending its remaining lifetime, sanitizer
+and performance gates. Gemma's native BF16 linear component needs device qualification
+before dependent device math is added.
+
+Qualify the cross-engine numerical comparison and target remaining prefill/projection
+costs on the contiguous path. The [first endpoint diagnostic](../benchmarks/runtime-contract.md#first-equal-artifact-endpoint-diagnostic-2026-10-16)
 exposed flat mixed c4/c8 throughput at about 22 tok/s. The [first measured lane improvement](../benchmarks/runtime-contract.md#heterogeneous-capacity-decode-2026-10-16)
 now batches compatible decode rows across different KV capacities: the same cohort
 improved to about 32/35 tok/s (+44%/+59%), with unchanged sampled outputs and short-c1
@@ -479,7 +486,10 @@ No remote URL/media fetching is needed for this first text path.
 Gate streaming/terminal order, disconnect and queue-saturated cancellation, overload,
 malformed/oversized requests, stalled clients with healthy-peer progress, readiness,
 metrics and retryable shutdown. Health/readiness must distinguish loading, serving,
-closing and faulted states. Python access follows the same owned semantics later.
+closing and faulted states. Networked Python access uses the existing protocol subset.
+Native Python bindings follow a usable shared Qwen/Gemma execution path, without
+waiting for every engine feature; they reuse its owned semantics as specified in the
+[application API design](inference-engine-design.md#application-api-and-serving).
 
 ### First competitive acceptance matrix
 

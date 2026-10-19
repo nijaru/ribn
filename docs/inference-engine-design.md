@@ -81,6 +81,14 @@ is not a mandatory task-default ceremony.
 The initial HTTP adapter now serves the documented loopback text subset; wider
 operations and general loading remain targets. Keep serving a thin adapter over the
 owned text facade, not a second execution loop.
+
+Python access has two roles: existing protocol clients for a separately served model,
+and eventual native bindings for offline batches, evaluation, data generation and
+custom Python servers. Native bindings must wrap the same Rust model handles,
+admission, streams, cancellation and shutdown owners, not add another scheduler.
+Python remains optional for Rust/CLI use. A Python API does not imply execution of
+arbitrary Python model code or automatic support for every Transformers architecture.
+
 Bound connections, request-body bytes, retained input/options, preprocessing, application
 requests and buffered responses separately. Payload lengths do not bound spare capacity,
 message containers or stop lists. Acquire admission before expensive processing and
@@ -221,6 +229,13 @@ an explicit numerical/quality policy, independent task-level acceptance, separat
 identity and opt-in selection; existing numerical error grants no additional error budget.
 
 ## Model support and loading
+
+For a supported architecture and backend, a compatible new checkpoint should load
+without Rust changes. A new architecture or custom model should normally add model
+semantics, processor/parameter mappings, backend bindings, registration and qualification,
+not edit scheduling, cancellation or frontend lifecycle. A new execution regime or
+unsupported device operation may require a shared-contract change; do not promise an
+arbitrary-model plugin interface or hide missing support behind a registry entry.
 
 Model families own configuration, parameter interpretation, processors, special tokens,
 operations, continuation semantics and backend execution. Registration is central selection,
