@@ -883,6 +883,32 @@ remain host fault-injection evidence, not injected hardware failures. Requested 
 plus padding do not measure driver rounding, context/library storage or full inference
 peaks; keep those margins separate from encoded payload totals and logical grants.
 
+### Native BF16 linear execution
+
+The linear execution slice computes row-major `output = input × weightᵀ` through
+cuBLAS with BF16 operands/results, FP32 accumulation and reduced-precision reductions
+disabled. It is a backend operation, not a model or universal tensor interface.
+Matrices and the explicit cuBLAS workspace are prepared and charged before launch;
+immutable weight slots retain their source layout. Model owners bind logical roles.
+
+A call validates the complete dimensions, initialized input, actual allocation ranges
+and common stable stream before invalidating output or entering cuBLAS. Reject CUDA's
+per-thread default pseudo-stream: moving a Send owner/error to another thread would
+drain a different queue despite retaining the same stream wrapper. A successful call
+includes stream completion and publishes initialized output. Error or unwind after
+possible enqueue retains weights, both matrices, handle/workspace and stream together.
+Those retained references forbid close, staging access or reuse until an explicit
+successful drain. Reference release alone is not device completion; defensive Drop
+retries drain or quarantines the entire access envelope. Uncertain handle destruction,
+like uncertain allocation free, is never blindly retried. No asynchronous application
+submission, cancellation protocol or model-level failure recovery is added here.
+
+Numerical qualification starts with exactly representable dot products and independent
+BF16 round-to-nearest-even results, including odd dimensions and multi-row transposition.
+That component gate is not whole-model parity or a performance claim. Real model
+execution still requires independently justified numerical acceptance and mixed-KV
+lifetime qualification.
+
 ### Snapshot replacement
 
 Start with one loaded execution owner's lifetime pinning one snapshot. Implement

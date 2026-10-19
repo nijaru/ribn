@@ -10,9 +10,15 @@ mod activation;
 pub use activation::CudaQ8_1Quantizer;
 
 #[cfg(any(feature = "cuda", test))]
+mod bf16_compute;
+#[cfg(any(feature = "cuda", test))]
 mod bf16_weights;
+#[cfg(any(feature = "cuda", test))]
+mod cuda_allocation;
 #[cfg(feature = "cuda")]
-pub use bf16_weights::{CudaBf16Weights, CudaBf16WeightsError};
+pub use bf16_compute::{CudaBf16Gemm, CudaBf16GemmError, CudaBf16Matrix};
+#[cfg(feature = "cuda")]
+pub use bf16_weights::{CudaBf16Error, CudaBf16Weights};
 
 #[cfg(feature = "cuda")]
 mod cuda;

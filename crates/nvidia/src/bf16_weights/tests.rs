@@ -23,11 +23,15 @@ struct Pending {
 )]
 struct Probe {
     bytes: Vec<u8>,
+    base: Option<u64>,
     allocations: usize,
     frees: usize,
     drains: usize,
     copies: Vec<usize>,
     pending: Option<Pending>,
+    staging: Option<usize>,
+    panic_drain: bool,
+    panic_free: bool,
     fail_allocate: bool,
     fail_copy: bool,
     fail_drain: bool,
@@ -36,8 +40,8 @@ struct Probe {
 
 struct Fake(Arc<Mutex<Probe>>);
 
-fn failure(operation: &'static str) -> CudaBf16WeightsError {
-    CudaBf16WeightsError::Transport {
+fn failure(operation: &'static str) -> CudaBf16Error {
+    CudaBf16Error::Transport {
         operation,
         source: Box::new(io::Error::other("injected")),
     }
@@ -50,7 +54,12 @@ impl Fake {
             p.pending.is_none(),
             "staging reused without a successful drain"
         );
-        let offset = usize::try_from(ptr - BASE).unwrap();
+        if let Some(staging) = p.staging {
+            assert_eq!(host, staging, "owner must retain the same DMA staging");
+        } else {
+            p.staging = Some(host);
+        }
+        let offset = usize::try_from(ptr - p.base.unwrap_or(BASE)).unwrap();
         assert!(offset + len <= p.bytes.len());
         p.copies.push(len);
         p.pending = Some(Pending {
@@ -106,7 +115,7 @@ impl Transport for Fake {
             return Err(failure("allocate"));
         }
         p.bytes = vec![0xcd; bytes];
-        Ok(BASE)
+        Ok(p.base.unwrap_or(BASE))
     }
     unsafe fn upload(&mut self, dst: u64, src: &[u8]) -> Result<()> {
         self.enqueue(src.as_ptr() as usize, dst, src.len(), Direction::Upload)
@@ -117,6 +126,10 @@ impl Transport for Fake {
     fn drain(&mut self) -> Result<()> {
         let mut p = self.0.lock().unwrap();
         p.drains += 1;
+        if p.panic_drain {
+            drop(p); // A wrapper unwind must not poison the probe's mutex.
+            panic!("injected drain unwind");
+        }
         if p.fail_drain {
             return Err(failure("drain"));
         }
@@ -125,11 +138,15 @@ impl Transport for Fake {
     }
     unsafe fn free(&mut self, ptr: u64) -> Result<()> {
         let mut p = self.0.lock().unwrap();
-        assert_eq!(ptr, BASE);
+        assert_eq!(ptr, p.base.unwrap_or(BASE));
         assert!(p.pending.is_none());
         p.frees += 1;
         // An uncertain free may actually have succeeded. A retry must never occur.
         p.bytes.clear();
+        if p.panic_free {
+            drop(p);
+            panic!("injected free unwind after physical release");
+        }
         if p.fail_free {
             return Err(failure("free"));
         }
@@ -217,18 +234,18 @@ fn preserves_bytes_odd_chunks_alignment_and_exactly_once_refund() {
     assert!(!owner.ready());
     assert!(matches!(
         owner.read_chunk(0, 0, 1),
-        Err(CudaBf16WeightsError::NotReady)
+        Err(CudaBf16Error::NotReady)
     ));
     let a = [0, 0, 0, 128, 128, 63, 129, 127, 255, 255];
     owner.upload(0, &mut a.as_slice()).unwrap();
     assert!(!owner.ready());
     assert!(matches!(
         owner.upload(0, &mut [].as_slice()),
-        Err(CudaBf16WeightsError::AlreadyUploaded(0))
+        Err(CudaBf16Error::AlreadyUploaded(0))
     ));
     assert!(matches!(
         owner.upload(2, &mut [].as_slice()),
-        Err(CudaBf16WeightsError::InvalidSlot(2))
+        Err(CudaBf16Error::InvalidSlot(2))
     ));
     owner.upload(1, &mut [0x45, 0x23].as_slice()).unwrap();
     assert!(owner.ready());
@@ -262,7 +279,7 @@ fn preserves_bytes_odd_chunks_alignment_and_exactly_once_refund() {
     assert!(!owner.ready());
     assert!(matches!(
         owner.read_chunk(0, 0, 1),
-        Err(CudaBf16WeightsError::Closed)
+        Err(CudaBf16Error::Closed)
     ));
     drop(owner);
     assert!(!refunded.changed(), "close/Drop must not refund twice");
@@ -284,7 +301,7 @@ fn short_long_and_io_error_sources_poison_the_complete_set() {
         assert!(!owner.ready());
         assert!(matches!(
             owner.upload(1, &mut [0, 0].as_slice()),
-            Err(CudaBf16WeightsError::Poisoned)
+            Err(CudaBf16Error::Poisoned)
         ));
         assert_eq!(pool.granted(), 32);
         owner.close().unwrap();
@@ -294,7 +311,7 @@ fn short_long_and_io_error_sources_poison_the_complete_set() {
     let (mut owner, _, _) = setup(vec![spec("a", 1)], 3);
     assert!(matches!(
         owner.upload(0, &mut Broken),
-        Err(CudaBf16WeightsError::Source(_))
+        Err(CudaBf16Error::Source(_))
     ));
     assert!(!owner.ready());
 }
@@ -307,7 +324,7 @@ fn partial_copy_and_failed_drain_retain_dma_buffer_until_retry() {
             if matches!(direction, Direction::Read) {
                 owner.upload(0, &mut [1, 2, 3, 4].as_slice()).unwrap();
             }
-            let host = owner.resources.as_ref().unwrap().staging.as_ptr();
+            let host = probe.lock().unwrap().staging;
             {
                 let mut p = probe.lock().unwrap();
                 p.fail_copy = fail_copy;
@@ -321,15 +338,17 @@ fn partial_copy_and_failed_drain_retain_dma_buffer_until_retry() {
             assert!(!owner.ready());
             assert!(matches!(
                 owner.read_chunk(0, 0, 1),
-                Err(CudaBf16WeightsError::Poisoned)
+                Err(CudaBf16Error::Poisoned)
             ));
             assert!(matches!(
                 owner.upload(0, &mut [0; 4].as_slice()),
-                Err(CudaBf16WeightsError::Poisoned)
+                Err(CudaBf16Error::Poisoned)
             ));
             assert!(owner.close().is_err());
             assert_eq!(pool.granted(), 16);
-            assert_eq!(owner.resources.as_ref().unwrap().staging.as_ptr(), host);
+            if let Some(host) = host {
+                assert_eq!(probe.lock().unwrap().staging, Some(host));
+            }
             assert!(probe.lock().unwrap().pending.is_some());
             assert_eq!(probe.lock().unwrap().frees, 0);
             probe.lock().unwrap().fail_drain = false;
@@ -352,21 +371,18 @@ fn uncertain_free_is_never_retried_and_drop_keeps_the_whole_envelope() {
             p.fail_free = fail_free;
             p.fail_drain = !fail_free;
         }
-        let host = owner.resources.as_ref().unwrap().staging.as_ptr();
+        let host = probe.lock().unwrap().staging.unwrap();
         if !fail_free {
             // Leave a D2H DMA pending across BOTH explicit failed cleanup and Drop.
             assert!(owner.read_chunk(0, 0, 3).is_err());
             assert!(probe.lock().unwrap().pending.is_some());
         }
         assert!(owner.close().is_err());
-        assert_eq!(owner.resources.as_ref().unwrap().staging.as_ptr(), host);
+        assert_eq!(probe.lock().unwrap().staging, Some(host));
         assert_eq!(pool.granted(), 16);
         assert_eq!(Arc::strong_count(&probe), 2);
         if fail_free {
-            assert!(matches!(
-                owner.close(),
-                Err(CudaBf16WeightsError::FreeUncertain)
-            ));
+            assert!(matches!(owner.close(), Err(CudaBf16Error::FreeUncertain)));
             assert_eq!(probe.lock().unwrap().frees, 1);
         }
         drop(owner);
@@ -386,6 +402,203 @@ fn uncertain_free_is_never_retried_and_drop_keeps_the_whole_envelope() {
         }
         // Intentional tiny safety-backstop leaks; production uses explicit retry.
     }
+}
+
+#[test]
+fn shared_access_requires_publication_and_excludes_mutation_without_poisoning() {
+    let (mut owner, pool, probe) = setup(vec![spec("a", 2), spec("b", 1)], 3);
+    assert!(matches!(owner.access(0), Err(CudaBf16Error::NotReady)));
+    owner.upload(0, &mut [1, 2, 3, 4].as_slice()).unwrap();
+    assert!(matches!(owner.access(0), Err(CudaBf16Error::NotReady)));
+    owner.upload(1, &mut [5, 6].as_slice()).unwrap();
+    assert!(matches!(
+        owner.access(2),
+        Err(CudaBf16Error::InvalidSlot(2))
+    ));
+    let (access, range) = owner.access(0).unwrap();
+    assert_eq!(range, 0..4);
+    assert!(matches!(owner.access(0), Err(CudaBf16Error::InUse)));
+    assert!(matches!(owner.access(1), Err(CudaBf16Error::InUse)));
+    assert_eq!(access.allocation_id(), owner.allocation_id());
+    assert_eq!(access.allocated_bytes(), 32);
+    assert_eq!(access.staging_bytes(), 3);
+    assert_eq!(access.pointer().unwrap(), BASE);
+    assert!(Arc::ptr_eq(&access.transport().0, &probe));
+    let before = {
+        let p = probe.lock().unwrap();
+        (p.copies.len(), p.drains, p.frees)
+    };
+    assert!(matches!(owner.close(), Err(CudaBf16Error::InUse)));
+    assert!(matches!(
+        owner.read_chunk(0, 0, 1),
+        Err(CudaBf16Error::InUse)
+    ));
+    assert!(matches!(
+        owner.read_chunk(0, 0, 0),
+        Err(CudaBf16Error::InUse)
+    ));
+    assert!(matches!(
+        owner.upload(0, &mut [].as_slice()),
+        Err(CudaBf16Error::InUse)
+    ));
+    assert!(owner.ready());
+    assert_eq!(pool.granted(), 32);
+    {
+        let p = probe.lock().unwrap();
+        assert_eq!((p.copies.len(), p.drains, p.frees), before);
+    }
+    drop(access);
+    let (access, range) = owner.access(1).unwrap();
+    assert_eq!(range, 16..18);
+    drop(access);
+    assert_eq!(owner.read_chunk(0, 1, 3).unwrap(), [2, 3, 4]);
+    owner.close().unwrap();
+    assert!(matches!(owner.access(0), Err(CudaBf16Error::Closed)));
+    assert_eq!(owner.allocated_bytes(), 32);
+    assert_eq!(owner.tensor_range(1), Some(16..18));
+    assert_eq!(pool.granted(), 0);
+}
+
+#[test]
+fn last_access_retires_after_root_drop_without_leaking_the_root_reference() {
+    let (mut owner, pool, probe) = setup(vec![spec("a", 2)], 3);
+    owner.upload(0, &mut [1, 2, 3, 4].as_slice()).unwrap();
+    let (access, _) = owner.access(0).unwrap();
+    let other = Arc::clone(&access);
+    let wait = pool.capacity_wait();
+    let drains = probe.lock().unwrap().drains;
+    drop(owner);
+    assert_eq!(
+        Arc::strong_count(&access),
+        2,
+        "root must relinquish its Arc"
+    );
+    assert_eq!(pool.granted(), 16);
+    assert!(!wait.changed());
+    assert_eq!(probe.lock().unwrap().frees, 0);
+    drop(access);
+    assert_eq!(pool.granted(), 16);
+    assert_eq!(probe.lock().unwrap().drains, drains);
+    drop(other);
+    assert!(wait.changed());
+    assert_eq!(pool.granted(), 0);
+    let p = probe.lock().unwrap();
+    assert_eq!(p.drains, drains + 1);
+    assert_eq!(p.frees, 1);
+    assert_eq!(Arc::strong_count(&probe), 1);
+}
+
+#[test]
+fn last_access_drop_quarantines_failed_retirement() {
+    for fail_free in [false, true] {
+        let (mut owner, pool, probe) = setup(vec![spec("a", 2)], 3);
+        owner.upload(0, &mut [1, 2, 3, 4].as_slice()).unwrap();
+        let (access, _) = owner.access(0).unwrap();
+        drop(owner);
+        {
+            let mut p = probe.lock().unwrap();
+            p.fail_free = fail_free;
+            p.fail_drain = !fail_free;
+        }
+        drop(access);
+        assert_eq!(pool.granted(), 16);
+        assert_eq!(probe.lock().unwrap().frees, usize::from(fail_free));
+        assert_eq!(Arc::strong_count(&probe), 2, "quarantine retains transport");
+    }
+}
+
+#[test]
+fn reader_and_cleanup_unwinds_preserve_retirement_ownership() {
+    use std::panic::{AssertUnwindSafe, catch_unwind};
+
+    struct Panics;
+    impl Read for Panics {
+        fn read(&mut self, _: &mut [u8]) -> io::Result<usize> {
+            panic!("injected source unwind");
+        }
+    }
+    let (mut owner, pool, _) = setup(vec![spec("a", 2)], 3);
+    assert!(catch_unwind(AssertUnwindSafe(|| owner.upload(0, &mut Panics))).is_err());
+    assert!(matches!(owner.access(0), Err(CudaBf16Error::Poisoned)));
+    owner.close().unwrap();
+    assert_eq!(pool.granted(), 0);
+
+    let (mut owner, pool, probe) = setup(vec![spec("a", 2)], 3);
+    probe.lock().unwrap().panic_free = true;
+    assert!(catch_unwind(AssertUnwindSafe(|| owner.close())).is_err());
+    assert!(matches!(owner.close(), Err(CudaBf16Error::FreeUncertain)));
+    drop(owner);
+    assert_eq!(
+        probe.lock().unwrap().frees,
+        1,
+        "unwound free is never retried"
+    );
+    assert_eq!(pool.granted(), 16);
+    assert_eq!(Arc::strong_count(&probe), 2);
+
+    let (mut owner, pool, probe) = setup(vec![spec("a", 2)], 3);
+    owner.upload(0, &mut [1, 2, 3, 4].as_slice()).unwrap();
+    probe.lock().unwrap().fail_drain = true;
+    assert!(owner.read_chunk(0, 0, 3).is_err());
+    probe.lock().unwrap().panic_drain = true;
+    assert!(catch_unwind(AssertUnwindSafe(|| drop(owner))).is_err());
+    assert_eq!(pool.granted(), 16);
+    assert_eq!(Arc::strong_count(&probe), 2);
+    let mut p = probe.lock().unwrap();
+    assert_eq!(p.frees, 0);
+    // Actual delayed DMA still has a live destination after defensive Drop unwinds.
+    complete(&mut p, usize::MAX);
+    assert!(p.pending.is_none());
+}
+
+#[test]
+fn shared_allocation_checks_byte_spans_before_reader_or_transport_actions() {
+    struct Untouched;
+    impl Read for Untouched {
+        fn read(&mut self, _: &mut [u8]) -> io::Result<usize> {
+            panic!("invalid range reached source");
+        }
+    }
+    let pool = BytePool::new(16).shared();
+    let probe = Arc::new(Mutex::new(Probe::default()));
+    for (bytes, staging) in [(0, 3), (16, 0)] {
+        assert!(Allocation::allocate(bytes, Fake(probe.clone()), &pool, staging).is_err());
+    }
+    assert_eq!(probe.lock().unwrap().allocations, 0);
+    let mut shared = Allocation::allocate(16, Fake(probe.clone()), &pool, 3).unwrap();
+    let owner = Arc::get_mut(&mut shared).unwrap();
+    for (offset, len) in [(17, 0), (15, 2), (u64::MAX, 1), (1, u64::MAX)] {
+        assert!(owner.write_exact(offset, len, &mut Untouched).is_err());
+    }
+    for (offset, len) in [(0, 4), (15, 2), (u64::MAX, 1)] {
+        assert!(owner.read_chunk(offset, len).is_err());
+    }
+    assert!(probe.lock().unwrap().copies.is_empty());
+    // Neither the span nor staging chunks need BF16 element alignment.
+    owner
+        .write_exact(1, 5, &mut [1, 2, 3, 4, 5].as_slice())
+        .unwrap();
+    assert_eq!(owner.read_chunk(2, 3).unwrap(), [2, 3, 4]);
+    assert_eq!(probe.lock().unwrap().copies, [3, 2, 3]);
+    owner.close().unwrap();
+    assert!(matches!(owner.pointer(), Err(CudaBf16Error::Closed)));
+    assert_eq!(owner.staging_bytes(), 3);
+    assert_eq!(pool.granted(), 0);
+
+    let probe = Arc::new(Mutex::new(Probe {
+        base: Some(u64::MAX - 8),
+        ..Probe::default()
+    }));
+    let mut shared = Allocation::allocate(16, Fake(probe.clone()), &pool, 3).unwrap();
+    let owner = Arc::get_mut(&mut shared).unwrap();
+    // The first chunk would fit; the entire span must validate BEFORE reading it.
+    assert!(owner.write_exact(0, 9, &mut Untouched).is_err());
+    assert!(owner.read_chunk(7, 2).is_err());
+    let p = probe.lock().unwrap();
+    assert!(p.copies.is_empty());
+    assert_eq!(p.drains, 0);
+    drop(p);
+    owner.close().unwrap();
 }
 
 #[test]

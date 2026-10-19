@@ -1,9 +1,11 @@
-//! Model-owned native BF16 materialization. No forward pass or token executor.
+//! Model-owned BF16 materialization and linear bindings. No decoder or token executor.
+
+mod linear;
 
 use crate::{Gemma4Config, Gemma4Error, Gemma4Source, ParameterId};
 use cudarc::driver::CudaStream;
 use engine_core::{DataType, WeightTensorSpec};
-use engine_nvidia::{CudaBf16Weights, CudaBf16WeightsError};
+use engine_nvidia::{CudaBf16Error, CudaBf16Weights};
 use ribn_foundation::{AllocationId, BytePool};
 use std::{collections::BTreeMap, error::Error, fmt, sync::Arc};
 
@@ -11,7 +13,7 @@ use std::{collections::BTreeMap, error::Error, fmt, sync::Arc};
 #[derive(Debug)]
 pub enum Gemma4CudaError {
     Model(Gemma4Error),
-    Backend(CudaBf16WeightsError),
+    Backend(CudaBf16Error),
 }
 impl fmt::Display for Gemma4CudaError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -49,7 +51,7 @@ impl Gemma4CudaLoadError {
     /// Retire partial construction. Failed cleanup keeps the same owner and charge.
     /// # Errors
     /// Returns a drain/free/quarantine error; never retry loading into this set.
-    pub fn retire(&mut self) -> Result<(), CudaBf16WeightsError> {
+    pub fn retire(&mut self) -> Result<(), CudaBf16Error> {
         if let Some(weights) = &mut self.retirement {
             weights.close()?;
         }
@@ -62,7 +64,7 @@ impl Gemma4CudaLoadError {
             retirement: None,
         }
     }
-    fn backend(error: CudaBf16WeightsError, retirement: Option<Box<CudaBf16Weights>>) -> Self {
+    fn backend(error: CudaBf16Error, retirement: Option<Box<CudaBf16Weights>>) -> Self {
         Self {
             cause: Gemma4CudaError::Backend(error),
             retirement,
@@ -209,7 +211,7 @@ impl Gemma4CudaWeights {
     /// Establish retirement before releasing this set's pool charge. Idempotent.
     /// # Errors
     /// Failed drain retains a retry owner; uncertain free remains quarantined.
-    pub fn close(&mut self) -> Result<(), CudaBf16WeightsError> {
+    pub fn close(&mut self) -> Result<(), CudaBf16Error> {
         self.storage.close()
     }
 }

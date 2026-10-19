@@ -141,7 +141,10 @@ BF16 parameter readers, aliases the output head to the input embedding and expli
 excludes inactive shared-tail projections and non-text weights. Its optional CUDA loader
 materializes native BF16 weights through one charged NVIDIA allocation, preserving tied
 head identity and retaining partial-load cleanup ownership. All 665 real parameters pass
-full byte readback and explicit unload; this is not an executable decoder.
+full byte readback and explicit unload at `1d4a7fb`; this is not an executable decoder.
+The subsequent shared allocation owner and BF16 cuBLAS linear binding have host checks
+but [pending device gates](../benchmarks/gemma4-reference/README.md#native-bf16-linear-component-device-gates-pending).
+The NVIDIA operation owns physical storage/completion; Gemma binds logical projections.
 Model-local KV range calculations distinguish
 persistent suffixes from untrimmed donor spans, with routing/last consumers resolved at
 configuration load; they do not prove live state, grants or safe physical lifetimes.

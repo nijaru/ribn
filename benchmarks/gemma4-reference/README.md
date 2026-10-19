@@ -229,6 +229,37 @@ cargo test --release -p engine-gemma4 --features cuda --test cuda_weights --lock
 This qualifies the weight preparation slice, **not Gemma model execution**, mixed-KV
 retirement, concurrent loading/serving capacity or task quality.
 
+## Native BF16 linear component: device gates pending
+
+`CudaBf16Gemm` now binds prepared BF16 weights and row-major `CudaBf16Matrix`
+inputs/outputs to cuBLAS; `Gemma4CudaWeights::linear_into` owns the logical-role
+mapping, including the raw tied head. Output and explicit library workspace are
+charged before launch. Success includes stream completion; failed/partial enqueue
+retains every accessed allocation and the handle until an acknowledged drain.
+CUDA's per-thread default pseudo-stream is rejected because these owners/errors can
+move between threads. This is an execution building block, not a Gemma decoder.
+
+The shared-allocation/access-owner refactor and new linear operations have passed
+host tests and CUDA-feature compilation/lints, **not device qualification**. The
+weight evidence above belongs to `1d4a7fb`; it does not qualify these later changes.
+Before using the new projection path, rerun weight byte/readback/unload gates and the
+full real-package diagnostic, then the new component and logical-binding gates:
+
+```sh
+cargo test --release -p engine-nvidia --features cuda --test cuda_bf16_gemm --locked -- --ignored --test-threads=1
+cargo test --release -p engine-gemma4 --features cuda --test cuda_linear --locked -- --ignored --test-threads=1
+```
+
+Run the new device binaries under Compute Sanitizer memcheck as well, serialized
+with other full-model work. The component reference uses exact integer dot products
+scaled by 1/64 and independent BF16 round-to-nearest-even, with widths 7, 63, 256,
+512 and 2560, odd output widths, multiple rows and output reuse. The model gate uses
+selected-source dyadic operands for four logical projections. Both require exact
+finite results; neither sets a whole-model tolerance. A separate gate rejects
+per-thread pseudo-streams on their originating thread and after a cross-thread move.
+Failed-completion/unwind retention remains deterministic host-injection evidence.
+No full forward pass, mixed-KV lifetime, serving or speedup is qualified by this slice.
+
 ## Host continuation-range gate
 
 `Gemma4Config::kv_step` calculates absolute half-open old/current/retained ranges

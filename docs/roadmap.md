@@ -423,7 +423,15 @@ An independent stock Transformers BF16 eager run now fits a 4096-token prompt pl
 whole-device use. No quantization/offload was needed for that single-request workload;
 this does not establish Ribn's eventual workspace/serving peak.
 
-Next gates: implement native BF16 execution and mixed-width local/global KV with donor
+The first native BF16 linear component now binds model projections to cuBLAS with
+preallocated output, charged workspace and completion-owned failure guards. Its
+shared-allocation refactor and arithmetic have host checks only; run the
+[pending device gates](../benchmarks/gemma4-reference/README.md#native-bf16-linear-component-device-gates-pending),
+including weight readback/unload regression, before building dependent device slices.
+It is not a second executable decoder or qualified model support.
+
+Next gates: qualify native BF16 linear execution, then implement the remaining model
+math and mixed-width local/global KV with donor
 spans pinned through shared-tail device reads. Use strongly typed model/backend state
 behind `GenerationExecutor`, not the current first-`kv()`/homogeneous-cache convenience
 or family branches in routing/scheduling. Qualified physical allocation/retirement and
