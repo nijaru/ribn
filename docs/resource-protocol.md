@@ -907,6 +907,11 @@ reads and EOF checks finish before publishing an immutable parameter. No GPU com
 can access it during initialization. A read failure or unwind drops the unpublished
 allocation; failure of a later parameter drops the entire incomplete set. Successful
 publication preserves one native token-embedding/output-head allocation and its config.
+The prepared Metal model separately owns a 128 KiB host GELU table, computed from the
+unchanged CPU reference before weight loading. Temporary table input is another 128 KiB;
+these are mathematical preparation state, not source read/copy staging. Lookup preserves
+finite BF16 results and non-finite-input rejection, and sequences borrow the immutable
+table from the shared model rather than constructing per-sequence copies.
 This synchronous path does not establish a global loading grant, bound source metadata,
 OS page cache or driver storage, or qualify asynchronous/failed-command retirement.
 

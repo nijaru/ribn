@@ -103,7 +103,10 @@ impl std::fmt::Debug for Gemma4MetalWeights {
 }
 
 use crate::AttentionKind;
-use crate::cpu::{add, argmax, factors, gelu_tanh, multiply, ple_combine, scale, softcap};
+use crate::cpu::{add, argmax, factors, multiply, ple_combine, scale, softcap};
+
+mod activation;
+use activation::GeluTable;
 use engine_metal::{
     MetalAttentionConfig, MetalBf16Error, MetalLinearShape, MetalProjectionNorm, MetalRotaryFactors,
 };
@@ -111,6 +114,7 @@ use engine_metal::{
 /// Host orchestration for one Metal decoder step.
 struct MetalOps<'a> {
     executor: &'a MetalBf16Executor,
+    gelu: &'a GeluTable,
 }
 
 fn metal_error(error: &MetalBf16Error) -> Gemma4Error {
@@ -273,6 +277,7 @@ struct OwnerCache {
 pub struct Gemma4MetalModel {
     metal: Gemma4MetalWeights,
     executor: MetalBf16Executor,
+    gelu: GeluTable,
 }
 
 impl Gemma4MetalModel {
@@ -280,9 +285,14 @@ impl Gemma4MetalModel {
     /// # Errors
     /// Rejects source reads, allocations or Metal preparation failures.
     pub fn load(source: &Gemma4Source) -> Result<Self, Gemma4Error> {
+        let gelu = GeluTable::new()?;
         let executor = MetalBf16Executor::new().map_err(|error| metal_error(&error))?;
         let metal = Gemma4MetalWeights::load(source, &executor)?;
-        Ok(Self { metal, executor })
+        Ok(Self {
+            metal,
+            executor,
+            gelu,
+        })
     }
 
     #[must_use]
@@ -393,6 +403,7 @@ impl Gemma4MetalDecoder {
             &self.model.metal,
             &MetalOps {
                 executor: &self.model.executor,
+                gelu: &self.model.gelu,
             },
             &mut self.caches,
             position,
@@ -706,7 +717,7 @@ fn feedforward_forward(
         epsilon,
         Some(metal.layer(layer, LayerParameter::PreFeedforwardNorm)?),
     )?;
-    let product = multiply(&gelu_tanh(&gate)?, &up)?;
+    let product = multiply(&ops.gelu.apply(&gate)?, &up)?;
     let normed = ops.project_normalized(
         &product,
         sequence,
@@ -725,7 +736,7 @@ fn feedforward_forward(
         sequence,
         metal.layer(layer, LayerParameter::PleGate)?,
     )?;
-    let product = multiply(&gelu_tanh(&gate)?, per_layer)?;
+    let product = multiply(&ops.gelu.apply(&gate)?, per_layer)?;
     let normed = ops.project_normalized(
         &product,
         sequence,

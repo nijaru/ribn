@@ -1000,6 +1000,67 @@ Metal clippy. Independent source review found no introduced issue. Hardware fail
 null-handle/OOM injection and recovery remain unqualified. CPU oracle/CUDA code are
 unchanged, and the shut-down desktop was not contacted.
 
+### Metal exact GELU table qualification (2026-10-20)
+
+A refreshed temporary profile on `ba1906a` observed the current **429** synchronous
+commands per step and timed host GELU separately. GPU timestamps were read after
+successful completion; commit/wait clocks excluded allocation/encoding, unlike the
+earlier whole-method clocks. Timestamp reads and trace output perturb model wall time,
+so only untraced executables determined promotion:
+
+| Step | Traced wall | Commit/wait sum | GPU interval sum | CPU GELU sum |
+| --- | ---: | ---: | ---: | ---: |
+| 18-token prefill | 298.01 ms | 202.24 ms | 111.88 ms | 59.03 ms |
+| 64-token prefill | 751.36 ms | 477.69 ms | 365.29 ms | 206.26 ms |
+| Decode after 18 tokens | 158.42 ms | 133.66 ms | 55.68 ms | 3.39 ms |
+
+These are medians of per-step sums and need not add to the wall median. GPU intervals
+are not kernel-only busy time or occupancy/stall attribution. All profiling changes
+were saved privately and reverted before implementation.
+
+The prepared Metal model now owns a **128 KiB GELU table**, generated once through the
+unchanged CPU reference. Lookup replaces only Metal's repeated host GELU evaluation,
+not the CPU oracle, GPU kernels, multiply, soft cap or command schedule. An exhaustive
+committed host test compares every **65,280 finite BF16 encoding** against a separate
+single-value reference call, including signed zeros and subnormals, and verifies all
+**256 non-finite encodings** still reject. Runtime checks reject those encodings before
+table indexing; no approximate polynomial, tolerance relaxation or silent fallback
+was introduced. The shared model owns the table; sequences borrow it.
+
+The predeclared promotion gate was exact exhaustive/full-model parity, at least 15%
+median improvement at 64-token prefill, and no material decode/RSS regression. Three
+untraced baseline and three candidate processes used the same M3 Max, package,
+reference/toolchain and one warmup plus three measured trials per prefix, with bracketed
+controls and all measured samples retained:
+
+| Prompt tokens | Baseline prefill | Table prefill | Baseline decode | Table decode |
+| ---: | ---: | ---: | ---: | ---: |
+| 1 | 261.23 ms | 144.41 ms | 301.82 ms | 142.66 ms |
+| 8 | 185.39 ms | 163.44 ms | 146.55 ms | 144.23 ms |
+| 18 | 287.18 ms | 227.69 ms | 147.29 ms | 144.61 ms |
+| 32 | 447.04 ms | 334.65 ms | 148.60 ms | 145.37 ms |
+| 64 | 748.42 ms | 528.40 ms | 149.74 ms | 147.32 ms |
+
+The primary 64-token prefill median fell **29.40%**, 748.423 → 528.402 ms. Its baseline
+run medians were 772.72/742.52/748.42 ms versus 528.17/528.51/527.62 ms for the table.
+Pooled warmed decode was 147.970 → 144.759 ms. The 1-token baseline cohort had large
+process-start timing swings; its apparent gain is not a clean startup-speed result.
+These remain direct-decoder diagnostics, not serving/SLO or CUDA evidence.
+
+All 262,144-element full-logit rows stayed finite and bit-identical for
+1/8/18/32/64/65/511/512/513-token prefixes and three common continuations. Archived
+greedy winners, real decoder reset/chunks 1/7, executor/text and actual CLI gates passed.
+Short-probe maximum RSS ranges overlapped: 14.013–14.023 GiB baseline versus
+14.014–14.023 GiB candidate; larger-prefix probes peaked at 14.225 versus 14.226 GiB.
+The table adds 128 KiB of mathematical state and its preparation uses a separate
+128 KiB input vector, not additional weight read/copy staging or a global memory grant.
+
+All 397 workspace tests, the release exhaustive table test, materialization and ignored
+real-model gates passed, along with boundaries, formatting and default/CUDA/targeted-
+Metal clippy. Native Metal code is unchanged from the preceding qualified delivery.
+Hardware failure/OOM recovery remains unqualified, and the shut-down desktop was not
+contacted.
+
 ## Synthetic CPU benchmark
 
 ```sh

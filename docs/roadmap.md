@@ -548,8 +548,11 @@ keeps the BF16 projection on device and removes its intermediate readback/upload
 now removes another 84 waits by sharing normalization across the gate/up projections.
 The [query/key rotary chain](../benchmarks/runtime-contract.md#metal-rotary-projection-chain-qualification-2026-10-20)
 removes another 66 waits while preserving both intermediate BF16 boundaries and sharing
-read-only factors. Other activation transfers and CPU elementwise work remain; no universal graph or
-CUDA policy was introduced.
+read-only factors. A refreshed profile identified CPU GELU as a large prefill cost;
+an [exact prepared BF16 table](../benchmarks/runtime-contract.md#metal-exact-gelu-table-qualification-2026-10-20)
+now replaces repeated host tanh evaluation without changing the CPU oracle. Other
+activation transfers and CPU elementwise work remain; no universal graph or CUDA
+policy was introduced.
 Sampling and eviction remain open. Shader/pipeline failures now fail both primitive
 and materialization tests rather than being mistaken for missing hardware.
 Then mixed-width local/global KV with donor spans pinned through shared-tail device reads. Use strongly typed model/backend state
