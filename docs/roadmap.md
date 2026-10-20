@@ -477,12 +477,13 @@ encodings. See the [elementwise gate](../benchmarks/gemma4-reference/README.md#e
 Native attention now also matches the archived stock operands bit-for-bit for
 local/global layers, including sliding windows and decode-against-history
 ([gate](../benchmarks/gemma4-reference/README.md#native-bf16-attention-component-gate)).
-A first CUDA decoder now reproduces the archived tokens with explicit KV owners and
-shared-tail reads; see the
+A first CUDA decoder now reproduces the archived tokens with explicit KV owners,
+shared-tail reads, the runtime executor and the text facade; `ribn run-gemma` selects
+it when built with `--features cuda`. See the
 [decoder gate](../benchmarks/gemma4-reference/README.md#native-cuda-gemma-decoder-gate).
 Next, choose from its measured gaps: replace the host K/V round trip with a device
-append, batch prefill rows, and bind the decoder to the runtime executor and text
-facade. Mixed-width cache lifetime, sampling and eviction remain open.
+append and batch prefill rows. Mixed-width cache lifetime, HTTP serving, sampling and
+eviction remain open.
 The host CPU path now composes a full Gemma decoder step — embeddings, PLE, all 42
 hybrid layers with owner/shared-tail KV, attention, the remaining layer math and the
 tied head — and reproduces all four greedy tokens of the archived 18-token chat row.

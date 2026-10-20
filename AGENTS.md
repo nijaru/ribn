@@ -24,9 +24,9 @@ possible later execution system, not inference policy.
   repair is easiest to finish. When device access is unavailable, advance concrete
   baseline or real-model integration prerequisites; do not accumulate unqualified
   device changes or substitute unrelated subsystem completion for competitive evidence.
-- Gemma 4 E4B is the real second decoder. The host CPU decoder is its correctness oracle;
-  macOS Metal is integration evidence, not CUDA support. CUDA has qualified linear, RMS
-  and rotary components only.
+- Gemma 4 E4B is the real second decoder. The host CPU decoder is its correctness oracle.
+  Metal and CUDA both run the full decoder through the executor and text facade; CUDA is
+  correctness-first (host K/V round trip, one token per step) and not a competitive path.
 
 ## Authority and working reference
 

@@ -618,9 +618,12 @@ RIBN_GEMMA_PACKAGE=/path/to/package RIBN_GEMMA_REFERENCE=/path/to/reference.json
   cargo test --release -p engine-gemma4 --features cuda --test cuda_decoder --locked -- --ignored --test-threads=1
 ```
 
-At `88b5da5` this establishes executable CUDA Gemma arithmetic end to end, not
-sampling, eviction, mixed-width cache lifetime, device-side append, batched prefill,
-the runtime executor/text facade, serving or performance qualification.
+At `88b5da5` this establishes executable CUDA Gemma arithmetic end to end. At
+`6bfdf87` the same decoder is bound to `Gemma4Executor`, the text facade and the
+`ribn run-gemma` CLI: the executor and text-path tests reproduce the archived chat
+tokens (text path 9.24 s including load), and the CLI streams coherent text on the
+4090. This still does not qualify sampling, eviction, mixed-width cache lifetime,
+device-side append, batched prefill, HTTP serving or competitive performance.
 
 ## Host rotary-frequency gate
 
