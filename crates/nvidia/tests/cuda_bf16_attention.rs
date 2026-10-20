@@ -156,6 +156,7 @@ fn compare(actual: &[u16], expected: &[u16], label: &str) -> f32 {
 
 #[test]
 #[ignore = "requires CUDA; serialize native BF16 attention qualification"]
+#[expect(clippy::too_many_lines, reason = "one linear device sequence across the declared geometry cases")]
 fn attention_matches_the_host_contract_on_gqa_windows_and_history() {
     let context = CudaContext::new(0).unwrap();
     let stream = context.new_stream().unwrap();
@@ -300,6 +301,7 @@ fn attention_matches_the_host_contract_on_gqa_windows_and_history() {
 
 #[test]
 #[ignore = "requires CUDA; serialize native BF16 attention qualification"]
+#[expect(clippy::too_many_lines, reason = "one linear invalid-operand sequence")]
 fn attention_rejects_invalid_geometry_and_spans_before_enqueue() {
     let context = CudaContext::new(0).unwrap();
     let stream = context.new_stream().unwrap();
