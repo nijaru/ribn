@@ -1060,11 +1060,13 @@ dependencies = [
 name = "ribn-text"
 version = "0.0.0"
 dependencies = [
+ "cudarc",
  "engine-gemma4",
  "engine-gguf",
  "engine-qwen",
  "flume",
  "ribn",
+ "ribn-foundation",
  "ribn-hf",
  "serde_json",
 ]

@@ -13,8 +13,11 @@ pub struct GemmaLoadReport {
     pub model_bytes: u64,
 }
 
+#[cfg(feature = "cuda")]
 const CUDA_POOL_BYTES: u64 = 20 << 30;
+#[cfg(feature = "cuda")]
 const CUDA_MAX_POSITIONS: usize = 4096;
+#[cfg(feature = "cuda")]
 const CUDA_SCRATCH_ENTRIES: usize = 8 * CUDA_MAX_POSITIONS;
 
 impl TextOwner {
