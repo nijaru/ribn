@@ -15,6 +15,7 @@ from pathlib import Path
 from gemma4_reference import (
     MANIFEST,
     prepare_cpu_reference,
+    prompt_chunks,
     require,
     retain,
     sha256,
@@ -74,7 +75,13 @@ def validated_rows(source, manifest, precision):
         require(case["policy"] in ("greedy", "forced"), "unknown history policy")
         previous = None
         require(case["steps"], "empty case")
-        for index, step in enumerate(case["steps"]):
+        chunks = prompt_chunks(case["prompt_ids"], source.get("prefill_chunk_size"))
+        intermediates = case.get("prefill_intermediates", [])
+        require(len(intermediates) == len(chunks) - 1, "missing/extra prefill chunks")
+        for call, step in enumerate(intermediates + case["steps"]):
+            prediction = call - len(intermediates)
+            index = call if prediction < 0 else prediction
+            suffix = f"prefill.{call}" if prediction < 0 else str(prediction)
             history, inputs = step["history_ids"], step["input_ids"]
             require(
                 type(step["index"]) is int and step["index"] == index,
@@ -101,9 +108,11 @@ def validated_rows(source, manifest, precision):
                 == list(range(len(history) - len(inputs), len(history))),
                 "wrong input positions",
             )
-            if previous is None:
+            if call < len(chunks):
+                end = sum(map(len, chunks[: call + 1]))
                 require(
-                    history == inputs == case["prompt_ids"], "wrong initial history"
+                    history == case["prompt_ids"][:end] and inputs == chunks[call],
+                    "wrong prefill history",
                 )
             else:
                 next_id = (
@@ -118,7 +127,7 @@ def validated_rows(source, manifest, precision):
                 )
             rows.append(
                 {
-                    "name": f"{name}.{index}",
+                    "name": f"{name}.{suffix}",
                     "history_ids": history,
                     "position": len(history) - 1,
                     "original_input_tokens": len(inputs),

@@ -41,6 +41,37 @@ embedding-constant rounding and operation precision differ. BF16 is the stock CP
 reference policy, not evidence of identical NVIDIA arithmetic. No numerical tolerance
 or task-quality acceptance follows from the difference between these references.
 
+### Chunked prompt collection
+
+Pass `--prefill-chunk-size N` to bound prompt input rows per forward, for example:
+
+```sh
+uv run --python 3.13 --script benchmarks/gemma4_reference.py \
+  --snapshot "$SNAPSHOT" --output /tmp/gemma4-reference-chunked-bf16 \
+  --precision bf16 --prefill-chunk-size 256 --stages
+```
+
+The default remains one whole-prompt forward. The final prompt chunk is prediction
+`steps[0]`; earlier chunks appear in `prefill_intermediates`, with tensor prefixes
+`<case>.prefill.<index>`. Every call records its actual input IDs, absolute positions,
+history and cache/donor shapes. Intermediate predictions, including EOS, never stop
+prompt ingestion. Tensor taps still retain the last row of each call, plus the full
+persistent/donor spans described below; this is not an all-activation dump. Component
+recomputation accepts these intermediate rows and preserves their tensor names.
+
+The collector has a separate small stock-model gate:
+
+```sh
+uv run --python 3.13 --script benchmarks/gemma4-reference/test_capture.py
+```
+
+It verifies the pinned runtime/sources, uses synthetic BF16 weights with reduced widths
+and vocabulary but all 42 layers and the real owner/shared-tail topology, and compares
+recorded tensors with direct stock forwards. It covers default and staged taps,
+whole/chunked prompts, partial tails, EOS during prompt ingestion and hook cleanup after
+failure. This gate reproduced a default-mode missing-tap regression before its repair.
+No new full-checkpoint chunked corpus or GPU qualification is claimed by these tests.
+
 ## Inputs and retained evidence
 
 - One public non-thinking chat prompt, four greedy prediction rows unless a declared

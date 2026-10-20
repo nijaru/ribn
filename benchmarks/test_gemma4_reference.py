@@ -7,13 +7,24 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from gemma4_reference import verify_files, verify_reference_sources
+from gemma4_reference import prompt_chunks, verify_files, verify_reference_sources
 
 SCRIPT = Path(__file__).with_name("gemma4_reference.py")
 ABC_SHA256 = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
 
 
 class ReferenceEvidenceTests(unittest.TestCase):
+    def test_prompt_chunking_preserves_order_and_rejects_nonpositive_sizes(self):
+        prompt = [1, 5, 3, 2, 8, 4, 6, 7, 9]
+        self.assertEqual(prompt_chunks(prompt, None), [prompt])
+        self.assertEqual(prompt_chunks(prompt, 4), [[1, 5, 3, 2], [8, 4, 6, 7], [9]])
+        self.assertEqual(prompt_chunks(prompt, 20), [prompt])
+        for size in (0, -1, True, 1.5):
+            with self.subTest(size=size), self.assertRaises(ValueError):
+                prompt_chunks(prompt, size)
+        with self.assertRaisesRegex(ValueError, "prompt must not be empty"):
+            prompt_chunks([], 4)
+
     def test_package_verification_rejects_same_size_corruption_and_truncation(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -106,6 +117,32 @@ class ReferenceEvidenceTests(unittest.TestCase):
             self.assertEqual(result.returncode, 1)
             self.assertIn("output already exists", result.stderr)
             self.assertEqual(output.read_bytes(), b"earlier evidence")
+
+    def test_chunk_size_is_not_silently_ignored_by_component_recomputation(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            output = root / "evidence"
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    str(SCRIPT),
+                    "--snapshot",
+                    str(root / "snapshot"),
+                    "--output",
+                    str(output),
+                    "--components-from",
+                    str(root / "corpus"),
+                    "--prefill-chunk-size",
+                    "4",
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=10,
+            )
+            self.assertEqual(result.returncode, 1)
+            self.assertIn("not --components-from", result.stderr)
+            self.assertFalse(output.exists())
 
     def test_cli_records_incomplete_source_failure_before_importing_model_runtime(self):
         with tempfile.TemporaryDirectory() as tmp:

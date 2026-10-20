@@ -181,7 +181,18 @@ def cases(tokenizer):
 STAGE_LAYERS = (0, 5, 22, 23)
 
 
-def capture_cases(model, tokenizer, report, tensors, output, stages=False):
+def prompt_chunks(prompt_ids, chunk_size):
+    require(prompt_ids, "prompt must not be empty")
+    size = len(prompt_ids) if chunk_size is None else chunk_size
+    require(type(size) is int and size > 0, "prefill chunk size must be positive")
+    return [
+        prompt_ids[start : start + size] for start in range(0, len(prompt_ids), size)
+    ]
+
+
+def capture_cases(
+    model, tokenizer, report, tensors, output, stages=False, prefill_chunk_size=None
+):
     import torch
 
     config = model.config.get_text_config()
@@ -414,11 +425,21 @@ def capture_cases(model, tokenizer, report, tensors, output, stages=False):
             for case in cases(tokenizer):
                 report["cases"].append(case)
                 case["steps"] = []
-                history = list(case["prompt_ids"])
-                inputs = list(history)
+                case["prefill_intermediates"] = []
+                chunks = prompt_chunks(case["prompt_ids"], prefill_chunk_size)
+                history = []
                 cache = None
-                for step in range(4):
-                    tap_prefix = f"{case['name']}.{step}"
+                next_id = None
+                for call in range(len(chunks) + 3):
+                    if call < len(chunks):
+                        inputs = chunks[call]
+                    else:
+                        require(next_id is not None, "missing continuation token")
+                        inputs = [next_id]
+                    history.extend(inputs)
+                    step = call - (len(chunks) - 1)
+                    suffix = f"prefill.{call}" if step < 0 else str(step)
+                    tap_prefix = f"{case['name']}.{suffix}"
                     positions = list(range(len(history) - len(inputs), len(history)))
                     seen_taps.clear()
                     tap_shapes = {
@@ -439,7 +460,7 @@ def capture_cases(model, tokenizer, report, tensors, output, stages=False):
                     }
                     for name, _module, _kind, width in stage_specs:
                         tap_shapes[name] = (1, len(inputs), width)
-                    for layer in STAGE_LAYERS:
+                    for layer in STAGE_LAYERS if stages else ():
                         tap_shapes[f"layer.{layer}.input"] = (
                             1,
                             len(inputs),
@@ -505,9 +526,12 @@ def capture_cases(model, tokenizer, report, tensors, output, stages=False):
                     chosen = int(result.logits[0, -1].argmax())
                     logprobs = result.logits[0, -1].float().log_softmax(dim=-1)
                     top_values, top_ids = logprobs.topk(5)
-                    case["steps"].append(
+                    records = (
+                        case["prefill_intermediates"] if step < 0 else case["steps"]
+                    )
+                    records.append(
                         {
-                            "index": step,
+                            "index": call if step < 0 else step,
                             "history_ids": list(history),
                             "input_ids": inputs,
                             "position_ids": positions,
@@ -523,6 +547,8 @@ def capture_cases(model, tokenizer, report, tensors, output, stages=False):
                             ],
                         }
                     )
+                    if step < 0:
+                        continue  # Intermediate prompt predictions never stop ingestion.
                     if step == 3 or (case["policy"] == "greedy" and chosen in stops):
                         break
                     # Boundary cases teacher-force public fixed IDs, even if the
@@ -532,8 +558,6 @@ def capture_cases(model, tokenizer, report, tensors, output, stages=False):
                         if case["policy"] == "greedy"
                         else case["forced_ids"][step]
                     )
-                    inputs = [next_id]
-                    history.append(next_id)
                 write_json(output / "reference.json", report)
                 print(
                     f"collected {case['name']}: {len(case['steps'])} rows",
@@ -544,9 +568,16 @@ def capture_cases(model, tokenizer, report, tensors, output, stages=False):
             hook.remove()
 
 
-def collect(snapshot, output, precision, threads, stages=False):
+def collect(
+    snapshot, output, precision, threads, stages=False, prefill_chunk_size=None
+):
     manifest = tomllib.loads(MANIFEST.read_text())
     require(threads > 0, "thread count must be positive")
+    require(
+        prefill_chunk_size is None
+        or (type(prefill_chunk_size) is int and prefill_chunk_size > 0),
+        "prefill chunk size must be positive",
+    )
     require(precision in ("fp32", "bf16"), "unsupported reference precision")
     require(
         not output.resolve().is_relative_to(snapshot.resolve()),
@@ -569,6 +600,7 @@ def collect(snapshot, output, precision, threads, stages=False):
         "python": sys.version,
         "scope": "text-only independent reference; no Ribn, GPU-fit, numerical or task-quality acceptance",
         "stages": list(STAGE_LAYERS) if stages else [],
+        "prefill_chunk_size": prefill_chunk_size,
         "cases": [],
     }
     write_json(output / "reference.json", report)
@@ -637,7 +669,9 @@ def collect(snapshot, output, precision, threads, stages=False):
         )
         report["tokenizer_class"] = type(tokenizer).__name__
 
-        capture_cases(model, tokenizer, report, tensors, output, stages)
+        capture_cases(
+            model, tokenizer, report, tensors, output, stages, prefill_chunk_size
+        )
         save_file(tensors, output / "tensors.safetensors")
         report["tensor_file"] = {
             "sha256": sha256(output / "tensors.safetensors"),
@@ -660,6 +694,11 @@ def main():
     parser.add_argument("--precision", choices=("fp32", "bf16"), default="fp32")
     parser.add_argument("--threads", type=int, default=8)
     parser.add_argument(
+        "--prefill-chunk-size",
+        type=int,
+        help="maximum input rows per prompt forward; default submits the whole prompt",
+    )
+    parser.add_argument(
         "--stages",
         action="store_true",
         help="also tap decoder-layer residual, MLP, PLE and final-normalization stages on selected layers",
@@ -673,9 +712,18 @@ def main():
     try:
         if args.components_from is None:
             collect(
-                args.snapshot, args.output, args.precision, args.threads, args.stages
+                args.snapshot,
+                args.output,
+                args.precision,
+                args.threads,
+                args.stages,
+                args.prefill_chunk_size,
             )
         else:
+            require(
+                args.prefill_chunk_size is None,
+                "--prefill-chunk-size requires a full-model collection, not --components-from",
+            )
             from gemma4_reference_components import collect_components
 
             collect_components(

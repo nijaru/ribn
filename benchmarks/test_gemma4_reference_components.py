@@ -78,6 +78,47 @@ class ComponentReferenceTests(unittest.TestCase):
         )
         self.assertEqual(rows[-1]["history_ids"], [2, 30, 31])
 
+    def test_chunked_prefill_rows_keep_their_prefixes_and_prediction_indices(self):
+        source = copy.deepcopy(self.source)
+        source["prefill_chunk_size"] = 1
+        for case in source["cases"]:
+            case["prefill_intermediates"] = [
+                {
+                    "index": 0,
+                    "history_ids": [2],
+                    "input_ids": [2],
+                    "position_ids": [0],
+                    "chosen": 99,  # Not the next prompt token or a generation choice.
+                }
+            ]
+            case["steps"][0].update(input_ids=[30], position_ids=[1])
+        rows = validated_rows(source, self.manifest, "bf16")
+        self.assertEqual(
+            [
+                (row["name"], row["position"], row["original_input_tokens"])
+                for row in rows
+            ],
+            [
+                ("greedy.prefill.0", 0, 1),
+                ("greedy.0", 1, 1),
+                ("greedy.1", 2, 1),
+                ("forced.prefill.0", 0, 1),
+                ("forced.0", 1, 1),
+                ("forced.1", 2, 1),
+            ],
+        )
+        missing = copy.deepcopy(source)
+        missing["cases"][0]["prefill_intermediates"] = []
+        wrong_prefix = copy.deepcopy(source)
+        wrong_prefix["cases"][0]["prefill_intermediates"][0].update(
+            history_ids=[4], input_ids=[4]
+        )
+        wrong_size = copy.deepcopy(source)
+        wrong_size["prefill_chunk_size"] = 2
+        for bad in (missing, wrong_prefix, wrong_size):
+            with self.subTest(source=bad), self.assertRaises(ValueError):
+                validated_rows(bad, self.manifest, "bf16")
+
     def test_incompatible_provenance_and_mixed_histories_reject(self):
         bad_history = copy.deepcopy(self.source)
         step = bad_history["cases"][0]["steps"][1]
