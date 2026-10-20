@@ -471,8 +471,9 @@ parity remain open; no performance or serving claim follows. On Apple silicon, a
 Metal (GPU, not ANE) slice now runs BF16 linear, RMS, causal/sliding attention, rotary
 and elementwise operations on real hardware with independent-reference tests, and the
 validated Gemma inventory uploads bitwise to one Metal device, and a host-orchestrated
-Metal decoder reproduces the archived four greedy chat tokens; an executor and
-measurement are next. A test-harness defect that skipped every Metal test when kernel
+Metal decoder reproduces the archived four greedy chat tokens through the runtime
+engine and the text facade; a synchronous greedy executor now shares weights across
+admitted sequences. Sampling, eviction and measurement are next. A test-harness defect that skipped every Metal test when kernel
 compilation failed was fixed, so the earlier attention/rotary/elementwise results are
 now genuinely device-executed.
 Then mixed-width local/global KV with donor spans pinned through shared-tail device reads. Use strongly typed model/backend state

@@ -18,6 +18,7 @@ engine-nvidia = { path = "../nvidia", optional = true }
 engine-metal = { path = "../metal", optional = true }
 cudarc = { version = "0.19", optional = true, default-features = false, features = ["std", "cuda-13020", "dynamic-loading"] }
 ribn-hf = { path = "../hf" }
+ribn = { path = "../runtime" }
 ribn-safetensors = { path = "../safetensors" }
 ribn-foundation = { path = "../foundation" }
 serde_json = "1.0.151"
@@ -28,6 +29,7 @@ tokenizers = { version = "0.23.2", default-features = false, features = ["fancy-
 
 [dev-dependencies]
 sha2 = "0.10.9"
+ribn-text = { path = "../text" }
 
 [[example]]
 name = "cuda_weights"

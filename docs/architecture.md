@@ -176,8 +176,13 @@ Metal device, preserving encodings and the tied head, and a host-orchestrated
 decoder runs the full step: matmuls, normalization, rotary and attention execute on
 the GPU while embeddings, elementwise algebra and the soft cap reuse the validated
 host primitives. The archived 18-token chat row reproduces all four greedy tokens on
-the M3 Max. The cache still keeps complete per-owner history, and eviction, an
-executor and performance measurement are absent. Tests on the
+the M3 Max, and again through the token runtime's engine and the text facade with the
+real Gemma tokenizer and chat assets. `Gemma4Executor` validates whole submissions,
+shares loaded weights across admitted sequences, runs the decoder synchronously and
+reports one completion per submitted row; a fast host test checks the same executor
+over the CPU decoder against that decoder's direct greedy path. The decoders keep
+complete per-owner history, and cache eviction, sampling and performance measurement
+remain absent. Tests on the
 M3 Max compare against an independent host reference, including exact dyadic products
 and attention spans plus bounded general operands; rotary and elementwise results are
 exact against their host references (GELU/soft cap inside declared FP32 bounds). This

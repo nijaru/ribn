@@ -5,6 +5,7 @@ use crate::cpu::{
     gelu_tanh, multiply, ple_combine, project, rms_norm, rms_norm_scale_free, scale, softcap,
 };
 use crate::{AttentionKind, Gemma4Config, Gemma4Error, LayerGeometry, LayerParameter, ParameterId};
+use std::sync::Arc;
 
 #[derive(Clone, Copy)]
 struct Scales {
@@ -25,7 +26,7 @@ struct OwnerCache {
 /// arithmetic matches the model while cache eviction/donor trimming remain unproven.
 pub struct Gemma4CpuDecoder {
     config: Gemma4Config,
-    weights: Gemma4CpuWeights,
+    weights: Arc<Gemma4CpuWeights>,
     caches: Vec<Option<OwnerCache>>,
     position: usize,
     scales: Scales,
@@ -37,6 +38,13 @@ impl Gemma4CpuDecoder {
     /// Rejects inconsistent owners, missing active K/V parameters or an inventory
     /// whose shapes disagree with its source configuration.
     pub fn new(weights: Gemma4CpuWeights) -> Result<Self, Gemma4Error> {
+        Self::shared(Arc::new(weights))
+    }
+
+    /// Prepare one sequence over already-loaded shared weights.
+    /// # Errors
+    /// As [`Self::new`].
+    pub fn shared(weights: Arc<Gemma4CpuWeights>) -> Result<Self, Gemma4Error> {
         let config = weights.config().clone();
         validate_inventory(&config, &weights)?;
         let mut caches = Vec::with_capacity(config.layers().len());

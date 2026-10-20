@@ -6,6 +6,7 @@
 use crate::{Gemma4Config, Gemma4CpuWeights, Gemma4Error, LayerParameter, ParameterId};
 use engine_metal::{MetalBf16Buffer, MetalBf16Executor};
 use std::collections::BTreeMap;
+use std::sync::Arc;
 
 /// Every active BF16 parameter uploaded once to one Metal device.
 pub struct Gemma4MetalWeights {
@@ -225,10 +226,39 @@ struct OwnerCache {
 /// elementwise algebra and the soft cap reuse the validated host primitives so
 /// this slice needs no additional device kernels. The cache keeps complete
 /// per-owner history and masks local spans rather than evicting them.
-pub struct Gemma4MetalDecoder {
-    host: Gemma4CpuWeights,
+/// Host inventory, device-resident weights and one Metal executor, shared by
+/// every sequence that runs on this device.
+pub struct Gemma4MetalModel {
+    host: Arc<Gemma4CpuWeights>,
     metal: Gemma4MetalWeights,
     executor: MetalBf16Executor,
+}
+
+impl Gemma4MetalModel {
+    /// Upload the validated inventory once.
+    /// # Errors
+    /// Rejects an inconsistent inventory or a Metal preparation failure.
+    pub fn load(host: Gemma4CpuWeights) -> Result<Self, Gemma4Error> {
+        let executor = MetalBf16Executor::new().map_err(|error| metal_error(&error))?;
+        let host = Arc::new(host);
+        let config = host.config().clone();
+        validate_inventory(&config, &host)?;
+        let metal = Gemma4MetalWeights::load(&host, &executor)?;
+        Ok(Self {
+            host,
+            metal,
+            executor,
+        })
+    }
+
+    #[must_use]
+    pub fn config(&self) -> &Gemma4Config {
+        self.host.config()
+    }
+}
+
+pub struct Gemma4MetalDecoder {
+    model: Arc<Gemma4MetalModel>,
     caches: Vec<Option<OwnerCache>>,
     position: usize,
 }
@@ -239,9 +269,14 @@ impl Gemma4MetalDecoder {
     /// Rejects an inventory whose shapes disagree with its source configuration
     /// or a Metal preparation failure.
     pub fn load(host: Gemma4CpuWeights) -> Result<Self, Gemma4Error> {
-        let executor = MetalBf16Executor::new().map_err(|error| metal_error(&error))?;
-        let config = host.config().clone();
-        validate_inventory(&config, &host)?;
+        Self::shared(Arc::new(Gemma4MetalModel::load(host)?))
+    }
+
+    /// Prepare one sequence over an already-loaded model.
+    /// # Errors
+    /// Rejects a key/value owner that follows its consumer.
+    pub fn shared(model: Arc<Gemma4MetalModel>) -> Result<Self, Gemma4Error> {
+        let config = model.config();
         let mut caches = Vec::with_capacity(config.layers().len());
         for (layer, geometry) in config.layers().iter().enumerate() {
             if geometry.kv_owner > layer {
@@ -255,11 +290,8 @@ impl Gemma4MetalDecoder {
                 values: Vec::new(),
             }));
         }
-        let metal = Gemma4MetalWeights::load(&host, &executor)?;
         Ok(Self {
-            host,
-            metal,
-            executor,
+            model,
             caches,
             position: 0,
         })
@@ -299,7 +331,7 @@ impl Gemma4MetalDecoder {
             .position
             .checked_add(sequence)
             .ok_or_else(|| Gemma4Error::new("Metal decoder", "position overflow"))?;
-        let config = self.host.config();
+        let config = self.model.config();
         if sequence == 0
             || end > config.max_position_embeddings()
             || tokens
@@ -323,10 +355,10 @@ impl Gemma4MetalDecoder {
             .collect();
         let position = self.position;
         let result = run_step(
-            &self.host,
-            &self.metal,
+            &self.model.host,
+            &self.model.metal,
             &MetalOps {
-                executor: &self.executor,
+                executor: &self.model.executor,
             },
             &mut self.caches,
             position,

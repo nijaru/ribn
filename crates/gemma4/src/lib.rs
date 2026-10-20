@@ -11,7 +11,7 @@ mod metal;
 #[cfg(feature = "cuda")]
 pub use cuda::{Gemma4CudaError, Gemma4CudaLoadError, Gemma4CudaWeights};
 #[cfg(all(feature = "metal", target_os = "macos"))]
-pub use metal::{Gemma4MetalDecoder, Gemma4MetalWeights, metal_argmax};
+pub use metal::{Gemma4MetalDecoder, Gemma4MetalModel, Gemma4MetalWeights, metal_argmax};
 
 mod config;
 mod continuation;
@@ -23,11 +23,13 @@ mod text_decode;
 
 pub use config::{AttentionKind, Gemma4Config, LayerGeometry, Rope};
 pub use continuation::{AttentionSpan, KvOwnerStep, KvStep, RetainedSpan};
+mod executor;
 pub use cpu::{
     AttentionConfig, CpuParameter, Gemma4CpuDecoder, Gemma4CpuWeights, add, apply_rotary, argmax,
     attention, attention_with_weights, bf16, factors, gelu_tanh, inverse_frequencies, linear,
     linear_f32, multiply, ple_combine, rms_norm, scale, softcap,
 };
+pub use executor::{Gemma4Executor, GemmaDecode};
 pub use parameters::{LayerParameter, ParameterId, ParameterSpec};
 pub use processor::{Gemma4TextProcessor, TextLimits, TextMessage};
 pub use source::{ExcludedParameter, Exclusion, Gemma4Source, StoredParameter};
