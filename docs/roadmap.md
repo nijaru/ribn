@@ -29,9 +29,9 @@ to the host or prove descriptors, arenas or graph capture will close it. Measure
 remaining projection/device costs and the fixed batched layer chain as well.
 The member-descriptor candidate remains off pending its remaining lifetime, sanitizer
 and performance gates. Qualified Gemma CUDA components now cover linear,
-shared-allocation, RMS, rotary and the elementwise layer math (residuals, PLE combine,
-layer scaling, gated product, GELU and soft cap); no CUDA attention, decoder or
-mixed-retention path exists yet.
+shared-allocation, RMS, rotary, the elementwise layer math and causal grouped-query
+attention (full/sliding, local/global widths, stock-operand bit parity); no CUDA
+decoder, KV cache owner or mixed-retention path exists yet.
 
 Qualify the cross-engine numerical comparison and target remaining prefill/projection
 costs on the contiguous path. The [first endpoint diagnostic](../benchmarks/runtime-contract.md#first-equal-artifact-endpoint-diagnostic-2026-10-16)
@@ -472,8 +472,11 @@ references: both residual adds, PLE combine, layer scaling, the gated product, G
 and the final soft cap. Exact transformations match the archived encodings; GELU stays
 inside the host audit's FP32 bound and soft-capped logits matched every one of 262,144
 encodings. See the [elementwise gate](../benchmarks/gemma4-reference/README.md#elementwise-layer-math-component-gate).
-Next: CUDA attention for local/global owners and shared-tail donor spans, then a full
-CUDA decoder; mixed-width KV, sampling and eviction remain open.
+Native attention now also matches the archived stock operands bit-for-bit for
+local/global layers, including sliding windows and decode-against-history
+([gate](../benchmarks/gemma4-reference/README.md#native-bf16-attention-component-gate)).
+Next: bind the qualified components into a CUDA decoder with explicit KV cache owners
+and shared-tail donor spans; mixed-width cache lifetime, sampling and eviction remain open.
 The host CPU path now composes a full Gemma decoder step — embeddings, PLE, all 42
 hybrid layers with owner/shared-tail KV, attention, the remaining layer math and the
 tied head — and reproduces all four greedy tokens of the archived 18-token chat row.

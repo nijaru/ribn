@@ -556,6 +556,43 @@ matched all 262,144 archived encodings exactly. This qualifies the remaining
 elementwise layer math at `24f1ac2`, not attention, MLP projections, a decoder,
 mixed-KV lifetime or performance.
 
+## Native BF16 attention component gate
+
+`CudaBf16Attention` runs three completion-owned kernels over one charged, reusable
+BF16 score/weight scratch matrix: query-key scores, softmax weights and the weighted
+value sum. Scores and weights round to BF16; softmax and value accumulation stay FP32
+and walk visible keys in ascending order like the host decoder. Grouped-query heads,
+causal masking, an optional sliding window and non-zero absolute query/key starts are
+explicit; the caller supplies every key the cache policy requires, and containment is
+checked rather than coverage. A call validates geometry, whole head groups, scratch
+capacity and one associated stream before invalidating output. The scratch bound is
+fixed at construction; this is not flash attention, a fused prefill kernel or a KV
+cache owner.
+
+The host-contract gate compares six cases against the CPU implementation: GQA at width
+8/256/512, full and sliding windows (2, 3 and 512), a single decode query against
+history, and non-zero query starts. Every output was bit-identical (worst encoding
+distance 0), including a window larger than the position count. That case found and
+fixed an unsigned window-start underflow that had skipped the earliest key.
+
+The model gate replays the archived stock attention operands for layers 0/5/22/23
+(ten positions, local and global head widths). The host decoder first matches the
+independent stock capture bit-for-bit; the device output is then bit-identical to that
+capture for all four layers (worst encoding distance 0).
+
+```sh
+cargo test --release -p engine-nvidia --features cuda --test cuda_bf16_attention --locked -- --ignored --test-threads=1
+RIBN_GEMMA_ATTENTION=/path/to/attention/corpus \
+  cargo test --release -p engine-gemma4 --features cuda --test cuda_attention --locked -- --ignored --test-threads=1
+```
+
+On 2026-10-20 the RTX 4090 (driver 615.71.10, toolkit 13.3) passed both device tests
+normally and under memcheck with zero reported errors; racecheck and synccheck were
+clean for the component. This qualifies the attention component at `7a8293e`, not KV
+cache ownership, decoder wiring, donor-span lifetime, prefill/softmax performance or a
+full forward pass. The serial per-head softmax and three-pass key traversal are
+correctness choices, not optimized execution.
+
 ## Host rotary-frequency gate
 
 `Gemma4Config::rotary_inverse_frequency` prepares individual FP32 factors without
