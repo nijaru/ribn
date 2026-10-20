@@ -142,3 +142,48 @@ fn engine_stop_token_ends_generation_on_the_real_executor() {
     assert_eq!(engine.status().requests, 0);
     engine.shutdown().unwrap();
 }
+
+#[test]
+fn cancelled_request_releases_its_capacity() {
+    let dir = Dir::new();
+    let package = package(&dir, &inventory(), false);
+    let source = Gemma4Source::open(&package).unwrap();
+    let host = Arc::new(Gemma4CpuWeights::load(&source).unwrap());
+    let mut engine = engine_over(host.clone());
+    let id = engine.enqueue(request(&[1, 2, 3], 8)).unwrap();
+    engine.step().unwrap();
+    while engine.pop_event_for(id).is_some() {}
+    assert_eq!(engine.status().requests, 1);
+    engine.cancel(id).unwrap();
+    for _ in 0..8 {
+        if engine.status().requests == 0 {
+            break;
+        }
+        engine.step().unwrap();
+        while engine.pop_event_for(id).is_some() {}
+    }
+    assert_eq!(engine.status().requests, 0);
+
+    // The released capacity accepts a later request with a clean continuation.
+    let expected = greedy(&mut Gemma4CpuDecoder::shared(host).unwrap(), &[6, 0], 2);
+    let id = engine.enqueue(request(&[6, 0], 2)).unwrap();
+    let streams = drive(&mut engine, &[(id, 2)]);
+    assert_eq!(streams[0].0, expected);
+    engine.shutdown().unwrap();
+}
+
+#[test]
+fn shutdown_settles_a_live_request() {
+    let dir = Dir::new();
+    let package = package(&dir, &inventory(), false);
+    let source = Gemma4Source::open(&package).unwrap();
+    let host = Arc::new(Gemma4CpuWeights::load(&source).unwrap());
+    let mut engine = engine_over(host);
+    let id = engine.enqueue(request(&[1, 2, 3], 8)).unwrap();
+    engine.step().unwrap();
+    while engine.pop_event_for(id).is_some() {}
+    engine.shutdown().unwrap();
+    assert!(engine.status().closed);
+    assert_eq!(engine.status().requests, 0);
+    assert!(engine.enqueue(request(&[1], 1)).is_err());
+}
