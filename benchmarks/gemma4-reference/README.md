@@ -518,6 +518,44 @@ This qualifies rotary execution from a model-owned FP32 inverse-frequency vector
 supplied integer positions. Native frequency derivation, Gemma layer binding, a full
 forward pass, mixed-KV lifetime and performance remain unqualified.
 
+## Elementwise layer-math component gate
+
+`CudaBf16Elementwise` prepares add, multiply, scale, tanh-GELU, soft cap and PLE
+combine on one stable stream with the same completion-owned retention as the other
+BF16 components. Each call validates whole equal-shaped ready operands, one associated
+stream and finite scalar parameters before invalidating output; failed preflight
+preserves it. Add, multiply, scale and the PLE multiply round once to BF16; PLE rounds
+its add separately. Soft cap reproduces the host policy's three roundings (divide,
+tanh, multiply). GELU evaluates the pinned algebraic form in FP32 and rounds once.
+Invalid calls do not enqueue or refund storage, and uncertain completion retains the
+program, stream and every accessed matrix.
+
+The component gate uses exact dyadic operands at 2×8, 1×17 and 3×5, including an
+element count that is not a multiple of the 256-thread block, and requires bit
+equality for add/multiply/scale. PLE, GELU and soft cap are compared with an
+independent host FP32 evaluation and RNE, allowing at most one adjacent BF16 encoding.
+Validation cases reject shape mismatch, non-finite/zero parameters, a foreign stream
+and reuse after a successful call without changing output.
+
+The model gate replays the archived stage taps for layers 0/5/22/23: 20 bit-exact
+comparisons (both residual adds, PLE combine, layer-scalar scale and gated product),
+four GELU comparisons inside the host audit's bound (`16·eps·|x|` plus one reference
+encoding), and the final soft cap over all 262,144 logits (`8·eps·cap` plus two
+encodings).
+
+```sh
+cargo test --release -p engine-nvidia --features cuda --test cuda_bf16_elementwise --locked -- --ignored --test-threads=1
+RIBN_GEMMA_STAGES=/path/tensors.safetensors \
+  cargo test --release -p engine-gemma4 --features cuda --test cuda_elementwise --locked -- --ignored --test-threads=1
+```
+
+On 2026-10-20 the RTX 4090 (driver 615.71.10, toolkit 13.3) passed both device tests
+normally and under memcheck with zero reported errors; racecheck and synccheck were
+clean for the component. Worst GELU bound usage was 1/64; the soft-capped logits
+matched all 262,144 archived encodings exactly. This qualifies the remaining
+elementwise layer math at `24f1ac2`, not attention, MLP projections, a decoder,
+mixed-KV lifetime or performance.
+
 ## Host rotary-frequency gate
 
 `Gemma4Config::rotary_inverse_frequency` prepares individual FP32 factors without

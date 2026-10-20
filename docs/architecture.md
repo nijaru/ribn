@@ -152,8 +152,12 @@ learned normalization scales, grouping and owner-only scale-free V. Native BF16
 rotary execution passes its
 [component gate](../benchmarks/gemma4-reference/README.md#native-bf16-rotary-execution-gate):
 the backend prepares cosine/sine factors from the model's FP32 inverse frequencies and
-positions, then applies them with eager per-product rounding. Frequency derivation from
-theta, decoder binding and mixed-KV lifetime remain absent.
+positions, then applies them with eager per-product rounding. A completion-owned
+elementwise component now covers residual adds, PLE combine, layer scaling, the gated
+product, tanh-GELU and the final soft cap, matching the archived stage encodings
+exactly where the operation is exact and within the host audit's bounds for GELU/soft
+cap. CUDA attention, frequency derivation from theta, decoder binding and mixed-KV
+lifetime remain absent.
 A host CPU path now materializes the same 665-parameter BF16 inventory into ordinary
 heap buffers and composes a complete decoder step: scaled embeddings, the per-layer
 embedding pipeline, all 42 hybrid layers with owner/shared-tail KV, causal and

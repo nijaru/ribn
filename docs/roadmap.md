@@ -28,8 +28,9 @@ and prefill-host-cost experiments; they do not attribute the entire endpoint def
 to the host or prove descriptors, arenas or graph capture will close it. Measure
 remaining projection/device costs and the fixed batched layer chain as well.
 The member-descriptor candidate remains off pending its remaining lifetime, sanitizer
-and performance gates. Qualified Gemma CUDA components remain linear, shared-allocation,
-RMS and rotary execution; no CUDA attention, elementwise layer math, decoder or
+and performance gates. Qualified Gemma CUDA components now cover linear,
+shared-allocation, RMS, rotary and the elementwise layer math (residuals, PLE combine,
+layer scaling, gated product, GELU and soft cap); no CUDA attention, decoder or
 mixed-retention path exists yet.
 
 Qualify the cross-engine numerical comparison and target remaining prefill/projection
@@ -466,10 +467,13 @@ using the archived real-model hidden inputs under both CPU precision policies.
 Their one-token processing schedule is distinct from original prefill taps; no new
 Ribn device slice or full-model qualification follows.
 
-Next gates: qualify the remaining layer math — residual and PLE combination, MLP
-gating, final normalization and soft-capped logits. Exact CPU stage references for
-those boundaries now exist, including per-layer residuals, all four norms, MLP and
-PLE stages and the final normalization; device implementation and acceptance remain.
+The remaining elementwise layer math is now device-qualified against those stage
+references: both residual adds, PLE combine, layer scaling, the gated product, GELU
+and the final soft cap. Exact transformations match the archived encodings; GELU stays
+inside the host audit's FP32 bound and soft-capped logits matched every one of 262,144
+encodings. See the [elementwise gate](../benchmarks/gemma4-reference/README.md#elementwise-layer-math-component-gate).
+Next: CUDA attention for local/global owners and shared-tail donor spans, then a full
+CUDA decoder; mixed-width KV, sampling and eviction remain open.
 The host CPU path now composes a full Gemma decoder step — embeddings, PLE, all 42
 hybrid layers with owner/shared-tail KV, attention, the remaining layer math and the
 tied head — and reproduces all four greedy tokens of the archived 18-token chat row.
