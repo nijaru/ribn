@@ -220,43 +220,40 @@ struct OwnerCache {
     values: Vec<u16>,
 }
 
-/// Host orchestration of one sequence over Metal-resident Gemma weights.
+/// Prepared Gemma weights and execution resources on one Metal device.
 ///
-/// Matmuls, normalization, rotary and attention run on the GPU; embeddings,
-/// elementwise algebra and the soft cap reuse the validated host primitives so
-/// this slice needs no additional device kernels. The cache keeps complete
-/// per-owner history and masks local spans rather than evicting them.
-/// Host inventory, device-resident weights and one Metal executor, shared by
-/// every sequence that runs on this device.
+/// Matmuls, normalization, rotary and attention run on the GPU; embedding lookups,
+/// elementwise algebra and the soft cap run on the CPU. Every sequence shares one
+/// immutable weight inventory in CPU-accessible Metal storage. The CPU loading
+/// mirror is discarded.
 pub struct Gemma4MetalModel {
-    host: Arc<Gemma4CpuWeights>,
     metal: Gemma4MetalWeights,
     executor: MetalBf16Executor,
 }
 
 impl Gemma4MetalModel {
-    /// Upload the validated inventory once.
+    /// Copy the validated inventory into shared Metal storage and retire the CPU mirror.
     /// # Errors
     /// Rejects an inconsistent inventory or a Metal preparation failure.
     pub fn load(host: Gemma4CpuWeights) -> Result<Self, Gemma4Error> {
         let executor = MetalBf16Executor::new().map_err(|error| metal_error(&error))?;
-        let host = Arc::new(host);
-        let config = host.config().clone();
-        validate_inventory(&config, &host)?;
+        validate_inventory(host.config(), &host)?;
         let metal = Gemma4MetalWeights::load(&host, &executor)?;
-        Ok(Self {
-            host,
-            metal,
-            executor,
-        })
+        // Metal's shared buffers own copies of every parameter. CPU embedding
+        // lookups borrow those immutable buffers too; retire the loading mirror
+        // before publishing the model.
+        drop(host);
+        Ok(Self { metal, executor })
     }
 
     #[must_use]
     pub fn config(&self) -> &Gemma4Config {
-        self.host.config()
+        self.metal.config()
     }
 }
 
+/// One sequence over a shared Metal model, retaining complete per-owner KV history.
+/// Sliding layers mask local spans without evicting them.
 pub struct Gemma4MetalDecoder {
     model: Arc<Gemma4MetalModel>,
     caches: Vec<Option<OwnerCache>>,
@@ -355,7 +352,6 @@ impl Gemma4MetalDecoder {
             .collect();
         let position = self.position;
         let result = run_step(
-            &self.model.host,
             &self.model.metal,
             &MetalOps {
                 executor: &self.model.executor,
@@ -383,35 +379,34 @@ impl Gemma4MetalDecoder {
 }
 
 fn run_step(
-    host: &Gemma4CpuWeights,
     metal: &Gemma4MetalWeights,
     ops: &MetalOps<'_>,
     caches: &mut [Option<OwnerCache>],
     position: usize,
     tokens: &[u32],
 ) -> Result<Vec<u16>, Gemma4Error> {
-    let config = host.config();
+    let config = metal.config();
     let sequence = tokens.len();
     let hidden_size = config.hidden_size();
     let ple = config.ple_dim();
     let packed = config.packed_ple_dim();
     let epsilon = config.rms_norm_eps();
-    let embedding = host
+    let embedding = metal
         .parameter(ParameterId::TokenEmbedding)
         .ok_or_else(|| Gemma4Error::new("Metal decoder", "missing token embedding"))?;
     let embed_scale = f32_value(bf16_f32(usize_to_f32(hidden_size).sqrt()));
     let mut hidden = Vec::with_capacity(sequence * hidden_size);
     for &token in tokens {
-        let row = token_row(embedding, token as usize)?;
+        let row = token_row(embedding, token as usize, hidden_size)?;
         hidden.extend(scale(row, embed_scale)?);
     }
-    let ple_embedding = host
+    let ple_embedding = metal
         .parameter(ParameterId::PleEmbedding)
         .ok_or_else(|| Gemma4Error::new("Metal decoder", "missing per-layer embedding"))?;
     let ple_scale = f32_value(bf16_f32(usize_to_f32(ple).sqrt()));
     let mut identity = Vec::with_capacity(sequence * packed);
     for &token in tokens {
-        let row = token_row(ple_embedding, token as usize)?;
+        let row = token_row(ple_embedding, token as usize, packed)?;
         identity.extend(scale(row, ple_scale)?);
     }
     let projection = ops.linear(
@@ -482,15 +477,21 @@ fn embedding_buffer(metal: &Gemma4MetalWeights) -> Result<&MetalBf16Buffer, Gemm
         .ok_or_else(|| Gemma4Error::new("Metal decoder", "missing token embedding"))
 }
 
-fn token_row(parameter: &crate::CpuParameter, token: usize) -> Result<&[u16], Gemma4Error> {
-    let shape = parameter.shape();
-    if shape.len() != 2 || token >= shape[0] {
+fn token_row(
+    parameter: &MetalBf16Buffer,
+    token: usize,
+    width: usize,
+) -> Result<&[u16], Gemma4Error> {
+    if width == 0
+        || !parameter.elements().is_multiple_of(width)
+        || token >= parameter.elements() / width
+    {
         return Err(Gemma4Error::new(
             "Metal decoder",
             "token exceeds its embedding table",
         ));
     }
-    Ok(&parameter.values()[token * shape[1]..(token + 1) * shape[1]])
+    Ok(&parameter.as_slice()[token * width..(token + 1) * width])
 }
 
 #[expect(

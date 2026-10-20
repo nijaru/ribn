@@ -36,8 +36,10 @@ impl Error for MetalBf16Error {}
 const THREADS: u64 = 256;
 const ATTENTION_SCRATCH_BYTES: usize = 512 * 1024 * 1024;
 
-/// One shared-storage BF16 buffer. Values are copied in and out; the handle owns
-/// its Metal buffer and exposes no pointer.
+/// One immutable shared-storage BF16 buffer.
+///
+/// Initialization/copy or GPU writes finish before publication. No API modifies a
+/// published buffer, so CPU borrows and GPU input reads may share its storage.
 pub struct MetalBf16Buffer {
     buffer: Buffer,
     elements: usize,
@@ -49,20 +51,20 @@ impl MetalBf16Buffer {
         self.elements
     }
 
+    /// Borrow the native BF16 encodings without copying shared storage.
+    #[must_use]
+    pub fn as_slice(&self) -> &[u16] {
+        // SAFETY: shared Metal storage is aligned for u16 and allocated for this
+        // element count. Upload copies or GPU writes finish before publication;
+        // all subsequent GPU uses are read-only. The borrow keeps the owned Metal
+        // buffer alive; no mutable view or raw Metal handle escapes this wrapper.
+        unsafe { std::slice::from_raw_parts(self.buffer.contents().cast::<u16>(), self.elements) }
+    }
+
     /// Copy the native BF16 encodings out of shared storage.
     #[must_use]
     pub fn bits(&self) -> Vec<u16> {
-        let length = self.elements * 2;
-        // SAFETY: the buffer was allocated for exactly this many bytes and the
-        // command queue drained before publication.
-        let bytes =
-            unsafe { std::slice::from_raw_parts(self.buffer.contents().cast::<u8>(), length) };
-        bytes
-            .as_chunks::<2>()
-            .0
-            .iter()
-            .map(|pair| u16::from_le_bytes(*pair))
-            .collect()
+        self.as_slice().to_vec()
     }
 }
 

@@ -125,8 +125,13 @@ fn upload_round_trips_native_encodings() {
         return;
     };
     let bits = [0x0000_u16, 0x8000, 0x3f80, 0xbf80, 0x7fc0, 0x1234];
-    let buffer = executor.upload(&bits).unwrap();
+    let mut source = bits.to_vec();
+    let buffer = executor.upload(&source).unwrap();
+    // Shared storage owns a copy, not a view into the loading allocation.
+    source.fill(0xffff);
+    drop(source);
     assert_eq!(buffer.elements(), bits.len());
+    assert_eq!(buffer.as_slice(), bits);
     assert_eq!(buffer.bits(), bits);
 }
 

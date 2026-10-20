@@ -698,6 +698,50 @@ cargo test -p engine-gemma4 --features metal --release --locked \
 CUDA device requalification and Metal command-failure/retirement injection were not run;
 this changes neither the CUDA path nor the current Metal ownership protocol.
 
+### Shared Metal weight inventory (2026-10-20)
+
+The Metal model no longer retains the complete `Gemma4CpuWeights` loading mirror after
+upload. Its immutable Shared buffers now supply CPU token/PLE embedding rows as well
+as GPU parameters. The token embedding and tied output head still use one native
+buffer. `MetalBf16Buffer::as_slice` borrows that buffer's lifetime; no mutable view or
+raw Metal handle escapes. Producers finish initialization or wait for GPU completion
+before publication. `newBufferWithBytes:length:options:` copies its initializer, so releasing
+CPU loading arrays after preparation does not invalidate those views.
+
+Matched full-package probes on the same M3 Max compared `9188e50` with this change:
+
+| Metric | CPU mirror retained | Shared inventory |
+| --- | ---: | ---: |
+| Owned BF16 weight payload, host + native | 27.80 GiB | 13.90 GiB |
+| Process RSS immediately after preparation | 29.16 GiB | 16.23 GiB |
+| Maximum RSS during loading/execution | 29.20 GiB | 29.17 GiB |
+| Native Metal allocated bytes after preparation | 14,926,430,208 | 14,926,430,208 |
+
+A second shared-inventory run reproduced 16.23 GiB prepared RSS and 29.17 GiB maximum
+RSS. This removes a retained representation, **not the loading peak**: preparation
+still holds the entire CPU inventory while constructing all Metal buffers. Native
+padding, allocator/driver storage, caches and request workspace are not the encoded
+weight payload. After model drop, native allocated bytes returned to about 475 KB even
+though process RSS remained nonzero; RSS alone is not evidence of live Metal buffers.
+
+All finite, full logit rows at prompt lengths 18 and 64 and three common teacher-forced
+continuations matched the earlier baseline captures exactly. The upload test now mutates
+and drops its source before checking both borrowed and copied results. These are
+successful-load, shared-view and execution checks, not OOM or failed-command recovery
+qualification. CPU oracle and CUDA storage are unchanged. Boundaries, fmt, 389 workspace
+tests, default/CUDA/targeted Metal clippy, Metal device/runtime/facade gates and the CLI
+passed.
+
+The existing diagnostic now prints loaded/prepared/executed RSS in KiB, sampled outside
+its phase timers. macOS `time -l` supplies the maximum RSS; run the built executable so
+compiler processes are not part of the measurement:
+
+```sh
+cargo build -p engine-gemma4 --features metal --release --locked --example metal_latency
+# Set RIBN_GEMMA_PACKAGE and RIBN_GEMMA_REFERENCE as for the decoder gate.
+/usr/bin/time -l target/release/examples/metal_latency
+```
+
 ## Synthetic CPU benchmark
 
 ```sh

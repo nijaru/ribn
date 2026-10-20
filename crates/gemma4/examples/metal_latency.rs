@@ -1,4 +1,4 @@
-//! Break down one Gemma Metal request into loading, upload, prefill and decode.
+//! Break down one Gemma Metal request into loading, upload, prefill, decode and RSS.
 //!
 //! Uses the archived chat prompt so the work matches the integration test. This
 //! measures the correctness-first orchestration, not a competitive engine path.
@@ -8,7 +8,21 @@ fn main() {
     use engine_gemma4::{Gemma4Config, Gemma4CpuWeights, Gemma4MetalDecoder, Gemma4Source, argmax};
     use ribn_hf::LocalModelPackage;
     use serde_json::Value;
+    use std::process::Command;
     use std::time::Instant;
+
+    fn rss_kib() -> u64 {
+        let output = Command::new("/bin/ps")
+            .args(["-o", "rss=", "-p", &std::process::id().to_string()])
+            .output()
+            .expect("sample this process's RSS");
+        assert!(output.status.success(), "ps RSS sample failed");
+        String::from_utf8(output.stdout)
+            .expect("RSS is UTF-8")
+            .trim()
+            .parse()
+            .expect("RSS is a KiB integer")
+    }
 
     let package = LocalModelPackage::open(
         std::env::var_os("RIBN_GEMMA_PACKAGE").expect("RIBN_GEMMA_PACKAGE"),
@@ -42,10 +56,12 @@ fn main() {
     let host = Gemma4CpuWeights::load(&source).unwrap();
     assert_eq!(host.config(), &config);
     let loaded = load.elapsed();
+    let host_rss = rss_kib();
 
     let upload = Instant::now();
     let mut decoder = Gemma4MetalDecoder::load(host).expect("Metal decoder");
     let uploaded = upload.elapsed();
+    let prepared_rss = rss_kib();
 
     let prefill = Instant::now();
     let mut logits = decoder.prefill(&prompt).expect("prefill");
@@ -58,7 +74,11 @@ fn main() {
         logits = decoder.decode(token).expect("decode");
         steps.push(decode.elapsed());
     }
+    let executed_rss = rss_kib();
     println!("prompt_tokens={}", prompt.len());
+    println!("host_loaded_rss_kib={host_rss}");
+    println!("prepared_rss_kib={prepared_rss}");
+    println!("executed_rss_kib={executed_rss}");
     println!("host_load_ms={:.1}", loaded.as_secs_f64() * 1e3);
     println!(
         "upload_including_load_ms={:.1}",

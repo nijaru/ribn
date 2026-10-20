@@ -7,7 +7,10 @@ use ribn::driver::{Driver, DriverConfig};
 use ribn_hf::LocalModelPackage;
 use std::sync::Arc;
 
-/// Retained model size reported after a successful load.
+/// Logical BF16 weight payload reported after a successful load.
+///
+/// Excludes duplicate representations, backend padding, loading overlap and workspace;
+/// this is neither a process-resident nor a peak-memory measurement.
 #[derive(Clone, Copy, Debug)]
 pub struct GemmaLoadReport {
     pub model_bytes: u64,

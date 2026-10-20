@@ -833,6 +833,12 @@ adapters, processor configuration and execution resources. A numeric version is 
 an owner. Mutable request state stays in the runtime, not inside a shared mutable
 snapshot object protected by one global lock.
 
+Immutable CPU-accessible backend storage may serve both host reads and device inputs.
+CPU views borrow that storage's owner, require completed initialization/producer writes
+and expose no mutable alias. A loading mirror can retire after copy completion when no
+consumer still needs it. Shared CPU visibility does not make loading zero-copy or, by
+itself, reduce the preparation peak.
+
 Local GGUF preparation selects one open source for metadata, processor/template,
 complete-artifact identity and streamed weights. Pathnames are diagnostics, not
 source identity: replacing or unlinking the pathname must not redirect existing
