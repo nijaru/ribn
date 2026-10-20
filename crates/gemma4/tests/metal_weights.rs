@@ -4,7 +4,7 @@
 use engine_gemma4::{
     Gemma4CpuWeights, Gemma4MetalWeights, Gemma4Source, LayerParameter, ParameterId,
 };
-use engine_metal::MetalBf16Executor;
+use engine_metal::{MetalBf16Error, MetalBf16Executor};
 
 #[path = "common/weights.rs"]
 mod weights;
@@ -12,9 +12,13 @@ use weights::{Dir, inventory, package};
 
 #[test]
 fn materializes_every_parameter_bitwise_with_a_tied_head() {
-    let Ok(executor) = MetalBf16Executor::new() else {
-        eprintln!("no Metal device; skipping");
-        return;
+    let executor = match MetalBf16Executor::new() {
+        Ok(executor) => executor,
+        Err(MetalBf16Error::Device) => {
+            eprintln!("no Metal device; skipping");
+            return;
+        }
+        Err(error) => panic!("Metal preparation failed: {error}"),
     };
     let dir = Dir::new();
     let package = package(&dir, &inventory(), false);
