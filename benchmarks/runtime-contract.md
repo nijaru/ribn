@@ -591,7 +591,10 @@ measurements do not isolate frontend cost.
 Reproducible diagnostic only: one M3 Max, one sequence, the archived 18-token chat
 prompt, greedy decoding, the correctness-first host-orchestrated Metal decoder
 (`crates/gemma4/examples/metal_latency.rs`). It is not a competitive comparison or an
-endpoint measurement.
+endpoint measurement. Later internal qualifications below preserve their previous
+kernel outputs, not necessarily stock CPU bit patterns. The separate
+[same-artifact MLX calibration](gemma4-metal-baseline.md) records current external
+model-call timings, full-logit differences and the remaining quality/serving limits.
 
 | Stage | First pass | Split attention |
 | --- | --- | --- |

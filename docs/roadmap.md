@@ -556,6 +556,13 @@ further reduces 32/64-token prefill by 30/31% with exact logits, selected only f
 32–64-row chunks divisible by four and vector-width inner dimensions; qualified two-row
 and original kernels remain the fallbacks. Other activation transfers and CPU elementwise
 work remain; no universal graph or CUDA policy was introduced.
+A [same-artifact MLX calibration](../benchmarks/gemma4-metal-baseline.md) now measures
+148.5 ms versus 31.1 ms pooled warmed direct decode. Both backends match the 12 archived
+winners but differ from stock CPU full logits; this is not a quality-equivalent serving
+baseline. Large Ribn timing swings remain unexplained. The next bounded Metal experiment
+should ablate command boundaries and intermediate host transfers before more row blocking,
+preserving the current numerical and ownership contracts rather than copying MLX's graph.
+This does not change CUDA sequencing or qualify capacity, recovery or SLO goodput.
 Sampling and eviction remain open. Shader/pipeline failures now fail both primitive
 and materialization tests rather than being mistaken for missing hardware.
 Then mixed-width local/global KV with donor spans pinned through shared-tail device reads. Use strongly typed model/backend state
