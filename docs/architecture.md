@@ -185,9 +185,10 @@ priority.
 An Apple GPU path has started in `engine-metal`: macOS-only Metal compute pipelines
 for BF16 linear, grouped RMS, split-half rotary and the decoder's elementwise
 operations (add, multiply, scale, tanh-GELU and soft cap), compiled at runtime from
-checked-in MSL and driven by one device plus command queue. Linear pairs input rows
-on qualified M3 Max even 8–64-row shapes whose inner dimension is divisible by four,
-reusing weights without changing each output's accumulation order; other GPUs/shapes retain
+checked-in MSL and driven by one device plus command queue. Linear blocks input rows
+on qualified M3 Max even 8–64-row shapes whose inner dimension is divisible by four:
+four rows for 32–64-row chunks divisible by four, otherwise two. Separate kernels reuse
+weights without changing each output's accumulation order; other GPUs/shapes retain
 the original kernel. Causal/sliding grouped-query attention runs as three ordered
 kernel dispatches in one command buffer: query-key scores, a per-row softmax reduction,
 and weighted values, each preserving the

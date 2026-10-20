@@ -224,7 +224,8 @@ pub struct MetalBf16Executor {
     device: Device,
     queue: CommandQueue,
     linear: ComputePipelineState,
-    pair_linear_rows: bool,
+    linear_rows4: ComputePipelineState,
+    block_linear_rows: bool,
     rms: ComputePipelineState,
     attention_scores: ComputePipelineState,
     attention_reduce: ComputePipelineState,
@@ -246,6 +247,12 @@ impl MetalBf16Executor {
         let linear = library
             .get_function("bf16_linear", None)
             .map_err(MetalBf16Error::Function)?;
+        let linear_rows4 = library
+            .get_function("bf16_linear_rows4", None)
+            .map_err(MetalBf16Error::Function)?;
+        let linear_rows4 = device
+            .new_compute_pipeline_state_with_function(&linear_rows4)
+            .map_err(MetalBf16Error::Pipeline)?;
         let rms = library
             .get_function("bf16_rms", None)
             .map_err(MetalBf16Error::Function)?;
@@ -287,12 +294,13 @@ impl MetalBf16Executor {
             .map_err(MetalBf16Error::Pipeline)?;
         let queue = Self::command_queue(&device)?;
         // Do not extend an optimization measured on M3 Max to other Apple GPUs.
-        let pair_linear_rows = device.name() == "Apple M3 Max";
+        let block_linear_rows = device.name() == "Apple M3 Max";
         Ok(Self {
             device,
             queue,
             linear,
-            pair_linear_rows,
+            linear_rows4,
+            block_linear_rows,
             rms,
             attention_scores,
             attention_reduce,

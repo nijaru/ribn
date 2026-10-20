@@ -72,6 +72,43 @@ kernel void bf16_linear(
     output[id] = bf16_rne(sum);
 }
 
+// A separate entry keeps the qualified single/pair kernels' register allocation
+// independent of this larger input-row block. Each output still adds ascending k.
+kernel void bf16_linear_rows4(
+    device const ushort* input [[buffer(0)]],
+    device const ushort* weight [[buffer(1)]],
+    device ushort* output [[buffer(2)]],
+    constant uint& columns [[buffer(3)]],
+    constant uint& inner [[buffer(4)]],
+    constant uint& total [[buffer(5)]],
+    uint id [[thread_position_in_grid]])
+{
+    if (id >= total / 4) return;
+    uint row = 4 * (id / columns);
+    uint column = id % columns;
+    device const ushort4* a0 = (device const ushort4*)(input + row * inner);
+    device const ushort4* a1 = (device const ushort4*)(input + (row + 1) * inner);
+    device const ushort4* a2 = (device const ushort4*)(input + (row + 2) * inner);
+    device const ushort4* a3 = (device const ushort4*)(input + (row + 3) * inner);
+    device const ushort4* b = (device const ushort4*)(weight + column * inner);
+    float4 sum = float4(0.0f);
+    for (uint i = 0; i < inner / 4; ++i) {
+        ushort4 av0 = a0[i];
+        ushort4 av1 = a1[i];
+        ushort4 av2 = a2[i];
+        ushort4 av3 = a3[i];
+        ushort4 bv = b[i];
+        sum += float4(bf16_load(av0.x), bf16_load(av1.x), bf16_load(av2.x), bf16_load(av3.x)) * bf16_load(bv.x);
+        sum += float4(bf16_load(av0.y), bf16_load(av1.y), bf16_load(av2.y), bf16_load(av3.y)) * bf16_load(bv.y);
+        sum += float4(bf16_load(av0.z), bf16_load(av1.z), bf16_load(av2.z), bf16_load(av3.z)) * bf16_load(bv.z);
+        sum += float4(bf16_load(av0.w), bf16_load(av1.w), bf16_load(av2.w), bf16_load(av3.w)) * bf16_load(bv.w);
+    }
+    output[row * columns + column] = bf16_rne(sum.x);
+    output[(row + 1) * columns + column] = bf16_rne(sum.y);
+    output[(row + 2) * columns + column] = bf16_rne(sum.z);
+    output[(row + 3) * columns + column] = bf16_rne(sum.w);
+}
+
 kernel void bf16_rms(
     device const ushort* input [[buffer(0)]],
     device const ushort* scale [[buffer(1)]],

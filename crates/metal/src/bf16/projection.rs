@@ -26,7 +26,7 @@ struct LinearGeometry {
     columns: u32,
     inner: u32,
     total: u32,
-    paired: u32,
+    row_block: u32,
 }
 
 impl LinearGeometry {
@@ -34,7 +34,7 @@ impl LinearGeometry {
         shape: MetalLinearShape,
         input: usize,
         weight: usize,
-        pair_rows: bool,
+        block_rows: bool,
     ) -> Result<Self, MetalBf16Error> {
         let MetalLinearShape {
             rows,
@@ -72,13 +72,20 @@ impl LinearGeometry {
                 .map_err(|_| MetalBf16Error::Shape("inner exceeds u32".into()))?,
             total: u32::try_from(output_length)
                 .map_err(|_| MetalBf16Error::Shape("output exceeds u32 elements".into()))?,
-            // Keep the independently qualified M3 Max selection unchanged.
-            paired: u32::from(
-                pair_rows
-                    && (8..=64).contains(&rows)
-                    && rows.is_multiple_of(2)
-                    && inner.is_multiple_of(4),
-            ),
+            // Block only the independently qualified M3 Max chunk scope.
+            row_block: if block_rows
+                && (8..=64).contains(&rows)
+                && rows.is_multiple_of(2)
+                && inner.is_multiple_of(4)
+            {
+                if rows >= 32 && rows.is_multiple_of(4) {
+                    4
+                } else {
+                    2
+                }
+            } else {
+                1
+            },
         })
     }
 
@@ -143,7 +150,7 @@ impl MetalBf16Executor {
             shape,
             input.elements,
             weight.elements,
-            self.pair_linear_rows,
+            self.block_linear_rows,
         )?;
         let output = self.allocate_shared(geometry.elements() * 2)?;
         let command = self.command()?;
@@ -199,7 +206,7 @@ impl MetalBf16Executor {
             shape,
             input.elements,
             weight.elements,
-            self.pair_linear_rows,
+            self.block_linear_rows,
         )?;
         let rows = linear
             .elements()
@@ -261,9 +268,13 @@ impl MetalBf16Executor {
         scale: Option<&MetalBf16Buffer>,
     ) -> Result<(MetalBf16Buffer, MetalBf16Buffer), MetalBf16Error> {
         let left_geometry =
-            LinearGeometry::new(shape, input.elements, left.elements, self.pair_linear_rows)?;
-        let right_geometry =
-            LinearGeometry::new(shape, input.elements, right.elements, self.pair_linear_rows)?;
+            LinearGeometry::new(shape, input.elements, left.elements, self.block_linear_rows)?;
+        let right_geometry = LinearGeometry::new(
+            shape,
+            input.elements,
+            right.elements,
+            self.block_linear_rows,
+        )?;
         let rms = RmsGeometry::new(input.elements, shape.rows, shape.inner, epsilon, scale)?;
         let normalized = self.allocate_shared(input.elements * 2)?;
         let left_output = self.allocate_shared(left_geometry.elements() * 2)?;
@@ -307,19 +318,20 @@ impl MetalBf16Executor {
         output: &BufferRef,
         geometry: &LinearGeometry,
     ) {
-        encoder.set_compute_pipeline_state(&self.linear);
+        encoder.set_compute_pipeline_state(if geometry.row_block == 4 {
+            &self.linear_rows4
+        } else {
+            &self.linear
+        });
         encoder.set_buffer(0, Some(input), 0);
         encoder.set_buffer(1, Some(weight), 0);
         encoder.set_buffer(2, Some(output), 0);
         encoder.set_bytes(3, 4, (&raw const geometry.columns).cast());
         encoder.set_bytes(4, 4, (&raw const geometry.inner).cast());
         encoder.set_bytes(5, 4, (&raw const geometry.total).cast());
-        encoder.set_bytes(6, 4, (&raw const geometry.paired).cast());
-        let grid = u64::from(if geometry.paired != 0 {
-            geometry.total / 2
-        } else {
-            geometry.total
-        });
+        let paired = u32::from(geometry.row_block == 2);
+        encoder.set_bytes(6, 4, (&raw const paired).cast());
+        let grid = u64::from(geometry.total / geometry.row_block);
         encoder.dispatch_threads(
             MTLSize::new(grid, 1, 1),
             MTLSize::new(grid.min(THREADS), 1, 1),
@@ -345,5 +357,41 @@ impl MetalBf16Executor {
             MTLSize::new(geometry.rows, 1, 1),
             MTLSize::new(THREADS, 1, 1),
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{LinearGeometry, MetalLinearShape};
+
+    #[test]
+    fn row_blocking_stays_inside_the_qualified_device_and_shape_scope() {
+        for (rows, inner, eligible_device, block) in [
+            (6, 4, true, 1),
+            (8, 4, true, 2),
+            (30, 4, true, 2),
+            (31, 4, true, 1),
+            (32, 4, true, 4),
+            (33, 4, true, 1),
+            (34, 4, true, 2),
+            (64, 4, true, 4),
+            (65, 4, true, 1),
+            (66, 4, true, 1),
+            (32, 7, true, 1),
+            (32, 4, false, 1),
+            (64, 4, false, 1),
+        ] {
+            let shape = MetalLinearShape {
+                rows,
+                columns: 3,
+                inner,
+            };
+            let geometry =
+                LinearGeometry::new(shape, rows * inner, 3 * inner, eligible_device).unwrap();
+            assert_eq!(
+                geometry.row_block, block,
+                "{shape:?}, eligible={eligible_device}"
+            );
+        }
     }
 }

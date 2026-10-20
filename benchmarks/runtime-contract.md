@@ -648,9 +648,10 @@ but restoring the baseline restored its timing. That candidate was removed.
 
 Pairing **input rows** instead reuses each four-wide weight load for two accumulators.
 Each output keeps the same ascending-inner-index additions and final BF16 rounding.
-Automatic selection is limited to M3 Max, even row counts **8–64**, and inner widths
-divisible by four. Other GPUs, single-token decode, small/odd chunks, larger batches
-and non-vector widths retain the original kernel. Linear preparation also rejects
+At this promotion, pairing was limited to M3 Max, even row counts **8–64**, and inner
+widths divisible by four. The later [four-row variant](#four-row-metal-linear-qualification-2026-10-20)
+replaces pairs on its qualified sub-scope. Other GPUs, single-token decode, small/odd
+chunks, larger batches and non-vector widths retain the original kernel. Linear preparation also rejects
 input/weight element products beyond the kernel's u32 address range before allocating
 output; checking dimensions alone did not establish safe offsets.
 
@@ -1060,6 +1061,66 @@ real-model gates passed, along with boundaries, formatting and default/CUDA/targ
 Metal clippy. Native Metal code is unchanged from the preceding qualified delivery.
 Hardware failure/OOM recovery remains unqualified, and the shut-down desktop was not
 contacted.
+
+### Four-row Metal linear qualification (2026-10-20)
+
+After exact GELU tabulation, the existing profile identified matrix multiplication as
+most of the remaining 64-token prefill cost. This experiment reused each four-wide BF16
+weight load across **four input rows** rather than two, with independent FP32 accumulators
+and unchanged ascending-inner-index additions and final BF16 rounding. It is a separate
+MSL entry/pipeline, leaving the qualified original/pair kernel unchanged. It is not the
+previously rejected four-output-column block or CUDA quantized four-rows-per-warp path.
+
+Automatic selection is limited to **M3 Max, rows 32–64 divisible by four, inner widths
+divisible by four**. Other eligible even 8–64-row chunks retain two-row blocking; other
+GPUs, single-token decode, odd/small/large chunks and non-vector widths retain the
+original kernel. Whole input/weight/output u32 geometry still validates before output
+allocation or encoding. The new kernel needs no additional buffers or command submissions.
+
+The predeclared gate was exact full logits, at least **10% faster 32- and 64-token
+prefill**, and no material decode/RSS regression; the experiment would stop after two
+matched sweeps if it clearly lost. On the same 40-core M3 Max, pinned package, reference,
+macOS and Rust release configuration, three interleaved baseline (`84993ab`) and candidate
+processes each used one warmup plus three measured trials per prefix and three common
+teacher-forced continuations. All measured samples were retained:
+
+| Prompt tokens | Baseline prefill | Four-row prefill | Baseline decode | Four-row decode |
+| ---: | ---: | ---: | ---: | ---: |
+| 1 | 142.67 ms | 142.41 ms | 143.46 ms | 142.79 ms |
+| 8 | 162.99 ms | 162.16 ms | 144.82 ms | 144.38 ms |
+| 18 | 227.79 ms | 228.71 ms | 146.02 ms | 145.53 ms |
+| 32 | 331.61 ms | 231.74 ms | 142.79 ms | 145.53 ms |
+| 64 | 525.35 ms | 361.82 ms | 145.91 ms | 147.01 ms |
+
+The primary prefill medians fell **30.12%** at 32 tokens and **31.13%** at 64. Per-process
+32-token baseline medians were 331.43/333.90/330.63 ms versus 231.74/229.61/269.64 ms;
+64-token medians were 537.24/522.66/523.23 versus 361.82/362.74/360.47 ms. The slower third
+32-token candidate run was retained. Pooled decode changed 144.823 → 145.176 ms (+0.24%);
+the 32-token-history cohort rose 1.92%, while the decode kernel itself is unchanged.
+No occupancy/stall or timing-variance cause was established. These are direct-decoder
+latency diagnostics, not serving/SLO evidence or a CUDA result.
+
+A further matched warmed sweep covers every intermediate newly selected row count:
+36/40/44/48/52/56/60-token prefill medians were respectively
+358.37/375.52/409.43/425.98/456.43/480.16/505.47 ms baseline versus
+253.18/260.67/278.62/290.00/317.10/328.16/343.79 ms candidate. Full 262,144-element rows
+were finite and bit-identical at all these sizes, 1/8/18/32/64 and unblocked
+65/511/512/513-token prefixes, through three common continuations each. Component
+coverage now checks every selected row count against independent host source-order
+math, tiny grids, column tails, long inner loops and non-vector fallbacks. A host
+selection test protects device/row/vector boundaries. The real-model decoder gate now
+also compares 32/64-token chunks against qualified 16-token chunks through continuation;
+the archived 18-token case alone could not exercise the new kernel.
+
+Short-probe peak RSS remained overlapping, 14.009–14.017 GiB baseline versus
+14.006–14.013 GiB candidate; intermediate-row sweeps peaked at 14.038 versus 14.031 GiB.
+All 398 workspace tests, 17 release Metal primitive tests (with expanded cases), the
+release selector test, exhaustive GELU gate, materialization, ignored decoder/executor/text
+and actual CLI gates passed, alongside boundaries, formatting and default/CUDA/targeted-
+Metal clippy. Independent read-only review found no actionable issues in arithmetic,
+addressing, selection or synchronous ownership; parent device qualification supplies
+the numerical evidence. Hardware fault/OOM recovery remains unqualified. No desktop
+access, cache eviction, scheduling change or universal graph was introduced.
 
 ## Synthetic CPU benchmark
 

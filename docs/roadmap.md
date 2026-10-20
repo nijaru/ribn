@@ -550,9 +550,12 @@ The [query/key rotary chain](../benchmarks/runtime-contract.md#metal-rotary-proj
 removes another 66 waits while preserving both intermediate BF16 boundaries and sharing
 read-only factors. A refreshed profile identified CPU GELU as a large prefill cost;
 an [exact prepared BF16 table](../benchmarks/runtime-contract.md#metal-exact-gelu-table-qualification-2026-10-20)
-now replaces repeated host tanh evaluation without changing the CPU oracle. Other
-activation transfers and CPU elementwise work remain; no universal graph or CUDA
-policy was introduced.
+now replaces repeated host tanh evaluation without changing the CPU oracle. A separate
+[four-input-row linear kernel](../benchmarks/runtime-contract.md#four-row-metal-linear-qualification-2026-10-20)
+further reduces 32/64-token prefill by 30/31% with exact logits, selected only for M3 Max
+32–64-row chunks divisible by four and vector-width inner dimensions; qualified two-row
+and original kernels remain the fallbacks. Other activation transfers and CPU elementwise
+work remain; no universal graph or CUDA policy was introduced.
 Sampling and eviction remain open. Shader/pipeline failures now fail both primitive
 and materialization tests rather than being mistaken for missing hardware.
 Then mixed-width local/global KV with donor spans pinned through shared-tail device reads. Use strongly typed model/backend state

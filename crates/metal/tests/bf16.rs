@@ -237,19 +237,28 @@ fn linear_matches_a_host_reference_and_exact_dyadics() {
     let Some(executor) = executor() else {
         return;
     };
-    // Paired and unpaired rows, tiny grids, column tails and non-vector widths.
-    // Every output preserves its own source-order accumulation, not a reduction
-    // across rows; adding the second row must not change the first row's bits.
+    // Single/pair/four-row blocks, selection boundaries, tiny grids, column
+    // tails, long inner loops and non-vector widths. Every output preserves its
+    // own source-order accumulation; adjacent rows must not change its bits.
     for (rows, columns, inner) in [
         (3, 7, 16),
         (2, 1, 4),
         (8, 7, 16),
         (9, 7, 16),
         (18, 257, 256),
+        (31, 7, 16),
+        (32, 1, 4),
+        (34, 7, 16),
         (64, 8, 1024),
+        (64, 3, 10240),
+        (64, 3, 7),
+        (65, 8, 1024),
         (66, 8, 1024),
         (8, 3, 7),
-    ] {
+    ]
+    .into_iter()
+    .chain((32..=64).step_by(4).map(|rows| (rows, 129, 260)))
+    {
         let input = operands(rows * inner, 11);
         let weight = operands(columns * inner, 29);
         let actual = executor

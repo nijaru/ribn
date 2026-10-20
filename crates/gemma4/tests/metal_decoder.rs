@@ -109,6 +109,35 @@ fn metal_decoder_reproduces_the_archived_greedy_tokens() {
         }
         assert_eq!(decoder.position(), prompt.len() + steps.len() - 1);
     }
+    // The archived 18-token case cannot select the four-row kernel. Compare
+    // both selected chunk sizes against qualified two-row chunks on a longer
+    // history, including owner-cache continuation after every partition.
+    let long_prompt: Vec<_> = prompt.iter().copied().cycle().take(64).collect();
+    decoder.reset();
+    for tokens in long_prompt.chunks(16) {
+        logits = decoder.prefill(tokens).expect("paired-row prefill");
+    }
+    finite_logits(&logits);
+    let mut paired = vec![logits.clone()];
+    for step in steps.iter().take(3) {
+        let token = u32::try_from(step["chosen"].as_u64().unwrap()).unwrap();
+        logits = decoder.decode(token).expect("paired-row continuation");
+        finite_logits(&logits);
+        paired.push(logits.clone());
+    }
+    for chunk in [32, 64] {
+        decoder.reset();
+        for tokens in long_prompt.chunks(chunk) {
+            logits = decoder.prefill(tokens).expect("four-row prefill");
+        }
+        same_logits(&logits, &paired[0], chunk, 0);
+        for (index, expected) in paired.iter().enumerate().skip(1) {
+            let token = u32::try_from(steps[index - 1]["chosen"].as_u64().unwrap()).unwrap();
+            logits = decoder.decode(token).expect("four-row continuation");
+            same_logits(&logits, expected, chunk, index);
+        }
+        assert_eq!(decoder.position(), long_prompt.len() + paired.len() - 1);
+    }
     decoder.reset();
     assert_eq!(decoder.position(), 0);
 }
