@@ -13,8 +13,11 @@ use std::{error::Error, fmt, io::Cursor, sync::Arc};
 #[path = "blas.rs"]
 mod blas;
 use blas::{Blas, error};
+#[path = "attention.rs"]
+mod attention;
 #[path = "elementwise.rs"]
 mod elementwise;
+pub use attention::{AttentionGeometry, AttentionSpan, CudaBf16Attention};
 #[path = "rms.rs"]
 mod rms;
 pub use elementwise::CudaBf16Elementwise;
@@ -170,6 +173,9 @@ enum Operation {
     Elementwise {
         program: Arc<elementwise::ElementwiseKernels>,
     },
+    Attention {
+        program: Arc<attention::AttentionKernels>,
+    },
     Rotary {
         program: Arc<rotary::RotaryKernels>,
         _cos: DeviceAllocation,
@@ -182,6 +188,7 @@ impl Operation {
             Self::Blas { program, .. } => program.stream(),
             Self::Rms { program, .. } => &program.stream,
             Self::Elementwise { program } => &program.stream,
+            Self::Attention { program } => &program.stream,
             Self::Rotary { program, .. } => &program.stream,
         }
     }
@@ -198,6 +205,14 @@ enum Access {
         _inputs: Vec<DeviceAllocation>,
         _output: DeviceAllocation,
     },
+    Attention {
+        operation: Operation,
+        _query: DeviceAllocation,
+        _keys: DeviceAllocation,
+        _values: DeviceAllocation,
+        _scratch: DeviceAllocation,
+        _output: DeviceAllocation,
+    },
     Factors {
         kernels: Arc<factors::FactorKernels>,
         _inverse_frequencies: DeviceAllocation,
@@ -209,9 +224,9 @@ enum Access {
 impl Access {
     fn stream(&self) -> &Arc<CudaStream> {
         match self {
-            Self::Matrices { operation, .. } | Self::Elementwise { operation, .. } => {
-                operation.stream()
-            }
+            Self::Matrices { operation, .. }
+            | Self::Elementwise { operation, .. }
+            | Self::Attention { operation, .. } => operation.stream(),
             Self::Factors { kernels, .. } => &kernels.stream,
         }
     }
