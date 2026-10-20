@@ -13,8 +13,13 @@ and CUDA through the synchronous greedy executor, `ribn` engine, text facade and
 `ribn run-gemma`. The complete host decoder remains the correctness oracle. CUDA now
 uses completion-owned device K/V append instead of a host round trip; the archived
 short-history logits are unchanged. This establishes scoped model-local integration,
-not sampling, eviction, mixed-retention lifetime or competitive acceptance. Define the
-accepted chunk's attention/donor spans and completion boundary before batching prefill.
+not sampling, eviction, mixed-retention lifetime or competitive acceptance. Bind the
+accepted chunk's attention/donor spans, row/workspace bounds and completion boundary
+before batching prefill. Keep complete owner histories for the initial batching baseline;
+cache eviction is a separate experiment. The
+[host multi-row oracle](../benchmarks/gemma4-reference/README.md#host-multi-row-prefill-oracle)
+now checks exact chunk/serial logits and continued execution with nonuniform weights,
+mixed head widths, shared consumers and window boundaries; it is not GPU qualification.
 Host-orchestration cleanup now removes tiny upload staging, the unused device PLE
 identity and intermediate prompt-token output heads. Exact common-history logits,
 continued/chunked execution, whole-chunk rejection and memcheck pass; upload-only versus
@@ -495,10 +500,11 @@ shared-tail reads, the runtime executor and the text facade; `ribn run-gemma` se
 it when built with `--features cuda`. See the
 [decoder gate](../benchmarks/gemma4-reference/README.md#native-cuda-gemma-decoder-gate).
 Device-side K/V append now passes byte-preservation, initialized-prefix and memcheck
-gates, with exact short-history logits against host append. Next, define the batched
-prefill attention-span contract and compare mixed prompt lengths before selecting a
-lane. The intervening upload/head cleanup is qualified without changing that serial
-lane; it does not establish batched execution. Mixed-width cache lifetime, HTTP serving,
+gates, with exact short-history logits against host append. Next, bind the batched
+prefill attention spans and workspace to the accepted chunk, retain the full-history
+baseline and compare mixed prompt lengths before selecting a lane. The intervening
+upload/head cleanup is qualified without changing that serial lane; it does not establish
+batched execution. Mixed-width cache lifetime, HTTP serving,
 sampling and eviction remain open.
 The host CPU path now composes a full Gemma decoder step — embeddings, PLE, all 42
 hybrid layers with owner/shared-tail KV, attention, the remaining layer math and the

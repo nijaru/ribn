@@ -749,6 +749,31 @@ source variants and logit captures are retained with qualification artifacts, no
 new public benchmark framework. Next is a separately qualified batched-prefill lane,
 including window/chunk boundaries and common-history numerical acceptance.
 
+## Host multi-row prefill oracle
+
+```sh
+cargo test -p engine-gemma4 --locked --test cpu_prefill
+```
+
+The CPU decoder already executes multiple input rows layer-by-layer. This gate uses
+the independent reduced package schema with deterministic, nonuniform BF16 weights:
+two different head widths, local/full KV owners and two shared-tail consumers. It
+compares complete, finite logit rows with single-token execution at every submitted
+chunk boundary and on three common teacher-forced continuation tokens. Windows 4 and
+512 exercise chunks ending before, at and after the window boundary, chunks larger
+than the window, nonzero prefixes and partial tails. Reset and whole-chunk rejection
+must preserve subsequent results. The fixture distinguishes equal-last-token histories;
+constant-valued source/materialization fixtures alone cannot protect these dependencies.
+
+Acceptance is bit equality because this CPU path preserves each row's arithmetic and
+visible-key accumulation order across chunk shapes. A temporary mutation that applied
+the last query's mask to every row made the gate fail; restoring per-query masks passed.
+This is an execution-transformation oracle, not an independent check of model semantics,
+physical donor retirement or GPU numerical accuracy. The CPU path deliberately retains
+complete owner histories. CUDA batching can keep that baseline without also introducing
+eviction; reordered device math still needs independently justified numerical bounds,
+common-history reference comparisons and device lifetime/memory qualification.
+
 ## Host rotary-frequency gate
 
 `Gemma4Config::rotary_inverse_frequency` prepares individual FP32 factors without

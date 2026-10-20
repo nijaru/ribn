@@ -286,9 +286,10 @@ path until its allocation, peak overlap and physical retirement are qualified.
 
 ### Mixed-retention and shared KV
 
-Status: model-local Gemma 4 range semantics can be checked on the host; physical
-storage, charged preparation and execution remain unimplemented. Do not encode this
-as two homogeneous full-attention requirements and then select only the first KV.
+Status: model-local Gemma 4 range semantics can be checked on the host. Current
+CPU/device decoders retain complete owner histories; bounded mixed-retention storage,
+charged preparation and execution remain unimplemented. Do not encode this as two
+homogeneous full-attention requirements and then select only the first KV.
 
 The model owns the layer-to-KV-owner mapping, head widths, retention and last consumers.
 The AR runtime sees sequence progress through `GenerationExecutor`, not model-family
@@ -322,6 +323,13 @@ farther and reporting a shorter prefix without rollback. Abandonment leaves comm
 state unchanged; this is not device rollback. A partial in-place enqueue may destroy
 resumability: fault the owner and drain/quarantine old/new storage with its charges.
 Cancellation intent and failed drain never release donor storage early.
+
+Multi-row prefill also bounds activation, PLE and attention workspace for the accepted
+range, including both head widths and the supplied context. Return logits for the last
+accepted input row; intermediate output heads are unnecessary. Batching does not require
+eviction: complete owner histories are a valid exact baseline. Qualify row batching
+separately from changing cache retention, so their numerical and lifetime effects can
+be distinguished.
 
 ### AR reservation authority
 
