@@ -615,6 +615,14 @@ linear cost measured in the same run, so a tiled BF16 GEMM is the next candidate
 Command-buffer batching, cache eviction and graph capture remain secondary until a
 representative workload is measured.
 
+A first GEMM experiment is a measured loser and was reverted: uploading every matrix
+transposed (so threads read adjacent output columns) cost about 30 s of host transposition
+for the 15 GB inventory and raised decode to 0.95-1.1 s/token across two runs, versus
+0.4-0.5 s with the original row-major weight layout. The per-thread sequential read of
+one weight row is faster on this GPU than the coalesced column walk. Keep the original
+layout; a tiled kernel must preserve the ascending-`k` accumulation order and beat this
+baseline, not merely change the layout.
+
 ## Synthetic CPU benchmark
 
 ```sh
