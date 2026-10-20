@@ -145,6 +145,7 @@ fn attention_matches_the_stock_operands_for_local_and_global_layers() {
                 AttentionSpan {
                     query_start: 0,
                     key_start: 0,
+                    key_sequence: sequence,
                 },
                 &mut out,
             )

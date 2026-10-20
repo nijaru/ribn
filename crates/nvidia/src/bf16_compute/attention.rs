@@ -26,6 +26,9 @@ pub(super) struct AttentionKernels {
 pub struct AttentionSpan {
     pub query_start: usize,
     pub key_start: usize,
+    /// Rows of the key/value storage actually visible, permitting a cache with
+    /// unused capacity beyond the current sequence.
+    pub key_sequence: usize,
 }
 
 /// One layer's attention geometry and mask policy.
@@ -137,6 +140,7 @@ impl CudaBf16Attention {
         let AttentionSpan {
             query_start,
             key_start,
+            key_sequence,
         } = span;
         let AttentionGeometry {
             heads,
@@ -153,7 +157,6 @@ impl CudaBf16Attention {
             return Err(CudaBf16Error::Invalid("attention window must be positive").into());
         }
         let sequence = query.shape.rows;
-        let key_sequence = keys.shape.rows;
         let head_step = heads
             .checked_mul(width)
             .ok_or(CudaBf16Error::Invalid("attention head stride overflow"))?;
@@ -162,6 +165,8 @@ impl CudaBf16Attention {
             .ok_or(CudaBf16Error::Invalid("attention key stride overflow"))?;
         if sequence == 0
             || key_sequence == 0
+            || key_sequence > keys.shape.rows
+            || key_sequence > values.shape.rows
             || query.shape.cols != head_step
             || keys.shape.cols != kv_step
             || values.shape != keys.shape

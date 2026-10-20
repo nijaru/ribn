@@ -281,6 +281,7 @@ fn attention_matches_the_host_contract_on_gqa_windows_and_history() {
                 AttentionSpan {
                     query_start,
                     key_start: 0,
+                    key_sequence,
                 },
                 &mut out,
             )
@@ -333,6 +334,7 @@ fn attention_rejects_invalid_geometry_and_spans_before_enqueue() {
             AttentionSpan {
                 query_start: 0,
                 key_start: 0,
+                key_sequence: 2,
             },
             &mut out,
         )
@@ -369,6 +371,7 @@ fn attention_rejects_invalid_geometry_and_spans_before_enqueue() {
                 AttentionSpan {
                     query_start,
                     key_start,
+                    key_sequence: 2,
                 },
                 &mut out,
             )
@@ -392,6 +395,7 @@ fn attention_rejects_invalid_geometry_and_spans_before_enqueue() {
             AttentionSpan {
                 query_start: 0,
                 key_start: 0,
+                key_sequence: 2,
             },
             &mut out,
         )
@@ -408,6 +412,7 @@ fn attention_rejects_invalid_geometry_and_spans_before_enqueue() {
             AttentionSpan {
                 query_start: 0,
                 key_start: 0,
+                key_sequence: 2,
             },
             &mut out,
         )

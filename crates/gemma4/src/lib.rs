@@ -2,14 +2,16 @@
 //!
 //! Configuration, parameter interpretation and continuation semantics belong here,
 //! not in HF/SafeTensors adapters or token scheduling. Includes native BF16 CUDA
-//! weight preparation, but no executable decoder or multimodal execution.
+//! weight preparation and a greedy CUDA decoder; no multimodal execution.
 
 #[cfg(feature = "cuda")]
 mod cuda;
 #[cfg(all(feature = "metal", target_os = "macos"))]
 mod metal;
 #[cfg(feature = "cuda")]
-pub use cuda::{Gemma4CudaError, Gemma4CudaLoadError, Gemma4CudaWeights};
+pub use cuda::{
+    Gemma4CudaDecoder, Gemma4CudaError, Gemma4CudaLoadError, Gemma4CudaModel, Gemma4CudaWeights,
+};
 #[cfg(all(feature = "metal", target_os = "macos"))]
 pub use metal::{Gemma4MetalDecoder, Gemma4MetalModel, Gemma4MetalWeights, metal_argmax};
 

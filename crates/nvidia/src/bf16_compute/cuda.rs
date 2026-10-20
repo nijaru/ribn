@@ -122,6 +122,28 @@ impl CudaBf16Matrix {
         self.state = MatrixState::Ready;
         Ok(())
     }
+    /// Write native BF16 bytes at a byte offset without conversion, for caches
+    /// whose later rows are filled incrementally. The caller owns offset validity
+    /// within the declared logical shape; transfer errors poison the matrix.
+    /// # Errors
+    /// Rejects invalid ranges, closed/poisoned/in-use storage or transfer failure.
+    pub fn write_chunk(&mut self, offset: u64, bytes: &[u8]) -> Result<(), CudaBf16Error> {
+        self.check_open()?;
+        let len = u64::try_from(bytes.len())
+            .map_err(|_| CudaBf16Error::Invalid("matrix write length exceeds u64"))?;
+        if offset
+            .checked_add(len)
+            .is_none_or(|end| end > self.shape.bytes)
+        {
+            return Err(CudaBf16Error::Invalid("matrix write exceeds logical bytes"));
+        }
+        let allocation = Arc::get_mut(&mut self.allocation).ok_or(CudaBf16Error::InUse)?;
+        self.state = MatrixState::Poisoned;
+        allocation.write_exact(offset, len, &mut Cursor::new(bytes))?;
+        self.state = MatrixState::Ready;
+        Ok(())
+    }
+
     /// Completion-safe diagnostic readback, bounded by the prepared staging size.
     /// # Errors
     /// Rejects uninitialized/in-use/closed storage, invalid ranges or transfer errors.
