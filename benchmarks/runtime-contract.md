@@ -591,23 +591,29 @@ measurements do not isolate frontend cost.
 Reproducible diagnostic only: one M3 Max, one sequence, the archived 18-token chat
 prompt, greedy decoding, the correctness-first host-orchestrated Metal decoder
 (`crates/gemma4/examples/metal_latency.rs`). It is not a competitive comparison, an
-endpoint measurement, or a promoted optimization. It exists to choose the next slice.
+endpoint measurement, or a promoted optimization.
 
-| Stage | Time |
-| --- | --- |
-| Host inventory load | 1.81 s |
-| Device upload | 1.69 s |
-| Prefill, 18 tokens | 5.92 s |
-| Decode, four tokens | 5.14 / 5.45 / 5.72 / 5.92 s |
+| Stage | First pass | Split attention |
+| --- | --- | --- |
+| Host inventory load | 1.81 s | 1.88 s |
+| Device upload | 1.69 s | 1.65 s |
+| Prefill, 18 tokens | 5.92 s | 0.98 s |
+| Decode, four tokens | 5.14 / 5.45 / 5.72 / 5.92 s | 0.32 / 0.40 / 0.70 / 0.55 s |
 
-A decode token performs roughly 9 GFLOP of weight arithmetic, so the measured
-~5.5 s/token implies about 1.7 GFLOP/s effective throughput. Per-operation command
-buffers and host round trips cost roughly 0.1-0.2 s per token across the ~630
-dispatches; they are not the dominant loss. The naive MSL GEMM is. Batching command
-buffers, eviction or graph capture cannot close this gap; a tiled BF16 GEMM with
-defined accumulation order, checked against the existing exact/bounded references,
-comes first. Prefill shows the same limit: its 18 tokens cost about one decode step,
-consistent with GEMM-bound work.
+Per-operation instrumentation of the first pass attributed 25.0 s of 28.1 s to
+attention, 2.5 s to linear, 0.47 s to RMS and 0.09 s to rotary. An earlier draft of
+this section blamed the naive GEMM; that attribution was wrong. Attention dispatched
+one thread per query head (eight threads) and recomputed the query-key dot product
+inside the output-channel loop, costing about 119 ms per layer. Splitting it into
+score, per-row softmax-reduction and weighted-value kernels with unchanged per-output
+arithmetic removed the dominant cost: the archived greedy tokens and the text-facade
+path stay identical. A repeat run measured a 0.41 s decode mean, so run-to-run variance
+is material at this scale.
+
+With attention fixed, the remaining ~0.4 s/token is consistent with the ~0.5 s/step
+linear cost measured in the same run, so a tiled BF16 GEMM is the next candidate.
+Command-buffer batching, cache eviction and graph capture remain secondary until a
+representative workload is measured.
 
 ## Synthetic CPU benchmark
 

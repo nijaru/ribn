@@ -168,10 +168,12 @@ sampling, a serving executor, device parity and performance remain unqualified; 
 is a correctness-first host path, not a portable tensor layer or a selected hardware
 priority.
 An Apple GPU path has started in `engine-metal`: macOS-only Metal compute pipelines
-for BF16 linear, grouped RMS, causal/sliding grouped-query attention, split-half
-rotary and the decoder's elementwise operations (add, multiply, scale, tanh-GELU and
-soft cap), compiled at runtime from checked-in MSL and driven by one device plus
-command queue. The Gemma model crate uploads its validated BF16 inventory once to one
+for BF16 linear, grouped RMS, split-half rotary and the decoder's elementwise
+operations (add, multiply, scale, tanh-GELU and soft cap), compiled at runtime from
+checked-in MSL and driven by one device plus command queue. Causal/sliding
+grouped-query attention runs as three parallel kernels in one command buffer: query-key
+scores, a per-row softmax reduction, and weighted values, each preserving the
+score/weight rounding and per-output accumulation order. The Gemma model crate uploads its validated BF16 inventory once to one
 Metal device, preserving encodings and the tied head, and a host-orchestrated
 decoder runs the full step: matmuls, normalization, rotary and attention execute on
 the GPU while embeddings, elementwise algebra and the soft cap reuse the validated

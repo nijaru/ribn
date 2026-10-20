@@ -66,10 +66,83 @@ kernel void bf16_rms(
 // Three-pass causal/sliding attention: score max, exponential sum, weighted
 // values. Scores and weights round to BF16 exactly where the pinned model does;
 // the output accumulates in FP32 and rounds once. No softcap is applied here.
-kernel void bf16_attention(
+kernel void bf16_attention_scores(
     device const ushort* query [[buffer(0)]],
     device const ushort* keys [[buffer(1)]],
-    device const ushort* values [[buffer(2)]],
+    device ushort* scores [[buffer(2)]],
+    constant uint& heads [[buffer(3)]],
+    constant uint& kv_heads [[buffer(4)]],
+    constant uint& width [[buffer(5)]],
+    constant uint& key_sequence [[buffer(6)]],
+    constant uint& query_start [[buffer(7)]],
+    constant uint& key_start [[buffer(8)]],
+    constant uint& window [[buffer(9)]],
+    constant uint& total [[buffer(10)]],
+    uint id [[thread_position_in_grid]])
+{
+    if (id >= total) return;
+    uint row = id / key_sequence;
+    uint j = id % key_sequence;
+    uint position = row / heads;
+    uint head = row % heads;
+    uint kv_head = head / (heads / kv_heads);
+    uint absolute = query_start + position;
+    uint last = min(absolute - key_start, key_sequence - 1);
+    uint first = 0;
+    if (window != 0) {
+        uint start = absolute >= window - 1 ? absolute - (window - 1) : 0;
+        first = start > key_start ? start - key_start : 0;
+        first = min(first, last);
+    }
+    ushort score = 0;
+    if (j >= first && j <= last) {
+        uint query_base = row * width;
+        uint key_base = j * (kv_heads * width) + kv_head * width;
+        float sum = 0.0f;
+        for (uint c = 0; c < width; ++c) {
+            sum += bf16_load(query[query_base + c]) * bf16_load(keys[key_base + c]);
+        }
+        score = bf16_rne(sum);
+    }
+    scores[id] = score;
+}
+
+kernel void bf16_attention_reduce(
+    device const ushort* scores [[buffer(0)]],
+    device float2* summary [[buffer(1)]],
+    constant uint& heads [[buffer(2)]],
+    constant uint& key_sequence [[buffer(3)]],
+    constant uint& query_start [[buffer(4)]],
+    constant uint& key_start [[buffer(5)]],
+    constant uint& window [[buffer(6)]],
+    constant uint& total [[buffer(7)]],
+    uint row [[thread_position_in_grid]])
+{
+    if (row >= total) return;
+    uint position = row / heads;
+    uint absolute = query_start + position;
+    uint last = min(absolute - key_start, key_sequence - 1);
+    uint first = 0;
+    if (window != 0) {
+        uint start = absolute >= window - 1 ? absolute - (window - 1) : 0;
+        first = start > key_start ? start - key_start : 0;
+        first = min(first, last);
+    }
+    float maximum = -INFINITY;
+    for (uint j = first; j <= last; ++j) {
+        maximum = max(maximum, bf16_load(scores[row * key_sequence + j]));
+    }
+    float denominator = 0.0f;
+    for (uint j = first; j <= last; ++j) {
+        denominator += exp(bf16_load(scores[row * key_sequence + j]) - maximum);
+    }
+    summary[row] = float2(maximum, denominator);
+}
+
+kernel void bf16_attention_values(
+    device const ushort* values [[buffer(0)]],
+    device const ushort* scores [[buffer(1)]],
+    device const float2* summary [[buffer(2)]],
     device ushort* output [[buffer(3)]],
     constant uint& heads [[buffer(4)]],
     constant uint& kv_heads [[buffer(5)]],
@@ -82,10 +155,11 @@ kernel void bf16_attention(
     uint id [[thread_position_in_grid]])
 {
     if (id >= total) return;
-    uint position = id / heads;
-    uint head = id % heads;
-    uint groups = heads / kv_heads;
-    uint kv_head = head / groups;
+    uint row = id / width;
+    uint c = id % width;
+    uint position = row / heads;
+    uint head = row % heads;
+    uint kv_head = head / (heads / kv_heads);
     uint absolute = query_start + position;
     uint last = min(absolute - key_start, key_sequence - 1);
     uint first = 0;
@@ -94,40 +168,15 @@ kernel void bf16_attention(
         first = start > key_start ? start - key_start : 0;
         first = min(first, last);
     }
-    uint query_base = position * heads * width + head * width;
-    uint key_stride = kv_heads * width;
-    float maximum = -INFINITY;
+    float2 row_summary = summary[row];
+    float accumulator = 0.0f;
     for (uint j = first; j <= last; ++j) {
-        uint key_base = j * key_stride + kv_head * width;
-        float sum = 0.0f;
-        for (uint c = 0; c < width; ++c) {
-            sum += bf16_load(query[query_base + c]) * bf16_load(keys[key_base + c]);
-        }
-        maximum = max(maximum, bf16_load(bf16_rne(sum)));
+        float score = bf16_load(scores[row * key_sequence + j]);
+        float weight = bf16_load(bf16_rne(exp(score - row_summary.x) / row_summary.y));
+        uint key_base = j * (kv_heads * width) + kv_head * width;
+        accumulator += weight * bf16_load(values[key_base + c]);
     }
-    float denominator = 0.0f;
-    for (uint j = first; j <= last; ++j) {
-        uint key_base = j * key_stride + kv_head * width;
-        float sum = 0.0f;
-        for (uint c = 0; c < width; ++c) {
-            sum += bf16_load(query[query_base + c]) * bf16_load(keys[key_base + c]);
-        }
-        denominator += exp(bf16_load(bf16_rne(sum)) - maximum);
-    }
-    for (uint c = 0; c < width; ++c) {
-        float accumulator = 0.0f;
-        for (uint j = first; j <= last; ++j) {
-            uint key_base = j * key_stride + kv_head * width;
-            float sum = 0.0f;
-            for (uint i = 0; i < width; ++i) {
-                sum += bf16_load(query[query_base + i]) * bf16_load(keys[key_base + i]);
-            }
-            float weight = bf16_load(
-                bf16_rne(exp(bf16_load(bf16_rne(sum)) - maximum) / denominator));
-            accumulator += weight * bf16_load(values[key_base + c]);
-        }
-        output[query_base + c] = bf16_rne(accumulator);
-    }
+    output[id] = bf16_rne(accumulator);
 }
 
 // Split-half rotation with prepared BF16 factors: each product rounds to BF16
