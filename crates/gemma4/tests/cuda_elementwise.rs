@@ -139,6 +139,7 @@ fn layer_math_matches_the_archived_stages() {
         let attention_residual = tap(&artifact, &format!("{prefix}.post_attention_residual"));
         let ffn_norm = tap(&artifact, &format!("{prefix}.post_feedforward_norm"));
         let ffn_residual = tap(&artifact, &format!("{prefix}.post_feedforward_residual"));
+        let ple_norm = tap(&artifact, &format!("{prefix}.ple_norm"));
         let per_layer = tap(&artifact, &format!("{prefix}.per_layer_input"));
         let output = tap(&artifact, &format!("{prefix}.output"));
         let gate = tap(&artifact, &format!("{prefix}.mlp_gate"));
@@ -152,7 +153,7 @@ fn layer_math_matches_the_archived_stages() {
             &attention_residual,
             &ffn_norm,
             &ffn_residual,
-            &per_layer,
+            &ple_norm,
             &output,
             &gate,
             &activated,
@@ -195,14 +196,16 @@ fn layer_math_matches_the_archived_stages() {
 
         let projection = tap(&artifact, "chat.0.ple_projection_norm");
         let lookup = tap(&artifact, "chat.0.ple_lookup");
-        let start = layer * width;
+        let ple_width = per_layer.len();
+        assert_eq!(ple_width, 256);
+        let start = layer * ple_width;
         let actual = run(
             &mut ops,
             &stream,
             &pool,
-            &projection[start..start + width],
+            &projection[start..start + ple_width],
             |ops, projection, output| {
-                let lookup = upload(&lookup[start..start + width], &stream, &pool);
+                let lookup = upload(&lookup[start..start + ple_width], &stream, &pool);
                 ops.ple_combine_into(projection, &lookup, output).unwrap();
                 let mut lookup = lookup;
                 lookup.close().unwrap();
