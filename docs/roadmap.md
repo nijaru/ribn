@@ -469,7 +469,8 @@ It keeps complete per-owner history and masks local spans rather than evicting t
 KV span policy, donor trimming, a serving executor, long-context behaviour and device
 parity remain open; no performance or serving claim follows. On Apple silicon, a first
 Metal (GPU, not ANE) slice now runs BF16 linear, RMS, causal/sliding attention, rotary
-and elementwise operations on real hardware with independent-reference tests; decoder
+and elementwise operations on real hardware with independent-reference tests, and the
+validated Gemma inventory uploads bitwise to one Metal device; per-layer decoder
 wiring and measurement are next.
 Then mixed-width local/global KV with donor spans pinned through shared-tail device reads. Use strongly typed model/backend state
 behind `GenerationExecutor`, not the current first-`kv()`/homogeneous-cache convenience

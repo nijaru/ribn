@@ -145,6 +145,13 @@ impl Gemma4CpuWeights {
         self.parameters.get(&id)
     }
 
+    /// Every active parameter in identifier order.
+    pub fn parameters(&self) -> impl Iterator<Item = (ParameterId, &CpuParameter)> {
+        self.parameters
+            .iter()
+            .map(|(&id, parameter)| (id, parameter))
+    }
+
     /// Decoder-layer parameter; inactive shared-tail roles are absent by design.
     /// # Errors
     /// Rejects an unknown layer/role instead of substituting another owner's bytes.

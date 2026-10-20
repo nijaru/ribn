@@ -10,10 +10,12 @@ publish = false
 [features]
 default = []
 cuda = ["dep:engine-core", "dep:engine-nvidia", "engine-nvidia/cuda", "dep:cudarc"]
+metal = ["dep:engine-metal"]
 
 [dependencies]
 engine-core = { path = "../core", optional = true }
 engine-nvidia = { path = "../nvidia", optional = true }
+engine-metal = { path = "../metal", optional = true }
 cudarc = { version = "0.19", optional = true, default-features = false, features = ["std", "cuda-13020", "dynamic-loading"] }
 ribn-hf = { path = "../hf" }
 ribn-safetensors = { path = "../safetensors" }

@@ -383,6 +383,7 @@ version = "0.0.0"
 dependencies = [
  "cudarc",
  "engine-core",
+ "engine-metal",
  "engine-nvidia",
  "minijinja",
  "minijinja-contrib",

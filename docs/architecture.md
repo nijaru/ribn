@@ -171,7 +171,8 @@ An Apple GPU path has started in `engine-metal`: macOS-only Metal compute pipeli
 for BF16 linear, grouped RMS, causal/sliding grouped-query attention, split-half
 rotary and the decoder's elementwise operations (add, multiply, scale, tanh-GELU and
 soft cap), compiled at runtime from checked-in MSL and driven by one device plus
-command queue. Tests on the
+command queue. The Gemma model crate uploads its validated BF16 inventory once to one
+Metal device, preserving encodings and the tied head; per-layer wiring is next. Tests on the
 M3 Max compare against an independent host reference, including exact dyadic products
 and attention spans plus bounded general operands; rotary and elementwise results are
 exact against their host references (GELU/soft cap inside declared FP32 bounds). This

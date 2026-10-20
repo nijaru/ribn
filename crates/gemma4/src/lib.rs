@@ -6,8 +6,12 @@
 
 #[cfg(feature = "cuda")]
 mod cuda;
+#[cfg(all(feature = "metal", target_os = "macos"))]
+mod metal;
 #[cfg(feature = "cuda")]
 pub use cuda::{Gemma4CudaError, Gemma4CudaLoadError, Gemma4CudaWeights};
+#[cfg(all(feature = "metal", target_os = "macos"))]
+pub use metal::Gemma4MetalWeights;
 
 mod config;
 mod continuation;
