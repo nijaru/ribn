@@ -787,6 +787,54 @@ failed-command hardware recovery were not injected; CPU oracle arithmetic and CU
 loading/execution were not changed. The diagnostic's phases are now source preflight,
 direct preparation and execution, rather than CPU materialization followed by upload.
 
+### Metal command-buffer profile and PLE batching experiment (2026-10-20)
+
+On `42df49a`, the direct Metal decoder (not an endpoint or runtime-scheduler benchmark)
+ran prompt prefixes 1/8/18/32/64 on the same M3 Max/package/toolchain, followed by three
+common teacher-forced continuations. Each cohort had one warmup and
+three measured repetitions; no measured samples were discarded. Temporary tracing
+read `GPUStartTime`/`GPUEndTime` after `waitUntilCompleted` and required terminal
+`Completed` status, finite timestamps and a positive start time. The installed Metal
+SDK documents these as host-time seconds bounding command-buffer GPU execution, not
+occupancy, kernel-only busy time or a stall-counter attribution.
+
+Every step issued **795 synchronous command buffers**. At 18-token history, median
+per-group sums for the first decode step were:
+
+| Operation | Commands | GPU interval sum | Method wall sum |
+| --- | ---: | ---: | ---: |
+| Linear | 344 | 49.17 ms | 113.63 ms |
+| RMS | 343 | 3.25 ms | 62.53 ms |
+| Rotary | 66 | 0.36 ms | 11.48 ms |
+| Attention (three kernels per buffer) | 42 | 2.11 ms | 10.23 ms |
+
+Group medians are not additive. Method clocks include allocation, encoding, commit
+and wait, but exclude model-side input uploads and output copies. Warmed decode at
+that history was about 209.75 ms untraced versus 224.22 ms traced. Timestamp reads and
+per-command logging perturb the measurement, so only **untraced** controls determined
+promotion. Longer prefill also has substantial CPU work outside these method clocks;
+this does not attribute the entire deficit to submission or transfer these proportions
+to CUDA.
+
+The bounded candidate normalized all independent token/layer PLE rows in one RMS
+call for chunks up to 64 tokens, preserving each row's reduction and BF16 arithmetic.
+It reduced command count to 754. Longer chunks retained layer-at-a-time normalization
+rather than multiplying normalization workspace by the layer count. The initial
+unbounded grouping was not eligible for promotion because of that workspace growth.
+Every full 262,144-element row stayed finite and bit-identical to earlier captures,
+including continuations and the independent archived greedy winners at 18 tokens.
+
+The predeclared gate was at least 3% warmed median decode improvement with no material
+prefill regression. Two untraced baseline runs yielded a pooled decode median of
+209.081 ms. The final bounded candidate's two run medians
+were 201.290 and 203.771 ms; its pooled median was 202.819 ms, **2.995% lower**, just
+below the gate and with meaningful run-to-run variation. Prefill medians did not regress.
+The candidate was **removed**, not promoted by rounding or relaxing the criterion.
+All tracing was removed too; no Rust implementation or test changes remain from this
+experiment. The next useful experiment is a concrete larger command chain with declared
+numerical and workspace bounds, not an assumption that another kernel variant fixes
+synchronous orchestration. No serving/SLO gain or hardware-failure recovery is claimed.
+
 ## Synthetic CPU benchmark
 
 ```sh

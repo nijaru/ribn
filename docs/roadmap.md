@@ -538,6 +538,10 @@ now also removes the full CPU inventory and parameter-sized upload copy from pre
 using at most 64 KiB of read/copy scratch
 ([measurement](../benchmarks/runtime-contract.md#direct-metal-source-loading-2026-10-20)).
 This is one synchronous load, not a global concurrent-loader grant.
+A [command-buffer profile](../benchmarks/runtime-contract.md#metal-command-buffer-profile-and-ple-batching-experiment-2026-10-20)
+now distinguishes repeated short-op synchronization from GPU intervals and model-side
+CPU work. Bounded PLE normalization batching missed its predeclared promotion gate
+and was removed; it is not a serving gain or an attribution of CUDA costs.
 Sampling and eviction remain open. Shader/pipeline failures now fail both primitive
 and materialization tests rather than being mistaken for missing hardware.
 Then mixed-width local/global KV with donor spans pinned through shared-tail device reads. Use strongly typed model/backend state
