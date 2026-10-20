@@ -220,10 +220,10 @@ fn layer_math_matches_the_archived_stages() {
             &pool,
             &ffn_residual,
             |ops, residual, output| {
-                let per_layer = upload(&per_layer, &stream, &pool);
-                ops.add_into(residual, &per_layer, output).unwrap();
-                let mut per_layer = per_layer;
-                per_layer.close().unwrap();
+                let ple_norm = upload(&ple_norm, &stream, &pool);
+                ops.add_into(residual, &ple_norm, output).unwrap();
+                let mut ple_norm = ple_norm;
+                ple_norm.close().unwrap();
             },
         );
         assert_eq!(actual.len(), width);
