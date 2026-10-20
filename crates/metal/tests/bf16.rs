@@ -4,7 +4,10 @@
 //! stays usable on hosts that have no Apple GPU.
 #![cfg(target_os = "macos")]
 
-use engine_metal::{MetalAttentionConfig, MetalBf16Error, MetalBf16Executor, MetalLinearShape};
+use engine_metal::{
+    MetalAttentionConfig, MetalBf16Error, MetalBf16Executor, MetalLinearShape, MetalProjectionNorm,
+    MetalRotaryFactors,
+};
 
 /// Missing hardware skips; any compilation or pipeline failure must fail the test.
 fn executor() -> Option<MetalBf16Executor> {
@@ -323,7 +326,17 @@ fn linear_rms_preserves_standalone_bits_and_grouping() {
                 .rms_norm(&projected, rows * columns / width, width, 1e-6, scale)
                 .unwrap();
             let actual = executor
-                .linear_rms(&input, &weight, shape, width, 1e-6, scale)
+                .project_normalized(
+                    &input,
+                    &weight,
+                    shape,
+                    MetalProjectionNorm {
+                        width,
+                        epsilon: 1e-6,
+                        scale,
+                        rotary: None,
+                    },
+                )
                 .unwrap();
             assert_eq!(actual.elements(), rows * columns);
             assert_eq!(
@@ -357,7 +370,17 @@ fn linear_rms_rejects_invalid_whole_chains_and_recovers() {
         (2, 1e-6, Some(&weight)),
     ] {
         assert!(matches!(
-            executor.linear_rms(&input, &weight, shape, width, epsilon, scale),
+            executor.project_normalized(
+                &input,
+                &weight,
+                shape,
+                MetalProjectionNorm {
+                    width,
+                    epsilon,
+                    scale,
+                    rotary: None
+                }
+            ),
             Err(MetalBf16Error::Shape(_))
         ));
     }
@@ -368,7 +391,17 @@ fn linear_rms_rejects_invalid_whole_chains_and_recovers() {
     };
     assert!(
         executor
-            .linear_rms(&input, &weight, overflow, 2, 1e-6, None)
+            .project_normalized(
+                &input,
+                &weight,
+                overflow,
+                MetalProjectionNorm {
+                    width: 2,
+                    epsilon: 1e-6,
+                    scale: None,
+                    rotary: None
+                }
+            )
             .is_err()
     );
     assert_eq!(input.bits(), input_bits);
@@ -376,9 +409,148 @@ fn linear_rms_rejects_invalid_whole_chains_and_recovers() {
     let projected = executor.linear(&input, &weight, shape).unwrap();
     let expected = executor.rms_norm(&projected, 2, 2, 1e-6, None).unwrap();
     let recovered = executor
-        .linear_rms(&input, &weight, shape, 2, 1e-6, None)
+        .project_normalized(
+            &input,
+            &weight,
+            shape,
+            MetalProjectionNorm {
+                width: 2,
+                epsilon: 1e-6,
+                scale: None,
+                rotary: None,
+            },
+        )
         .unwrap();
     assert_eq!(recovered.bits(), expected.bits());
+}
+
+#[test]
+fn normalized_rotary_projection_preserves_three_standalone_calls() {
+    let Some(executor) = executor() else {
+        return;
+    };
+    for (rows, heads, width, inner) in [
+        (1, 2, 256, 256),
+        (8, 3, 16, 256),
+        (9, 5, 6, 7),
+        (64, 2, 256, 256),
+        (66, 1, 512, 256),
+    ] {
+        let columns = heads * width;
+        let input = executor.upload(&operands(rows * inner, 11)).unwrap();
+        let weight = executor.upload(&operands(columns * inner, 29)).unwrap();
+        let scale = executor.upload(&operands(width, 13)).unwrap();
+        // Distinct, non-symmetric halves protect both factor bindings and row/head strides.
+        let cosine = executor.upload(&operands(rows * width, 31)).unwrap();
+        let sine = executor.upload(&operands(rows * width, 47)).unwrap();
+        let shape = MetalLinearShape {
+            rows,
+            columns,
+            inner,
+        };
+        let projected = executor.linear(&input, &weight, shape).unwrap();
+        for scale in [None, Some(&scale)] {
+            let normalized = executor
+                .rms_norm(&projected, rows * heads, width, 1e-6, scale)
+                .unwrap();
+            let expected = executor
+                .rotary_apply(&normalized, &cosine, &sine, rows, heads, width)
+                .unwrap();
+            let actual = executor
+                .project_normalized(
+                    &input,
+                    &weight,
+                    shape,
+                    MetalProjectionNorm {
+                        width,
+                        epsilon: 1e-6,
+                        scale,
+                        rotary: Some(MetalRotaryFactors {
+                            heads,
+                            cosine: &cosine,
+                            sine: &sine,
+                        }),
+                    },
+                )
+                .unwrap();
+            assert_eq!(
+                actual.bits(),
+                expected.bits(),
+                "{shape:?}, heads={heads}, width={width}"
+            );
+        }
+    }
+}
+
+#[test]
+fn normalized_projection_rejects_bad_rotation_before_publication() {
+    let Some(executor) = executor() else {
+        return;
+    };
+    let input = executor.upload(&operands(8, 11)).unwrap();
+    let weight = executor.upload(&operands(16, 29)).unwrap();
+    let factors = executor.upload(&operands(4, 31)).unwrap();
+    let short = executor.upload(&operands(2, 47)).unwrap();
+    let shape = MetalLinearShape {
+        rows: 2,
+        columns: 4,
+        inner: 4,
+    };
+    for (heads, cosine, sine) in [
+        (0, &factors, &factors),
+        (1, &factors, &factors),
+        (2, &short, &factors),
+        (2, &factors, &short),
+    ] {
+        let norm = MetalProjectionNorm {
+            width: 2,
+            epsilon: 1e-6,
+            scale: None,
+            rotary: Some(MetalRotaryFactors {
+                heads,
+                cosine,
+                sine,
+            }),
+        };
+        assert!(matches!(
+            executor.project_normalized(&input, &weight, shape, norm),
+            Err(MetalBf16Error::Shape(_))
+        ));
+    }
+    let normalized = executor
+        .project_normalized(
+            &input,
+            &weight,
+            shape,
+            MetalProjectionNorm {
+                width: 2,
+                epsilon: 1e-6,
+                scale: None,
+                rotary: None,
+            },
+        )
+        .unwrap();
+    let expected = executor
+        .rotary_apply(&normalized, &factors, &factors, 2, 2, 2)
+        .unwrap();
+    let actual = executor
+        .project_normalized(
+            &input,
+            &weight,
+            shape,
+            MetalProjectionNorm {
+                width: 2,
+                epsilon: 1e-6,
+                scale: None,
+                rotary: Some(MetalRotaryFactors {
+                    heads: 2,
+                    cosine: &factors,
+                    sine: &factors,
+                }),
+            },
+        )
+        .unwrap();
+    assert_eq!(actual.bits(), expected.bits());
 }
 
 #[test]

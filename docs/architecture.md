@@ -198,9 +198,9 @@ also provide borrowed CPU embedding rows; preparation constructs neither a full 
 inventory nor a parameter-sized encoded upload copy. A host-orchestrated
 decoder runs the full step: matmuls, normalization, rotary and attention execute on
 the GPU while embeddings, elementwise algebra and the soft cap reuse the validated
-host primitives. Adjacent linear → RMS operations share one serial command buffer and
-a private BF16 projection, avoiding that intermediate's host round trip without changing
-either kernel or rounding boundary. FFN input normalization and its gate/up projections
+host primitives. Normalized projections share one serial command buffer and private
+BF16 intermediates. Query/key projections also rotate in that command, sharing immutable
+per-position factors without changing kernels or rounding boundaries. FFN input normalization and its gate/up projections
 also share one command and a private normalized input, returning both completed outputs.
 Output publication requires successful completion;
 remaining activation transfers and CPU elementwise work still limit the path.

@@ -1,6 +1,7 @@
 //! Fixed projection chains using the existing linear and RMS kernels.
 
-use super::{MetalBf16Buffer, MetalBf16Error, MetalBf16Executor, THREADS};
+use super::rotary::RotaryGeometry;
+use super::{MetalBf16Buffer, MetalBf16Error, MetalBf16Executor, MetalRotaryFactors, THREADS};
 use metal::{BufferRef, ComputeCommandEncoderRef, MTLSize};
 
 /// Row-major `input[rows, inner] × weight[columns, inner]ᵀ` geometry.
@@ -9,6 +10,16 @@ pub struct MetalLinearShape {
     pub rows: usize,
     pub columns: usize,
     pub inner: usize,
+}
+
+/// Normalization and optional per-head rotation after a BF16 projection.
+#[derive(Clone, Copy)]
+pub struct MetalProjectionNorm<'a> {
+    pub width: usize,
+    pub epsilon: f32,
+    pub scale: Option<&'a MetalBf16Buffer>,
+    /// When present, each normalization group is one rotary head.
+    pub rotary: Option<MetalRotaryFactors<'a>>,
 }
 
 struct LinearGeometry {
@@ -170,22 +181,19 @@ impl MetalBf16Executor {
         })
     }
 
-    /// Project, then normalize contiguous groups of `width` in one serial command.
+    /// Project, normalize contiguous groups and optionally rotate each head.
     ///
-    /// The private BF16 projection preserves the standalone rounding boundary.
-    /// Both output-sized buffers stay owned until terminal GPU completion; only
-    /// a successfully initialized normalized output is published.
+    /// Existing kernels share a serial command; their BF16 boundaries remain.
+    /// All private intermediates and inputs stay owned through terminal completion.
     /// # Errors
-    /// Validates both operations before allocation/submission. Rejects invalid
-    /// shapes/epsilon/scale, allocation failure or unsuccessful GPU execution.
-    pub fn linear_rms(
+    /// Validates the complete chain before allocation/submission. Rejects invalid
+    /// shapes/epsilon/scale/factors, allocation failure or unsuccessful execution.
+    pub fn project_normalized(
         &self,
         input: &MetalBf16Buffer,
         weight: &MetalBf16Buffer,
         shape: MetalLinearShape,
-        width: usize,
-        epsilon: f32,
-        scale: Option<&MetalBf16Buffer>,
+        norm: MetalProjectionNorm<'_>,
     ) -> Result<MetalBf16Buffer, MetalBf16Error> {
         let linear = LinearGeometry::new(
             shape,
@@ -195,19 +203,40 @@ impl MetalBf16Executor {
         )?;
         let rows = linear
             .elements()
-            .checked_div(width)
+            .checked_div(norm.width)
             .ok_or_else(|| MetalBf16Error::Shape("RMS width must be positive".into()))?;
-        let rms = RmsGeometry::new(linear.elements(), rows, width, epsilon, scale)?;
+        let rms = RmsGeometry::new(
+            linear.elements(),
+            rows,
+            norm.width,
+            norm.epsilon,
+            norm.scale,
+        )?;
+        let rotation = norm
+            .rotary
+            .map(|factors| {
+                RotaryGeometry::new(linear.elements(), shape.rows, norm.width, factors)
+                    .map(|geometry| (factors, geometry))
+            })
+            .transpose()?;
         let projected = self.allocate_shared(linear.elements() * 2)?;
-        let output = self.allocate_shared(linear.elements() * 2)?;
+        let normalized = self.allocate_shared(linear.elements() * 2)?;
+        let rotation = rotation
+            .map(|(factors, geometry)| {
+                self.allocate_shared(linear.elements() * 2)
+                    .map(|output| (factors, geometry, output))
+            })
+            .transpose()?;
         let command = self.command()?;
-        // The default encoder is serial: the RMS dispatch observes all writes
-        // from linear, without a CPU readback or a concurrent-encoder barrier.
         let encoder = Self::compute_encoder(&command)?;
         self.encode_linear(&encoder, &input.buffer, &weight.buffer, &projected, &linear);
-        self.encode_rms(&encoder, &projected, &output, scale, &rms);
+        self.encode_rms(&encoder, &projected, &normalized, norm.scale, &rms);
+        if let Some((factors, geometry, output)) = &rotation {
+            self.encode_rotary(&encoder, &normalized, output, *factors, geometry);
+        }
         encoder.end_encoding();
-        Self::submit(&command, "linear/RMS")?;
+        Self::submit(&command, "normalized projection")?;
+        let output = rotation.map_or(normalized, |(_, _, output)| output);
         Ok(MetalBf16Buffer {
             buffer: output,
             elements: linear.elements(),

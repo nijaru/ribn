@@ -11,4 +11,5 @@ mod bf16;
 #[cfg(target_os = "macos")]
 pub use bf16::{
     MetalAttentionConfig, MetalBf16Buffer, MetalBf16Error, MetalBf16Executor, MetalLinearShape,
+    MetalProjectionNorm, MetalRotaryFactors,
 };

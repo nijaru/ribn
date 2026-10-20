@@ -947,6 +947,59 @@ clippy. No new unsafe interop or asynchronous ownership was introduced. Physical
 null-handle and hardware-fault recovery remain unqualified; CPU oracle and CUDA code
 are unchanged, and the shut-down desktop was not contacted.
 
+### Metal rotary projection-chain qualification (2026-10-20)
+
+Baseline `a6e9fb4` and the normalized projection with optional rotary used the same
+M3 Max, package, reference and toolchain. Query/key projections now encode linear,
+RMS and split-half rotary in one serial command. The kernels and both BF16 boundaries
+are unchanged. Full factor/head/row geometry validates before any output allocation;
+rotation owns a third output-sized private buffer through terminal completion. The
+model prepares immutable factors once per layer and shares them across query/key
+consumers. Standalone and chained rotation share one validator/encoder; the obsolete
+`linear_rms` API/callers were replaced, not retained as compatibility wrappers.
+This removes another **66 waits**, leaving **429 command buffers per step**. It is
+not a new kernel-selection policy or universal graph.
+
+The predeclared gate was exact finite full logits, at least 5% warmed median decode
+improvement, and no material prefill or memory regression. Three baseline and three
+candidate processes used one warmup plus three measured trials per prefix and three
+common continuation steps, with bracketed controls and all measured samples retained:
+
+| Prompt tokens | Baseline prefill | Chain prefill | Baseline decode | Chain decode |
+| ---: | ---: | ---: | ---: | ---: |
+| 1 | 157.71 ms | 144.12 ms | 158.93 ms | 143.92 ms |
+| 8 | 195.60 ms | 185.57 ms | 157.95 ms | 145.37 ms |
+| 18 | 298.74 ms | 286.61 ms | 156.71 ms | 146.39 ms |
+| 32 | 460.29 ms | 445.87 ms | 157.28 ms | 146.50 ms |
+| 64 | 764.82 ms | 771.32 ms | 159.48 ms | 151.19 ms |
+
+Pooled warmed decode median: **157.907 → 145.906 ms**, **7.60% lower**. Run medians
+were 159.87/157.70/157.87 ms baseline versus 149.03/144.88/145.61 ms candidate.
+The first baseline and candidate processes had large, unexplained timing swings:
+measured decode samples reached about 396 ms in each, and candidate 64-token prefill
+included 854/854/1762 ms. These were not discarded or attributed to occupancy,
+stalls, thermal state or another application without evidence. The 64-token pooled
+prefill median rose **0.85%**; that is a nonmaterial observed trade-off for promotion,
+not an established prefill improvement. Later controls reproduce the decode direction,
+but these noisy diagnostics are not serving/SLO evidence or a CUDA result.
+
+All full 262,144-element rows remained finite and bit-identical for
+1/8/18/32/64/65/511/512/513-token prefixes and three common continuations. Archived
+four-token winners and real decoder reset/chunks 1/7, executor/text and CLI gates
+remained unchanged. New primitive cases compare the complete chain against three
+standalone calls, including both non-symmetric factor halves, multiple heads,
+scaled/unscaled RMS, paired/unpaired rows and inner/column tails. Bad head/factor
+geometry rejects without publication and a subsequent valid call recovers.
+
+Short-probe maximum RSS was 14.020–14.024 GiB baseline versus 14.013–14.028 GiB
+candidate; larger-prefix probes peaked at 14.239 versus 14.226 GiB. No material
+peak-RSS regression was observed; this is not a concurrent memory grant. All 397
+workspace tests, 17 release Metal primitive tests, materialization and ignored
+real-model gates passed, along with boundaries, formatting and default/CUDA/targeted-
+Metal clippy. Independent source review found no introduced issue. Hardware failure,
+null-handle/OOM injection and recovery remain unqualified. CPU oracle/CUDA code are
+unchanged, and the shut-down desktop was not contacted.
+
 ## Synthetic CPU benchmark
 
 ```sh

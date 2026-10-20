@@ -917,7 +917,12 @@ standalone calls. Validate the whole linear geometry, grouped RMS extent, epsilo
 scale and u32 kernel offsets before allocating outputs or encoding either operation.
 Allocate a private projection and normalized output, each `rows × columns` BF16
 elements. These are concrete per-call native buffers, not a universal graph, a shared
-workspace grant or an asynchronous output promise.
+workspace grant or an asynchronous output promise. A normalized projection can also
+rotate each RMS group as one head. Validate `heads × width == columns`, positive/even
+head width and both full `[rows, width]` factor arrays, including both halves, before
+any allocation/submission. Rotation adds a third output-sized private buffer and keeps
+both BF16 materialization boundaries. Query/key consumers may share immutable factors;
+those factors stay owned through each consuming command's terminal wait.
 
 A second fixed chain normalizes the input and projects it through two same-shaped
 weights. Validate both weights and RMS before allocation. Its private normalized
@@ -928,7 +933,7 @@ deliberately retaining both owners alongside both CPU copies.
 
 All dispatches use one default serial compute encoder. Each consumer observes its
 producer's writes without a host readback/upload; no published immutable buffer is modified.
-The call retains inputs, weights, optional scale and all private allocations through
+The call retains inputs, weights, optional scale/factors and all private allocations through
 `waitUntilCompleted`. That synchronous Metal wait establishes terminal completion,
 including aborted execution. Status must then be `Completed` before publishing any
 output; other statuses return an execution error, not an initialized result. Queue,

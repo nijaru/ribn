@@ -9,9 +9,11 @@ use std::fmt;
 
 mod loading;
 mod projection;
+mod rotary;
 mod submission;
 
-pub use projection::MetalLinearShape;
+pub use projection::{MetalLinearShape, MetalProjectionNorm};
+pub use rotary::MetalRotaryFactors;
 
 /// Metal preparation or execution failure.
 #[derive(Debug)]
@@ -373,77 +375,6 @@ impl MetalBf16Executor {
         Ok(MetalBf16Buffer {
             buffer: output,
             elements: query.elements,
-        })
-    }
-
-    /// Split-half rotation with prepared BF16 factors `[rows, width]`.
-    ///
-    /// Channel `j` pairs with `j + width/2`; each product rounds to BF16 before
-    /// the FP32 addition, and both factor halves are read.
-    /// # Errors
-    /// Rejects odd/zero widths, non-whole heads or disagreeing buffer lengths.
-    pub fn rotary_apply(
-        &self,
-        input: &MetalBf16Buffer,
-        cosine: &MetalBf16Buffer,
-        sine: &MetalBf16Buffer,
-        rows: usize,
-        heads: usize,
-        width: usize,
-    ) -> Result<MetalBf16Buffer, MetalBf16Error> {
-        if rows == 0 || heads == 0 || width == 0 || !width.is_multiple_of(2) {
-            return Err(MetalBf16Error::Shape(
-                "rotary needs positive rows/heads and an even width".into(),
-            ));
-        }
-        let columns = heads
-            .checked_mul(width)
-            .ok_or_else(|| MetalBf16Error::Shape("rotary head stride overflow".into()))?;
-        let input_length = rows
-            .checked_mul(columns)
-            .ok_or_else(|| MetalBf16Error::Shape("rotary input overflow".into()))?;
-        let factor_length = rows
-            .checked_mul(width)
-            .ok_or_else(|| MetalBf16Error::Shape("rotary factor overflow".into()))?;
-        let half = width / 2;
-        let pairs = rows
-            .checked_mul(heads)
-            .and_then(|n| n.checked_mul(half))
-            .ok_or_else(|| MetalBf16Error::Shape("rotary pair count overflow".into()))?;
-        if input.elements != input_length
-            || cosine.elements != factor_length
-            || sine.elements != factor_length
-        {
-            return Err(MetalBf16Error::Shape(
-                "rotary buffers disagree with the requested shape".into(),
-            ));
-        }
-        let output = self.allocate_shared(input_length * 2)?;
-        let command = self.command()?;
-        let encoder = Self::compute_encoder(&command)?;
-        encoder.set_compute_pipeline_state(&self.rotary);
-        encoder.set_buffer(0, Some(&input.buffer), 0);
-        encoder.set_buffer(1, Some(&cosine.buffer), 0);
-        encoder.set_buffer(2, Some(&sine.buffer), 0);
-        encoder.set_buffer(3, Some(&output), 0);
-        let columns = u32::try_from(columns)
-            .map_err(|_| MetalBf16Error::Shape("columns exceed u32".into()))?;
-        let width =
-            u32::try_from(width).map_err(|_| MetalBf16Error::Shape("width exceeds u32".into()))?;
-        let pairs = u32::try_from(pairs)
-            .map_err(|_| MetalBf16Error::Shape("rotary pairs exceed u32".into()))?;
-        encoder.set_bytes(4, 4, (&raw const columns).cast());
-        encoder.set_bytes(5, 4, (&raw const width).cast());
-        encoder.set_bytes(6, 4, (&raw const pairs).cast());
-        encoder.dispatch_threads(
-            MTLSize::new(u64::from(pairs), 1, 1),
-            MTLSize::new(u64::from(pairs).min(256), 1, 1),
-        );
-        encoder.end_encoding();
-        Self::submit(&command, "rotary")?;
-        Ok(MetalBf16Buffer {
-            buffer: output,
-            elements: input_length,
         })
     }
 

@@ -104,7 +104,9 @@ impl std::fmt::Debug for Gemma4MetalWeights {
 
 use crate::AttentionKind;
 use crate::cpu::{add, argmax, factors, gelu_tanh, multiply, ple_combine, scale, softcap};
-use engine_metal::{MetalAttentionConfig, MetalBf16Error, MetalLinearShape};
+use engine_metal::{
+    MetalAttentionConfig, MetalBf16Error, MetalLinearShape, MetalProjectionNorm, MetalRotaryFactors,
+};
 
 /// Host orchestration for one Metal decoder step.
 struct MetalOps<'a> {
@@ -155,19 +157,17 @@ impl MetalOps<'_> {
         Ok(output.bits())
     }
 
-    fn linear_rms(
+    fn project_normalized(
         &self,
         input: &[u16],
         rows: usize,
         weight: &MetalBf16Buffer,
-        width: usize,
-        epsilon: f32,
-        scale: Option<&MetalBf16Buffer>,
+        norm: MetalProjectionNorm<'_>,
     ) -> Result<Vec<u16>, Gemma4Error> {
         let (buffer, shape) = self.linear_input(input, rows, weight)?;
         let output = self
             .executor
-            .linear_rms(&buffer, weight, shape, width, epsilon, scale)
+            .project_normalized(&buffer, weight, shape, norm)
             .map_err(|error| metal_error(&error))?;
         Ok(output.bits())
     }
@@ -212,32 +212,22 @@ impl MetalOps<'_> {
         Ok(output.bits())
     }
 
-    fn rotary(
+    fn rotary_factors(
         &self,
-        input: &[u16],
-        rows: usize,
-        heads: usize,
-        width: usize,
-        cosine: &[u16],
-        sine: &[u16],
-    ) -> Result<Vec<u16>, Gemma4Error> {
-        let input = self
-            .executor
-            .upload(input)
-            .map_err(|error| metal_error(&error))?;
+        config: &Gemma4Config,
+        layer: usize,
+        positions: &[u32],
+    ) -> Result<(MetalBf16Buffer, MetalBf16Buffer), Gemma4Error> {
+        let (cosine, sine) = factors(config, layer, positions)?;
         let cosine = self
             .executor
-            .upload(cosine)
+            .upload(&cosine)
             .map_err(|error| metal_error(&error))?;
         let sine = self
             .executor
-            .upload(sine)
+            .upload(&sine)
             .map_err(|error| metal_error(&error))?;
-        let output = self
-            .executor
-            .rotary_apply(&input, &cosine, &sine, rows, heads, width)
-            .map_err(|error| metal_error(&error))?;
-        Ok(output.bits())
+        Ok((cosine, sine))
     }
 
     fn attention(
@@ -610,33 +600,48 @@ fn attention_forward(
         epsilon,
         Some(metal.layer(layer, LayerParameter::InputNorm)?),
     )?;
-    let queries = ops.linear_rms(
+    let (cosine, sine) = ops.rotary_factors(config, layer, positions)?;
+    let queries = ops.project_normalized(
         &normed,
         sequence,
         metal.layer(layer, LayerParameter::Query)?,
-        width,
-        epsilon,
-        Some(metal.layer(layer, LayerParameter::QueryNorm)?),
+        MetalProjectionNorm {
+            width,
+            epsilon,
+            scale: Some(metal.layer(layer, LayerParameter::QueryNorm)?),
+            rotary: Some(MetalRotaryFactors {
+                heads,
+                cosine: &cosine,
+                sine: &sine,
+            }),
+        },
     )?;
-    let (cosine, sine) = factors(config, layer, positions)?;
-    let queries = ops.rotary(&queries, sequence, heads, width, &cosine, &sine)?;
     if geometry.kv_owner == layer {
-        let keys = ops.linear_rms(
+        let keys = ops.project_normalized(
             &normed,
             sequence,
             metal.layer(layer, LayerParameter::Key)?,
-            width,
-            epsilon,
-            Some(metal.layer(layer, LayerParameter::KeyNorm)?),
+            MetalProjectionNorm {
+                width,
+                epsilon,
+                scale: Some(metal.layer(layer, LayerParameter::KeyNorm)?),
+                rotary: Some(MetalRotaryFactors {
+                    heads: kv_heads,
+                    cosine: &cosine,
+                    sine: &sine,
+                }),
+            },
         )?;
-        let keys = ops.rotary(&keys, sequence, kv_heads, width, &cosine, &sine)?;
-        let values = ops.linear_rms(
+        let values = ops.project_normalized(
             &normed,
             sequence,
             metal.layer(layer, LayerParameter::Value)?,
-            width,
-            epsilon,
-            None,
+            MetalProjectionNorm {
+                width,
+                epsilon,
+                scale: None,
+                rotary: None,
+            },
         )?;
         let cache = caches[layer]
             .as_mut()
@@ -664,13 +669,16 @@ fn attention_forward(
         position,
         0,
     )?;
-    let normed = ops.linear_rms(
+    let normed = ops.project_normalized(
         &attended,
         sequence,
         metal.layer(layer, LayerParameter::AttentionOutput)?,
-        hidden_size,
-        epsilon,
-        Some(metal.layer(layer, LayerParameter::PostAttentionNorm)?),
+        MetalProjectionNorm {
+            width: hidden_size,
+            epsilon,
+            scale: Some(metal.layer(layer, LayerParameter::PostAttentionNorm)?),
+            rotary: None,
+        },
     )?;
     add(hidden, &normed)
 }
@@ -699,13 +707,16 @@ fn feedforward_forward(
         Some(metal.layer(layer, LayerParameter::PreFeedforwardNorm)?),
     )?;
     let product = multiply(&gelu_tanh(&gate)?, &up)?;
-    let normed = ops.linear_rms(
+    let normed = ops.project_normalized(
         &product,
         sequence,
         metal.layer(layer, LayerParameter::Down)?,
-        hidden_size,
-        epsilon,
-        Some(metal.layer(layer, LayerParameter::PostFeedforwardNorm)?),
+        MetalProjectionNorm {
+            width: hidden_size,
+            epsilon,
+            scale: Some(metal.layer(layer, LayerParameter::PostFeedforwardNorm)?),
+            rotary: None,
+        },
     )?;
     let hidden = add(&residual, &normed)?;
     let residual = hidden.clone();
@@ -715,13 +726,16 @@ fn feedforward_forward(
         metal.layer(layer, LayerParameter::PleGate)?,
     )?;
     let product = multiply(&gelu_tanh(&gate)?, per_layer)?;
-    let normed = ops.linear_rms(
+    let normed = ops.project_normalized(
         &product,
         sequence,
         metal.layer(layer, LayerParameter::PleProjection)?,
-        hidden_size,
-        epsilon,
-        Some(metal.layer(layer, LayerParameter::PostPleNorm)?),
+        MetalProjectionNorm {
+            width: hidden_size,
+            epsilon,
+            scale: Some(metal.layer(layer, LayerParameter::PostPleNorm)?),
+            rotary: None,
+        },
     )?;
     let hidden = add(&residual, &normed)?;
     let scalar = metal.layer(layer, LayerParameter::LayerScalar)?.bits();

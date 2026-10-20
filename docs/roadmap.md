@@ -546,7 +546,9 @@ The subsequent [fixed linear → RMS chain](../benchmarks/runtime-contract.md#me
 keeps the BF16 projection on device and removes its intermediate readback/upload and
 216 synchronous waits per step. The [FFN input chain](../benchmarks/runtime-contract.md#metal-ffn-input-chain-qualification-2026-10-20)
 now removes another 84 waits by sharing normalization across the gate/up projections.
-Other activation transfers and CPU elementwise work remain; no universal graph or
+The [query/key rotary chain](../benchmarks/runtime-contract.md#metal-rotary-projection-chain-qualification-2026-10-20)
+removes another 66 waits while preserving both intermediate BF16 boundaries and sharing
+read-only factors. Other activation transfers and CPU elementwise work remain; no universal graph or
 CUDA policy was introduced.
 Sampling and eviction remain open. Shader/pipeline failures now fail both primitive
 and materialization tests rather than being mistaken for missing hardware.
