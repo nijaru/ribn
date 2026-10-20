@@ -4,8 +4,8 @@ A Rust-first, server-first model inference engine.
 
 Ribn targets competitive throughput, latency, memory efficiency and serving reliability,
 with broad support for common models and hardware. The current implementation is an
-experimental Qwen GGUF/CUDA autoregressive path and a reference-qualified BERT encoder
-fixture. Those are qualification workloads, not the product boundary. There is no
+experimental Qwen GGUF/CUDA autoregressive path, an experimental Gemma 4 SafeTensors
+decoder on host CPU and Apple Metal, and a reference-qualified BERT encoder fixture. Those are qualification workloads, not the product boundary. There is no
 general model loader or claim of state-of-the-art performance yet. The initial HTTP
 adapter exposes a bounded loopback completion/chat subset.
 
@@ -61,6 +61,9 @@ health/metrics and shutdown. Non-local exposure is unsupported.
 - `ribn-text` adds raw/chat/token input, bounded preprocessing, incremental UTF-8
   decoding and ordered bounded-window offline batching. `TextModel` is cloneable;
   `TextOwner` owns shutdown. CUDA assembly still selects Qwen GGUF.
+- `engine-gemma4` is the Gemma 4 second decoder: package preflight, a host CPU BF16
+  decoder and a synchronous greedy executor; `engine-metal` supplies its macOS Metal
+  primitives. Experimental and greedy-only, not a competitive backend.
 - `ribn-server` is the bounded HTTP adapter over the text facade; it owns transport
   tasks and retains the text shutdown owner for cleanup retry, not a second scheduler.
 - `ribn-batch` is the non-AR batching runtime used by the BERT encoder. Its results

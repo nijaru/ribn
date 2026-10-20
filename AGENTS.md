@@ -24,6 +24,9 @@ possible later execution system, not inference policy.
   repair is easiest to finish. When device access is unavailable, advance concrete
   baseline or real-model integration prerequisites; do not accumulate unqualified
   device changes or substitute unrelated subsystem completion for competitive evidence.
+- Gemma 4 E4B is the real second decoder. The host CPU decoder is its correctness oracle;
+  macOS Metal is integration evidence, not CUDA support. CUDA has qualified linear, RMS
+  and rotary components only.
 
 ## Authority and working reference
 
@@ -112,7 +115,9 @@ changing lifecycle, preparation, resource ownership or concurrent application ac
 - GDN chunk scan remains opt-in while its full-model gate fails. Do not call it harmless
   or widen tolerances based on existing reference error.
 - Do not repeat measured losers without new evidence: `MAX_BATCH_ROWS=4`, shared IQ4
-  codebook, pre-elimination `decayed_keys`. See benchmark evidence for conditions.
+  codebook, pre-elimination `decayed_keys`, transposed Metal weight upload and
+  warp-cooperative Metal linear reduction. The latter two were numerically acceptable
+  but slower than the four-wide exact kernel. See benchmark evidence for conditions.
 - Serialize full-model device tests on `ssh desktop`, one model process at a time, and
   check GPU utilization before launching. Its login shell is fish, so send multi-line
   scripts with `ssh desktop bash -s`. Preserve its untracked `cuda-rust-probe/simt/*`.
@@ -129,6 +134,11 @@ cargo fmt --all -- --check
 cargo test --workspace --locked
 cargo clippy --workspace --all-targets --locked -- -D warnings
 cargo clippy --workspace --all-targets --locked --features cuda -- -D warnings
+# macOS Metal second decoder (ignored tests are release-only; a missing device is the
+# only permitted skip, never a kernel/executor build failure):
+cargo clippy -p engine-gemma4 -p ribn-text -p ribn-cli --all-targets --locked --features metal -- -D warnings
+RIBN_GEMMA_PACKAGE=<package> RIBN_GEMMA_REFERENCE=<reference.json> \
+  cargo test -p engine-gemma4 --features metal --release --test metal_decoder -- --ignored --test-threads=1
 ```
 
 Capture actual exit codes; pipes must not mask failures. Text behavior is host-testable;

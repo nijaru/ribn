@@ -183,16 +183,16 @@ real Gemma tokenizer and chat assets. `Gemma4Executor` validates whole submissio
 shares loaded weights across admitted sequences, runs the decoder synchronously and
 reports one completion per submitted row; a fast host test checks the same executor
 over the CPU decoder against that decoder's direct greedy path. The decoders keep
-complete per-owner history, and cache eviction, sampling and performance measurement
-remain absent. Tests on the
+complete per-owner history; cache eviction and sampling remain absent, and the
+single-sequence Metal decode timing is diagnostic only. Tests on the
 M3 Max compare against an independent host reference, including exact dyadic products
 and attention spans plus bounded general operands; rotary and elementwise results are
 exact against their host references (GELU/soft cap inside declared FP32 bounds). This
 is real device evidence for those primitives. Metal, not the Neural
 Engine, is the Apple decode target: batch decode is bandwidth-bound and needs dynamic
-shapes and custom kernels, while the ANE is reachable only through CoreML. Decoder
-wiring, an executor and performance measurement are absent, and the CPU decoder
-remains the correctness oracle.
+shapes and custom kernels, while the ANE is reachable only through CoreML. The CPU
+decoder remains the correctness oracle; CUDA parity, sampling, eviction and competitive
+performance remain absent.
 
 Model-local KV range calculations distinguish
 persistent suffixes from untrimmed donor spans, with routing/last consumers resolved at
@@ -201,7 +201,8 @@ Its bounded text processor uses the package's tokenizer/template/generation meta
 request-local decoding retains complete byte-fallback runs until a boundary or finalization.
 `ribn-text::GemmaProcessor` binds it to owned text delivery, including bounded delayed
 byte runs and fallible terminal finalization. Host fixtures substitute token execution
-only; there is still no executable Gemma model. A separate stock Transformers CUDA
+only; the host CPU decoder and the macOS Metal executor are the executable Gemma
+backends. A separate stock Transformers CUDA
 probe establishes BF16 fit for one 4096-token prompt and 32 predictions, not Ribn fit.
 Unknown text semantics or parameters reject;
 see the [real-package gate](../benchmarks/gemma4-reference/README.md#ribn-text-source-preflight).
@@ -237,7 +238,7 @@ Shared CUDA physical retirement and downstream-workspace progress remain unprove
 | `crates/nvidia` / `engine-nvidia` | NVIDIA storage, completion, dispatch and kernels |
 | `crates/bert` / `engine-bert` | BERT semantics, preparation, executor binding and device retirement |
 | `crates/gemma4` / `engine-gemma4` | Gemma 4 text processing, config, source/KV preflight, host CPU BF16 decoder and native BF16 CUDA weight/compute bindings |
-| `crates/metal` / `engine-metal` | Apple Metal BF16 linear/RMS compute primitives; macOS-gated, no decoder |
+| `crates/metal` / `engine-metal` | Apple Metal BF16 linear/RMS/rotary/attention/elementwise primitives; macOS-gated, no decoder |
 | `crates/core` / `engine-core` | Prepared batch, backend submission, continuation state and weight contracts; no scheduler, plan or model description |
 | `crates/gguf` / `engine-gguf` | GGUF artifact access and current tokenizer/chat-template implementation |
 | `crates/safetensors` / `ribn-safetensors` | Validated SafeTensors metadata and bounded payload readers |
@@ -245,7 +246,7 @@ Shared CUDA physical retirement and downstream-workspace progress remain unprove
 | `crates/foundation` / `ribn-foundation` | Byte accounting, readiness and consumed version/scalar types |
 | `crates/batch` / `ribn-batch` | Non-AR batching, leased results and cancellation |
 | `crates/server` / `ribn-server` | Bounded loopback text HTTP transport, health/metrics and lifecycle adapter |
-| `crates/cli` / `ribn-cli` | `inspect`, experimental `run` and `serve` |
+| `crates/cli` / `ribn-cli` | `inspect`, experimental `run`/`serve` (CUDA) and `run-gemma` (macOS Metal) |
 
 `tools/check-boundaries.py` checks production dependency direction and retired-path
 resurrection. It does not freeze the remaining shared crates against an accepted migration.
@@ -266,4 +267,5 @@ retain useful limitations. They do not qualify a universal execution API.
 
 Not implemented: non-local/authenticated serving, general architecture/source resolution, remote HF
 loading, real media processors, dynamic hybrid continuation, executable snapshot
-replacement, a second hardware backend or distributed execution.
+replacement, a qualified non-NVIDIA backend beyond the experimental macOS Metal path,
+or distributed execution.

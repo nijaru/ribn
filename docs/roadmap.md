@@ -7,8 +7,16 @@ open implementation choices and acceptance gates. All v0 interfaces may change.
 
 ## Current execution order
 
-**Next: qualify candidate execution changes and complete the real second decoder;
-choose subsequent optimizations from matched measurements.** The same-artifact
+**Next: resume CUDA Gemma layer math and remaining device gates while qualifying
+candidate execution changes.** The real second decoder is integrated on CPU and Apple
+Metal: the complete host decoder is the correctness oracle, a synchronous greedy
+executor runs it through `ribn`'s engine and text facade, and `ribn run-gemma` exposes
+the ordinary package path on macOS. That satisfies the model-local integration boundary
+for those backends, not CUDA execution, sampling, eviction or competitive acceptance.
+Native BF16 linear, RMS and rotary CUDA component gates have passed; the next device
+gates are the remaining layer math against archived stage references (residual and PLE
+combination, MLP gating, final normalization and soft-capped logits), then mixed-width
+local/global KV and a CUDA decoder. The same-artifact
 llama.cpp comparison (2026-10-18) measured 32.7 versus 39.9 tok/s at c1—about 18% lower
 Ribn throughput, with better TTFT—and 2.2x/3.3x throughput gaps at c4/c8. This is not
 single-stream parity or independently quality-qualified competitive acceptance.
@@ -20,9 +28,9 @@ and prefill-host-cost experiments; they do not attribute the entire endpoint def
 to the host or prove descriptors, arenas or graph capture will close it. Measure
 remaining projection/device costs and the fixed batched layer chain as well.
 The member-descriptor candidate remains off pending its remaining lifetime, sanitizer
-and performance gates. Gemma's native BF16 linear, shared-allocation, RMS and
-rotary-execution component gates have passed; proceed with the remaining model math
-and mixed-retention continuation.
+and performance gates. Qualified Gemma CUDA components remain linear, shared-allocation,
+RMS and rotary execution; no CUDA attention, elementwise layer math, decoder or
+mixed-retention path exists yet.
 
 Qualify the cross-engine numerical comparison and target remaining prefill/projection
 costs on the contiguous path. The [first endpoint diagnostic](../benchmarks/runtime-contract.md#first-equal-artifact-endpoint-diagnostic-2026-10-16)
@@ -466,8 +474,11 @@ The host CPU path now composes a full Gemma decoder step — embeddings, PLE, al
 hybrid layers with owner/shared-tail KV, attention, the remaining layer math and the
 tied head — and reproduces all four greedy tokens of the archived 18-token chat row.
 It keeps complete per-owner history and masks local spans rather than evicting them.
-KV span policy, donor trimming, a serving executor, long-context behaviour and device
-parity remain open; no performance or serving claim follows. On Apple silicon, a first
+A synchronous greedy executor now runs the host decoder through the token runtime and
+the text facade for admitted sequences sharing one prepared weight set, and the same
+executor path is exported by `ribn run-gemma` on macOS. Cache eviction, donor trimming,
+sampling, long-context behaviour and CUDA parity remain open; the Metal decode timing
+is diagnostic, not a performance or serving claim. On Apple silicon, a first
 Metal (GPU, not ANE) slice now runs BF16 linear, RMS, causal/sliding attention, rotary
 and elementwise operations on real hardware with independent-reference tests, and the
 validated Gemma inventory uploads bitwise to one Metal device, and a host-orchestrated
@@ -476,8 +487,11 @@ engine and the text facade, and a synchronous greedy executor shares weights acr
 admitted sequences. Splitting attention into parallel score, reduction and value
 kernels cut single-sequence decode from ~5.5 s to ~0.4-0.5 s per token on the M3 Max in
 the diagnostic benchmark; that is not a competitive result. The package now also runs
-through the ordinary CLI path (`ribn run-gemma`, macOS Metal, greedy). A tiled GEMM is
-the next measured candidate; sampling and eviction remain open. A test-harness defect that skipped every Metal test when kernel
+through the ordinary CLI path (`ribn run-gemma`, macOS Metal, greedy). Two
+reordered-accumulation GEMM variants (transposed weight layout and warp-cooperative
+reduction) were numerically qualified but measured slower than the four-wide exact
+kernel, so both were removed and recorded; the next candidate is register blocking with
+wide loads, not another layout or reduction split. Sampling and eviction remain open. A test-harness defect that skipped every Metal test when kernel
 compilation failed was fixed, so the earlier attention/rotary/elementwise results are
 now genuinely device-executed.
 Then mixed-width local/global KV with donor spans pinned through shared-tail device reads. Use strongly typed model/backend state
