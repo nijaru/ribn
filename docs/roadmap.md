@@ -475,8 +475,9 @@ Metal decoder reproduces the archived four greedy chat tokens through the runtim
 engine and the text facade, and a synchronous greedy executor shares weights across
 admitted sequences. Splitting attention into parallel score, reduction and value
 kernels cut single-sequence decode from ~5.5 s to ~0.4-0.5 s per token on the M3 Max in
-the diagnostic benchmark; that is not a competitive result. A tiled GEMM is the next
-measured candidate; sampling and eviction remain open. A test-harness defect that skipped every Metal test when kernel
+the diagnostic benchmark; that is not a competitive result. The package now also runs
+through the ordinary CLI path (`ribn run-gemma`, macOS Metal, greedy). A tiled GEMM is
+the next measured candidate; sampling and eviction remain open. A test-harness defect that skipped every Metal test when kernel
 compilation failed was fixed, so the earlier attention/rotary/elementwise results are
 now genuinely device-executed.
 Then mixed-width local/global KV with donor spans pinned through shared-tail device reads. Use strongly typed model/backend state

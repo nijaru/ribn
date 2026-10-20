@@ -10,6 +10,7 @@ publish = false
 [features]
 default = []
 cuda = ["dep:ribn-text", "ribn-text/cuda", "dep:ribn-server", "dep:tokio"]
+metal = ["dep:ribn-text", "ribn-text/metal"]
 
 [dependencies]
 ribn-server = { path = "../server", optional = true }

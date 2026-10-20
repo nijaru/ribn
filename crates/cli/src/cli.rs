@@ -1,6 +1,8 @@
 use std::path::PathBuf;
 
+#[cfg(any(feature = "cuda", test))]
 const DEFAULT_MAX_TOKENS: u32 = 32;
+#[cfg(any(feature = "cuda", test))]
 const DEFAULT_CONTEXT_LENGTH: u32 = 4096;
 
 #[derive(Debug)]
@@ -10,10 +12,19 @@ pub(crate) struct RunOptions {
     pub(crate) file: Option<PathBuf>,
     pub(crate) raw: bool,
     pub(crate) max_tokens: u32,
+    #[cfg_attr(
+        not(any(feature = "cuda", test)),
+        expect(dead_code, reason = "only the Qwen path reads this")
+    )]
     pub(crate) context_length: u32,
+    #[cfg_attr(
+        not(any(feature = "cuda", test)),
+        expect(dead_code, reason = "only the Qwen path reads this")
+    )]
     pub(crate) device: u16,
 }
 
+#[cfg(any(feature = "cuda", test))]
 pub(crate) fn parse(arguments: &[String], usage: &str) -> Result<RunOptions, String> {
     let mut model = None;
     let mut prompt = None;
@@ -75,6 +86,7 @@ pub(crate) fn parse(arguments: &[String], usage: &str) -> Result<RunOptions, Str
     })
 }
 
+#[cfg(any(feature = "cuda", test))]
 fn positive_u32(value: &str, option: &str) -> Result<u32, String> {
     let value = value
         .parse::<u32>()

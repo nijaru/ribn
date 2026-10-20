@@ -10,6 +10,7 @@ publish = false
 [features]
 default = []
 cuda = ["dep:engine-qwen", "engine-qwen/cuda"]
+metal = ["engine-gemma4/metal"]
 
 [dependencies]
 ribn = { path = "../runtime" }

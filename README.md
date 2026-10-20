@@ -35,6 +35,15 @@ Oversized input rejects rather than truncates; file/stdin reads use a one-byte o
 probe. Interactive terminal chat is not implemented. The obsolete `local` command is
 removed; `run` is the shared text entry point.
 
+A Gemma 4 SafeTensors package runs through the same text layer on the Apple GPU
+(macOS, experimental, greedy decoding). The positional argument is the package
+directory rather than a single file:
+
+```sh
+cargo run -p ribn-cli --features metal -- run-gemma /path/to/gemma-package \
+  --prompt 'Explain a mutex.' --max-tokens 128
+```
+
 The same owned text path also serves a loopback HTTP endpoint:
 
 ```sh
