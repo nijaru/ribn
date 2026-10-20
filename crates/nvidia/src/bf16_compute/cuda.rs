@@ -15,6 +15,8 @@ mod blas;
 use blas::{Blas, error};
 #[path = "attention.rs"]
 mod attention;
+#[path = "copy.rs"]
+mod copy;
 #[path = "elementwise.rs"]
 mod elementwise;
 pub use attention::{AttentionGeometry, AttentionSpan, CudaBf16Attention};
@@ -35,7 +37,7 @@ static BETA: f32 = 0.0;
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum MatrixState {
     Empty,
-    Ready,
+    Ready(usize),
     Poisoned,
     Closed,
 }
@@ -86,16 +88,24 @@ impl CudaBf16Matrix {
     pub fn allocation_id(&self) -> AllocationId {
         self.allocation.allocation_id()
     }
+    /// Whether every logical row is initialized; partial caches are not fully ready.
     #[must_use]
     pub fn ready(&self) -> bool {
-        self.state == MatrixState::Ready
+        self.ready_rows() == self.shape.rows
+    }
+
+    fn ready_rows(&self) -> usize {
+        match self.state {
+            MatrixState::Ready(rows) => rows,
+            _ => 0,
+        }
     }
 
     fn check_open(&self) -> Result<(), CudaBf16Error> {
         match self.state {
             MatrixState::Closed => Err(CudaBf16Error::Closed),
             MatrixState::Poisoned => Err(CudaBf16Error::Poisoned),
-            MatrixState::Empty | MatrixState::Ready => {
+            MatrixState::Empty | MatrixState::Ready(_) => {
                 if Arc::strong_count(&self.allocation) != 1 {
                     return Err(CudaBf16Error::InUse);
                 }
@@ -119,28 +129,7 @@ impl CudaBf16Matrix {
         let allocation = Arc::get_mut(&mut self.allocation).ok_or(CudaBf16Error::InUse)?;
         self.state = MatrixState::Poisoned;
         allocation.write_exact(0, self.shape.bytes, &mut Cursor::new(bytes))?;
-        self.state = MatrixState::Ready;
-        Ok(())
-    }
-    /// Write native BF16 bytes at a byte offset without conversion, for caches
-    /// whose later rows are filled incrementally. The caller owns offset validity
-    /// within the declared logical shape; transfer errors poison the matrix.
-    /// # Errors
-    /// Rejects invalid ranges, closed/poisoned/in-use storage or transfer failure.
-    pub fn write_chunk(&mut self, offset: u64, bytes: &[u8]) -> Result<(), CudaBf16Error> {
-        self.check_open()?;
-        let len = u64::try_from(bytes.len())
-            .map_err(|_| CudaBf16Error::Invalid("matrix write length exceeds u64"))?;
-        if offset
-            .checked_add(len)
-            .is_none_or(|end| end > self.shape.bytes)
-        {
-            return Err(CudaBf16Error::Invalid("matrix write exceeds logical bytes"));
-        }
-        let allocation = Arc::get_mut(&mut self.allocation).ok_or(CudaBf16Error::InUse)?;
-        self.state = MatrixState::Poisoned;
-        allocation.write_exact(offset, len, &mut Cursor::new(bytes))?;
-        self.state = MatrixState::Ready;
+        self.state = MatrixState::Ready(self.shape.rows);
         Ok(())
     }
 
@@ -149,14 +138,18 @@ impl CudaBf16Matrix {
     /// Rejects uninitialized/in-use/closed storage, invalid ranges or transfer errors.
     pub fn read_chunk(&mut self, offset: u64, len: usize) -> Result<Vec<u8>, CudaBf16Error> {
         self.check_open()?;
-        if !self.ready() {
+        let rows = self.ready_rows();
+        if rows == 0 {
             return Err(CudaBf16Error::NotReady);
         }
+        let initialized_bytes = rows as u64 * self.shape.cols as u64 * 2;
         if offset
             .checked_add(len as u64)
-            .is_none_or(|end| end > self.shape.bytes)
+            .is_none_or(|end| end > initialized_bytes)
         {
-            return Err(CudaBf16Error::Invalid("matrix read exceeds logical bytes"));
+            return Err(CudaBf16Error::Invalid(
+                "matrix read exceeds initialized bytes",
+            ));
         }
         let allocation = Arc::get_mut(&mut self.allocation).ok_or(CudaBf16Error::InUse)?;
         allocation.check_read(offset, len)?;
@@ -164,7 +157,7 @@ impl CudaBf16Matrix {
         // leave its owner-held staging in use; never retry/reuse a poisoned matrix.
         self.state = MatrixState::Poisoned;
         let bytes = allocation.read_chunk(offset, len)?;
-        self.state = MatrixState::Ready;
+        self.state = MatrixState::Ready(rows);
         Ok(bytes)
     }
     /// Drain and acknowledge physical release before refunding this matrix's grant.
@@ -217,6 +210,10 @@ impl Operation {
 }
 /// Each access shape retains exactly the resources its launch can touch.
 enum Access {
+    Copy {
+        source: DeviceAllocation,
+        _destination: DeviceAllocation,
+    },
     Matrices {
         operation: Operation,
         _input: DeviceAllocation,
@@ -250,6 +247,7 @@ impl Access {
             | Self::Elementwise { operation, .. }
             | Self::Attention { operation, .. } => operation.stream(),
             Self::Factors { kernels, .. } => &kernels.stream,
+            Self::Copy { source, .. } => &source.transport().stream,
         }
     }
 }
@@ -463,7 +461,7 @@ impl CudaBf16Gemm {
                 retirement: Some(Retirement::Execution(pending)),
             });
         }
-        output.state = MatrixState::Ready;
+        output.state = MatrixState::Ready(output.shape.rows);
         self.poisoned = false;
         Ok(())
     }

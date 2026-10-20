@@ -600,8 +600,8 @@ one-token decoder: scaled embedding and PLE lookups on the host, device projecti
 grouped RMS, rotary factors/application, causal grouped-query attention, the
 residual/PLE/MLP elementwise algebra, final normalization, the tied head and a host
 soft cap. KV owners keep device-resident BF16 caches; shared-tail layers read their
-owner's cache. Each appended K/V row is currently read back to the host and written
-at its cache offset rather than copied device-to-device. Cache capacity is explicit
+owner's cache. K/V rows now append through completion-owned device copies (see below).
+Cache capacity is explicit
 and attention distinguishes storage rows from the visible key span. Any failed
 component retains its retirement owner on the model for an explicit retry.
 
@@ -623,7 +623,67 @@ At `88b5da5` this establishes executable CUDA Gemma arithmetic end to end. At
 `ribn run-gemma` CLI: the executor and text-path tests reproduce the archived chat
 tokens (text path 9.24 s including load), and the CLI streams coherent text on the
 4090. This still does not qualify sampling, eviction, mixed-width cache lifetime,
-device-side append, batched prefill, HTTP serving or competitive performance.
+batched prefill, HTTP serving or competitive performance. Device append is qualified
+separately below.
+
+## Device-side K/V append
+
+On 2026-10-20, `CudaBf16Matrix::copy_rows_from` replaces the decoder's K/V D2H/H2D
+round trip with a same-stream device copy. It preserves encodings without arithmetic,
+retains both allocations and their charges before possible enqueue, and drains before
+returning success. Failed enqueue/completion retains the existing retry/quarantine
+owner. No asynchronous execution or new kernel is introduced.
+
+Matrices now track their contiguous initialized row prefix instead of declaring the
+whole cache ready after a partial write. Copies cannot leave holes; readback and
+attention reject uninitialized rows, while whole-matrix operations require full
+initialization. The obsolete host `write_chunk` interface is removed.
+
+Acceptance was fixed before measurement: exact copied bytes, unchanged untouched rows,
+exact common-history full-model logits and the archived greedy tokens. On the same
+RTX 4090, driver 615.71.10 and CUDA 13.3:
+
+- Both `cuda_bf16_copy` tests passed normally and under memcheck: one/three-row copies,
+  widths 7/256/512, first/interior/final offsets, raw BF16 encodings including NaN payloads,
+  invalid ranges/foreign streams, initialized-prefix extension and attention rejection.
+  Existing linear/RMS/rotary/factor/elementwise/attention component gates also passed.
+- A temporary before/after probe compared all **262,144 finite BF16 logits at each of
+  four predictions**, with the same 18-token prompt and three common continuation tokens.
+  Every encoding matched exactly. This compares append implementations, not a new
+  independent model-quality reference. The committed decoder/executor/text gates each
+  reproduced the four independent archived greedy tokens. The real CUDA `run-gemma`
+  CLI also completed a raw/piped-stdin four-token smoke; that is input-path evidence,
+  not a quality check for its unconstrained output.
+- Copy-component and full-decoder memcheck reported **zero errors**. Failed-drain
+  ownership relies on the shared host fault-injected `Pending` envelope plus source
+  review; hardware failure was not injected. Mixed-retention lifetime remains unqualified.
+
+A temporary timer around each owner's paired K/V append measured 504 append regions
+(24 owners × 21 processed tokens). The baseline spent **635.8 ms** there during prefill
+and **35.18–35.26 ms** per decode step; device append spent **3.46 ms** and
+**0.188–0.189 ms** respectively. These wall intervals include synchronization; baseline
+cache writes split through its five-byte staging buffer, so this is not a general
+CPU/GPU transfer-cost estimate.
+
+The instrumented pair measured **1.593 → 0.921 s prefill**, **83.1–83.2 → 47.3–47.4 ms/token**.
+Three subsequent uninstrumented device-append runs measured **0.921–0.989 s prefill**
+and **47.2–48.5 ms/token**; the initial uninstrumented host-append baseline was
+**1.601 s** and **83.0–83.2 ms/token**. Loading varied from 2.28 to 4.25 s and is not
+part of these execution intervals. These are single-sequence, short-prompt diagnostics,
+not mixed-arrival serving, long-context quality or competitive acceptance. Prefill
+still executes one token at a time with per-operation synchronization.
+
+```sh
+cargo test --release -p engine-nvidia --features cuda --locked \
+  --test cuda_bf16_copy -- --ignored --test-threads=1
+# Set RIBN_GEMMA_PACKAGE and RIBN_GEMMA_REFERENCE as above.
+cargo test --release -p engine-gemma4 --features cuda --locked \
+  --test cuda_decoder --test executor_cuda --test text_path_cuda \
+  -- --ignored --test-threads=1
+# Run the built copy/decoder test executables under compute-sanitizer:
+# compute-sanitizer --tool memcheck --error-exitcode 86 <test-executable> \
+#   --ignored --test-threads=1
+```
 
 ## Host rotary-frequency gate
 

@@ -160,8 +160,11 @@ cap. A three-kernel causal grouped-query attention component matches the archive
 operands bit-for-bit for local and sliding layers, including decode-against-history.
 A host-orchestrated CUDA decoder now binds the components, keeps KV owner caches
 device-resident and reproduces the archived greedy chat tokens through the engine, the
-text facade and `ribn run-gemma` (CUDA or Metal). K/V appends still round-trip through
-the host and decode is one token at a time. Frequency derivation from theta, Gemma HTTP
+text facade and `ribn run-gemma` (CUDA or Metal). Completion-owned device copies append
+K/V without a host round trip; initialized-row prefixes bound cache reads and attention.
+Decode is still synchronous and one token at a time. See the
+[append qualification](../benchmarks/gemma4-reference/README.md#device-side-kv-append).
+Frequency derivation from theta, Gemma HTTP
 serving and mixed-KV lifetime remain absent.
 A host CPU path now materializes the same 665-parameter BF16 inventory into ordinary
 heap buffers and composes a complete decoder step: scaled embeddings, the per-layer
@@ -173,7 +176,7 @@ evaluation bound, residual/gated/combine cases bit-exact, rotary bit-exact and
 attention matching with zero error; the archived 18-token chat row reproduces all four
 greedy tokens. The CPU cache keeps complete per-owner history and masks local spans
 instead of evicting them. Cache eviction, donor trimming, long-context behaviour,
-sampling, a serving executor, device parity and performance remain unqualified; this
+sampling and competitive performance remain unqualified; this
 is a correctness-first host path, not a portable tensor layer or a selected hardware
 priority.
 An Apple GPU path has started in `engine-metal`: macOS-only Metal compute pipelines
@@ -200,8 +203,8 @@ exact against their host references (GELU/soft cap inside declared FP32 bounds).
 is real device evidence for those primitives. Metal, not the Neural
 Engine, is the Apple decode target: batch decode is bandwidth-bound and needs dynamic
 shapes and custom kernels, while the ANE is reachable only through CoreML. The CPU
-decoder remains the correctness oracle; CUDA parity, sampling, eviction and competitive
-performance remain absent.
+decoder remains the correctness oracle; sampling, eviction and competitive performance
+remain absent.
 
 Model-local KV range calculations distinguish
 persistent suffixes from untrimmed donor spans, with routing/last consumers resolved at
@@ -210,8 +213,7 @@ Its bounded text processor uses the package's tokenizer/template/generation meta
 request-local decoding retains complete byte-fallback runs until a boundary or finalization.
 `ribn-text::GemmaProcessor` binds it to owned text delivery, including bounded delayed
 byte runs and fallible terminal finalization. Host fixtures substitute token execution
-only; the host CPU decoder and the macOS Metal executor are the executable Gemma
-backends. A separate stock Transformers CUDA
+only; host CPU, macOS Metal and CUDA are the executable Gemma backends. A separate stock Transformers CUDA
 probe establishes BF16 fit for one 4096-token prompt and 32 predictions, not Ribn fit.
 Unknown text semantics or parameters reject;
 see the [real-package gate](../benchmarks/gemma4-reference/README.md#ribn-text-source-preflight).

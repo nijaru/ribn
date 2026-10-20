@@ -68,6 +68,23 @@ impl MatrixShape {
         u32::try_from(elements).map_err(|_| CudaBf16Error::Invalid("elementwise count exceeds u32"))
     }
 
+    fn validate_copy_rows(
+        self,
+        source: Self,
+        start: usize,
+        initialized: usize,
+    ) -> Result<(u64, usize), CudaBf16Error> {
+        let end = start
+            .checked_add(source.rows)
+            .ok_or(CudaBf16Error::Invalid("matrix copy row overflow"))?;
+        if self.cols != source.cols || end > self.rows || start > initialized {
+            return Err(CudaBf16Error::Invalid(
+                "matrix copy requires matching columns, bounded rows and no uninitialized gap",
+            ));
+        }
+        Ok((start as u64 * self.cols as u64 * 2, initialized.max(end)))
+    }
+
     fn validate_rms(self, output: Self, width: usize, epsilon: f32) -> Result<u32, CudaBf16Error> {
         if self != output || width == 0 || !self.cols.is_multiple_of(width) {
             return Err(CudaBf16Error::Invalid(
@@ -138,6 +155,30 @@ impl MatrixShape {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn row_copy_preserves_a_contiguous_initialized_prefix() {
+        let cache = MatrixShape::new(5, 7).unwrap();
+        let row = MatrixShape::new(1, 7).unwrap();
+        let pair = MatrixShape::new(2, 7).unwrap();
+        assert_eq!(cache.validate_copy_rows(row, 0, 0).unwrap(), (0, 1));
+        assert_eq!(cache.validate_copy_rows(pair, 1, 1).unwrap(), (14, 3));
+        assert_eq!(cache.validate_copy_rows(row, 1, 3).unwrap(), (14, 3));
+        assert_eq!(cache.validate_copy_rows(row, 4, 4).unwrap(), (56, 5));
+        for (source, start, initialized) in [
+            (row, 1, 0),
+            (row, 5, 5),
+            (pair, 4, 4),
+            (row, usize::MAX, 5),
+            (MatrixShape::new(1, 8).unwrap(), 0, 0),
+        ] {
+            assert!(
+                cache
+                    .validate_copy_rows(source, start, initialized)
+                    .is_err()
+            );
+        }
+    }
 
     #[test]
     fn rotary_checks_complete_row_head_and_factor_shapes() {

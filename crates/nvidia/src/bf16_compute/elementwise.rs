@@ -322,7 +322,7 @@ impl CudaBf16Elementwise {
                 retirement: Some(Retirement::Execution(pending)),
             });
         }
-        output.state = super::MatrixState::Ready;
+        output.state = super::MatrixState::Ready(output.shape.rows);
         self.poisoned = false;
         Ok(())
     }

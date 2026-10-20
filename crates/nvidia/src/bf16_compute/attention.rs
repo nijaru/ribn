@@ -134,7 +134,10 @@ impl CudaBf16Attention {
         values.check_open()?;
         self.scratch.check_open()?;
         output.check_open()?;
-        if !query.ready() || !keys.ready() || !values.ready() {
+        if !query.ready()
+            || span.key_sequence > keys.ready_rows()
+            || span.key_sequence > values.ready_rows()
+        {
             return Err(CudaBf16Error::NotReady.into());
         }
         let AttentionSpan {
@@ -315,7 +318,7 @@ impl CudaBf16Attention {
                 retirement: Some(Retirement::Execution(pending)),
             });
         }
-        output.state = super::MatrixState::Ready;
+        output.state = super::MatrixState::Ready(output.shape.rows);
         self.poisoned = false;
         Ok(())
     }

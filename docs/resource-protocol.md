@@ -1,6 +1,6 @@
 # Resource, submission and snapshot protocol
 
-Status: accepted execution contract, revised 2026-10-11. Implemented behavior and
+Status: accepted execution contract, revised 2026-10-20. Implemented behavior and
 qualification limits are identified below; targets do not retroactively qualify source.
 AR preparation control is host-qualified. Dynamic Qwen growth, bounded overlap,
 non-AR application lifecycle and snapshot replacement remain unimplemented. Accepted text
@@ -908,6 +908,20 @@ BF16 round-to-nearest-even results, including odd dimensions and multi-row trans
 That component gate is not whole-model parity or a performance claim. Real model
 execution still requires independently justified numerical acceptance and mixed-KV
 lifetime qualification.
+
+### Native BF16 cache-row copies
+
+A same-stream device copy may overwrite or extend a matrix's contiguous initialized row
+prefix, but never create a gap or change untouched rows. Source rows must be fully
+initialized with matching column width. Whole-matrix consumers require full initialization;
+attention and diagnostic readback validate the initialized span they actually consume,
+not just allocation capacity. Invalid calls preserve prior initialization and bytes.
+
+Possible enqueue retains source and destination allocations, their charges and the stable
+stream/context before device access. Success includes completion; error or unwind poisons
+the destination and retains both owners through the same retry/quarantine envelope as
+compute. Source reuse/close is forbidden while that envelope remains live. This synchronous
+component does not add overlapping model submissions or authorize cache trimming.
 
 ### Native BF16 normalization
 

@@ -218,8 +218,8 @@ impl CudaBf16RotaryFactors {
                 retirement: Some(Retirement::Execution(pending)),
             });
         }
-        cosine.state = MatrixState::Ready;
-        sine.state = MatrixState::Ready;
+        cosine.state = MatrixState::Ready(cosine.shape.rows);
+        sine.state = MatrixState::Ready(sine.shape.rows);
         self.poisoned = false;
         Ok(())
     }

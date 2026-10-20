@@ -138,7 +138,7 @@ impl CudaBf16RmsNorm {
                 retirement: Some(Retirement::Execution(pending)),
             });
         }
-        output.state = MatrixState::Ready;
+        output.state = MatrixState::Ready(output.shape.rows);
         self.poisoned = false;
         Ok(())
     }

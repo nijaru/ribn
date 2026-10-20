@@ -3,9 +3,9 @@
 //! One token is processed at a time. Embedding lookup, PLE lookup and logit
 //! soft-capping stay on the host; projections, norms, rotary, attention and the
 //! elementwise layer algebra run on the device. KV owners keep device-resident
-//! caches; shared-tail layers read their owner's cache. Each appended K/V row is
-//! read back and re-uploaded at its cache offset instead of being copied
-//! device-to-device, so this is correctness-first, not an optimized path.
+//! caches; shared-tail layers read their owner's cache. K/V rows append through
+//! completion-owned device copies. Execution remains synchronous and one token at
+//! a time, so this is correctness-first, not a competitive path.
 
 use super::Gemma4CudaWeights;
 use crate::cpu::CpuParameter;
@@ -554,18 +554,11 @@ fn layer_forward(
             &mut buffers.values,
         )?;
         cuda.value_norm_into(layer, rms, &mut buffers.values, &mut buffers.value_norm)?;
-        let row_bytes = kv_heads * width * 2;
-        let offset = u64::try_from(position * kv_heads * width * 2)
-            .map_err(|_| CudaBf16Error::Invalid("KV offset exceeds u64"))?;
         let cache = caches[layer]
             .as_mut()
             .ok_or(CudaBf16Error::Invalid("missing KV owner cache"))?;
-        cache
-            .keys
-            .write_chunk(offset, &buffers.key_rotary.read_chunk(0, row_bytes)?)?;
-        cache
-            .values
-            .write_chunk(offset, &buffers.value_norm.read_chunk(0, row_bytes)?)?;
+        cache.keys.copy_rows_from(position, &buffers.key_rotary)?;
+        cache.values.copy_rows_from(position, &buffers.value_norm)?;
     }
 
     let cache = caches[geometry.kv_owner]

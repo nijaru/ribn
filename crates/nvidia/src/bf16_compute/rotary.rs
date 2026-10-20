@@ -126,7 +126,7 @@ impl CudaBf16RotaryApply {
                 retirement: Some(Retirement::Execution(pending)),
             });
         }
-        output.state = MatrixState::Ready;
+        output.state = MatrixState::Ready(output.shape.rows);
         self.poisoned = false;
         Ok(())
     }
