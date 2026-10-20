@@ -64,12 +64,23 @@ impl MetalBf16Buffer {
     }
 }
 
-/// BF16 linear and RMS pipelines on one Metal device and queue.
+/// Attention geometry and mask policy for one layer.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct MetalAttentionConfig {
+    pub heads: usize,
+    pub kv_heads: usize,
+    pub width: usize,
+    /// Sliding window length in positions; `None` is full attention.
+    pub window: Option<usize>,
+}
+
+/// BF16 linear, RMS and attention pipelines on one Metal device and queue.
 pub struct MetalBf16Executor {
     device: Device,
     queue: CommandQueue,
     linear: ComputePipelineState,
     rms: ComputePipelineState,
+    attention: ComputePipelineState,
 }
 
 impl MetalBf16Executor {
@@ -94,12 +105,19 @@ impl MetalBf16Executor {
         let rms = device
             .new_compute_pipeline_state_with_function(&rms)
             .map_err(MetalBf16Error::Pipeline)?;
+        let attention = library
+            .get_function("bf16_attention", None)
+            .map_err(MetalBf16Error::Function)?;
+        let attention = device
+            .new_compute_pipeline_state_with_function(&attention)
+            .map_err(MetalBf16Error::Pipeline)?;
         let queue = device.new_command_queue();
         Ok(Self {
             device,
             queue,
             linear,
             rms,
+            attention,
         })
     }
 
@@ -239,6 +257,118 @@ impl MetalBf16Executor {
         Ok(MetalBf16Buffer {
             buffer: output,
             elements: expected,
+        })
+    }
+
+    /// Causal grouped-query attention over explicit absolute spans.
+    ///
+    /// One thread per query position and head recomputes its visible scores for
+    /// the max, exponential sum and weighted values. Scores and weights round to
+    /// BF16; the output accumulates in FP32 and rounds once.
+    /// # Errors
+    /// Rejects malformed geometry, disagreeing buffer lengths or span violations.
+    pub fn attention(
+        &self,
+        query: &MetalBf16Buffer,
+        keys: &MetalBf16Buffer,
+        values: &MetalBf16Buffer,
+        config: MetalAttentionConfig,
+        query_start: usize,
+        key_start: usize,
+    ) -> Result<MetalBf16Buffer, MetalBf16Error> {
+        let MetalAttentionConfig {
+            heads,
+            kv_heads,
+            width,
+            window,
+        } = config;
+        if heads == 0 || kv_heads == 0 || width == 0 || !heads.is_multiple_of(kv_heads) {
+            return Err(MetalBf16Error::Shape(
+                "attention heads or width are invalid".into(),
+            ));
+        }
+        if window == Some(0) {
+            return Err(MetalBf16Error::Shape(
+                "attention window must be positive".into(),
+            ));
+        }
+        let query_step = heads
+            .checked_mul(width)
+            .ok_or_else(|| MetalBf16Error::Shape("attention query stride overflow".into()))?;
+        let key_step = kv_heads
+            .checked_mul(width)
+            .ok_or_else(|| MetalBf16Error::Shape("attention key stride overflow".into()))?;
+        if query.elements == 0
+            || !query.elements.is_multiple_of(query_step)
+            || keys.elements != values.elements
+            || keys.elements == 0
+            || !keys.elements.is_multiple_of(key_step)
+        {
+            return Err(MetalBf16Error::Shape(
+                "attention buffers are not whole positions".into(),
+            ));
+        }
+        let sequence = query.elements / query_step;
+        let key_sequence = keys.elements / key_step;
+        let last_query = query_start
+            .checked_add(sequence)
+            .ok_or_else(|| MetalBf16Error::Shape("attention query span overflow".into()))?;
+        let last_key = key_start
+            .checked_add(key_sequence)
+            .ok_or_else(|| MetalBf16Error::Shape("attention key span overflow".into()))?;
+        if last_query > last_key || query_start < key_start {
+            return Err(MetalBf16Error::Shape(
+                "attention queries precede or outrun the key span".into(),
+            ));
+        }
+        let output = self.device.new_buffer(
+            (query.elements * 2) as u64,
+            MTLResourceOptions::StorageModeShared,
+        );
+        let command = self.queue.new_command_buffer();
+        let encoder = command.new_compute_command_encoder();
+        encoder.set_compute_pipeline_state(&self.attention);
+        encoder.set_buffer(0, Some(&query.buffer), 0);
+        encoder.set_buffer(1, Some(&keys.buffer), 0);
+        encoder.set_buffer(2, Some(&values.buffer), 0);
+        encoder.set_buffer(3, Some(&output), 0);
+        let heads_u32 =
+            u32::try_from(heads).map_err(|_| MetalBf16Error::Shape("heads exceed u32".into()))?;
+        let kv_heads_u32 = u32::try_from(kv_heads)
+            .map_err(|_| MetalBf16Error::Shape("key-value heads exceed u32".into()))?;
+        let width_u32 =
+            u32::try_from(width).map_err(|_| MetalBf16Error::Shape("width exceeds u32".into()))?;
+        let key_sequence_u32 = u32::try_from(key_sequence)
+            .map_err(|_| MetalBf16Error::Shape("keys exceed u32".into()))?;
+        let query_start_u32 = u32::try_from(query_start)
+            .map_err(|_| MetalBf16Error::Shape("query start exceeds u32".into()))?;
+        let key_start_u32 = u32::try_from(key_start)
+            .map_err(|_| MetalBf16Error::Shape("key start exceeds u32".into()))?;
+        let window_u32 = match window {
+            None => 0,
+            Some(window) => u32::try_from(window)
+                .map_err(|_| MetalBf16Error::Shape("window exceeds u32".into()))?,
+        };
+        let total = u32::try_from(sequence * heads)
+            .map_err(|_| MetalBf16Error::Shape("attention rows exceed u32".into()))?;
+        encoder.set_bytes(4, 4, (&raw const heads_u32).cast());
+        encoder.set_bytes(5, 4, (&raw const kv_heads_u32).cast());
+        encoder.set_bytes(6, 4, (&raw const width_u32).cast());
+        encoder.set_bytes(7, 4, (&raw const key_sequence_u32).cast());
+        encoder.set_bytes(8, 4, (&raw const query_start_u32).cast());
+        encoder.set_bytes(9, 4, (&raw const key_start_u32).cast());
+        encoder.set_bytes(10, 4, (&raw const window_u32).cast());
+        encoder.set_bytes(11, 4, (&raw const total).cast());
+        encoder.dispatch_threads(
+            MTLSize::new(u64::from(total), 1, 1),
+            MTLSize::new(u64::from(total).min(THREADS), 1, 1),
+        );
+        encoder.end_encoding();
+        command.commit();
+        command.wait_until_completed();
+        Ok(MetalBf16Buffer {
+            buffer: output,
+            elements: query.elements,
         })
     }
 }

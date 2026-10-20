@@ -168,14 +168,15 @@ sampling, a serving executor, device parity and performance remain unqualified; 
 is a correctness-first host path, not a portable tensor layer or a selected hardware
 priority.
 An Apple GPU path has started in `engine-metal`: macOS-only Metal compute pipelines
-for BF16 linear and grouped RMS, compiled at runtime from checked-in MSL and driven by
-one device plus command queue. Tests on the M3 Max compare against an independent host
-reference, including exact dyadic products and one-encoding bounds for general
-operands; they are real device evidence for those primitives. Metal, not the Neural
+for BF16 linear, grouped RMS and causal/sliding grouped-query attention, compiled at
+runtime from checked-in MSL and driven by one device plus command queue. Tests on the
+M3 Max compare against an independent host reference, including exact dyadic products
+and attention spans plus bounded general operands; they are real device evidence for
+those primitives. Metal, not the Neural
 Engine, is the Apple decode target: batch decode is bandwidth-bound and needs dynamic
-shapes and custom kernels, while the ANE is reachable only through CoreML. Attention,
-decoder wiring, an executor and performance measurement are absent, and the CPU
-decoder remains the correctness oracle.
+shapes and custom kernels, while the ANE is reachable only through CoreML. Decoder
+wiring, an executor and performance measurement are absent, and the CPU decoder
+remains the correctness oracle.
 
 Model-local KV range calculations distinguish
 persistent suffixes from untrimmed donor spans, with routing/last consumers resolved at

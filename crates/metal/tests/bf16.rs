@@ -4,7 +4,7 @@
 //! stays usable on hosts that have no Apple GPU.
 #![cfg(target_os = "macos")]
 
-use engine_metal::MetalBf16Executor;
+use engine_metal::{MetalAttentionConfig, MetalBf16Executor};
 
 fn bf16(value: f32) -> u16 {
     let bits = value.to_bits();
@@ -205,6 +205,215 @@ fn invalid_shapes_and_epsilon_reject() {
     assert!(
         executor
             .rms_norm(&input, 2, 4, 1e-6, Some(&weight))
+            .is_err()
+    );
+}
+
+struct AttentionReference {
+    output: Vec<u16>,
+    /// Per output element: the reference's `sum |weight × value|` magnitude.
+    magnitude: Vec<f32>,
+    /// Per query position and head: largest visible BF16 score encoding step.
+    slack: Vec<f32>,
+}
+
+fn reference_attention(
+    query: &[u16],
+    keys: &[u16],
+    values: &[u16],
+    config: MetalAttentionConfig,
+    query_start: usize,
+    key_start: usize,
+) -> AttentionReference {
+    let MetalAttentionConfig {
+        heads,
+        kv_heads,
+        width,
+        window,
+    } = config;
+    let sequence = query.len() / (heads * width);
+    let key_sequence = keys.len() / (kv_heads * width);
+    let groups = heads / kv_heads;
+    let mut output = vec![0_u16; query.len()];
+    let mut magnitude = vec![0.0_f32; query.len()];
+    let mut slack = vec![0.0_f32; sequence * heads];
+    for position in 0..sequence {
+        let absolute = query_start + position;
+        let last = (absolute - key_start).min(key_sequence - 1);
+        let first = match window {
+            None => 0,
+            Some(window) => optional_start(absolute, window)
+                .saturating_sub(key_start)
+                .min(last),
+        };
+        for head in 0..heads {
+            let kv_head = head / groups;
+            let query_base = position * heads * width + head * width;
+            let mut scores = Vec::new();
+            for key_position in first..=last {
+                let key_base = key_position * kv_heads * width + kv_head * width;
+                let mut sum = 0.0_f32;
+                for column in 0..width {
+                    sum += value(query[query_base + column]) * value(keys[key_base + column]);
+                }
+                let bits = bf16(sum);
+                scores.push(value(bits));
+                slack[position * heads + head] = slack[position * heads + head].max(ulp(bits));
+            }
+            let maximum = scores.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+            let weights: Vec<f32> = scores.iter().map(|score| (score - maximum).exp()).collect();
+            let denominator: f32 = weights.iter().sum();
+            for column in 0..width {
+                let mut accumulator = 0.0_f32;
+                let mut total = 0.0_f32;
+                for (offset, weight) in weights.iter().enumerate() {
+                    let key_base = (first + offset) * kv_heads * width + kv_head * width;
+                    let weight = value(bf16(weight / denominator));
+                    let stored = value(values[key_base + column]);
+                    accumulator += weight * stored;
+                    total += (weight * stored).abs();
+                }
+                output[query_base + column] = bf16(accumulator);
+                magnitude[query_base + column] = total;
+            }
+        }
+    }
+    AttentionReference {
+        output,
+        magnitude,
+        slack,
+    }
+}
+
+fn optional_start(absolute: usize, window: usize) -> usize {
+    absolute.saturating_sub(window - 1)
+}
+
+#[test]
+fn attention_matches_a_host_reference_for_causal_and_sliding_spans() {
+    let Ok(executor) = MetalBf16Executor::new() else {
+        eprintln!("no Metal device; skipping");
+        return;
+    };
+    // Dyadic operands under causal and sliding masks: every dot, probability and
+    // weighted sum is exactly representable, so the bits must agree.
+    let query: Vec<u16> = [
+        1.0_f32, 0.5, -1.0, 2.0, 0.5, -0.5, 1.0, -2.0, -1.0, 1.0, 2.0, 0.5,
+    ]
+    .into_iter()
+    .map(bf16)
+    .collect();
+    let keys: Vec<u16> = [1.0_f32, -1.0, 2.0, 0.5, -0.5, 1.0]
+        .into_iter()
+        .map(bf16)
+        .collect();
+    let values: Vec<u16> = [1.0_f32, 2.0, -1.0, 0.5, 2.0, 1.0]
+        .into_iter()
+        .map(bf16)
+        .collect();
+    for window in [None, Some(2)] {
+        let config = MetalAttentionConfig {
+            heads: 2,
+            kv_heads: 1,
+            width: 2,
+            window,
+        };
+        let reference = reference_attention(&query, &keys, &values, config, 0, 0);
+        let actual = executor
+            .attention(
+                &executor.upload(&query).unwrap(),
+                &executor.upload(&keys).unwrap(),
+                &executor.upload(&values).unwrap(),
+                config,
+                0,
+                0,
+            )
+            .unwrap();
+        assert_eq!(actual.bits(), reference.output, "window {window:?}");
+    }
+
+    // General operands with a cached prefix and a sliding window.
+    let (sequence, key_sequence, heads, kv_heads, width) = (4, 8, 2, 1, 8);
+    let query = operands(sequence * heads * width, 41);
+    let keys = operands(key_sequence * kv_heads * width, 43);
+    let values = operands(key_sequence * kv_heads * width, 47);
+    let config = MetalAttentionConfig {
+        heads,
+        kv_heads,
+        width,
+        window: Some(3),
+    };
+    let reference = reference_attention(&query, &keys, &values, config, 4, 0);
+    let actual = executor
+        .attention(
+            &executor.upload(&query).unwrap(),
+            &executor.upload(&keys).unwrap(),
+            &executor.upload(&values).unwrap(),
+            config,
+            4,
+            0,
+        )
+        .unwrap();
+    let actual = actual.bits();
+    for (index, &expected) in reference.output.iter().enumerate() {
+        let position = index / (heads * width);
+        let head = (index / width) % heads;
+        let visible = (4 + position) - optional_start(4 + position, 3) + 1;
+        #[expect(clippy::cast_precision_loss, reason = "visible key counts are small")]
+        let gamma = visible as f32 * f32::EPSILON / (1.0 - visible as f32 * f32::EPSILON);
+        let bound = (gamma + 2.0 * reference.slack[position * heads + head])
+            * reference.magnitude[index]
+            + ulp(expected);
+        let error = (value(actual[index]) - value(expected)).abs();
+        assert!(
+            error <= bound,
+            "attention[{index}] error {error:e} exceeds {bound:e}"
+        );
+    }
+}
+
+#[test]
+fn attention_rejects_malformed_spans_and_geometry() {
+    let Ok(executor) = MetalBf16Executor::new() else {
+        eprintln!("no Metal device; skipping");
+        return;
+    };
+    let query = executor.upload(&operands(4, 1)).unwrap();
+    let keys = executor.upload(&operands(4, 2)).unwrap();
+    let values = executor.upload(&operands(4, 3)).unwrap();
+    let plain = MetalAttentionConfig {
+        heads: 1,
+        kv_heads: 1,
+        width: 2,
+        window: None,
+    };
+    assert!(
+        executor
+            .attention(&query, &keys, &values, plain, 1, 0)
+            .is_err()
+    );
+    assert!(
+        executor
+            .attention(&query, &keys, &values, plain, 0, 1)
+            .is_err()
+    );
+    let uneven = MetalAttentionConfig {
+        heads: 3,
+        kv_heads: 2,
+        ..plain
+    };
+    assert!(
+        executor
+            .attention(&query, &keys, &values, uneven, 0, 0)
+            .is_err()
+    );
+    let closed = MetalAttentionConfig {
+        window: Some(0),
+        ..plain
+    };
+    assert!(
+        executor
+            .attention(&query, &keys, &values, closed, 0, 0)
             .is_err()
     );
 }
