@@ -29,9 +29,11 @@ to the host or prove descriptors, arenas or graph capture will close it. Measure
 remaining projection/device costs and the fixed batched layer chain as well.
 The member-descriptor candidate remains off pending its remaining lifetime, sanitizer
 and performance gates. Qualified Gemma CUDA components now cover linear,
-shared-allocation, RMS, rotary, the elementwise layer math and causal grouped-query
-attention (full/sliding, local/global widths, stock-operand bit parity); no CUDA
-decoder, KV cache owner or mixed-retention path exists yet.
+shared-allocation, RMS, rotary, the elementwise layer math, causal grouped-query
+attention and a host-orchestrated decoder that keeps KV owners device-resident and
+reproduces the archived greedy tokens. Its K/V append still round-trips through the
+host, it processes one token at a time, and it has no executor, sampling, eviction or
+mixed-retention path yet.
 
 Qualify the cross-engine numerical comparison and target remaining prefill/projection
 costs on the contiguous path. The [first endpoint diagnostic](../benchmarks/runtime-contract.md#first-equal-artifact-endpoint-diagnostic-2026-10-16)
@@ -475,8 +477,12 @@ encodings. See the [elementwise gate](../benchmarks/gemma4-reference/README.md#e
 Native attention now also matches the archived stock operands bit-for-bit for
 local/global layers, including sliding windows and decode-against-history
 ([gate](../benchmarks/gemma4-reference/README.md#native-bf16-attention-component-gate)).
-Next: bind the qualified components into a CUDA decoder with explicit KV cache owners
-and shared-tail donor spans; mixed-width cache lifetime, sampling and eviction remain open.
+A first CUDA decoder now reproduces the archived tokens with explicit KV owners and
+shared-tail reads; see the
+[decoder gate](../benchmarks/gemma4-reference/README.md#native-cuda-gemma-decoder-gate).
+Next, choose from its measured gaps: replace the host K/V round trip with a device
+append, batch prefill rows, and bind the decoder to the runtime executor and text
+facade. Mixed-width cache lifetime, sampling and eviction remain open.
 The host CPU path now composes a full Gemma decoder step — embeddings, PLE, all 42
 hybrid layers with owner/shared-tail KV, attention, the remaining layer math and the
 tied head — and reproduces all four greedy tokens of the archived 18-token chat row.

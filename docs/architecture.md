@@ -158,8 +158,10 @@ product, tanh-GELU and the final soft cap, matching the archived stage encodings
 exactly where the operation is exact and within the host audit's bounds for GELU/soft
 cap. A three-kernel causal grouped-query attention component matches the archived stock
 operands bit-for-bit for local and sliding layers, including decode-against-history.
-Frequency derivation from theta, a CUDA decoder binding and mixed-KV lifetime remain
-absent.
+A host-orchestrated CUDA decoder now binds the components, keeps KV owner caches
+device-resident and reproduces the archived greedy chat tokens; K/V appends still
+round-trip through the host and decode is one token at a time. Frequency derivation
+from theta, executor/serving integration and mixed-KV lifetime remain absent.
 A host CPU path now materializes the same 665-parameter BF16 inventory into ordinary
 heap buffers and composes a complete decoder step: scaled embeddings, the per-layer
 embedding pipeline, all 42 hybrid layers with owner/shared-tail KV, causal and

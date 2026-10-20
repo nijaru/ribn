@@ -593,6 +593,35 @@ cache ownership, decoder wiring, donor-span lifetime, prefill/softmax performanc
 full forward pass. The serial per-head softmax and three-pass key traversal are
 correctness choices, not optimized execution.
 
+## Native CUDA Gemma decoder gate
+
+`Gemma4CudaModel` binds the qualified components into a host-orchestrated,
+one-token decoder: scaled embedding and PLE lookups on the host, device projections,
+grouped RMS, rotary factors/application, causal grouped-query attention, the
+residual/PLE/MLP elementwise algebra, final normalization, the tied head and a host
+soft cap. KV owners keep device-resident BF16 caches; shared-tail layers read their
+owner's cache. Each appended K/V row is currently read back to the host and written
+at its cache offset rather than copied device-to-device. Cache capacity is explicit
+and attention distinguishes storage rows from the visible key span. Any failed
+component retains its retirement owner on the model for an explicit retry.
+
+The archived chat row reproduces all four greedy tokens through this decoder. On
+2026-10-20 the RTX 4090 (driver 615.71.10) loaded the 16 GB package in **2.25 s**,
+processed the 18-token prompt in **1.57 s**, and decoded at **82.9/83.0/83.1 ms per
+token**. The full test, including weight load, passed under memcheck with zero
+reported errors. These are diagnostic timings for a correctness-first path with
+per-operation synchronization, host K/V round trips and no batching; they are not a
+competitive result or a serving measurement.
+
+```sh
+RIBN_GEMMA_PACKAGE=/path/to/package RIBN_GEMMA_REFERENCE=/path/to/reference.json \
+  cargo test --release -p engine-gemma4 --features cuda --test cuda_decoder --locked -- --ignored --test-threads=1
+```
+
+At `88b5da5` this establishes executable CUDA Gemma arithmetic end to end, not
+sampling, eviction, mixed-width cache lifetime, device-side append, batched prefill,
+the runtime executor/text facade, serving or performance qualification.
+
 ## Host rotary-frequency gate
 
 `Gemma4Config::rotary_inverse_frequency` prepares individual FP32 factors without
