@@ -615,6 +615,11 @@ linear cost measured in the same run, so a tiled BF16 GEMM is the next candidate
 Command-buffer batching, cache eviction and graph capture remain secondary until a
 representative workload is measured.
 
+Four-wide BF16 loads in the linear kernel, with the same ascending-`k` additions,
+reduced decode to 0.30 s/token and 18-token prefill to 0.81 s; timing variance also
+collapsed to 0.300-0.310 s per token across four steps. The archived tokens and the
+engine-metal tests stayed bit-identical.
+
 A first GEMM experiment is a measured loser and was reverted: uploading every matrix
 transposed (so threads read adjacent output columns) cost about 30 s of host transposition
 for the 15 GB inventory and raised decode to 0.95-1.1 s/token across two runs, versus

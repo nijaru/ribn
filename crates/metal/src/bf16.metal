@@ -26,8 +26,24 @@ kernel void bf16_linear(
     uint row = id / columns;
     uint column = id % columns;
     float sum = 0.0f;
-    for (uint i = 0; i < inner; ++i) {
-        sum += bf16_load(input[row * inner + i]) * bf16_load(weight[column * inner + i]);
+    uint i = 0;
+    if ((inner & 3u) == 0) {
+        device const ushort4* input4 =
+            (device const ushort4*)(input + row * inner);
+        device const ushort4* weight4 =
+            (device const ushort4*)(weight + column * inner);
+        for (; i < inner; i += 4) {
+            ushort4 a = input4[i / 4];
+            ushort4 b = weight4[i / 4];
+            sum += bf16_load(a.x) * bf16_load(b.x);
+            sum += bf16_load(a.y) * bf16_load(b.y);
+            sum += bf16_load(a.z) * bf16_load(b.z);
+            sum += bf16_load(a.w) * bf16_load(b.w);
+        }
+    } else {
+        for (; i < inner; ++i) {
+            sum += bf16_load(input[row * inner + i]) * bf16_load(weight[column * inner + i]);
+        }
     }
     output[id] = bf16_rne(sum);
 }
