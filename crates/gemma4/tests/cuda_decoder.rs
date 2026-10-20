@@ -6,6 +6,7 @@ use ribn_foundation::BytePool;
 use ribn_hf::LocalModelPackage;
 use serde_json::Value;
 use std::path::PathBuf;
+use std::time::Instant;
 
 fn environment(name: &str) -> PathBuf {
     PathBuf::from(
@@ -56,19 +57,27 @@ fn cuda_decoder_reproduces_the_archived_greedy_tokens() {
     let context = CudaContext::new(0).unwrap();
     let stream = context.new_stream().unwrap();
     let pool = BytePool::new(20_u64 << 30).shared();
+    let started = Instant::now();
     let mut decoder =
         Gemma4CudaDecoder::load(&source, host, stream, &pool, 32, 512).expect("CUDA decoder");
+    let loaded = started.elapsed();
 
+    let prefill = Instant::now();
     let mut logits = decoder.prefill(&prompt).expect("prompt prefill");
+    let prefilled = prefill.elapsed();
+    let mut decoded = Vec::with_capacity(steps.len() - 1);
     let mut chosen = argmax(&logits).unwrap();
     assert_eq!(u64::from(chosen), u64::from(steps[0]), "step 0");
     for (index, expected) in steps.iter().enumerate().skip(1) {
+        let step = Instant::now();
         logits = decoder.decode(chosen).expect("decode step");
+        decoded.push(step.elapsed());
         chosen = argmax(&logits).unwrap();
         assert_eq!(u64::from(chosen), u64::from(*expected), "step {index}");
     }
     assert_eq!(decoder.position(), prompt.len() + steps.len() - 1);
     assert_eq!(logits.len(), config.vocab_size());
+    println!("load {loaded:?}, prefill {prefilled:?}, decode {decoded:?}");
     decoder.reset();
     assert_eq!(decoder.position(), 0);
 }
