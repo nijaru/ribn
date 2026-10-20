@@ -162,8 +162,11 @@ A host-orchestrated CUDA decoder now binds the components, keeps KV owner caches
 device-resident and reproduces the archived greedy chat tokens through the engine, the
 text facade and `ribn run-gemma` (CUDA or Metal). Completion-owned device copies append
 K/V without a host round trip; initialized-row prefixes bound cache reads and attention.
-Decode is still synchronous and one token at a time. See the
-[append qualification](../benchmarks/gemma4-reference/README.md#device-side-kv-append).
+Decode is still synchronous and one token at a time. Prefill validates a whole chunk,
+advances its tokens serially and computes only the final token's output head. Actual host
+uploads use row-sized staging; the unused device PLE identity is removed. See the
+[append qualification](../benchmarks/gemma4-reference/README.md#device-side-kv-append) and
+[upload/head cleanup](../benchmarks/gemma4-reference/README.md#cuda-prompt-head-and-upload-cleanup).
 Frequency derivation from theta, Gemma HTTP
 serving and mixed-KV lifetime remain absent.
 A host CPU path now materializes the same 665-parameter BF16 inventory into ordinary

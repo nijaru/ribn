@@ -15,6 +15,10 @@ uses completion-owned device K/V append instead of a host round trip; the archiv
 short-history logits are unchanged. This establishes scoped model-local integration,
 not sampling, eviction, mixed-retention lifetime or competitive acceptance. Define the
 accepted chunk's attention/donor spans and completion boundary before batching prefill.
+Host-orchestration cleanup now removes tiny upload staging, the unused device PLE
+identity and intermediate prompt-token output heads. Exact common-history logits,
+continued/chunked execution, whole-chunk rejection and memcheck pass; upload-only versus
+combined diagnostics isolate the gain. [Qualification](../benchmarks/gemma4-reference/README.md#cuda-prompt-head-and-upload-cleanup).
 The same-artifact
 llama.cpp comparison (2026-10-18) measured 32.7 versus 39.9 tok/s at c1—about 18% lower
 Ribn throughput, with better TTFT—and 2.2x/3.3x throughput gaps at c4/c8. This is not
@@ -31,9 +35,10 @@ and performance gates. Qualified Gemma CUDA components now cover linear,
 shared-allocation, RMS, rotary, the elementwise layer math, causal grouped-query
 attention and a host-orchestrated decoder that keeps KV owners device-resident and
 reproduces the archived greedy tokens through the executor, text facade and CLI. Device
-append reduces diagnostic decode from about 83 to 47–49 ms/token on the 4090 with exact
-common-history logits; this is not a serving measurement. Execution still processes one
-token at a time, without sampling, eviction or mixed-retention cache lifetime.
+append reduced diagnostic decode from about 83 to 47–49 ms/token on the 4090; upload
+cleanup now measures about 18–20 ms/token with exact common-history logits. These are
+sequential diagnostics, not serving measurements. Execution still processes one token
+at a time, without sampling, eviction or mixed-retention cache lifetime.
 [Append qualification](../benchmarks/gemma4-reference/README.md#device-side-kv-append).
 
 Qualify the cross-engine numerical comparison and target remaining prefill/projection
@@ -492,7 +497,9 @@ it when built with `--features cuda`. See the
 Device-side K/V append now passes byte-preservation, initialized-prefix and memcheck
 gates, with exact short-history logits against host append. Next, define the batched
 prefill attention-span contract and compare mixed prompt lengths before selecting a
-lane. Mixed-width cache lifetime, HTTP serving, sampling and eviction remain open.
+lane. The intervening upload/head cleanup is qualified without changing that serial
+lane; it does not establish batched execution. Mixed-width cache lifetime, HTTP serving,
+sampling and eviction remain open.
 The host CPU path now composes a full Gemma decoder step — embeddings, PLE, all 42
 hybrid layers with owner/shared-tail KV, attention, the remaining layer math and the
 tied head — and reproduces all four greedy tokens of the archived 18-token chat row.

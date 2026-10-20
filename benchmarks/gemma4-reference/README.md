@@ -685,6 +685,70 @@ cargo test --release -p engine-gemma4 --features cuda --locked \
 #   --ignored --test-threads=1
 ```
 
+## CUDA prompt-head and upload cleanup
+
+The cleanup at `2ae340f` (2026-10-20) removes host-orchestration waste without changing
+kernels or physical batching. A temporary timer at `3c60043` measured about **16 ms**
+per token for embedding uploads (including an unused device PLE identity), **13 ms**
+for all per-layer PLE-context uploads, and **3.1 ms** for final normalization, the tied
+vocabulary head, logit readback and host soft cap. Uploads used five-byte staging and
+drained after each fragment.
+
+The cleanup removes the unused device PLE-identity allocation/upload, stages each
+actual embedding/PLE-context upload as one complete row, and computes the output head
+only for the last token of each accepted prefill chunk. Other tokens still execute all
+layers and cache writes in the same order. Device-only matrices keep minimal staging;
+readback buffers retain their explicit capacities. This adds neither overlap nor batched
+prefill and makes no whole-loader/physical-peak claim.
+
+Before device work, prefill now validates the entire chunk's token/media semantics and
+reachable capacity. A regression test fails on the original code: a valid token followed
+by an out-of-vocabulary token leaves position 19 instead of 18 after rejection. Revised
+code preserves the old position and continuation. Possible device failure still faults
+the shared model and retains its retirement owner; validation is not device rollback.
+
+### Matched sequential diagnostic
+
+Same RTX 4090, driver 615.71.10, CUDA 13.3, pinned BF16 package and archived chat token IDs.
+A temporary probe repeats those IDs to lengths 1/18/64/129, warms three input tokens, then
+runs each length three times with reset and three common teacher-forced continuation
+tokens. Cache capacity is 160 and attention scratch is `160 × attention_heads`. Timings
+exclude loading and evidence-file comparison. Variants run sequentially in baseline,
+upload-cleanup and combined order, not alternating order; these are bounded diagnostics,
+not mixed-arrival serving, long-context quality or competitive acceptance.
+
+Median prefill wall time (ms):
+
+| Prompt tokens | Device-append baseline | Upload cleanup only | Upload + last-token head |
+| --- | ---: | ---: | ---: |
+| 1 | 46.87 | 17.88 | 17.99 |
+| 18 | 845.88 | 324.87 | 274.76 |
+| 64 | 3058.09 | 1200.12 | 1014.12 |
+| 129 | 6208.06 | 2468.54 | 2091.13 |
+
+Baseline prefill ranges were 46.80–47.68, 845.73–846.01, 3054.09–3060.01 and
+6204.74–6209.18 ms respectively; combined ranges were 17.99–18.27, 274.56–277.31,
+1013.32–1014.47 and 2090.82–2091.60 ms. At the 18-token history, median decode fell
+**47.46 → 18.51 ms/token**; across all four histories combined decode medians were
+18.06–19.90 ms/token. Upload-only versus combined decode differed by less than 1%;
+last-token head selection benefits prefill, not single-token decode.
+
+Every variant/repetition checked the shape, finiteness and exact BF16 encodings of all
+262,144 logits after prefill and each continuation step against the baseline. This is
+transformation equivalence, not an independent model-quality reference. The committed
+`cuda_decoder` gate retains the archived four-token check and adds exact full-logit
+comparisons for one-token and seven-token prompt chunks, continued decoding and reset,
+plus rejection without prefix mutation. Decoder, executor and text gates passed; the
+expanded full decoder test passed memcheck with **zero errors**. Host boundaries, fmt,
+387 workspace tests and default/CUDA/targeted Metal clippy passed. Failed-drain hardware
+injection and Metal device reruns were not performed for this CUDA-only slice.
+
+The existing `cuda_decoder` command above reproduces the short archived gate and prints
+cold execution timings; it does not reproduce the warmed length sweep. Raw probe code,
+source variants and logit captures are retained with qualification artifacts, not as a
+new public benchmark framework. Next is a separately qualified batched-prefill lane,
+including window/chunk boundaries and common-history numerical acceptance.
+
 ## Host rotary-frequency gate
 
 `Gemma4Config::rotary_inverse_frequency` prepares individual FP32 factors without
