@@ -39,6 +39,19 @@ impl GemmaDecode for Gemma4CpuDecoder {
     }
 }
 
+#[cfg(feature = "cuda")]
+impl GemmaDecode for crate::Gemma4CudaDecoder {
+    fn prefill(&mut self, tokens: &[u32]) -> Result<Vec<u16>, Gemma4Error> {
+        Self::prefill(self, tokens)
+    }
+    fn decode(&mut self, token: u32) -> Result<Vec<u16>, Gemma4Error> {
+        Self::decode(self, token)
+    }
+    fn position(&self) -> usize {
+        Self::position(self)
+    }
+}
+
 #[cfg(all(feature = "metal", target_os = "macos"))]
 impl GemmaDecode for crate::Gemma4MetalDecoder {
     fn prefill(&mut self, tokens: &[u32]) -> Result<Vec<u16>, Gemma4Error> {
@@ -87,6 +100,26 @@ impl Gemma4Executor<Gemma4CpuDecoder> {
             "gemma4 cpu",
             config,
             Box::new(move || Gemma4CpuDecoder::shared(weights.clone())),
+        )
+    }
+}
+
+#[cfg(feature = "cuda")]
+impl Gemma4Executor<crate::Gemma4CudaDecoder> {
+    /// Bind the executor to an uploaded CUDA model shared by every sequence.
+    /// # Errors
+    /// Rejects a poisoned model lock or a configuration whose context bound
+    /// exceeds the runtime's u32 limits.
+    pub fn cuda(model: Arc<std::sync::Mutex<crate::Gemma4CudaModel>>) -> Result<Self, Gemma4Error> {
+        let config = model
+            .lock()
+            .map_err(|_| Gemma4Error::new("executor", "CUDA model lock poisoned"))?
+            .config()
+            .clone();
+        Self::new(
+            "gemma4 cuda",
+            config,
+            Box::new(move || crate::Gemma4CudaDecoder::shared(model.clone())),
         )
     }
 }
