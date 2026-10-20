@@ -417,3 +417,160 @@ fn attention_rejects_malformed_spans_and_geometry() {
             .is_err()
     );
 }
+
+fn reference_rotary(
+    input: &[u16],
+    cosine: &[u16],
+    sine: &[u16],
+    rows: usize,
+    heads: usize,
+    width: usize,
+) -> Vec<u16> {
+    let half = width / 2;
+    let mut output = vec![0_u16; input.len()];
+    for row in 0..rows {
+        for head in 0..heads {
+            let base = (row * heads + head) * width;
+            for j in 0..half {
+                let factor = row * width + j;
+                let product = |a: f32, b: f32| value(bf16(a * b));
+                let first = product(value(input[base + j]), value(cosine[factor]))
+                    + product(-value(input[base + j + half]), value(sine[factor]));
+                let second = product(value(input[base + j + half]), value(cosine[factor + half]))
+                    + product(value(input[base + j]), value(sine[factor + half]));
+                output[base + j] = bf16(first);
+                output[base + j + half] = bf16(second);
+            }
+        }
+    }
+    output
+}
+
+#[test]
+fn rotary_matches_a_host_reference_with_both_factor_halves() {
+    let Ok(executor) = MetalBf16Executor::new() else {
+        eprintln!("no Metal device; skipping");
+        return;
+    };
+    let (rows, heads, width) = (3, 2, 4);
+    let input = operands(rows * heads * width, 61);
+    let cosine = operands(rows * width, 67);
+    let sine = operands(rows * width, 71);
+    let actual = executor
+        .rotary_apply(
+            &executor.upload(&input).unwrap(),
+            &executor.upload(&cosine).unwrap(),
+            &executor.upload(&sine).unwrap(),
+            rows,
+            heads,
+            width,
+        )
+        .unwrap();
+    assert_eq!(
+        actual.bits(),
+        reference_rotary(&input, &cosine, &sine, rows, heads, width)
+    );
+    assert!(
+        executor
+            .rotary_apply(
+                &executor.upload(&input).unwrap(),
+                &executor.upload(&cosine).unwrap(),
+                &executor.upload(&sine).unwrap(),
+                rows,
+                heads,
+                3,
+            )
+            .is_err()
+    );
+}
+
+fn reference_gelu(input: &[u16]) -> Vec<u16> {
+    const ALPHA: f32 = 0.797_884_6;
+    const CUBIC: f32 = 0.044_715;
+    input
+        .iter()
+        .map(|&bits| {
+            let x = value(bits);
+            bf16(0.5 * x * (1.0 + (ALPHA * x * (1.0 + CUBIC * x * x)).tanh()))
+        })
+        .collect()
+}
+
+fn reference_softcap(input: &[u16], cap: f32) -> Vec<u16> {
+    input
+        .iter()
+        .map(|&bits| {
+            let divided = bf16(value(bits) / cap);
+            let hyperbolic = bf16(value(divided).tanh());
+            bf16(value(hyperbolic) * cap)
+        })
+        .collect()
+}
+
+#[test]
+fn elementwise_operations_match_host_references() {
+    let Ok(executor) = MetalBf16Executor::new() else {
+        eprintln!("no Metal device; skipping");
+        return;
+    };
+    let left = operands(64, 73);
+    let right = operands(64, 79);
+    let left_buffer = executor.upload(&left).unwrap();
+    let right_buffer = executor.upload(&right).unwrap();
+
+    let added = executor.add(&left_buffer, &right_buffer).unwrap();
+    let expected: Vec<u16> = left
+        .iter()
+        .zip(&right)
+        .map(|(&a, &b)| bf16(value(a) + value(b)))
+        .collect();
+    assert_eq!(added.bits(), expected);
+
+    let multiplied = executor.multiply(&left_buffer, &right_buffer).unwrap();
+    let expected: Vec<u16> = left
+        .iter()
+        .zip(&right)
+        .map(|(&a, &b)| bf16(value(a) * value(b)))
+        .collect();
+    assert_eq!(multiplied.bits(), expected);
+
+    let scaled = executor.scale(&left_buffer, 0.5).unwrap();
+    let expected: Vec<u16> = left.iter().map(|&a| bf16(value(a) * 0.5)).collect();
+    assert_eq!(scaled.bits(), expected);
+
+    let gelu = executor.gelu(&left_buffer).unwrap();
+    let expected = reference_gelu(&left);
+    for (index, (&actual, &expected)) in gelu.bits().iter().zip(&expected).enumerate() {
+        let bound = 16.0 * f32::EPSILON * value(left[index]).abs() + ulp(expected);
+        let error = (value(actual) - value(expected)).abs();
+        assert!(
+            error <= bound,
+            "gelu[{index}] error {error:e} exceeds {bound:e}"
+        );
+    }
+
+    let capped = executor.softcap(&left_buffer, 30.0).unwrap();
+    let expected = reference_softcap(&left, 30.0);
+    for (index, (&actual, &expected)) in capped.bits().iter().zip(&expected).enumerate() {
+        let bound = 8.0 * f32::EPSILON * 30.0 + 2.0 * ulp(expected);
+        let error = (value(actual) - value(expected)).abs();
+        assert!(
+            error <= bound,
+            "softcap[{index}] error {error:e} exceeds {bound:e}"
+        );
+    }
+}
+
+#[test]
+fn elementwise_validation_rejects_bad_operands() {
+    let Ok(executor) = MetalBf16Executor::new() else {
+        eprintln!("no Metal device; skipping");
+        return;
+    };
+    let left = executor.upload(&operands(8, 83)).unwrap();
+    let shorter = executor.upload(&operands(4, 89)).unwrap();
+    assert!(executor.add(&left, &shorter).is_err());
+    assert!(executor.multiply(&left, &shorter).is_err());
+    assert!(executor.scale(&left, f32::NAN).is_err());
+    assert!(executor.softcap(&left, 0.0).is_err());
+}

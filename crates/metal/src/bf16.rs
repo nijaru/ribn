@@ -81,6 +81,8 @@ pub struct MetalBf16Executor {
     linear: ComputePipelineState,
     rms: ComputePipelineState,
     attention: ComputePipelineState,
+    rotary: ComputePipelineState,
+    elementwise: ComputePipelineState,
 }
 
 impl MetalBf16Executor {
@@ -111,6 +113,18 @@ impl MetalBf16Executor {
         let attention = device
             .new_compute_pipeline_state_with_function(&attention)
             .map_err(MetalBf16Error::Pipeline)?;
+        let rotary = library
+            .get_function("bf16_rotary_apply", None)
+            .map_err(MetalBf16Error::Function)?;
+        let rotary = device
+            .new_compute_pipeline_state_with_function(&rotary)
+            .map_err(MetalBf16Error::Pipeline)?;
+        let elementwise = library
+            .get_function("bf16_elementwise", None)
+            .map_err(MetalBf16Error::Function)?;
+        let elementwise = device
+            .new_compute_pipeline_state_with_function(&elementwise)
+            .map_err(MetalBf16Error::Pipeline)?;
         let queue = device.new_command_queue();
         Ok(Self {
             device,
@@ -118,6 +132,8 @@ impl MetalBf16Executor {
             linear,
             rms,
             attention,
+            rotary,
+            elementwise,
         })
     }
 
@@ -369,6 +385,181 @@ impl MetalBf16Executor {
         Ok(MetalBf16Buffer {
             buffer: output,
             elements: query.elements,
+        })
+    }
+
+    /// Split-half rotation with prepared BF16 factors `[rows, width]`.
+    ///
+    /// Channel `j` pairs with `j + width/2`; each product rounds to BF16 before
+    /// the FP32 addition, and both factor halves are read.
+    /// # Errors
+    /// Rejects odd/zero widths, non-whole heads or disagreeing buffer lengths.
+    pub fn rotary_apply(
+        &self,
+        input: &MetalBf16Buffer,
+        cosine: &MetalBf16Buffer,
+        sine: &MetalBf16Buffer,
+        rows: usize,
+        heads: usize,
+        width: usize,
+    ) -> Result<MetalBf16Buffer, MetalBf16Error> {
+        if rows == 0 || heads == 0 || width == 0 || !width.is_multiple_of(2) {
+            return Err(MetalBf16Error::Shape(
+                "rotary needs positive rows/heads and an even width".into(),
+            ));
+        }
+        let columns = heads
+            .checked_mul(width)
+            .ok_or_else(|| MetalBf16Error::Shape("rotary head stride overflow".into()))?;
+        let input_length = rows
+            .checked_mul(columns)
+            .ok_or_else(|| MetalBf16Error::Shape("rotary input overflow".into()))?;
+        let factor_length = rows
+            .checked_mul(width)
+            .ok_or_else(|| MetalBf16Error::Shape("rotary factor overflow".into()))?;
+        let half = width / 2;
+        let pairs = rows
+            .checked_mul(heads)
+            .and_then(|n| n.checked_mul(half))
+            .ok_or_else(|| MetalBf16Error::Shape("rotary pair count overflow".into()))?;
+        if input.elements != input_length
+            || cosine.elements != factor_length
+            || sine.elements != factor_length
+        {
+            return Err(MetalBf16Error::Shape(
+                "rotary buffers disagree with the requested shape".into(),
+            ));
+        }
+        let output = self.device.new_buffer(
+            (input_length * 2) as u64,
+            MTLResourceOptions::StorageModeShared,
+        );
+        let command = self.queue.new_command_buffer();
+        let encoder = command.new_compute_command_encoder();
+        encoder.set_compute_pipeline_state(&self.rotary);
+        encoder.set_buffer(0, Some(&input.buffer), 0);
+        encoder.set_buffer(1, Some(&cosine.buffer), 0);
+        encoder.set_buffer(2, Some(&sine.buffer), 0);
+        encoder.set_buffer(3, Some(&output), 0);
+        let columns = u32::try_from(columns)
+            .map_err(|_| MetalBf16Error::Shape("columns exceed u32".into()))?;
+        let width =
+            u32::try_from(width).map_err(|_| MetalBf16Error::Shape("width exceeds u32".into()))?;
+        let pairs = u64::try_from(pairs)
+            .map_err(|_| MetalBf16Error::Shape("rotary pairs exceed u64".into()))?;
+        encoder.set_bytes(4, 4, (&raw const columns).cast());
+        encoder.set_bytes(5, 4, (&raw const width).cast());
+        encoder.set_bytes(6, 8, (&raw const pairs).cast());
+        encoder.dispatch_threads(
+            MTLSize::new(pairs, 1, 1),
+            MTLSize::new(pairs.min(256), 1, 1),
+        );
+        encoder.end_encoding();
+        command.commit();
+        command.wait_until_completed();
+        Ok(MetalBf16Buffer {
+            buffer: output,
+            elements: input_length,
+        })
+    }
+
+    /// Elementwise BF16 addition with one rounding.
+    /// # Errors
+    /// Rejects disagreeing buffer lengths.
+    pub fn add(
+        &self,
+        left: &MetalBf16Buffer,
+        right: &MetalBf16Buffer,
+    ) -> Result<MetalBf16Buffer, MetalBf16Error> {
+        self.elementwise(0, 0.0, left, Some(right))
+    }
+
+    /// Elementwise BF16 multiplication with one rounding.
+    /// # Errors
+    /// Rejects disagreeing buffer lengths.
+    pub fn multiply(
+        &self,
+        left: &MetalBf16Buffer,
+        right: &MetalBf16Buffer,
+    ) -> Result<MetalBf16Buffer, MetalBf16Error> {
+        self.elementwise(1, 0.0, left, Some(right))
+    }
+
+    /// Multiply every element by one FP32 scalar with one rounding.
+    /// # Errors
+    /// Rejects a non-finite scalar.
+    pub fn scale(
+        &self,
+        input: &MetalBf16Buffer,
+        factor: f32,
+    ) -> Result<MetalBf16Buffer, MetalBf16Error> {
+        if !factor.is_finite() {
+            return Err(MetalBf16Error::Invalid("scale factor must be finite"));
+        }
+        self.elementwise(2, factor, input, None)
+    }
+
+    /// Tanh-approximated GELU with one rounding.
+    /// # Errors
+    /// Rejects an empty buffer.
+    pub fn gelu(&self, input: &MetalBf16Buffer) -> Result<MetalBf16Buffer, MetalBf16Error> {
+        self.elementwise(3, 0.0, input, None)
+    }
+
+    /// Final logit soft cap: divide, tanh and multiply with BF16 rounding each step.
+    /// # Errors
+    /// Rejects a non-positive/non-finite cap.
+    pub fn softcap(
+        &self,
+        input: &MetalBf16Buffer,
+        cap: f32,
+    ) -> Result<MetalBf16Buffer, MetalBf16Error> {
+        if !cap.is_finite() || cap <= 0.0 {
+            return Err(MetalBf16Error::Invalid(
+                "soft cap must be finite and positive",
+            ));
+        }
+        self.elementwise(4, cap, input, None)
+    }
+
+    fn elementwise(
+        &self,
+        operation: u32,
+        scalar: f32,
+        left: &MetalBf16Buffer,
+        right: Option<&MetalBf16Buffer>,
+    ) -> Result<MetalBf16Buffer, MetalBf16Error> {
+        if left.elements == 0 || right.is_some_and(|right| right.elements != left.elements) {
+            return Err(MetalBf16Error::Shape(
+                "elementwise buffers disagree with the requested shape".into(),
+            ));
+        }
+        let total = u32::try_from(left.elements)
+            .map_err(|_| MetalBf16Error::Shape("elementwise length exceeds u32".into()))?;
+        let output = self.device.new_buffer(
+            (left.elements * 2) as u64,
+            MTLResourceOptions::StorageModeShared,
+        );
+        let command = self.queue.new_command_buffer();
+        let encoder = command.new_compute_command_encoder();
+        encoder.set_compute_pipeline_state(&self.elementwise);
+        encoder.set_buffer(0, Some(&left.buffer), 0);
+        let right_buffer = right.map_or(&left.buffer, |right| &right.buffer);
+        encoder.set_buffer(1, Some(right_buffer), 0);
+        encoder.set_buffer(2, Some(&output), 0);
+        encoder.set_bytes(3, 4, (&raw const operation).cast());
+        encoder.set_bytes(4, 4, (&raw const scalar).cast());
+        encoder.set_bytes(5, 4, (&raw const total).cast());
+        encoder.dispatch_threads(
+            MTLSize::new(u64::from(total), 1, 1),
+            MTLSize::new(u64::from(total).min(THREADS), 1, 1),
+        );
+        encoder.end_encoding();
+        command.commit();
+        command.wait_until_completed();
+        Ok(MetalBf16Buffer {
+            buffer: output,
+            elements: left.elements,
         })
     }
 }

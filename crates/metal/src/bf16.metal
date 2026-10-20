@@ -129,3 +129,64 @@ kernel void bf16_attention(
         output[query_base + c] = bf16_rne(accumulator);
     }
 }
+
+// Split-half rotation with prepared BF16 factors: each product rounds to BF16
+// before the FP32 addition, matching eager arithmetic.
+kernel void bf16_rotary_apply(
+    device const ushort* input [[buffer(0)]],
+    device const ushort* cosine [[buffer(1)]],
+    device const ushort* sine [[buffer(2)]],
+    device ushort* output [[buffer(3)]],
+    constant uint& columns [[buffer(4)]],
+    constant uint& width [[buffer(5)]],
+    constant ulong& pairs [[buffer(6)]],
+    uint64_t id [[thread_position_in_grid]])
+{
+    if (id >= pairs) return;
+    uint half = width / 2;
+    ulong head = id / half;
+    uint j = (uint)(id % half);
+    ulong row = head / (columns / width);
+    ulong x = head * width + j;
+    ulong factor = row * width + j;
+    float a = bf16_load(input[x]);
+    float b = bf16_load(input[x + half]);
+    float ac = bf16_load(bf16_rne(a * bf16_load(cosine[factor])));
+    float bs = bf16_load(bf16_rne(-b * bf16_load(sine[factor])));
+    float bc = bf16_load(bf16_rne(b * bf16_load(cosine[factor + half])));
+    float a_sine = bf16_load(bf16_rne(a * bf16_load(sine[factor + half])));
+    output[x] = bf16_rne(ac + bs);
+    output[x + half] = bf16_rne(bc + a_sine);
+}
+
+// One elementwise operation per launch: 0 add, 1 multiply, 2 scale, 3 GELU
+// (tanh approximation), 4 final soft cap. Unary operations bind `right` to
+// `left` and ignore it.
+kernel void bf16_elementwise(
+    device const ushort* left [[buffer(0)]],
+    device const ushort* right [[buffer(1)]],
+    device ushort* output [[buffer(2)]],
+    constant uint& operation [[buffer(3)]],
+    constant float& scalar [[buffer(4)]],
+    constant uint& total [[buffer(5)]],
+    uint id [[thread_position_in_grid]])
+{
+    if (id >= total) return;
+    float value = bf16_load(left[id]);
+    float result;
+    if (operation == 0) {
+        result = value + bf16_load(right[id]);
+    } else if (operation == 1) {
+        result = value * bf16_load(right[id]);
+    } else if (operation == 2) {
+        result = value * scalar;
+    } else if (operation == 3) {
+        float inner = 0.7978846f * value * (1.0f + 0.0447150f * value * value);
+        result = 0.5f * value * (1.0f + tanh(inner));
+    } else {
+        float divided = bf16_load(bf16_rne(value / scalar));
+        float hyperbolic = bf16_load(bf16_rne(tanh(divided)));
+        result = bf16_load(hyperbolic) * scalar;
+    }
+    output[id] = bf16_rne(result);
+}
