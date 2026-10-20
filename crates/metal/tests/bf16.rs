@@ -4,7 +4,7 @@
 //! stays usable on hosts that have no Apple GPU.
 #![cfg(target_os = "macos")]
 
-use engine_metal::{MetalAttentionConfig, MetalBf16Error, MetalBf16Executor};
+use engine_metal::{MetalAttentionConfig, MetalBf16Error, MetalBf16Executor, MetalLinearShape};
 
 /// Missing hardware skips; any compilation or pipeline failure must fail the test.
 fn executor() -> Option<MetalBf16Executor> {
@@ -253,9 +253,11 @@ fn linear_matches_a_host_reference_and_exact_dyadics() {
             .linear(
                 &executor.upload(&input).unwrap(),
                 &executor.upload(&weight).unwrap(),
-                rows,
-                columns,
-                inner,
+                MetalLinearShape {
+                    rows,
+                    columns,
+                    inner,
+                },
             )
             .unwrap();
         assert_eq!(
@@ -279,13 +281,104 @@ fn linear_matches_a_host_reference_and_exact_dyadics() {
             .linear(
                 &executor.upload(input).unwrap(),
                 &executor.upload(&weight).unwrap(),
-                rows,
-                1,
-                4,
+                MetalLinearShape {
+                    rows,
+                    columns: 1,
+                    inner: 4,
+                },
             )
             .unwrap();
         assert_eq!(exact.bits(), reference_linear(input, &weight, rows, 1, 4));
     }
+}
+
+#[test]
+fn linear_rms_preserves_standalone_bits_and_grouping() {
+    let Some(executor) = executor() else {
+        return;
+    };
+    // Paired/unpaired linear selection, column/inner tails, and multiple RMS
+    // groups per projected row. Existing standalone tests supply independent
+    // arithmetic references; this gate protects the in-command dependency and
+    // the BF16 materialization boundary between the two kernels.
+    for (rows, columns, inner, width) in [
+        (1, 512, 256, 256),
+        (3, 7, 16, 7),
+        (8, 768, 256, 256),
+        (9, 514, 7, 257),
+        (64, 512, 256, 512),
+        (66, 256, 256, 256),
+    ] {
+        let input = executor.upload(&operands(rows * inner, 11)).unwrap();
+        let weight = executor.upload(&operands(columns * inner, 29)).unwrap();
+        let scale = executor.upload(&operands(width, 13)).unwrap();
+        let shape = MetalLinearShape {
+            rows,
+            columns,
+            inner,
+        };
+        let projected = executor.linear(&input, &weight, shape).unwrap();
+        for scale in [None, Some(&scale)] {
+            let expected = executor
+                .rms_norm(&projected, rows * columns / width, width, 1e-6, scale)
+                .unwrap();
+            let actual = executor
+                .linear_rms(&input, &weight, shape, width, 1e-6, scale)
+                .unwrap();
+            assert_eq!(actual.elements(), rows * columns);
+            assert_eq!(
+                actual.bits(),
+                expected.bits(),
+                "linear/RMS {shape:?}, width={width}"
+            );
+        }
+    }
+}
+
+#[test]
+fn linear_rms_rejects_invalid_whole_chains_and_recovers() {
+    let Some(executor) = executor() else {
+        return;
+    };
+    let input_bits = operands(8, 11);
+    let weight_bits = operands(8, 29);
+    let input = executor.upload(&input_bits).unwrap();
+    let weight = executor.upload(&weight_bits).unwrap();
+    let shape = MetalLinearShape {
+        rows: 2,
+        columns: 2,
+        inner: 4,
+    };
+    for (width, epsilon, scale) in [
+        (0, 1e-6, None),
+        (3, 1e-6, None),
+        (2, 0.0, None),
+        (2, f32::NAN, None),
+        (2, 1e-6, Some(&weight)),
+    ] {
+        assert!(matches!(
+            executor.linear_rms(&input, &weight, shape, width, epsilon, scale),
+            Err(MetalBf16Error::Shape(_))
+        ));
+    }
+    let overflow = MetalLinearShape {
+        rows: usize::MAX,
+        columns: 2,
+        inner: 4,
+    };
+    assert!(
+        executor
+            .linear_rms(&input, &weight, overflow, 2, 1e-6, None)
+            .is_err()
+    );
+    assert_eq!(input.bits(), input_bits);
+    assert_eq!(weight.bits(), weight_bits);
+    let projected = executor.linear(&input, &weight, shape).unwrap();
+    let expected = executor.rms_norm(&projected, 2, 2, 1e-6, None).unwrap();
+    let recovered = executor
+        .linear_rms(&input, &weight, shape, 2, 1e-6, None)
+        .unwrap();
+    assert_eq!(recovered.bits(), expected.bits());
 }
 
 #[test]
@@ -323,8 +416,20 @@ fn invalid_shapes_and_epsilon_reject() {
     };
     let input = executor.upload(&operands(8, 1)).unwrap();
     let weight = executor.upload(&operands(8, 2)).unwrap();
-    assert!(executor.linear(&input, &weight, 0, 2, 4).is_err());
-    assert!(executor.linear(&input, &weight, 2, 3, 4).is_err());
+    for shape in [
+        MetalLinearShape {
+            rows: 0,
+            columns: 2,
+            inner: 4,
+        },
+        MetalLinearShape {
+            rows: 2,
+            columns: 3,
+            inner: 4,
+        },
+    ] {
+        assert!(executor.linear(&input, &weight, shape).is_err());
+    }
     assert!(executor.rms_norm(&input, 2, 3, 1e-6, None).is_err());
     assert!(executor.rms_norm(&input, 2, 4, 0.0, None).is_err());
     assert!(

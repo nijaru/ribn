@@ -910,6 +910,31 @@ publication preserves one native token-embedding/output-head allocation and its 
 This synchronous path does not establish a global loading grant, bound source metadata,
 OS page cache or driver storage, or qualify asynchronous/failed-command retirement.
 
+### Synchronous Metal projection chains
+
+A fixed linear → RMS chain uses the same kernels and BF16 projection boundary as
+standalone calls. Validate the whole linear geometry, grouped RMS extent, epsilon,
+scale and u32 kernel offsets before allocating outputs or encoding either operation.
+Allocate a private projection and normalized output, each `rows × columns` BF16
+elements. These are concrete per-call native buffers, not a universal graph, a shared
+workspace grant or an asynchronous output promise.
+
+Both dispatches use one default serial compute encoder. RMS reads the completed
+projection without a host readback/upload; no published immutable buffer is modified.
+The call retains inputs, weights, optional scale and both private allocations through
+`waitUntilCompleted`. That synchronous Metal wait establishes terminal completion,
+including aborted execution. Status must then be `Completed` before publishing any
+output; other statuses return an execution error, not an initialized result. Queue,
+command-buffer and encoder creation check nullable native handles before constructing
+Rust references. Pre-submit failure drops only unpublished work. A terminal command
+error releases private work only after the wait; no partial output escapes.
+
+The same checked preparation/completion path owns standalone Metal commands. A decoder
+error follows the existing synchronous executor failure path; cancellation does not
+interrupt a committed command or release its storage before completion. This contract
+does not establish a concurrent device-memory grant or qualify hardware-fault recovery.
+The CPU full-history oracle and CUDA execution/retirement contracts remain independent.
+
 ### Native BF16 linear execution
 
 The linear execution slice computes row-major `output = input × weightᵀ` through

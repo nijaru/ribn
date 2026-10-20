@@ -1,4 +1,4 @@
-//! Chunked BF16 linear and RMS execution on one Metal command queue.
+//! BF16 execution with synchronous completion on one Metal command queue.
 
 use metal::{
     Buffer, CommandQueue, CompileOptions, ComputeCommandEncoderRef, ComputePipelineState, Device,
@@ -8,6 +8,10 @@ use std::error::Error;
 use std::fmt;
 
 mod loading;
+mod projection;
+mod submission;
+
+pub use projection::MetalLinearShape;
 
 /// Metal preparation or execution failure.
 #[derive(Debug)]
@@ -19,6 +23,7 @@ pub enum MetalBf16Error {
     Invalid(&'static str),
     Shape(String),
     Allocation(String),
+    Execution(String),
     Read(std::io::Error),
 }
 
@@ -32,6 +37,7 @@ impl fmt::Display for MetalBf16Error {
             Self::Invalid(message) => formatter.write_str(message),
             Self::Shape(message) => write!(formatter, "Metal shape: {message}"),
             Self::Allocation(message) => write!(formatter, "Metal allocation: {message}"),
+            Self::Execution(message) => write!(formatter, "Metal execution: {message}"),
             Self::Read(error) => write!(formatter, "Metal BF16 source: {error}"),
         }
     }
@@ -277,7 +283,7 @@ impl MetalBf16Executor {
         let elementwise = device
             .new_compute_pipeline_state_with_function(&elementwise)
             .map_err(MetalBf16Error::Pipeline)?;
-        let queue = device.new_command_queue();
+        let queue = Self::command_queue(&device)?;
         // Do not extend an optimization measured on M3 Max to other Apple GPUs.
         let pair_linear_rows = device.name() == "Apple M3 Max";
         Ok(Self {
@@ -291,133 +297,6 @@ impl MetalBf16Executor {
             attention_values,
             rotary,
             elementwise,
-        })
-    }
-
-    /// Row-major `output[m,n] = input[m,k] · weight[n,k]` in BF16.
-    ///
-    /// Each output accumulates in FP32 in ascending inner-index order and rounds once.
-    /// # Errors
-    /// Rejects mismatched/empty shapes or element counts beyond u32 kernel offsets.
-    pub fn linear(
-        &self,
-        input: &MetalBf16Buffer,
-        weight: &MetalBf16Buffer,
-        rows: usize,
-        columns: usize,
-        inner: usize,
-    ) -> Result<MetalBf16Buffer, MetalBf16Error> {
-        let input_length = rows
-            .checked_mul(inner)
-            .ok_or_else(|| MetalBf16Error::Shape("input dimensions overflow".into()))?;
-        let weight_length = columns
-            .checked_mul(inner)
-            .ok_or_else(|| MetalBf16Error::Shape("weight dimensions overflow".into()))?;
-        let output_length = rows
-            .checked_mul(columns)
-            .ok_or_else(|| MetalBf16Error::Shape("output dimensions overflow".into()))?;
-        if rows == 0
-            || columns == 0
-            || inner == 0
-            || input.elements != input_length
-            || weight.elements != weight_length
-        {
-            return Err(MetalBf16Error::Shape(
-                "linear buffers disagree with the requested shape".into(),
-            ));
-        }
-        // Kernel element offsets use u32 products, not only u32 dimensions.
-        if u32::try_from(input_length).is_err() || u32::try_from(weight_length).is_err() {
-            return Err(MetalBf16Error::Shape(
-                "linear input or weight exceeds u32 elements".into(),
-            ));
-        }
-        let columns = u32::try_from(columns)
-            .map_err(|_| MetalBf16Error::Shape("columns exceed u32".into()))?;
-        let inner =
-            u32::try_from(inner).map_err(|_| MetalBf16Error::Shape("inner exceeds u32".into()))?;
-        let total = u32::try_from(output_length)
-            .map_err(|_| MetalBf16Error::Shape("output exceeds u32 elements".into()))?;
-        let output = self.allocate_shared(output_length * 2)?;
-        let command = self.queue.new_command_buffer();
-        let encoder = command.new_compute_command_encoder();
-        encoder.set_compute_pipeline_state(&self.linear);
-        encoder.set_buffer(0, Some(&input.buffer), 0);
-        encoder.set_buffer(1, Some(&weight.buffer), 0);
-        encoder.set_buffer(2, Some(&output), 0);
-        encoder.set_bytes(3, 4, (&raw const columns).cast());
-        encoder.set_bytes(4, 4, (&raw const inner).cast());
-        encoder.set_bytes(5, 4, (&raw const total).cast());
-        // Only the measured multi-row range uses register blocking. Decode,
-        // small/tail chunks and larger unqualified batches keep the exact kernel.
-        let paired = u32::from(
-            self.pair_linear_rows
-                && (8..=64).contains(&rows)
-                && rows.is_multiple_of(2)
-                && inner.is_multiple_of(4),
-        );
-        encoder.set_bytes(6, 4, (&raw const paired).cast());
-        let grid = u64::from(if paired != 0 { total / 2 } else { total });
-        encoder.dispatch_threads(
-            MTLSize::new(grid, 1, 1),
-            MTLSize::new(grid.min(THREADS), 1, 1),
-        );
-        encoder.end_encoding();
-        command.commit();
-        command.wait_until_completed();
-        Ok(MetalBf16Buffer {
-            buffer: output,
-            elements: output_length,
-        })
-    }
-
-    /// Grouped RMS over rows of `width`, with an optional direct BF16 scale.
-    /// # Errors
-    /// Rejects empty/whole-row-mismatched shapes or an invalid epsilon.
-    pub fn rms_norm(
-        &self,
-        input: &MetalBf16Buffer,
-        rows: usize,
-        width: usize,
-        epsilon: f32,
-        scale: Option<&MetalBf16Buffer>,
-    ) -> Result<MetalBf16Buffer, MetalBf16Error> {
-        let expected = rows
-            .checked_mul(width)
-            .ok_or_else(|| MetalBf16Error::Shape("RMS dimensions overflow".into()))?;
-        if rows == 0
-            || width == 0
-            || !epsilon.is_finite()
-            || epsilon <= 0.0
-            || input.elements != expected
-            || scale.is_some_and(|scale| scale.elements != width)
-        {
-            return Err(MetalBf16Error::Shape(
-                "RMS buffers disagree with the requested shape".into(),
-            ));
-        }
-        let output = self.allocate_shared(expected * 2)?;
-        let command = self.queue.new_command_buffer();
-        let encoder = command.new_compute_command_encoder();
-        encoder.set_compute_pipeline_state(&self.rms);
-        encoder.set_buffer(0, Some(&input.buffer), 0);
-        let scale_buffer = scale.map_or(&input.buffer, |scale| &scale.buffer);
-        encoder.set_buffer(1, Some(scale_buffer), 0);
-        encoder.set_buffer(2, Some(&output), 0);
-        let width =
-            u32::try_from(width).map_err(|_| MetalBf16Error::Shape("width exceeds u32".into()))?;
-        encoder.set_bytes(3, 4, (&raw const width).cast());
-        encoder.set_bytes(4, 4, (&raw const epsilon).cast());
-        let has_scale = u32::from(scale.is_some());
-        encoder.set_bytes(5, 4, (&raw const has_scale).cast());
-        encoder
-            .dispatch_thread_groups(MTLSize::new(rows as u64, 1, 1), MTLSize::new(THREADS, 1, 1));
-        encoder.end_encoding();
-        command.commit();
-        command.wait_until_completed();
-        Ok(MetalBf16Buffer {
-            buffer: output,
-            elements: expected,
         })
     }
 
@@ -457,13 +336,13 @@ impl MetalBf16Executor {
         let output = self.allocate_shared(query.elements * 2)?;
         let scores_buffer = self.allocate_shared(geometry.scores as usize * 2)?;
         let summary_buffer = self.allocate_shared(geometry.rows as usize * 8)?;
-        let command = self.queue.new_command_buffer();
-        let encoder = command.new_compute_command_encoder();
+        let command = self.command()?;
+        let encoder = Self::compute_encoder(&command)?;
         encoder.set_compute_pipeline_state(&self.attention_scores);
         encoder.set_buffer(0, Some(&query.buffer), 0);
         encoder.set_buffer(1, Some(&keys.buffer), 0);
         encoder.set_buffer(2, Some(&scores_buffer), 0);
-        geometry.set_bytes(encoder, 3, false);
+        geometry.set_bytes(&encoder, 3, false);
         encoder.set_bytes(10, 4, (&raw const geometry.scores).cast());
         encoder.dispatch_threads(
             MTLSize::new(u64::from(geometry.scores), 1, 1),
@@ -472,7 +351,7 @@ impl MetalBf16Executor {
         encoder.set_compute_pipeline_state(&self.attention_reduce);
         encoder.set_buffer(0, Some(&scores_buffer), 0);
         encoder.set_buffer(1, Some(&summary_buffer), 0);
-        geometry.set_bytes(encoder, 2, true);
+        geometry.set_bytes(&encoder, 2, true);
         encoder.set_bytes(7, 4, (&raw const geometry.rows).cast());
         encoder.dispatch_threads(
             MTLSize::new(u64::from(geometry.rows), 1, 1),
@@ -483,15 +362,14 @@ impl MetalBf16Executor {
         encoder.set_buffer(1, Some(&scores_buffer), 0);
         encoder.set_buffer(2, Some(&summary_buffer), 0);
         encoder.set_buffer(3, Some(&output), 0);
-        geometry.set_bytes(encoder, 4, false);
+        geometry.set_bytes(&encoder, 4, false);
         encoder.set_bytes(11, 4, (&raw const geometry.values).cast());
         encoder.dispatch_threads(
             MTLSize::new(u64::from(geometry.values), 1, 1),
             MTLSize::new(u64::from(geometry.values).min(THREADS), 1, 1),
         );
         encoder.end_encoding();
-        command.commit();
-        command.wait_until_completed();
+        Self::submit(&command, "attention")?;
         Ok(MetalBf16Buffer {
             buffer: output,
             elements: query.elements,
@@ -541,8 +419,8 @@ impl MetalBf16Executor {
             ));
         }
         let output = self.allocate_shared(input_length * 2)?;
-        let command = self.queue.new_command_buffer();
-        let encoder = command.new_compute_command_encoder();
+        let command = self.command()?;
+        let encoder = Self::compute_encoder(&command)?;
         encoder.set_compute_pipeline_state(&self.rotary);
         encoder.set_buffer(0, Some(&input.buffer), 0);
         encoder.set_buffer(1, Some(&cosine.buffer), 0);
@@ -562,8 +440,7 @@ impl MetalBf16Executor {
             MTLSize::new(u64::from(pairs).min(256), 1, 1),
         );
         encoder.end_encoding();
-        command.commit();
-        command.wait_until_completed();
+        Self::submit(&command, "rotary")?;
         Ok(MetalBf16Buffer {
             buffer: output,
             elements: input_length,
@@ -644,8 +521,8 @@ impl MetalBf16Executor {
         let total = u32::try_from(left.elements)
             .map_err(|_| MetalBf16Error::Shape("elementwise length exceeds u32".into()))?;
         let output = self.allocate_shared(left.elements * 2)?;
-        let command = self.queue.new_command_buffer();
-        let encoder = command.new_compute_command_encoder();
+        let command = self.command()?;
+        let encoder = Self::compute_encoder(&command)?;
         encoder.set_compute_pipeline_state(&self.elementwise);
         encoder.set_buffer(0, Some(&left.buffer), 0);
         let right_buffer = right.map_or(&left.buffer, |right| &right.buffer);
@@ -659,8 +536,7 @@ impl MetalBf16Executor {
             MTLSize::new(u64::from(total).min(THREADS), 1, 1),
         );
         encoder.end_encoding();
-        command.commit();
-        command.wait_until_completed();
+        Self::submit(&command, "elementwise")?;
         Ok(MetalBf16Buffer {
             buffer: output,
             elements: left.elements,

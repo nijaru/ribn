@@ -188,9 +188,9 @@ operations (add, multiply, scale, tanh-GELU and soft cap), compiled at runtime f
 checked-in MSL and driven by one device plus command queue. Linear pairs input rows
 on qualified M3 Max even 8–64-row shapes whose inner dimension is divisible by four,
 reusing weights without changing each output's accumulation order; other GPUs/shapes retain
-the original kernel. Causal/sliding grouped-query attention runs as three parallel
-kernels in one command buffer: query-key
-scores, a per-row softmax reduction, and weighted values, each preserving the
+the original kernel. Causal/sliding grouped-query attention runs as three ordered
+kernel dispatches in one command buffer: query-key scores, a per-row softmax reduction,
+and weighted values, each preserving the
 score/weight rounding and per-output accumulation order. The Gemma model crate reads
 its preflighted BF16 source directly into owned Shared Metal buffers using at most
 64 KiB of read/copy scratch, preserving encodings and the tied head. Immutable buffers
@@ -198,7 +198,11 @@ also provide borrowed CPU embedding rows; preparation constructs neither a full 
 inventory nor a parameter-sized encoded upload copy. A host-orchestrated
 decoder runs the full step: matmuls, normalization, rotary and attention execute on
 the GPU while embeddings, elementwise algebra and the soft cap reuse the validated
-host primitives. The archived 18-token chat row reproduces all four greedy tokens on
+host primitives. Adjacent linear → RMS operations share one serial command buffer and
+a private BF16 projection, avoiding that intermediate's host round trip without changing
+either kernel or rounding boundary. Output publication requires successful completion;
+remaining activation transfers and CPU elementwise work still limit the path.
+The archived 18-token chat row reproduces all four greedy tokens on
 the M3 Max, and again through the token runtime's engine and the text facade with the
 real Gemma tokenizer and chat assets. `Gemma4Executor` validates whole submissions,
 shares loaded weights across admitted sequences, runs the decoder synchronously and

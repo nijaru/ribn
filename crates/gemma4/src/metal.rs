@@ -104,7 +104,7 @@ impl std::fmt::Debug for Gemma4MetalWeights {
 
 use crate::AttentionKind;
 use crate::cpu::{add, argmax, factors, gelu_tanh, multiply, ple_combine, scale, softcap};
-use engine_metal::{MetalAttentionConfig, MetalBf16Error};
+use engine_metal::{MetalAttentionConfig, MetalBf16Error, MetalLinearShape};
 
 /// Host orchestration for one Metal decoder step.
 struct MetalOps<'a> {
@@ -116,12 +116,12 @@ fn metal_error(error: &MetalBf16Error) -> Gemma4Error {
 }
 
 impl MetalOps<'_> {
-    fn linear(
+    fn linear_input(
         &self,
         input: &[u16],
         rows: usize,
         weight: &MetalBf16Buffer,
-    ) -> Result<Vec<u16>, Gemma4Error> {
+    ) -> Result<(MetalBf16Buffer, MetalLinearShape), Gemma4Error> {
         if rows == 0 || !input.len().is_multiple_of(rows) {
             return Err(Gemma4Error::new("Metal decoder", "linear input rows"));
         }
@@ -129,14 +129,45 @@ impl MetalOps<'_> {
         if inner == 0 || !weight.elements().is_multiple_of(inner) {
             return Err(Gemma4Error::new("Metal decoder", "linear weight shape"));
         }
-        let columns = weight.elements() / inner;
+        let shape = MetalLinearShape {
+            rows,
+            columns: weight.elements() / inner,
+            inner,
+        };
         let buffer = self
             .executor
             .upload(input)
             .map_err(|error| metal_error(&error))?;
+        Ok((buffer, shape))
+    }
+
+    fn linear(
+        &self,
+        input: &[u16],
+        rows: usize,
+        weight: &MetalBf16Buffer,
+    ) -> Result<Vec<u16>, Gemma4Error> {
+        let (buffer, shape) = self.linear_input(input, rows, weight)?;
         let output = self
             .executor
-            .linear(&buffer, weight, rows, columns, inner)
+            .linear(&buffer, weight, shape)
+            .map_err(|error| metal_error(&error))?;
+        Ok(output.bits())
+    }
+
+    fn linear_rms(
+        &self,
+        input: &[u16],
+        rows: usize,
+        weight: &MetalBf16Buffer,
+        width: usize,
+        epsilon: f32,
+        scale: Option<&MetalBf16Buffer>,
+    ) -> Result<Vec<u16>, Gemma4Error> {
+        let (buffer, shape) = self.linear_input(input, rows, weight)?;
+        let output = self
+            .executor
+            .linear_rms(&buffer, weight, shape, width, epsilon, scale)
             .map_err(|error| metal_error(&error))?;
         Ok(output.bits())
     }
@@ -558,14 +589,10 @@ fn attention_forward(
         epsilon,
         Some(metal.layer(layer, LayerParameter::InputNorm)?),
     )?;
-    let queries = ops.linear(
+    let queries = ops.linear_rms(
         &normed,
         sequence,
         metal.layer(layer, LayerParameter::Query)?,
-    )?;
-    let queries = ops.rms(
-        &queries,
-        sequence * heads,
         width,
         epsilon,
         Some(metal.layer(layer, LayerParameter::QueryNorm)?),
@@ -573,21 +600,23 @@ fn attention_forward(
     let (cosine, sine) = factors(config, layer, positions)?;
     let queries = ops.rotary(&queries, sequence, heads, width, &cosine, &sine)?;
     if geometry.kv_owner == layer {
-        let keys = ops.linear(&normed, sequence, metal.layer(layer, LayerParameter::Key)?)?;
-        let keys = ops.rms(
-            &keys,
-            sequence * kv_heads,
+        let keys = ops.linear_rms(
+            &normed,
+            sequence,
+            metal.layer(layer, LayerParameter::Key)?,
             width,
             epsilon,
             Some(metal.layer(layer, LayerParameter::KeyNorm)?),
         )?;
         let keys = ops.rotary(&keys, sequence, kv_heads, width, &cosine, &sine)?;
-        let values = ops.linear(
+        let values = ops.linear_rms(
             &normed,
             sequence,
             metal.layer(layer, LayerParameter::Value)?,
+            width,
+            epsilon,
+            None,
         )?;
-        let values = ops.rms(&values, sequence * kv_heads, width, epsilon, None)?;
         let cache = caches[layer]
             .as_mut()
             .ok_or_else(|| Gemma4Error::new("Metal decoder", "owner cache missing"))?;
@@ -614,14 +643,10 @@ fn attention_forward(
         position,
         0,
     )?;
-    let projected = ops.linear(
+    let normed = ops.linear_rms(
         &attended,
         sequence,
         metal.layer(layer, LayerParameter::AttentionOutput)?,
-    )?;
-    let normed = ops.rms(
-        &projected,
-        sequence,
         hidden_size,
         epsilon,
         Some(metal.layer(layer, LayerParameter::PostAttentionNorm)?),
@@ -652,14 +677,10 @@ fn feedforward_forward(
     let gate = ops.linear(&normed, sequence, metal.layer(layer, LayerParameter::Gate)?)?;
     let up = ops.linear(&normed, sequence, metal.layer(layer, LayerParameter::Up)?)?;
     let product = multiply(&gelu_tanh(&gate)?, &up)?;
-    let down = ops.linear(
+    let normed = ops.linear_rms(
         &product,
         sequence,
         metal.layer(layer, LayerParameter::Down)?,
-    )?;
-    let normed = ops.rms(
-        &down,
-        sequence,
         hidden_size,
         epsilon,
         Some(metal.layer(layer, LayerParameter::PostFeedforwardNorm)?),
@@ -672,14 +693,10 @@ fn feedforward_forward(
         metal.layer(layer, LayerParameter::PleGate)?,
     )?;
     let product = multiply(&gelu_tanh(&gate)?, per_layer)?;
-    let projected = ops.linear(
+    let normed = ops.linear_rms(
         &product,
         sequence,
         metal.layer(layer, LayerParameter::PleProjection)?,
-    )?;
-    let normed = ops.rms(
-        &projected,
-        sequence,
         hidden_size,
         epsilon,
         Some(metal.layer(layer, LayerParameter::PostPleNorm)?),

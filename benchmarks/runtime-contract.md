@@ -835,6 +835,68 @@ experiment. The next useful experiment is a concrete larger command chain with d
 numerical and workspace bounds, not an assumption that another kernel variant fixes
 synchronous orchestration. No serving/SLO gain or hardware-failure recovery is claimed.
 
+### Metal linear-RMS chain qualification (2026-10-20)
+
+Baseline `153153f` and the fixed chain ran the same direct decoder, M3 Max, package,
+reference and toolchain as the preceding profile. Each candidate call encodes the
+existing linear and RMS kernels in one serial command buffer, preserving the private
+BF16 projection and every per-output arithmetic step. Query/key/value normalization,
+attention-output normalization, FFN down-projection normalization and PLE output
+normalization use the chain. This removes 216 intermediate readback/upload pairs and
+synchronous waits from the measured 795-command schedule: **579 command buffers per
+step**, with no reduction in kernel count or new kernel-selection policy. Whole-chain
+preflight, private buffers and checked terminal publication follow
+[the resource contract](../docs/resource-protocol.md#synchronous-metal-projection-chains).
+
+The predeclared promotion gate was exact finite full logits, at least 10% warmed
+median decode improvement, and no material prefill or memory regression. Three
+untraced baseline runs and three candidate runs each used one warmup plus three
+measured repetitions per prefix, followed by three common teacher-forced decode steps.
+The baseline was rebuilt in a detached `153153f` worktree; controls before, between
+and after candidate runs retained all timing variation. Medians pool the measured
+repetitions; no measured sample was removed:
+
+| Prompt tokens | Baseline prefill | Chain prefill | Baseline decode | Chain decode |
+| ---: | ---: | ---: | ---: | ---: |
+| 1 | 207.99 ms | 169.18 ms | 208.50 ms | 169.19 ms |
+| 8 | 251.66 ms | 209.76 ms | 206.65 ms | 168.89 ms |
+| 18 | 377.69 ms | 338.64 ms | 208.94 ms | 173.44 ms |
+| 32 | 533.87 ms | 510.63 ms | 209.95 ms | 174.15 ms |
+| 64 | 915.27 ms | 860.75 ms | 212.13 ms | 173.10 ms |
+
+The pooled decode median across all five histories was **209.286 → 172.273 ms**,
+**17.69% lower**. Individual run medians were 208.90/211.35/208.96 ms for baseline and
+164.00/174.14/174.15 ms for the chain; the first candidate run was appreciably faster
+than the other two and remains included. These are diagnostic direct-decoder timings,
+not serving goodput, latency SLOs or evidence about CUDA. No measured prefill cohort's
+pooled median regressed.
+
+Every 262,144-element full-logit row was finite and bit-identical to earlier native
+captures for 1/8/18/32/64-token prompts and all three common continuations. All four
+independent archived greedy winners at 18 tokens remained unchanged. Additional
+baseline/candidate comparisons covered **65/511/512/513**-token prompts and three
+continuations apiece, including the sliding-window boundary and larger original-kernel
+linear grids. The release decoder gate also compared whole-prompt execution with
+chunks 1/7 through reset and common-history continuation. Primitive tests independently
+retain the host arithmetic references and now check compound-versus-standalone exact
+bits across paired/unpaired shapes, multiple norm groups, column/inner tails, scaled
+and unscaled RMS, invalid whole-chain rejection and recovery.
+
+External `/usr/bin/time -l` measurements included loading and the complete probe.
+Short-prefix baseline maximum RSS was 14.075/14.067 GiB versus 14.032/14.030 GiB for
+the chain. The 65–513-token probes peaked at 14.257 versus 14.233 GiB. This supports
+no observed peak-RSS regression under these conditions, not a hard device-memory or
+concurrent-loader bound. Each chain owns two output-sized native buffers through the
+wait and avoids the former projection CPU copy and upload.
+
+All 393 workspace tests, 13 release Metal primitive tests, materialization tests,
+ignored real decoder/executor/text gates and the four-token `run-gemma` CLI passed.
+Production boundaries, formatting, default/CUDA/targeted-Metal clippy also passed.
+Independent source/SDK ownership review found no introduced issue. Hardware command
+failure, null-handle/OOM injection and recovery were **not** exercised; healthy-device
+results do not qualify them. Only macOS Metal was device-tested; desktop CUDA remains
+unavailable. The CPU oracle and CUDA implementation are unchanged.
+
 ## Synthetic CPU benchmark
 
 ```sh
