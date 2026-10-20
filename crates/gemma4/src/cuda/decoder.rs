@@ -22,7 +22,8 @@ use engine_nvidia::{
 use ribn_foundation::BytePool;
 use std::sync::{Arc, Mutex};
 
-const STAGING: usize = 5;
+// The allocation owner requires nonempty staging even for device-only buffers.
+const DEVICE_ONLY_STAGING: usize = 1;
 const WEIGHT_STAGING: usize = 1024 * 1024;
 const GEMM_WORKSPACE: usize = 8 * 1024 * 1024;
 
@@ -71,7 +72,6 @@ struct Buffers {
     logits: CudaBf16Matrix,
     ple_projection: CudaBf16Matrix,
     ple_projected_scaled: CudaBf16Matrix,
-    ple_identity: CudaBf16Matrix,
     ple_normed: CudaBf16Matrix,
     ple_context: CudaBf16Matrix,
     local: GeometryBuffers,
@@ -147,15 +147,14 @@ impl Gemma4CudaModel {
         let packed = config.packed_ple_dim();
         let vocab = config.vocab_size();
         let buffers = Buffers {
-            hidden: matrix(1, hidden, &stream, pool, STAGING)?,
-            hidden_next: matrix(1, hidden, &stream, pool, STAGING)?,
-            final_norm: matrix(1, hidden, &stream, pool, STAGING)?,
+            hidden: matrix(1, hidden, &stream, pool, hidden * 2)?,
+            hidden_next: matrix(1, hidden, &stream, pool, DEVICE_ONLY_STAGING)?,
+            final_norm: matrix(1, hidden, &stream, pool, DEVICE_ONLY_STAGING)?,
             logits: matrix(1, vocab, &stream, pool, vocab * 2)?,
-            ple_projection: matrix(1, packed, &stream, pool, STAGING)?,
-            ple_projected_scaled: matrix(1, packed, &stream, pool, STAGING)?,
-            ple_identity: matrix(1, packed, &stream, pool, STAGING)?,
+            ple_projection: matrix(1, packed, &stream, pool, DEVICE_ONLY_STAGING)?,
+            ple_projected_scaled: matrix(1, packed, &stream, pool, DEVICE_ONLY_STAGING)?,
             ple_normed: matrix(1, packed, &stream, pool, packed * 2)?,
-            ple_context: matrix(1, ple, &stream, pool, STAGING)?,
+            ple_context: matrix(1, ple, &stream, pool, ple * 2)?,
             local: GeometryBuffers::new(&config, AttentionWidth::Local, &stream, pool)?,
             global: GeometryBuffers::new(&config, AttentionWidth::Global, &stream, pool)?,
         };
@@ -205,7 +204,7 @@ impl Gemma4CudaModel {
 
     fn step(
         &mut self,
-        token: u32,
+        tokens: &[u32],
         position: usize,
         caches: &mut [Option<DeviceCache>],
     ) -> Result<Vec<u16>, Gemma4Error> {
@@ -215,7 +214,7 @@ impl Gemma4CudaModel {
                 format!("device failure is not retired: {}", failure.cause()),
             ));
         }
-        let result = {
+        let result = (|| {
             let Self {
                 host,
                 cuda,
@@ -224,18 +223,22 @@ impl Gemma4CudaModel {
                 factors,
                 ..
             } = self;
-            run_token(
-                host.config(),
-                host,
-                cuda,
-                executors,
-                buffers,
-                factors,
-                caches,
-                position,
-                token,
-            )
-        };
+            // The caller validates the entire range before any cache mutation.
+            for (offset, &token) in tokens.iter().enumerate() {
+                run_token(
+                    host.config(),
+                    host,
+                    cuda,
+                    executors,
+                    buffers,
+                    factors,
+                    caches,
+                    position + offset,
+                    token,
+                )?;
+            }
+            project_logits(host.config(), cuda, executors, buffers)
+        })();
         match result {
             Ok(logits) => Ok(logits),
             Err(failure) => {
@@ -302,17 +305,38 @@ impl Gemma4CudaDecoder {
         Self::shared(Arc::new(Mutex::new(model)))
     }
 
-    /// Append a prompt chunk and return logits for its last token.
+    /// Append a prompt chunk and return logits for its last token. Intermediate
+    /// tokens advance all layer/cache state without computing discarded logits.
     /// # Errors
-    /// Rejects an empty chunk or any token that [`Self::decode`] rejects.
+    /// Rejects an empty chunk, invalid tokens or excess capacity before mutation.
+    /// A device failure faults the shared model and retains its retirement owner.
     pub fn prefill(&mut self, tokens: &[u32]) -> Result<Vec<u16>, Gemma4Error> {
         if tokens.is_empty() {
             return Err(Gemma4Error::new("CUDA decoder", "empty prompt chunk"));
         }
-        let mut logits = Vec::new();
-        for &token in tokens {
-            logits = self.decode(token)?;
+        let mut model = self
+            .model
+            .lock()
+            .map_err(|_| Gemma4Error::new("CUDA decoder", "model lock poisoned"))?;
+        if tokens
+            .iter()
+            .any(|&token| token as usize >= model.config().vocab_size())
+        {
+            return Err(Gemma4Error::new(
+                "CUDA decoder",
+                "token outside the vocabulary",
+            ));
         }
+        let end = self
+            .position
+            .checked_add(tokens.len())
+            .filter(|&end| end <= model.max_positions)
+            .ok_or_else(|| {
+                Gemma4Error::new("CUDA decoder", "chunk exceeds the device cache capacity")
+            })?;
+        model.config().validate_text_tokens(tokens)?;
+        let logits = model.step(tokens, self.position, &mut self.caches)?;
+        self.position = end;
         Ok(logits)
     }
 
@@ -320,26 +344,7 @@ impl Gemma4CudaDecoder {
     /// # Errors
     /// Rejects invalid tokens or a step past the cache capacity.
     pub fn decode(&mut self, token: u32) -> Result<Vec<u16>, Gemma4Error> {
-        let mut model = self
-            .model
-            .lock()
-            .map_err(|_| Gemma4Error::new("CUDA decoder", "model lock poisoned"))?;
-        if token as usize >= model.config().vocab_size() {
-            return Err(Gemma4Error::new(
-                "CUDA decoder",
-                "token outside the vocabulary",
-            ));
-        }
-        if self.position >= model.max_positions {
-            return Err(Gemma4Error::new(
-                "CUDA decoder",
-                "step exceeds the device cache capacity",
-            ));
-        }
-        model.config().validate_text_tokens(&[token])?;
-        let logits = model.step(token, self.position, &mut self.caches)?;
-        self.position += 1;
-        Ok(logits)
+        self.prefill(&[token])
     }
 
     #[must_use]
@@ -367,19 +372,17 @@ fn run_token(
     caches: &mut [Option<DeviceCache>],
     position: usize,
     token: u32,
-) -> Result<Vec<u16>, CudaBf16ComputeError> {
+) -> Result<(), CudaBf16ComputeError> {
     let Buffers {
         hidden,
         hidden_next,
-        final_norm,
-        logits,
         ple_projection,
         ple_projected_scaled,
-        ple_identity,
         ple_normed,
         ple_context,
         local,
         global,
+        ..
     } = buffers;
     let Scale {
         embed,
@@ -394,7 +397,6 @@ fn run_token(
     let hidden_row = scaled_row(row(embedding, token)?, embed);
     hidden.upload(&encode(&hidden_row))?;
     let identity = scaled_row(row(ple_embedding, token)?, ple_embed);
-    ple_identity.upload(&encode(&identity))?;
 
     cuda.linear_into(
         ParameterId::PleProjection,
@@ -444,6 +446,21 @@ fn run_token(
         )?;
     }
 
+    Ok(())
+}
+
+fn project_logits(
+    config: &Gemma4Config,
+    cuda: &mut Gemma4CudaWeights,
+    executors: &mut Executors,
+    buffers: &mut Buffers,
+) -> Result<Vec<u16>, CudaBf16ComputeError> {
+    let Buffers {
+        hidden,
+        final_norm,
+        logits,
+        ..
+    } = buffers;
     cuda.rms_norm_into(
         ParameterId::FinalNorm,
         &mut executors.rms,
@@ -678,32 +695,32 @@ impl GeometryBuffers {
         let kv = kv_heads * width;
         Ok(Self {
             width,
-            cos: matrix(1, width, stream, pool, STAGING)?,
-            sin: matrix(1, width, stream, pool, STAGING)?,
-            normed: matrix(1, hidden, stream, pool, STAGING)?,
-            queries: matrix(1, q, stream, pool, STAGING)?,
-            query_norm: matrix(1, q, stream, pool, STAGING)?,
-            query_rotary: matrix(1, q, stream, pool, STAGING)?,
-            keys: matrix(1, kv, stream, pool, STAGING)?,
-            key_norm: matrix(1, kv, stream, pool, STAGING)?,
-            key_rotary: matrix(1, kv, stream, pool, kv * 2)?,
-            values: matrix(1, kv, stream, pool, STAGING)?,
-            value_norm: matrix(1, kv, stream, pool, kv * 2)?,
-            attended: matrix(1, q, stream, pool, STAGING)?,
-            projected: matrix(1, hidden, stream, pool, STAGING)?,
-            post_attention: matrix(1, hidden, stream, pool, STAGING)?,
-            ffn_norm: matrix(1, hidden, stream, pool, STAGING)?,
-            gate: matrix(1, intermediate, stream, pool, STAGING)?,
-            up: matrix(1, intermediate, stream, pool, STAGING)?,
-            activated: matrix(1, intermediate, stream, pool, STAGING)?,
-            product: matrix(1, intermediate, stream, pool, STAGING)?,
-            down: matrix(1, hidden, stream, pool, STAGING)?,
-            post_feedforward: matrix(1, hidden, stream, pool, STAGING)?,
-            ple_gate: matrix(1, ple, stream, pool, STAGING)?,
-            ple_activated: matrix(1, ple, stream, pool, STAGING)?,
-            ple_product: matrix(1, ple, stream, pool, STAGING)?,
-            ple_projected: matrix(1, hidden, stream, pool, STAGING)?,
-            post_ple: matrix(1, hidden, stream, pool, STAGING)?,
+            cos: matrix(1, width, stream, pool, DEVICE_ONLY_STAGING)?,
+            sin: matrix(1, width, stream, pool, DEVICE_ONLY_STAGING)?,
+            normed: matrix(1, hidden, stream, pool, DEVICE_ONLY_STAGING)?,
+            queries: matrix(1, q, stream, pool, DEVICE_ONLY_STAGING)?,
+            query_norm: matrix(1, q, stream, pool, DEVICE_ONLY_STAGING)?,
+            query_rotary: matrix(1, q, stream, pool, DEVICE_ONLY_STAGING)?,
+            keys: matrix(1, kv, stream, pool, DEVICE_ONLY_STAGING)?,
+            key_norm: matrix(1, kv, stream, pool, DEVICE_ONLY_STAGING)?,
+            key_rotary: matrix(1, kv, stream, pool, DEVICE_ONLY_STAGING)?,
+            values: matrix(1, kv, stream, pool, DEVICE_ONLY_STAGING)?,
+            value_norm: matrix(1, kv, stream, pool, DEVICE_ONLY_STAGING)?,
+            attended: matrix(1, q, stream, pool, DEVICE_ONLY_STAGING)?,
+            projected: matrix(1, hidden, stream, pool, DEVICE_ONLY_STAGING)?,
+            post_attention: matrix(1, hidden, stream, pool, DEVICE_ONLY_STAGING)?,
+            ffn_norm: matrix(1, hidden, stream, pool, DEVICE_ONLY_STAGING)?,
+            gate: matrix(1, intermediate, stream, pool, DEVICE_ONLY_STAGING)?,
+            up: matrix(1, intermediate, stream, pool, DEVICE_ONLY_STAGING)?,
+            activated: matrix(1, intermediate, stream, pool, DEVICE_ONLY_STAGING)?,
+            product: matrix(1, intermediate, stream, pool, DEVICE_ONLY_STAGING)?,
+            down: matrix(1, hidden, stream, pool, DEVICE_ONLY_STAGING)?,
+            post_feedforward: matrix(1, hidden, stream, pool, DEVICE_ONLY_STAGING)?,
+            ple_gate: matrix(1, ple, stream, pool, DEVICE_ONLY_STAGING)?,
+            ple_activated: matrix(1, ple, stream, pool, DEVICE_ONLY_STAGING)?,
+            ple_product: matrix(1, ple, stream, pool, DEVICE_ONLY_STAGING)?,
+            ple_projected: matrix(1, hidden, stream, pool, DEVICE_ONLY_STAGING)?,
+            post_ple: matrix(1, hidden, stream, pool, DEVICE_ONLY_STAGING)?,
         })
     }
 }
@@ -736,8 +753,8 @@ impl DeviceCache {
         pool: &Arc<BytePool>,
     ) -> Result<Self, Gemma4Error> {
         Ok(Self {
-            keys: matrix(capacity, columns, stream, pool, STAGING)?,
-            values: matrix(capacity, columns, stream, pool, STAGING)?,
+            keys: matrix(capacity, columns, stream, pool, DEVICE_ONLY_STAGING)?,
+            values: matrix(capacity, columns, stream, pool, DEVICE_ONLY_STAGING)?,
         })
     }
 }

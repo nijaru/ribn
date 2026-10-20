@@ -65,6 +65,16 @@ fn cuda_decoder_reproduces_the_archived_greedy_tokens() {
     let prefill = Instant::now();
     let mut logits = decoder.prefill(&prompt).expect("prompt prefill");
     let prefilled = prefill.elapsed();
+    let mut expected_logits = vec![logits.clone()];
+    // Whole-chunk rejection must not consume a valid prefix or alter live KV.
+    for invalid in [
+        Vec::new(),
+        vec![prompt[0], u32::try_from(config.vocab_size()).unwrap()],
+        vec![prompt[0]; 32],
+    ] {
+        assert!(decoder.prefill(&invalid).is_err());
+        assert_eq!(decoder.position(), prompt.len());
+    }
     let mut step_times = Vec::with_capacity(steps.len() - 1);
     let mut chosen = argmax(&logits).unwrap();
     assert_eq!(u64::from(chosen), u64::from(steps[0]), "step 0");
@@ -72,12 +82,37 @@ fn cuda_decoder_reproduces_the_archived_greedy_tokens() {
         let step = Instant::now();
         logits = decoder.decode(chosen).expect("decode step");
         step_times.push(step.elapsed());
+        expected_logits.push(logits.clone());
         chosen = argmax(&logits).unwrap();
         assert_eq!(u64::from(chosen), u64::from(*expected), "step {index}");
     }
     assert_eq!(decoder.position(), prompt.len() + steps.len() - 1);
     assert_eq!(logits.len(), config.vocab_size());
     println!("load {loaded:?}, prefill {prefilled:?}, decode {step_times:?}");
+    // Single-token heads and partial prompt chunks must produce exactly the same
+    // logits and continuation as skipping heads within one complete prefill.
+    for chunk_size in [1, 7] {
+        decoder.reset();
+        assert_eq!(decoder.position(), 0);
+        for chunk in prompt.chunks(chunk_size) {
+            logits = decoder.prefill(chunk).unwrap();
+        }
+        assert_logits(&logits, &expected_logits[0]);
+        for (token, expected) in steps.iter().zip(&expected_logits[1..]) {
+            logits = decoder.decode(*token).unwrap();
+            assert_logits(&logits, expected);
+        }
+        assert_eq!(decoder.position(), prompt.len() + steps.len() - 1);
+    }
     decoder.reset();
     assert_eq!(decoder.position(), 0);
+}
+
+fn assert_logits(actual: &[u16], expected: &[u16]) {
+    assert_eq!(actual.len(), expected.len());
+    assert!(actual.iter().all(|bits| bits & 0x7f80 != 0x7f80));
+    assert!(
+        actual == expected,
+        "prefill partition changed logit encodings"
+    );
 }
