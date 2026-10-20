@@ -9,7 +9,7 @@ publish = false
 
 [features]
 default = []
-cuda = ["dep:engine-qwen", "engine-qwen/cuda"]
+cuda = ["dep:engine-qwen", "engine-qwen/cuda", "engine-gemma4/cuda", "dep:cudarc", "dep:ribn-foundation"]
 metal = ["engine-gemma4/metal"]
 
 [dependencies]
@@ -18,6 +18,8 @@ engine-gguf = { path = "../gguf" }
 engine-gemma4 = { path = "../gemma4" }
 ribn-hf = { path = "../hf" }
 engine-qwen = { path = "../qwen", optional = true }
+cudarc = { version = "0.19", optional = true, default-features = false, features = ["std", "cuda-13020", "dynamic-loading"] }
+ribn-foundation = { path = "../foundation", optional = true }
 flume = { version = "0.12", default-features = false, features = ["async"] }
 
 [dev-dependencies]

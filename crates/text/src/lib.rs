@@ -9,7 +9,7 @@
 mod cuda;
 mod error;
 mod gemma4;
-#[cfg(all(feature = "metal", target_os = "macos"))]
+#[cfg(any(all(feature = "metal", target_os = "macos"), feature = "cuda"))]
 mod gemma_load;
 mod gguf;
 mod input;
@@ -20,7 +20,7 @@ mod stream;
 #[cfg(feature = "cuda")]
 pub use cuda::{LoadOptions, MemoryReport};
 pub use error::TextError;
-#[cfg(all(feature = "metal", target_os = "macos"))]
+#[cfg(any(all(feature = "metal", target_os = "macos"), feature = "cuda"))]
 pub use gemma_load::GemmaLoadReport;
 pub use gemma4::GemmaProcessor;
 pub use gguf::GgufProcessor;

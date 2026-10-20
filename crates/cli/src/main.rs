@@ -7,14 +7,14 @@ mod inspect;
 mod output;
 #[cfg(feature = "cuda")]
 mod run;
-#[cfg(all(feature = "metal", target_os = "macos"))]
+#[cfg(any(feature = "cuda", all(feature = "metal", target_os = "macos")))]
 mod run_gemma;
 #[cfg(feature = "cuda")]
 mod serve;
 #[cfg(any(feature = "cuda", test))]
 mod serve_cli;
 
-const USAGE: &str = "ribn <command>\n\ncommands:\n  inspect  inspect a GGUF artifact without GPU initialization\n  run      stream one Qwen GGUF request through the experimental Ribn runtime\n  run-gemma  stream one Gemma package request through the Metal runtime (macOS)\n  serve    serve a bounded loopback completion/chat HTTP endpoint";
+const USAGE: &str = "ribn <command>\n\ncommands:\n  inspect  inspect a GGUF artifact without GPU initialization\n  run      stream one Qwen GGUF request through the experimental Ribn runtime\n  run-gemma  stream one Gemma package request through the experimental runtime (Metal or CUDA)\n  serve    serve a bounded loopback completion/chat HTTP endpoint";
 
 fn main() {
     let mut arguments = std::env::args().skip(1);
@@ -42,7 +42,7 @@ fn run_prepared(arguments: &[String]) -> Result<(), String> {
     run::run(arguments)
 }
 
-#[cfg(all(feature = "metal", target_os = "macos"))]
+#[cfg(any(feature = "cuda", all(feature = "metal", target_os = "macos")))]
 fn run_gemma_prepared(arguments: &[String]) -> Result<(), String> {
     run_gemma::run(arguments)
 }
@@ -62,7 +62,7 @@ fn run_prepared(_arguments: &[String]) -> Result<(), String> {
     Err("Qwen inference requires building ribn with --features cuda".to_owned())
 }
 
-#[cfg(not(all(feature = "metal", target_os = "macos")))]
+#[cfg(not(any(feature = "cuda", all(feature = "metal", target_os = "macos"))))]
 fn run_gemma_prepared(_arguments: &[String]) -> Result<(), String> {
-    Err("Gemma inference requires macOS and building ribn with --features metal".to_owned())
+    Err("Gemma inference requires --features metal on macOS or --features cuda".to_owned())
 }

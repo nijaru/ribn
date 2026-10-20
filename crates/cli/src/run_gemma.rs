@@ -12,7 +12,7 @@ const USAGE: &str =
 pub(crate) fn run(arguments: &[String]) -> Result<(), String> {
     if matches!(arguments, [help] if matches!(help.as_str(), "-h" | "--help")) {
         println!(
-            "{USAGE}\n\nWithout --raw, text input is sent as one user chat message through the package's embedded chat template. If neither --prompt nor --file is given, piped stdin is used.\n\nExperimental Gemma 4 SafeTensors/Metal path; the package directory must contain config.json, tokenizer and chat assets. Greedy decoding only. --device and --context-length are not accepted here."
+            "{USAGE}\n\nWithout --raw, text input is sent as one user chat message through the package's embedded chat template. If neither --prompt nor --file is given, piped stdin is used.\n\nExperimental Gemma 4 SafeTensors path on the build's Metal or CUDA backend; the package directory must contain config.json, tokenizer and chat assets. Greedy decoding only. --device and --context-length are not accepted here."
         );
         return Ok(());
     }
@@ -31,8 +31,8 @@ pub(crate) fn run(arguments: &[String]) -> Result<(), String> {
         TextInput::chat(vec![message])
     };
 
-    eprintln!("preparing the Gemma 4 package on the Metal device (experimental Ribn runtime)");
-    let (mut owner, report) = TextOwner::load_gemma(options.model).map_err(display)?;
+    eprintln!("preparing the Gemma 4 package on the device (experimental Ribn runtime)");
+    let (mut owner, report) = load_model(options.model).map_err(display)?;
     eprintln!(
         "ready: {} model bytes retained before device upload",
         report.model_bytes
@@ -48,6 +48,20 @@ pub(crate) fn run(arguments: &[String]) -> Result<(), String> {
         (Err(error), Ok(())) | (Ok(()), Err(error)) => Err(error),
         (Err(error), Err(cleanup)) => Err(format!("{error}; shutdown also failed: {cleanup}")),
     }
+}
+
+#[cfg(all(feature = "metal", target_os = "macos"))]
+fn load_model(
+    path: PathBuf,
+) -> Result<(TextOwner, ribn_text::GemmaLoadReport), ribn_text::TextError> {
+    TextOwner::load_gemma(path)
+}
+
+#[cfg(all(feature = "cuda", not(all(feature = "metal", target_os = "macos"))))]
+fn load_model(
+    path: PathBuf,
+) -> Result<(TextOwner, ribn_text::GemmaLoadReport), ribn_text::TextError> {
+    TextOwner::load_gemma_cuda(path)
 }
 
 fn parse(arguments: &[String]) -> Result<RunOptions, String> {
