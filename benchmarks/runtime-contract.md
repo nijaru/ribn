@@ -586,6 +586,29 @@ and mixed-arrival frontend-overhead comparisons remain unmeasured; endpoint thro
 measurements do not isolate frontend cost.
 
 
+## Gemma 4 Metal second-decoder timing (2026-10-20)
+
+Reproducible diagnostic only: one M3 Max, one sequence, the archived 18-token chat
+prompt, greedy decoding, the correctness-first host-orchestrated Metal decoder
+(`crates/gemma4/examples/metal_latency.rs`). It is not a competitive comparison, an
+endpoint measurement, or a promoted optimization. It exists to choose the next slice.
+
+| Stage | Time |
+| --- | --- |
+| Host inventory load | 1.81 s |
+| Device upload | 1.69 s |
+| Prefill, 18 tokens | 5.92 s |
+| Decode, four tokens | 5.14 / 5.45 / 5.72 / 5.92 s |
+
+A decode token performs roughly 9 GFLOP of weight arithmetic, so the measured
+~5.5 s/token implies about 1.7 GFLOP/s effective throughput. Per-operation command
+buffers and host round trips cost roughly 0.1-0.2 s per token across the ~630
+dispatches; they are not the dominant loss. The naive MSL GEMM is. Batching command
+buffers, eviction or graph capture cannot close this gap; a tiled BF16 GEMM with
+defined accumulation order, checked against the existing exact/bounded references,
+comes first. Prefill shows the same limit: its 18 tokens cost about one decode step,
+consistent with GEMM-bound work.
+
 ## Synthetic CPU benchmark
 
 ```sh

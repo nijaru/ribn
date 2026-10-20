@@ -35,5 +35,9 @@ ribn-text = { path = "../text" }
 name = "cuda_weights"
 required-features = ["cuda"]
 
+[[example]]
+name = "metal_latency"
+required-features = ["metal"]
+
 [lints]
 workspace = true
