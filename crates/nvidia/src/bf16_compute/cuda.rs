@@ -13,8 +13,11 @@ use std::{error::Error, fmt, io::Cursor, sync::Arc};
 #[path = "blas.rs"]
 mod blas;
 use blas::{Blas, error};
+#[path = "elementwise.rs"]
+mod elementwise;
 #[path = "rms.rs"]
 mod rms;
+pub use elementwise::CudaBf16Elementwise;
 pub use rms::CudaBf16RmsNorm;
 #[path = "rotary.rs"]
 mod rotary;
@@ -164,6 +167,9 @@ enum Operation {
         program: Arc<rms::RmsKernels>,
         _scale: Option<DeviceAllocation>,
     },
+    Elementwise {
+        program: Arc<elementwise::ElementwiseKernels>,
+    },
     Rotary {
         program: Arc<rotary::RotaryKernels>,
         _cos: DeviceAllocation,
@@ -175,6 +181,7 @@ impl Operation {
         match self {
             Self::Blas { program, .. } => program.stream(),
             Self::Rms { program, .. } => &program.stream,
+            Self::Elementwise { program } => &program.stream,
             Self::Rotary { program, .. } => &program.stream,
         }
     }
@@ -184,6 +191,11 @@ enum Access {
     Matrices {
         operation: Operation,
         _input: DeviceAllocation,
+        _output: DeviceAllocation,
+    },
+    Elementwise {
+        operation: Operation,
+        _inputs: Vec<DeviceAllocation>,
         _output: DeviceAllocation,
     },
     Factors {
@@ -197,7 +209,9 @@ enum Access {
 impl Access {
     fn stream(&self) -> &Arc<CudaStream> {
         match self {
-            Self::Matrices { operation, .. } => operation.stream(),
+            Self::Matrices { operation, .. } | Self::Elementwise { operation, .. } => {
+                operation.stream()
+            }
             Self::Factors { kernels, .. } => &kernels.stream,
         }
     }

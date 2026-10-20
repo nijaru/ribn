@@ -6,8 +6,8 @@ mod pending;
 mod cuda;
 #[cfg(feature = "cuda")]
 pub use cuda::{
-    CudaBf16ComputeError, CudaBf16Gemm, CudaBf16Matrix, CudaBf16RmsNorm, CudaBf16RotaryApply,
-    CudaBf16RotaryFactors,
+    CudaBf16ComputeError, CudaBf16Elementwise, CudaBf16Gemm, CudaBf16Matrix, CudaBf16RmsNorm,
+    CudaBf16RotaryApply, CudaBf16RotaryFactors,
 };
 
 use crate::cuda_allocation::CudaBf16Error;
@@ -52,6 +52,19 @@ impl MatrixShape {
     #[cfg(feature = "cuda")]
     fn blas_cols(self) -> i32 {
         i32::try_from(self.cols).expect("validated matrix columns")
+    }
+
+    fn validate_elementwise(self, output: Self) -> Result<u32, CudaBf16Error> {
+        if self != output {
+            return Err(CudaBf16Error::Invalid(
+                "elementwise requires equal operand and output shapes",
+            ));
+        }
+        let elements = self
+            .rows
+            .checked_mul(self.cols)
+            .ok_or(CudaBf16Error::Invalid("elementwise element overflow"))?;
+        u32::try_from(elements).map_err(|_| CudaBf16Error::Invalid("elementwise count exceeds u32"))
     }
 
     fn validate_rms(self, output: Self, width: usize, epsilon: f32) -> Result<u32, CudaBf16Error> {
