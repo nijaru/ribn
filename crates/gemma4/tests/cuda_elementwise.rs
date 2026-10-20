@@ -87,22 +87,27 @@ fn assert_exact(actual: &[u16], expected: &[u16], label: &str) {
     }
 }
 
-fn assert_gelu(actual: &[u16], input: &[u16], reference: &[u16]) {
+fn assert_gelu(actual: &[u16], input: &[u16], reference: &[u16]) -> f32 {
     assert_eq!(actual.len(), input.len());
+    let mut worst = 0.0_f32;
     for (index, ((&a, &x), &b)) in actual.iter().zip(input).zip(reference).enumerate() {
         let (a, b) = (value(a), value(b));
         assert!(a.is_finite() && b.is_finite(), "non-finite GELU {index}");
         // Same evaluation bound as the host audit: FP32 error relative to the
         // GELU input, plus one reference encoding.
         let bound = 16.0 * f32::EPSILON * value(x).abs() + ulp(reference[index]);
+        let error = (a - b).abs();
+        worst = worst.max(error / bound);
         assert!(
-            (a - b).abs() <= bound,
+            error <= bound,
             "GELU {index}: device {a:e} reference {b:e} bound {bound:e}"
         );
     }
+    worst
 }
 
-fn assert_softcap(actual: &[u16], reference: &[u16], cap: f32) {
+fn assert_softcap(actual: &[u16], reference: &[u16], cap: f32) -> f32 {
+    let mut worst = 0.0_f32;
     for (index, (&a, &b)) in actual.iter().zip(reference).enumerate() {
         let (a, b) = (value(a), value(b));
         assert!(
@@ -110,11 +115,14 @@ fn assert_softcap(actual: &[u16], reference: &[u16], cap: f32) {
             "non-finite soft cap {index}"
         );
         let bound = 8.0 * f32::EPSILON * cap + 2.0 * ulp(reference[index]);
+        let error = (a - b).abs();
+        worst = worst.max(error / bound);
         assert!(
-            (a - b).abs() <= bound,
+            error <= bound,
             "soft cap {index}: device {a:e} reference {b:e} bound {bound:e}"
         );
     }
+    worst
 }
 
 #[test]
@@ -135,6 +143,7 @@ fn layer_math_matches_the_archived_stages() {
     let stream = context.new_stream().unwrap();
     let pool = BytePool::new(64 * 1024 * 1024).shared();
     let mut ops = CudaBf16Elementwise::new(Arc::clone(&stream)).unwrap();
+    let mut gelu_worst = 0.0_f32;
     for layer in [0_usize, 5, 22, 23] {
         let prefix = format!("chat.0.layer.{layer}");
         let input = tap(&artifact, &format!("{prefix}.input"));
@@ -259,7 +268,7 @@ fn layer_math_matches_the_archived_stages() {
         let actual = run(&mut ops, &stream, &pool, &gate, |ops, gate, output| {
             ops.gelu_tanh_into(gate, output).unwrap();
         });
-        assert_gelu(&actual, &gate, &activated);
+        gelu_worst = gelu_worst.max(assert_gelu(&actual, &gate, &activated));
     }
 
     let raw = tap(&artifact, "chat.0.raw_logits");
@@ -267,7 +276,8 @@ fn layer_math_matches_the_archived_stages() {
     let actual = run(&mut ops, &stream, &pool, &raw, |ops, raw, output| {
         ops.softcap_into(raw, 30.0, output).unwrap();
     });
-    assert_softcap(&actual, &capped, 30.0);
+    let softcap_worst = assert_softcap(&actual, &capped, 30.0);
+    println!("gelu worst bound usage {gelu_worst}, soft cap worst bound usage {softcap_worst}");
 
     ops.close().unwrap();
     assert_eq!(pool.granted(), 0);
