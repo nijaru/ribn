@@ -14,7 +14,8 @@ __device__ void attention_range(
     unsigned int absolute = query_start + position;
     *last = min(absolute - key_start, key_sequence - 1u);
     if (window > 0) {
-        unsigned int span = absolute - (unsigned int)(window - 1);
+        unsigned int offset = (unsigned int)(window - 1);
+        unsigned int span = absolute > offset ? absolute - offset : 0u;
         unsigned int start = span > key_start ? span - key_start : 0u;
         *first = min(start, *last);
     } else {
