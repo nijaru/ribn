@@ -94,7 +94,7 @@ fn assert_gelu(actual: &[u16], input: &[u16], reference: &[u16]) {
         assert!(a.is_finite() && b.is_finite(), "non-finite GELU {index}");
         // Same evaluation bound as the host audit: FP32 error relative to the
         // GELU input, plus one reference encoding.
-        let bound = 16.0 * f32::EPSILON * value(x).abs() + ulp(b);
+        let bound = 16.0 * f32::EPSILON * value(x).abs() + ulp(reference[index]);
         assert!(
             (a - b).abs() <= bound,
             "GELU {index}: device {a:e} reference {b:e} bound {bound:e}"
