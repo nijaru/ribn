@@ -70,7 +70,7 @@ extern "C" __global__ void bf16_attention_softmax(
     unsigned int first, last;
     attention_range(position, key_sequence, query_start, key_start, window, &first, &last);
     unsigned int base = id * key_sequence;
-    float maximum = -INFINITY;
+    float maximum = -3.402823466e38f; // -FLT_MAX; NVRTC has no INFINITY here
     for (unsigned int key = first; key <= last; ++key) {
         float score = bf16_load(scores[base + key]);
         maximum = fmaxf(maximum, score);
