@@ -1,6 +1,6 @@
 # Inference engine design
 
-Status: accepted target, revised 2026-10-11; not implemented support or a SOTA claim.
+Status: accepted target, revised 2026-10-20; not implemented support or a SOTA claim.
 [Resource protocol](resource-protocol.md) owns execution/resource transitions;
 [roadmap](roadmap.md) owns delivery order, open implementation choices and gates;
 [architecture](architecture.md) maps current source. Public v0 interfaces are unstable.
@@ -127,7 +127,9 @@ Use one logical progress frontier per sequence and a bounded token budget across
 decode and replay. Phase remains an execution distinction, not a reason for unrelated
 ownership paths. Give decoding latency protection while aging prefills/replays so neither
 starves. Select policy and chunk sizes from measured TTFT/ITL/goodput tradeoffs; a token
-budget is not a universal estimate of bytes or execution time.
+budget is not a universal estimate of bytes or execution time. Once physical costs are
+stable enough to calibrate, compare measured-time chunk budgeting against token budgeting
+on identical lanes and latency/fairness objectives; no cost formula is selected here.
 
 The model/backend negotiates aggregate feasible ranges and lowers them into a bounded
 set of compatible physical lanes. Packed/ragged work must amortize weight reads across
@@ -290,6 +292,10 @@ new sessions on newly started replicas rather than needlessly relocating warm
 sessions. Compare random, load-only, fixed-affinity and combined routing instead
 of assuming a fixed scoring formula wins.
 
+Affinity depends on cache topology: locally resident reuse may avoid prefill, while a
+shared accessible cache can reduce that advantage. Include retrieval/transfer cost and
+queue imbalance rather than assuming every cache hit requires a particular replica.
+
 Client session/parent identifiers are advisory locality hints, not proof of equal
 content or authorization. Reuse requires exact compatible tokenized prefix,
 processor/model/adapter/numerical snapshot, all required hybrid components and
@@ -326,6 +332,11 @@ Prerecorded future-turn replay measures serving, not autonomous task success.
 Use real content and independent outcome checks when evaluating model quality;
 do not extrapolate a vendor's 100k-token profile to an unqualified device/context.
 
+Ordinary numerical correctness does not promise batch-invariant results or repeatable
+stochastic sampling. A future optional reproducibility policy needs separate qualification
+across batch shapes, sequence order and supported execution variants, with stable per-sequence
+sampling identity and a measured performance cost. It is not the compulsory fast path.
+
 Arithmetic-preserving changes require exact checks; reordered algorithms need independently
 justified metrics/tolerances. Current long-prompt reference disagreement is a fidelity item,
 not permission to widen optimized-variant gates. Follow [model qualification](../.agents/skills/model-integration/SKILL.md).
@@ -333,7 +344,7 @@ Expand to encoder-decoder speech, iterative/non-AR text/media, structured output
 adapters, realtime sessions and wider hardware through concrete operation contracts, not a
 universal execution API. The [roadmap](roadmap.md) defines the next delivery gates.
 
-### Research basis (reviewed 2026-10-13)
+### Research basis
 
 These sources justify mechanisms and experiments, not Ribn performance or universal support.
 Development-head features may differ from releases; pin deployed versions for comparisons.
@@ -351,3 +362,16 @@ Refresh this evidence when implementing the corresponding slice or when upstream
 - [NVIDIA Dynamo KV-aware router, v1.5.1](https://docs.dynamo.nvidia.com/dynamo/v1.5.1/knowledge-base/concepts/system-architecture/kv-aware-routing) and [session-aware inference, 2026-10-08](https://pytorch.org/blog/session-aware-agentic-inference-with-nvidia-dynamo/): cache overlap plus projected load; agent IDs inform locality, but do not establish resident state. A shared event bus is not automatically required.
 - [MLPerf Agentic Inference, 2026-07-08](https://mlcommons.org/2026/07/agentic-inference-for-mlperf-inference/): closed-loop multi-turn pacing, coding and shared-prompt cohorts, interactivity/throughput frontiers and accuracy gates. Pin actual reference rules and version before comparison.
 - [vLLM prefix-caching design](https://github.com/vllm-project/vllm/blob/main/docs/design/prefix_caching.md): prefix hashes include model-dependent extras and tenant salts; this evolving design informs identity/isolation, not a substitute for Ribn's hybrid continuation proof.
+
+#### DeepInfer and Recipe (reviewed 2026-10-20)
+
+DeepInfer at [`774ce244`](https://github.com/deepseek-ai/DeepInfer/tree/774ce244b87cc0eb8d4b94ab9f5de2ab22049f01)
+is a specialized, offline DeepSeek-V4.1-Flash release, not its complete production serving
+system or a matched cross-engine performance result. The following findings inform existing
+slices; they do not select a new engine architecture or reorder delivery:
+
+- [Worker](https://github.com/deepseek-ai/DeepInfer/blob/774ce244b87cc0eb8d4b94ab9f5de2ab22049f01/deepinfer/worker/worker.py) and [sequence remapping](https://github.com/deepseek-ai/DeepInfer/blob/774ce244b87cc0eb8d4b94ab9f5de2ab22049f01/csrc/engine/zos.cpp): device-resident sampled tokens, stable sequence mapping, position correction and explicit events permit dependent work ahead of host result processing. This informs the later dependent-overlap contract, not just the first independent-sequence increment; “zero overhead” is not synchronization-free execution.
+- [CPU verification policy](https://github.com/deepseek-ai/DeepInfer/blob/774ce244b87cc0eb8d4b94ab9f5de2ab22049f01/csrc/engine/mtp_varlen.hpp) and [GPU confidence allocator](https://github.com/deepseek-ai/DeepInfer/blob/774ce244b87cc0eb8d4b94ab9f5de2ab22049f01/deepinfer/model_executor/layers/tilelang_ops/cuda/schedule_mtp_varlen.py): choose a bounded verification budget on the CPU, then rank cumulative acceptance estimates using newer GPU-resident confidence within that budget. Reported workload-derived throughput estimates include a low-concurrency loss; they are not Ribn gains or an online-serving comparison.
+- [Deployment Q&A](https://github.com/deepseek-ai/DeepInfer/blob/774ce244b87cc0eb8d4b94ab9f5de2ab22049f01/doc/inference_deployment_qa.md): fitted prefill-time quotas and shared 3FS block KV plus host SWA storage describe production, not the released scheduler/cache service. The [released scheduler](https://github.com/deepseek-ai/DeepInfer/blob/774ce244b87cc0eb8d4b94ab9f5de2ab22049f01/csrc/engine/scheduler.hpp) uses token/context limits. Approximate bounded SWA replay is not exact restoration; the Q&A's 128-token replay and the README's 140-token decoder compact setting describe different boundaries. Cache topology informs routing economics, not a mandatory storage hierarchy.
+- [Reproducibility scope](https://github.com/deepseek-ai/DeepInfer/blob/774ce244b87cc0eb8d4b94ab9f5de2ab22049f01/README.md): deterministic sampling requires NVIDIA, batch-invariant execution, fixed sequence seeds and variable-length verification disabled. Reproducibility and sampling correctness remain distinct qualification policies.
+- DeepSeek Recipe at [`935817c`](https://github.com/deepseek-ai/deepseek-recipe/tree/935817c66f5d6e64838f419692545f06787e485f): [encoding](https://github.com/deepseek-ai/deepseek-recipe/blob/935817c66f5d6e64838f419692545f06787e485f/deepseek-recipe-encoding/src/tokenizer.rs) distinguishes structural token IDs from ordinary text; the [incremental parser](https://github.com/deepseek-ai/deepseek-recipe/blob/935817c66f5d6e64838f419692545f06787e485f/deepseek-recipe/src/stream/output_parser.rs) retains parser state and emits argument fragments. Token provenance matters: text-only parsing cannot distinguish a literal marker from a structural token. This informs future model-owned protocol/tool parsing, not a replacement for Ribn's processor boundary or a defense against semantic prompt injection.

@@ -628,7 +628,7 @@ separately below.
 
 ## Device-side K/V append
 
-On 2026-10-20, `CudaBf16Matrix::copy_rows_from` replaces the decoder's K/V D2H/H2D
+At `a8e5d23` (2026-10-20), `CudaBf16Matrix::copy_rows_from` replaces the decoder's K/V D2H/H2D
 round trip with a same-stream device copy. It preserves encodings without arithmetic,
 retains both allocations and their charges before possible enqueue, and drains before
 returning success. Failed enqueue/completion retains the existing retry/quarantine

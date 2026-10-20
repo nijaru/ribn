@@ -7,16 +7,15 @@ open implementation choices and acceptance gates. All v0 interfaces may change.
 
 ## Current execution order
 
-**Next: resume CUDA Gemma layer math and remaining device gates while qualifying
-candidate execution changes.** The real second decoder is integrated on CPU and Apple
-Metal: the complete host decoder is the correctness oracle, a synchronous greedy
-executor runs it through `ribn`'s engine and text facade, and `ribn run-gemma` exposes
-the ordinary package path on macOS. That satisfies the model-local integration boundary
-for those backends, not CUDA execution, sampling, eviction or competitive acceptance.
-Native BF16 linear, RMS and rotary CUDA component gates have passed; the next device
-gates are the remaining layer math against archived stage references (residual and PLE
-combination, MLP gating, final normalization and soft-capped logits), then mixed-width
-local/global KV and a CUDA decoder. The same-artifact
+**Next: define and qualify batched CUDA Gemma prefill while pursuing measured Qwen
+execution improvements.** The real second decoder is integrated on CPU, Apple Metal
+and CUDA through the synchronous greedy executor, `ribn` engine, text facade and
+`ribn run-gemma`. The complete host decoder remains the correctness oracle. CUDA now
+uses completion-owned device K/V append instead of a host round trip; the archived
+short-history logits are unchanged. This establishes scoped model-local integration,
+not sampling, eviction, mixed-retention lifetime or competitive acceptance. Define the
+accepted chunk's attention/donor spans and completion boundary before batching prefill.
+The same-artifact
 llama.cpp comparison (2026-10-18) measured 32.7 versus 39.9 tok/s at c1—about 18% lower
 Ribn throughput, with better TTFT—and 2.2x/3.3x throughput gaps at c4/c8. This is not
 single-stream parity or independently quality-qualified competitive acceptance.
@@ -31,9 +30,11 @@ The member-descriptor candidate remains off pending its remaining lifetime, sani
 and performance gates. Qualified Gemma CUDA components now cover linear,
 shared-allocation, RMS, rotary, the elementwise layer math, causal grouped-query
 attention and a host-orchestrated decoder that keeps KV owners device-resident and
-reproduces the archived greedy tokens. Its K/V append still round-trips through the
-host, it processes one token at a time, and it has no executor, sampling, eviction or
-mixed-retention path yet.
+reproduces the archived greedy tokens through the executor, text facade and CLI. Device
+append reduces diagnostic decode from about 83 to 47–49 ms/token on the 4090 with exact
+common-history logits; this is not a serving measurement. Execution still processes one
+token at a time, without sampling, eviction or mixed-retention cache lifetime.
+[Append qualification](../benchmarks/gemma4-reference/README.md#device-side-kv-append).
 
 Qualify the cross-engine numerical comparison and target remaining prefill/projection
 costs on the contiguous path. The [first endpoint diagnostic](../benchmarks/runtime-contract.md#first-equal-artifact-endpoint-diagnostic-2026-10-16)
@@ -368,11 +369,18 @@ This work starts alongside serving and paging, not after prefix reuse.
    decode latency and prefill/replay progress. Compare against current queues with the same
    physical lanes, then compare lane changes separately. Tune chunk sizes with actual
    TTFT/ITL/E2E objectives, mixed arrivals and pressure; submission counts are not time bounds.
+   Once lane/dispatch costs stabilize, compare calibrated prefill-time quotas with token
+   budgeting on those same lanes. Report prediction error/headroom, context/length skew,
+   fairness and SLO goodput; retain the token baseline and losing cases. DeepInfer's fitted
+   quadratic is a production reference, not a selected Ribn formula.
 4. **Persistent metadata and bounded overlap.** Separate stable request rows from kernel
    ordering. Start with independent-sequence preparation/execution overlap only after
    per-submission owners and physical release qualify. Gate immutable staging/table versions,
    out-of-order completion, stalled delivery, shutdown and failed-drain recycling. Graph
    capture needs qualified stable storage and measured eager-versus-replay benefit.
+   After launch reduction, use timelines to measure recoverable CPU scheduling, metadata,
+   enqueue and device gaps. DeepInfer's result reconciliation informs later dependent
+   overlap; it does not bypass projected/committed cursor or EOS/cancellation gates.
 
 Promote policies/variants only over their qualified scope, with repeatable benefit beyond
 run variability and no hidden quality, memory, fairness or latency regressions. Retain
@@ -481,9 +489,10 @@ A first CUDA decoder now reproduces the archived tokens with explicit KV owners,
 shared-tail reads, the runtime executor and the text facade; `ribn run-gemma` selects
 it when built with `--features cuda`. See the
 [decoder gate](../benchmarks/gemma4-reference/README.md#native-cuda-gemma-decoder-gate).
-Next, choose from its measured gaps: replace the host K/V round trip with a device
-append and batch prefill rows. Mixed-width cache lifetime, HTTP serving, sampling and
-eviction remain open.
+Device-side K/V append now passes byte-preservation, initialized-prefix and memcheck
+gates, with exact short-history logits against host append. Next, define the batched
+prefill attention-span contract and compare mixed prompt lengths before selecting a
+lane. Mixed-width cache lifetime, HTTP serving, sampling and eviction remain open.
 The host CPU path now composes a full Gemma decoder step — embeddings, PLE, all 42
 hybrid layers with owner/shared-tail KV, attention, the remaining layer math and the
 tied head — and reproduces all four greedy tokens of the archived 18-token chat row.
@@ -641,19 +650,29 @@ and distributed training need separate qualification. Training is not an AR sche
   hybrid rollback, output/usage and sampling-state contracts qualify. Compare
   target-conditioned, learned and simpler drafters on content-real cohorts before
   selecting a training strategy. Measure whole-round net goodput with weights,
-  intermediate/state/scratch charged; allow drafting to be disabled. Exact token-ID
+  intermediate/state/scratch charged; allow drafting to be disabled. Once draft/verify
+  exists, compare fixed-length, adaptive-length and confidence-ranked GPU allocation
+  within a CPU-reserved verification budget, including confidence calibration, accepted
+  tokens, total work, latency and SLO goodput. This is a later candidate, not an immediate
+  milestone or evidence of distribution-preserving sampling. Exact token-ID
   training traces require explicit content authority and snapshot/processor provenance.
 - **Lossy state and host tiers:** try FP8/other supported continuation encodings only
   after exact-cache and physical accounting gates, with independently qualified
   full-model quality. CPU/remote cache tiers are optional, evaluated against
   recompute/retention for tail benefit under pressure including transfer/retirement
   overhead; no universal cache hierarchy is required.
+- **Reproducibility:** qualify optional batch-invariant execution independently of ordinary
+  numerical correctness; keyed reproducible sampling additionally needs a usable sampling
+  path. Specify supported batch shapes/orderings and speculation settings and report cost.
 - **Text access:** thinking controls, thread-affine construction and offline-window throughput
-  remain conditional. They do not justify replacing the owned facade or raising buffers
-  without boundedness/progress evidence.
+  remain conditional. For richer tool/protocol operations, qualify structural token
+  provenance versus literal markers and incremental parsing across token, UTF-8 and JSON
+  argument boundaries. Keep this in model-owned processors above token scheduling; Recipe
+  is a reference, not a processor replacement. These features do not justify replacing the
+  owned facade or raising buffers without boundedness/progress evidence.
 - **Research/reference backend:** evaluate when a concrete integration needs it, not as a
   parallel universal implementation backlog. Research sources/limits live in the
-  [target design](inference-engine-design.md#research-basis-reviewed-2026-10-13).
+  [target design](inference-engine-design.md#research-basis).
 
 ## Required checks
 
