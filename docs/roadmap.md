@@ -489,10 +489,10 @@ hybrid layers with owner/shared-tail KV, attention, the remaining layer math and
 tied head — and reproduces all four greedy tokens of the archived 18-token chat row.
 It keeps complete per-owner history and masks local spans rather than evicting them.
 A synchronous greedy executor now runs the host decoder through the token runtime and
-the text facade for admitted sequences sharing one prepared weight set, and the same
-executor path is exported by `ribn run-gemma` on macOS. Cache eviction, donor trimming,
-sampling, long-context behaviour and CUDA parity remain open; the Metal decode timing
-is diagnostic, not a performance or serving claim. On Apple silicon, a first
+the text facade for admitted sequences sharing one prepared weight set; device executors
+are exported by `ribn run-gemma` on Metal and CUDA. Cache eviction, donor trimming,
+sampling and long-context behaviour remain open; the Metal and CUDA decode timings are
+diagnostic, not performance or serving claims. On Apple silicon, a first
 Metal (GPU, not ANE) slice now runs BF16 linear, RMS, causal/sliding attention, rotary
 and elementwise operations on real hardware with independent-reference tests, and the
 validated Gemma inventory uploads bitwise to one Metal device, and a host-orchestrated
