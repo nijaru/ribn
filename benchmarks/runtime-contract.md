@@ -705,10 +705,10 @@ upload. Its immutable Shared buffers now supply CPU token/PLE embedding rows as 
 as GPU parameters. The token embedding and tied output head still use one native
 buffer. `MetalBf16Buffer::as_slice` borrows that buffer's lifetime; no mutable view or
 raw Metal handle escapes. Producers finish initialization or wait for GPU completion
-before publication. `newBufferWithBytes:length:options:` copies its initializer, so releasing
-CPU loading arrays after preparation does not invalidate those views.
+before publication. At `3655ab4`, `newBufferWithBytes:length:options:` copied each
+initializer, allowing CPU loading arrays to retire after preparation.
 
-Matched full-package probes on the same M3 Max compared `9188e50` with this change:
+Matched full-package probes on the same M3 Max compared `9188e50` with `3655ab4`:
 
 | Metric | CPU mirror retained | Shared inventory |
 | --- | ---: | ---: |
@@ -718,8 +718,10 @@ Matched full-package probes on the same M3 Max compared `9188e50` with this chan
 | Native Metal allocated bytes after preparation | 14,926,430,208 | 14,926,430,208 |
 
 A second shared-inventory run reproduced 16.23 GiB prepared RSS and 29.17 GiB maximum
-RSS. This removes a retained representation, **not the loading peak**: preparation
-still holds the entire CPU inventory while constructing all Metal buffers. Native
+RSS. That revision removed a retained representation, **not the loading peak**:
+preparation still held the entire CPU inventory while constructing Metal buffers. The
+[direct-source follow-up](#direct-metal-source-loading-2026-10-20) below removes this overlap.
+Native
 padding, allocator/driver storage, caches and request workspace are not the encoded
 weight payload. After model drop, native allocated bytes returned to about 475 KB even
 though process RSS remained nonzero; RSS alone is not evidence of live Metal buffers.
@@ -732,8 +734,7 @@ qualification. CPU oracle and CUDA storage are unchanged. Boundaries, fmt, 389 w
 tests, default/CUDA/targeted Metal clippy, Metal device/runtime/facade gates and the CLI
 passed.
 
-The existing diagnostic now prints loaded/prepared/executed RSS in KiB, sampled outside
-its phase timers. macOS `time -l` supplies the maximum RSS; run the built executable so
+The diagnostic prints phase RSS in KiB, sampled outside its phase timers. macOS `time -l` supplies the maximum RSS; run the built executable so
 compiler processes are not part of the measurement:
 
 ```sh
@@ -741,6 +742,50 @@ cargo build -p engine-gemma4 --features metal --release --locked --example metal
 # Set RIBN_GEMMA_PACKAGE and RIBN_GEMMA_REFERENCE as for the decoder gate.
 /usr/bin/time -l target/release/examples/metal_latency
 ```
+
+### Direct Metal source loading (2026-10-20)
+
+After whole-source config/catalog/shape/dtype preflight, Metal reads each parameter
+through bounded retained artifact readers into its final Shared buffer. At most 64 KiB
+of fallibly allocated scratch stages each synchronous read/copy. No CPU inventory or
+parameter-sized encoded upload copy is constructed. EOF is checked before immutable
+publication; a failed read or Rust unwind releases the private allocation, and a later
+parameter failure releases the entire incomplete set. CPU-slice uploads also copy
+directly into Shared storage. All buffer allocations now check host/device limits and
+nullable native allocation results before constructing their Rust owners.
+
+Same artifact, M3 Max and toolchain as above; baseline is `3655ab4`. The built
+`metal_latency` executable runs the archived 18-token prompt and four greedy decode
+steps, with `/usr/bin/time -l` measuring the process rather than Cargo. Two direct-load
+runs gave:
+
+| Metric | CPU inventory then upload | Direct source loading |
+| --- | ---: | ---: |
+| Prepared process RSS | 16.23 GiB | 13.92 GiB |
+| Maximum process RSS | 29.17 GiB | 13.93–13.94 GiB |
+| Owned encoded weight payload | 13.90 GiB | 13.90 GiB |
+| Native Metal allocated bytes after preparation | 14,926,430,208 | 14,926,430,208 |
+
+The peak reduction is about 52%, not a smaller model representation. A separate
+18/64-token probe, repeated twice, compared all 262,144 finite BF16 logits at four
+prediction rows per length against the earlier captures: every bit matched, including
+three common teacher-forced continuations. It dropped the source/package before
+inference. Its 64-token maximum RSS was 13.95–13.96 GiB; after model drop, native
+allocated bytes returned to about 475 KB while residual RSS remained nonzero.
+
+Device tests cover fragmented reads across the scratch boundary, source independence,
+short/trailing input, read errors and Rust panics after a copied prefix, and invalid
+lengths before reads. The tiny full-inventory gate compares every parameter against an
+independently loaded CPU inventory after pathname removal and source drop; a source
+truncated after preflight rejects the partial set and a fresh load recovers. Workspace
+tests, boundaries/fmt, default/CUDA/Metal clippy, real decoder/executor/text-facade gates
+and the ordinary CLI passed.
+
+This establishes the synchronous Metal loading path, not a global concurrent loading
+grant, a hard RSS bound, or serving throughput. Native allocation refusal/OOM and
+failed-command hardware recovery were not injected; CPU oracle arithmetic and CUDA
+loading/execution were not changed. The diagnostic's phases are now source preflight,
+direct preparation and execution, rather than CPU materialization followed by upload.
 
 ## Synthetic CPU benchmark
 

@@ -136,6 +136,100 @@ fn upload_round_trips_native_encodings() {
 }
 
 #[test]
+fn streamed_encodings_cross_scratch_boundaries_without_aliasing_source() {
+    use std::io::{self, Read};
+
+    struct ShortReads<'a> {
+        bytes: &'a [u8],
+        largest_request: usize,
+    }
+    impl Read for ShortReads<'_> {
+        fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+            self.largest_request = self.largest_request.max(buffer.len());
+            let count = buffer.len().min(self.bytes.len()).min(7);
+            buffer[..count].copy_from_slice(&self.bytes[..count]);
+            self.bytes = &self.bytes[count..];
+            Ok(count)
+        }
+    }
+
+    let Some(executor) = executor() else { return };
+    let bits: Vec<u16> = (0..=u16::MAX).take(32_771).collect();
+    let mut bytes: Vec<u8> = bits.iter().flat_map(|bits| bits.to_le_bytes()).collect();
+    let mut reader = ShortReads {
+        bytes: &bytes,
+        largest_request: 0,
+    };
+    let buffer = executor.read_bf16(bits.len(), &mut reader).unwrap();
+    assert!(reader.bytes.is_empty());
+    assert!(reader.largest_request <= 64 * 1024);
+    bytes.fill(0xff);
+    drop(bytes);
+    assert_eq!(buffer.as_slice(), bits);
+}
+
+#[test]
+fn streamed_initialization_rejects_incomplete_sources_and_recovers() {
+    use std::io::{self, Cursor, Read};
+
+    struct Broken {
+        remaining: usize,
+        panic: bool,
+    }
+    impl Read for Broken {
+        fn read(&mut self, bytes: &mut [u8]) -> io::Result<usize> {
+            if self.remaining == 0 {
+                assert!(!self.panic, "injected source panic");
+                return Err(io::Error::other("injected source error"));
+            }
+            let count = self.remaining.min(bytes.len());
+            bytes[..count].fill(0x3f);
+            self.remaining -= count;
+            Ok(count)
+        }
+    }
+
+    let Some(executor) = executor() else { return };
+    for data in [&[0x80_u8][..], &[0x80, 0x3f, 0xff][..]] {
+        assert!(executor.read_bf16(1, &mut Cursor::new(data)).is_err());
+    }
+    assert!(matches!(
+        executor.read_bf16(
+            32_769,
+            &mut Broken {
+                remaining: 65_536,
+                panic: false
+            }
+        ),
+        Err(MetalBf16Error::Read(_))
+    ));
+    assert!(
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            executor.read_bf16(
+                32_769,
+                &mut Broken {
+                    remaining: 65_536,
+                    panic: true,
+                },
+            )
+        }))
+        .is_err()
+    );
+    for elements in [0, usize::MAX, usize::MAX / 4] {
+        let mut reader = Cursor::new([0x80, 0x3f]);
+        assert!(matches!(
+            executor.read_bf16(elements, &mut reader),
+            Err(MetalBf16Error::Invalid(_))
+        ));
+        assert_eq!(reader.position(), 0);
+    }
+    let buffer = executor
+        .read_bf16(1, &mut Cursor::new([0x80, 0x3f]))
+        .unwrap();
+    assert_eq!(buffer.as_slice(), [0x3f80]);
+}
+
+#[test]
 fn linear_matches_a_host_reference_and_exact_dyadics() {
     let Some(executor) = executor() else {
         return;

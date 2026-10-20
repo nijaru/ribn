@@ -191,10 +191,11 @@ reusing weights without changing each output's accumulation order; other GPUs/sh
 the original kernel. Causal/sliding grouped-query attention runs as three parallel
 kernels in one command buffer: query-key
 scores, a per-row softmax reduction, and weighted values, each preserving the
-score/weight rounding and per-output accumulation order. The Gemma model crate uploads its validated BF16 inventory once to one
-Metal device, preserving encodings and the tied head. Immutable shared buffers also
-provide borrowed CPU embedding rows; successful preparation discards the full CPU
-loading mirror. Preparation still temporarily holds both inventories. A host-orchestrated
+score/weight rounding and per-output accumulation order. The Gemma model crate reads
+its preflighted BF16 source directly into owned Shared Metal buffers using at most
+64 KiB of read/copy scratch, preserving encodings and the tied head. Immutable buffers
+also provide borrowed CPU embedding rows; preparation constructs neither a full CPU
+inventory nor a parameter-sized encoded upload copy. A host-orchestrated
 decoder runs the full step: matmuls, normalization, rotary and attention execute on
 the GPU while embeddings, elementwise algebra and the soft cap reuse the validated
 host primitives. The archived 18-token chat row reproduces all four greedy tokens on

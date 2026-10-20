@@ -1,9 +1,9 @@
 //! Prepared Gemma weights resident on one Metal device.
 //!
-//! Loading uploads the already validated host inventory without conversion and
-//! keeps the tied output head as the single token-embedding buffer.
+//! Loading reads the preflighted source directly into shared storage without
+//! conversion and keeps the tied head as the single token-embedding buffer.
 
-use crate::{Gemma4Config, Gemma4CpuWeights, Gemma4Error, LayerParameter, ParameterId};
+use crate::{Gemma4Config, Gemma4Error, Gemma4Source, LayerParameter, ParameterId};
 use engine_metal::{MetalBf16Buffer, MetalBf16Executor};
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -16,31 +16,35 @@ pub struct Gemma4MetalWeights {
 }
 
 impl Gemma4MetalWeights {
-    /// Upload the validated host inventory, preserving native BF16 encodings.
+    /// Read the complete preflighted source directly into immutable Shared buffers.
     /// # Errors
-    /// Returns the first Metal upload failure; no partial set is published.
-    pub fn load(
-        host: &Gemma4CpuWeights,
-        executor: &MetalBf16Executor,
-    ) -> Result<Self, Gemma4Error> {
+    /// Rejects allocation/read failures and short/trailing sources. No partial
+    /// set is published and no CPU inventory or parameter-sized staging is retained.
+    pub fn load(source: &Gemma4Source, executor: &MetalBf16Executor) -> Result<Self, Gemma4Error> {
+        let expected = u64::try_from(source.encoded_bytes())
+            .map_err(|_| Gemma4Error::new("Metal weight", "source bytes exceed u64"))?;
         let mut parameters = BTreeMap::new();
         let mut bytes = 0_u64;
-        for (id, parameter) in host.parameters() {
+        for (&id, parameter) in source.parameters() {
+            let length = parameter.spec().byte_len()?;
             let buffer = executor
-                .upload(parameter.values())
-                .map_err(|error| Gemma4Error::new("Metal weight", error.to_string()))?;
+                .read_bf16(length / 2, &mut parameter.reader())
+                .map_err(|error| Gemma4Error::new(&parameter.spec().name, error.to_string()))?;
             bytes =
                 bytes
-                    .checked_add(u64::try_from(parameter.values().len() * 2).map_err(|_| {
+                    .checked_add(u64::try_from(length).map_err(|_| {
                         Gemma4Error::new("Metal weight", "parameter bytes exceed u64")
                     })?)
                     .ok_or_else(|| Gemma4Error::new("Metal weight", "total bytes overflow"))?;
             parameters.insert(id, buffer);
         }
+        if bytes != expected {
+            return Err(Gemma4Error::new("Metal weight", "inventory bytes disagree"));
+        }
         Ok(Self {
             parameters,
             bytes,
-            config: host.config().clone(),
+            config: source.config().clone(),
         })
     }
 
@@ -99,9 +103,7 @@ impl std::fmt::Debug for Gemma4MetalWeights {
 }
 
 use crate::AttentionKind;
-use crate::cpu::{
-    add, argmax, factors, gelu_tanh, multiply, ple_combine, scale, softcap, validate_inventory,
-};
+use crate::cpu::{add, argmax, factors, gelu_tanh, multiply, ple_combine, scale, softcap};
 use engine_metal::{MetalAttentionConfig, MetalBf16Error};
 
 /// Host orchestration for one Metal decoder step.
@@ -224,25 +226,20 @@ struct OwnerCache {
 ///
 /// Matmuls, normalization, rotary and attention run on the GPU; embedding lookups,
 /// elementwise algebra and the soft cap run on the CPU. Every sequence shares one
-/// immutable weight inventory in CPU-accessible Metal storage. The CPU loading
-/// mirror is discarded.
+/// immutable weight inventory in CPU-accessible Metal storage. Loading uses bounded
+/// scratch, without constructing a CPU weight inventory.
 pub struct Gemma4MetalModel {
     metal: Gemma4MetalWeights,
     executor: MetalBf16Executor,
 }
 
 impl Gemma4MetalModel {
-    /// Copy the validated inventory into shared Metal storage and retire the CPU mirror.
+    /// Materialize the preflighted source directly in shared Metal storage.
     /// # Errors
-    /// Rejects an inconsistent inventory or a Metal preparation failure.
-    pub fn load(host: Gemma4CpuWeights) -> Result<Self, Gemma4Error> {
+    /// Rejects source reads, allocations or Metal preparation failures.
+    pub fn load(source: &Gemma4Source) -> Result<Self, Gemma4Error> {
         let executor = MetalBf16Executor::new().map_err(|error| metal_error(&error))?;
-        validate_inventory(host.config(), &host)?;
-        let metal = Gemma4MetalWeights::load(&host, &executor)?;
-        // Metal's shared buffers own copies of every parameter. CPU embedding
-        // lookups borrow those immutable buffers too; retire the loading mirror
-        // before publishing the model.
-        drop(host);
+        let metal = Gemma4MetalWeights::load(source, &executor)?;
         Ok(Self { metal, executor })
     }
 
@@ -261,12 +258,11 @@ pub struct Gemma4MetalDecoder {
 }
 
 impl Gemma4MetalDecoder {
-    /// Upload the inventory and prepare decoder state.
+    /// Materialize the source and prepare decoder state.
     /// # Errors
-    /// Rejects an inventory whose shapes disagree with its source configuration
-    /// or a Metal preparation failure.
-    pub fn load(host: Gemma4CpuWeights) -> Result<Self, Gemma4Error> {
-        Self::shared(Arc::new(Gemma4MetalModel::load(host)?))
+    /// Rejects source reads, allocations or Metal preparation failures.
+    pub fn load(source: &Gemma4Source) -> Result<Self, Gemma4Error> {
+        Self::shared(Arc::new(Gemma4MetalModel::load(source)?))
     }
 
     /// Prepare one sequence over an already-loaded model.

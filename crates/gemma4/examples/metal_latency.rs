@@ -5,7 +5,7 @@
 
 #[cfg(all(target_os = "macos", feature = "metal"))]
 fn main() {
-    use engine_gemma4::{Gemma4Config, Gemma4CpuWeights, Gemma4MetalDecoder, Gemma4Source, argmax};
+    use engine_gemma4::{Gemma4Config, Gemma4MetalDecoder, Gemma4Source, argmax};
     use ribn_hf::LocalModelPackage;
     use serde_json::Value;
     use std::process::Command;
@@ -53,14 +53,13 @@ fn main() {
 
     let load = Instant::now();
     let source = Gemma4Source::open(&package).unwrap();
-    let host = Gemma4CpuWeights::load(&source).unwrap();
-    assert_eq!(host.config(), &config);
+    assert_eq!(source.config(), &config);
     let loaded = load.elapsed();
-    let host_rss = rss_kib();
+    let preflight_rss = rss_kib();
 
-    let upload = Instant::now();
-    let mut decoder = Gemma4MetalDecoder::load(host).expect("Metal decoder");
-    let uploaded = upload.elapsed();
+    let prepare = Instant::now();
+    let mut decoder = Gemma4MetalDecoder::load(&source).expect("Metal decoder");
+    let prepared = prepare.elapsed();
     let prepared_rss = rss_kib();
 
     let prefill = Instant::now();
@@ -76,14 +75,11 @@ fn main() {
     }
     let executed_rss = rss_kib();
     println!("prompt_tokens={}", prompt.len());
-    println!("host_loaded_rss_kib={host_rss}");
+    println!("preflight_rss_kib={preflight_rss}");
     println!("prepared_rss_kib={prepared_rss}");
     println!("executed_rss_kib={executed_rss}");
-    println!("host_load_ms={:.1}", loaded.as_secs_f64() * 1e3);
-    println!(
-        "upload_including_load_ms={:.1}",
-        uploaded.as_secs_f64() * 1e3
-    );
+    println!("source_preflight_ms={:.1}", loaded.as_secs_f64() * 1e3);
+    println!("prepare_ms={:.1}", prepared.as_secs_f64() * 1e3);
     println!("prefill_ms={:.1}", prefilled.as_secs_f64() * 1e3);
     for (index, step) in steps.iter().enumerate() {
         println!("decode_{index}_ms={:.1}", step.as_secs_f64() * 1e3);

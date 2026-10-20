@@ -1,7 +1,9 @@
 //! Ordinary package loading for the Gemma 4 executors.
 
 use crate::{GemmaProcessor, ProcessorLimits, TextConfig, TextError, TextOwner};
-use engine_gemma4::{Gemma4CpuWeights, Gemma4Executor, Gemma4Source};
+#[cfg(feature = "cuda")]
+use engine_gemma4::Gemma4CpuWeights;
+use engine_gemma4::{Gemma4Executor, Gemma4Source};
 use ribn::Engine;
 use ribn::driver::{Driver, DriverConfig};
 use ribn_hf::LocalModelPackage;
@@ -35,10 +37,9 @@ impl TextOwner {
     ) -> Result<(Self, GemmaLoadReport), TextError> {
         let package = LocalModelPackage::open(path).map_err(TextError::processor)?;
         let source = Gemma4Source::open(&package).map_err(TextError::processor)?;
-        let host = Gemma4CpuWeights::load(&source).map_err(TextError::processor)?;
-        let model_bytes = host.bytes();
         let model =
-            Arc::new(engine_gemma4::Gemma4MetalModel::load(host).map_err(TextError::processor)?);
+            Arc::new(engine_gemma4::Gemma4MetalModel::load(&source).map_err(TextError::processor)?);
+        let model_bytes = u64::try_from(source.encoded_bytes()).map_err(TextError::processor)?;
         let executor = Gemma4Executor::metal(model).map_err(TextError::processor)?;
         assemble(&package, executor, model_bytes)
     }

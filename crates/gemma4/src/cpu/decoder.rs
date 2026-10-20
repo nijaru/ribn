@@ -186,7 +186,7 @@ fn expect_shape(actual: &[usize], expected: &[usize], name: &str) -> Result<(), 
 }
 
 /// Bind the inventory to the configuration recorded with its validated source.
-pub(crate) fn validate_inventory(
+fn validate_inventory(
     config: &Gemma4Config,
     weights: &Gemma4CpuWeights,
 ) -> Result<(), Gemma4Error> {

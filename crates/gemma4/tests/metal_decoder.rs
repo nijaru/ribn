@@ -1,9 +1,7 @@
 //! End-to-end Metal Gemma forwarding, gated on macOS and the metal feature.
 #![cfg(all(target_os = "macos", feature = "metal"))]
 
-use engine_gemma4::{
-    Gemma4Config, Gemma4CpuWeights, Gemma4MetalDecoder, Gemma4Source, metal_argmax,
-};
+use engine_gemma4::{Gemma4Config, Gemma4MetalDecoder, Gemma4Source, metal_argmax};
 use ribn_hf::LocalModelPackage;
 use serde_json::Value;
 use std::path::PathBuf;
@@ -69,9 +67,8 @@ fn metal_decoder_reproduces_the_archived_greedy_tokens() {
     let steps = case["steps"].as_array().unwrap();
     assert_eq!(steps.len(), 4);
 
-    let host = Gemma4CpuWeights::load(&source).unwrap();
-    assert_eq!(host.config(), &config);
-    let mut decoder = Gemma4MetalDecoder::load(host).expect("Metal decoder");
+    assert_eq!(source.config(), &config);
+    let mut decoder = Gemma4MetalDecoder::load(&source).expect("Metal decoder");
     let mut logits = decoder.prefill(&prompt).expect("prompt prefill");
     finite_logits(&logits);
     let mut full = vec![logits.clone()];

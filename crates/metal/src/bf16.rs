@@ -2,10 +2,12 @@
 
 use metal::{
     Buffer, CommandQueue, CompileOptions, ComputeCommandEncoderRef, ComputePipelineState, Device,
-    MTLResourceOptions, MTLSize,
+    MTLSize,
 };
 use std::error::Error;
 use std::fmt;
+
+mod loading;
 
 /// Metal preparation or execution failure.
 #[derive(Debug)]
@@ -16,6 +18,8 @@ pub enum MetalBf16Error {
     Pipeline(String),
     Invalid(&'static str),
     Shape(String),
+    Allocation(String),
+    Read(std::io::Error),
 }
 
 impl fmt::Display for MetalBf16Error {
@@ -27,11 +31,20 @@ impl fmt::Display for MetalBf16Error {
             Self::Pipeline(message) => write!(formatter, "Metal pipeline: {message}"),
             Self::Invalid(message) => formatter.write_str(message),
             Self::Shape(message) => write!(formatter, "Metal shape: {message}"),
+            Self::Allocation(message) => write!(formatter, "Metal allocation: {message}"),
+            Self::Read(error) => write!(formatter, "Metal BF16 source: {error}"),
         }
     }
 }
 
-impl Error for MetalBf16Error {}
+impl Error for MetalBf16Error {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        match self {
+            Self::Read(error) => Some(error),
+            _ => None,
+        }
+    }
+}
 
 const THREADS: u64 = 256;
 const ATTENTION_SCRATCH_BYTES: usize = 512 * 1024 * 1024;
@@ -281,28 +294,6 @@ impl MetalBf16Executor {
         })
     }
 
-    /// Upload native BF16 encodings into one shared-storage buffer.
-    /// # Errors
-    /// Rejects empty input.
-    pub fn upload(&self, values: &[u16]) -> Result<MetalBf16Buffer, MetalBf16Error> {
-        if values.is_empty() {
-            return Err(MetalBf16Error::Invalid("empty Metal buffer"));
-        }
-        let bytes: Vec<u8> = values
-            .iter()
-            .flat_map(|value| value.to_le_bytes())
-            .collect();
-        let buffer = self.device.new_buffer_with_data(
-            bytes.as_ptr().cast(),
-            bytes.len() as u64,
-            MTLResourceOptions::StorageModeShared,
-        );
-        Ok(MetalBf16Buffer {
-            buffer,
-            elements: values.len(),
-        })
-    }
-
     /// Row-major `output[m,n] = input[m,k] · weight[n,k]` in BF16.
     ///
     /// Each output accumulates in FP32 in ascending inner-index order and rounds once.
@@ -347,10 +338,7 @@ impl MetalBf16Executor {
             u32::try_from(inner).map_err(|_| MetalBf16Error::Shape("inner exceeds u32".into()))?;
         let total = u32::try_from(output_length)
             .map_err(|_| MetalBf16Error::Shape("output exceeds u32 elements".into()))?;
-        let output = self.device.new_buffer(
-            (output_length * 2) as u64,
-            MTLResourceOptions::StorageModeShared,
-        );
+        let output = self.allocate_shared(output_length * 2)?;
         let command = self.queue.new_command_buffer();
         let encoder = command.new_compute_command_encoder();
         encoder.set_compute_pipeline_state(&self.linear);
@@ -408,9 +396,7 @@ impl MetalBf16Executor {
                 "RMS buffers disagree with the requested shape".into(),
             ));
         }
-        let output = self
-            .device
-            .new_buffer((expected * 2) as u64, MTLResourceOptions::StorageModeShared);
+        let output = self.allocate_shared(expected * 2)?;
         let command = self.queue.new_command_buffer();
         let encoder = command.new_compute_command_encoder();
         encoder.set_compute_pipeline_state(&self.rms);
@@ -468,18 +454,9 @@ impl MetalBf16Executor {
             query_start,
             key_start,
         )?;
-        let output = self.device.new_buffer(
-            (query.elements * 2) as u64,
-            MTLResourceOptions::StorageModeShared,
-        );
-        let scores_buffer = self.device.new_buffer(
-            u64::from(geometry.scores) * 2,
-            MTLResourceOptions::StorageModeShared,
-        );
-        let summary_buffer = self.device.new_buffer(
-            u64::from(geometry.rows) * 8,
-            MTLResourceOptions::StorageModeShared,
-        );
+        let output = self.allocate_shared(query.elements * 2)?;
+        let scores_buffer = self.allocate_shared(geometry.scores as usize * 2)?;
+        let summary_buffer = self.allocate_shared(geometry.rows as usize * 8)?;
         let command = self.queue.new_command_buffer();
         let encoder = command.new_compute_command_encoder();
         encoder.set_compute_pipeline_state(&self.attention_scores);
@@ -563,10 +540,7 @@ impl MetalBf16Executor {
                 "rotary buffers disagree with the requested shape".into(),
             ));
         }
-        let output = self.device.new_buffer(
-            (input_length * 2) as u64,
-            MTLResourceOptions::StorageModeShared,
-        );
+        let output = self.allocate_shared(input_length * 2)?;
         let command = self.queue.new_command_buffer();
         let encoder = command.new_compute_command_encoder();
         encoder.set_compute_pipeline_state(&self.rotary);
@@ -669,10 +643,7 @@ impl MetalBf16Executor {
         }
         let total = u32::try_from(left.elements)
             .map_err(|_| MetalBf16Error::Shape("elementwise length exceeds u32".into()))?;
-        let output = self.device.new_buffer(
-            (left.elements * 2) as u64,
-            MTLResourceOptions::StorageModeShared,
-        );
+        let output = self.allocate_shared(left.elements * 2)?;
         let command = self.queue.new_command_buffer();
         let encoder = command.new_compute_command_encoder();
         encoder.set_compute_pipeline_state(&self.elementwise);

@@ -33,10 +33,7 @@ pub(crate) fn run(arguments: &[String]) -> Result<(), String> {
 
     eprintln!("preparing the Gemma 4 package on the device (experimental Ribn runtime)");
     let (mut owner, report) = load_model(options.model).map_err(display)?;
-    eprintln!(
-        "ready: {} model bytes retained before device upload",
-        report.model_bytes
-    );
+    eprintln!("ready: {} encoded model bytes", report.model_bytes);
     let generation = GenerationOptions {
         max_output_tokens: options.max_tokens,
         ..GenerationOptions::default()

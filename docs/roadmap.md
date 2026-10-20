@@ -533,9 +533,11 @@ at 18 tokens and 694 to 527 ms at 32, with exact common-history logits and conti
 execution. Other GPUs and shapes retain the original kernel. The
 [qualification](../benchmarks/runtime-contract.md#paired-row-linear-qualification-2026-10-20)
 records substantial timing variance and does not establish serving performance.
-Metal CPU embedding reads now borrow the shared weight inventory; the full CPU loading
-mirror retires after upload. This lowers retained memory, not the still-doubled loading
-peak ([measurement](../benchmarks/runtime-contract.md#shared-metal-weight-inventory-2026-10-20)).
+Metal CPU embedding reads borrow the shared weight inventory. Direct source loading
+now also removes the full CPU inventory and parameter-sized upload copy from preparation,
+using at most 64 KiB of read/copy scratch
+([measurement](../benchmarks/runtime-contract.md#direct-metal-source-loading-2026-10-20)).
+This is one synchronous load, not a global concurrent-loader grant.
 Sampling and eviction remain open. Shader/pipeline failures now fail both primitive
 and materialization tests rather than being mistaken for missing hardware.
 Then mixed-width local/global KV with donor spans pinned through shared-tail device reads. Use strongly typed model/backend state

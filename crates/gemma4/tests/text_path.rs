@@ -1,9 +1,7 @@
 //! Gemma text facade over the token runtime, gated on macOS and the metal feature.
 #![cfg(all(target_os = "macos", feature = "metal"))]
 
-use engine_gemma4::{
-    Gemma4Config, Gemma4CpuWeights, Gemma4Executor, Gemma4MetalModel, Gemma4Source,
-};
+use engine_gemma4::{Gemma4Config, Gemma4Executor, Gemma4MetalModel, Gemma4Source};
 use ribn::driver::{Driver, DriverConfig};
 use ribn::{Engine, EngineConfig, GenerationOptions, SchedulePolicy};
 use ribn_hf::LocalModelPackage;
@@ -51,9 +49,8 @@ fn gemma_text_facade_reproduces_the_archived_greedy_tokens() {
         .map(|step| u32::try_from(step["chosen"].as_u64().unwrap()).unwrap())
         .collect();
 
-    let host = Gemma4CpuWeights::load(&source).unwrap();
-    assert_eq!(host.config(), &config);
-    let model = Arc::new(Gemma4MetalModel::load(host).unwrap());
+    assert_eq!(source.config(), &config);
+    let model = Arc::new(Gemma4MetalModel::load(&source).unwrap());
     let executor = Gemma4Executor::metal(model).expect("Metal executor");
     let engine = Engine::new(
         executor,

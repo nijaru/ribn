@@ -1,9 +1,7 @@
 //! Gemma through the token runtime's engine, gated on macOS and the metal feature.
 #![cfg(all(target_os = "macos", feature = "metal"))]
 
-use engine_gemma4::{
-    Gemma4Config, Gemma4CpuWeights, Gemma4Executor, Gemma4MetalModel, Gemma4Source,
-};
+use engine_gemma4::{Gemma4Config, Gemma4Executor, Gemma4MetalModel, Gemma4Source};
 use ribn::{Engine, Event, GenerationExecutor, GenerationOptions, TokenRequest};
 use ribn_hf::LocalModelPackage;
 use serde_json::Value;
@@ -50,9 +48,8 @@ fn metal_executor_reproduces_the_archived_tokens_through_the_engine() {
         .collect();
     assert_eq!(expected.len(), 4);
 
-    let host = Gemma4CpuWeights::load(&source).unwrap();
-    assert_eq!(host.config(), &config);
-    let model = Arc::new(Gemma4MetalModel::load(host).unwrap());
+    assert_eq!(source.config(), &config);
+    let model = Arc::new(Gemma4MetalModel::load(&source).unwrap());
     let executor = Gemma4Executor::metal(model).expect("Metal executor");
     let limits = executor.info().limits;
     assert_eq!(limits.max_decode_tokens, 1);

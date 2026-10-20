@@ -897,6 +897,19 @@ remain host fault-injection evidence, not injected hardware failures. Requested 
 plus padding do not measure driver rounding, context/library storage or full inference
 peaks; keep those margins separate from encoded payload totals and logical grants.
 
+### Metal Shared BF16 preparation
+
+Metal prepares the fully preflighted Gemma source directly into privately owned Shared
+buffers. One 64 KiB scratch buffer bounds backend read/copy staging; neither a complete
+CPU inventory nor a parameter-sized encoded copy is required. Validate each allocation's
+length/device limit and handle a null allocation before accessing storage. Exact-length
+reads and EOF checks finish before publishing an immutable parameter. No GPU command
+can access it during initialization. A read failure or unwind drops the unpublished
+allocation; failure of a later parameter drops the entire incomplete set. Successful
+publication preserves one native token-embedding/output-head allocation and its config.
+This synchronous path does not establish a global loading grant, bound source metadata,
+OS page cache or driver storage, or qualify asynchronous/failed-command retirement.
+
 ### Native BF16 linear execution
 
 The linear execution slice computes row-major `output = input × weightᵀ` through
