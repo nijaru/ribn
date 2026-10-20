@@ -54,6 +54,7 @@ impl MatrixShape {
         i32::try_from(self.cols).expect("validated matrix columns")
     }
 
+    #[cfg(feature = "cuda")]
     fn validate_elementwise(self, output: Self) -> Result<u32, CudaBf16Error> {
         if self != output {
             return Err(CudaBf16Error::Invalid(
