@@ -628,6 +628,17 @@ one weight row is faster on this GPU than the coalesced column walk. Keep the or
 layout; a tiled kernel must preserve the ascending-`k` accumulation order and beat this
 baseline, not merely change the layout.
 
+A second GEMM experiment was qualified but not promoted. Criteria were declared before
+running: each output within one BF16 encoding of the exact kernel on random BF16 operands
+(five shapes, inner 16-1024), bit-identical dyadic cases, and identical archived greedy
+tokens. All three held: at most one ulp, dyadic outputs exact, and the four tokens
+identical. Performance did not: 0.35 s versus 0.30 s per decode token and 0.94 s versus
+0.81 s prefill under the same conditions, so the warp kernel and its qualification test
+were removed. One threadgroup per output issues scalar two-byte loads and one FMA per
+element; the four-wide exact kernel needs fewer instructions per element, and better
+coalescing did not offset that. The next attempt must cut instruction count (wide loads
+with register blocking), not only memory transactions.
+
 ## Synthetic CPU benchmark
 
 ```sh
