@@ -201,6 +201,7 @@ pub struct MetalBf16Executor {
     device: Device,
     queue: CommandQueue,
     linear: ComputePipelineState,
+    pair_linear_rows: bool,
     rms: ComputePipelineState,
     attention_scores: ComputePipelineState,
     attention_reduce: ComputePipelineState,
@@ -262,10 +263,13 @@ impl MetalBf16Executor {
             .new_compute_pipeline_state_with_function(&elementwise)
             .map_err(MetalBf16Error::Pipeline)?;
         let queue = device.new_command_queue();
+        // Do not extend an optimization measured on M3 Max to other Apple GPUs.
+        let pair_linear_rows = device.name() == "Apple M3 Max";
         Ok(Self {
             device,
             queue,
             linear,
+            pair_linear_rows,
             rms,
             attention_scores,
             attention_reduce,
@@ -299,9 +303,9 @@ impl MetalBf16Executor {
 
     /// Row-major `output[m,n] = input[m,k] · weight[n,k]` in BF16.
     ///
-    /// One GPU thread per output element accumulates in FP32 and rounds once.
+    /// Each output accumulates in FP32 in ascending inner-index order and rounds once.
     /// # Errors
-    /// Rejects dimensions that disagree with either buffer.
+    /// Rejects mismatched/empty shapes or element counts beyond u32 kernel offsets.
     pub fn linear(
         &self,
         input: &MetalBf16Buffer,
@@ -329,6 +333,18 @@ impl MetalBf16Executor {
                 "linear buffers disagree with the requested shape".into(),
             ));
         }
+        // Kernel element offsets use u32 products, not only u32 dimensions.
+        if u32::try_from(input_length).is_err() || u32::try_from(weight_length).is_err() {
+            return Err(MetalBf16Error::Shape(
+                "linear input or weight exceeds u32 elements".into(),
+            ));
+        }
+        let columns = u32::try_from(columns)
+            .map_err(|_| MetalBf16Error::Shape("columns exceed u32".into()))?;
+        let inner =
+            u32::try_from(inner).map_err(|_| MetalBf16Error::Shape("inner exceeds u32".into()))?;
+        let total = u32::try_from(output_length)
+            .map_err(|_| MetalBf16Error::Shape("output exceeds u32 elements".into()))?;
         let output = self.device.new_buffer(
             (output_length * 2) as u64,
             MTLResourceOptions::StorageModeShared,
@@ -339,16 +355,19 @@ impl MetalBf16Executor {
         encoder.set_buffer(0, Some(&input.buffer), 0);
         encoder.set_buffer(1, Some(&weight.buffer), 0);
         encoder.set_buffer(2, Some(&output), 0);
-        let columns = u32::try_from(columns)
-            .map_err(|_| MetalBf16Error::Shape("columns exceed u32".into()))?;
-        let inner =
-            u32::try_from(inner).map_err(|_| MetalBf16Error::Shape("inner exceeds u32".into()))?;
-        let total = u32::try_from(output_length)
-            .map_err(|_| MetalBf16Error::Shape("output exceeds u32 elements".into()))?;
         encoder.set_bytes(3, 4, (&raw const columns).cast());
         encoder.set_bytes(4, 4, (&raw const inner).cast());
         encoder.set_bytes(5, 4, (&raw const total).cast());
-        let grid = u64::from(total);
+        // Only the measured multi-row range uses register blocking. Decode,
+        // small/tail chunks and larger unqualified batches keep the exact kernel.
+        let paired = u32::from(
+            self.pair_linear_rows
+                && (8..=64).contains(&rows)
+                && rows.is_multiple_of(2)
+                && inner.is_multiple_of(4),
+        );
+        encoder.set_bytes(6, 4, (&raw const paired).cast());
+        let grid = u64::from(if paired != 0 { total / 2 } else { total });
         encoder.dispatch_threads(
             MTLSize::new(grid, 1, 1),
             MTLSize::new(grid.min(THREADS), 1, 1),

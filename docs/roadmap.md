@@ -526,10 +526,15 @@ the diagnostic benchmark; that is not a competitive result. The package now also
 through the ordinary CLI path (`ribn run-gemma`, macOS Metal, greedy). Two
 reordered-accumulation GEMM variants (transposed weight layout and warp-cooperative
 reduction) were numerically qualified but measured slower than the four-wide exact
-kernel, so both were removed and recorded; the next candidate is register blocking with
-wide loads, not another layout or reduction split. Sampling and eviction remain open. A test-harness defect that skipped every Metal test when kernel
-compilation failed was fixed, so the earlier attention/rotary/elementwise results are
-now genuinely device-executed.
+kernel, so both were removed and recorded. Four-output-column register blocking also
+lost and was removed. Pairing input rows with wide weight loads is now selected on
+M3 Max for even 8–64-row batches: the diagnostic median prefill fell from 474 to 365 ms
+at 18 tokens and 694 to 527 ms at 32, with exact common-history logits and continued
+execution. Other GPUs and shapes retain the original kernel. The
+[qualification](../benchmarks/runtime-contract.md#paired-row-linear-qualification-2026-10-20)
+records substantial timing variance and does not establish serving performance.
+Sampling and eviction remain open. Shader/pipeline failures now fail both primitive
+and materialization tests rather than being mistaken for missing hardware.
 Then mixed-width local/global KV with donor spans pinned through shared-tail device reads. Use strongly typed model/backend state
 behind `GenerationExecutor`, not the current first-`kv()`/homogeneous-cache convenience
 or family branches in routing/scheduling. Qualified physical allocation/retirement and

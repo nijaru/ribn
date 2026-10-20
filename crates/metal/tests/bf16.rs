@@ -135,40 +135,58 @@ fn linear_matches_a_host_reference_and_exact_dyadics() {
     let Some(executor) = executor() else {
         return;
     };
-    let (rows, columns, inner) = (3, 7, 16);
-    let input = operands(rows * inner, 11);
-    let weight = operands(columns * inner, 29);
-    let actual = executor
-        .linear(
-            &executor.upload(&input).unwrap(),
-            &executor.upload(&weight).unwrap(),
-            rows,
-            columns,
-            inner,
-        )
-        .unwrap();
-    assert_close(
-        &actual.bits(),
-        &reference_linear(&input, &weight, rows, columns, inner),
-        "linear",
-    );
+    // Paired and unpaired rows, tiny grids, column tails and non-vector widths.
+    // Every output preserves its own source-order accumulation, not a reduction
+    // across rows; adding the second row must not change the first row's bits.
+    for (rows, columns, inner) in [
+        (3, 7, 16),
+        (2, 1, 4),
+        (8, 7, 16),
+        (9, 7, 16),
+        (18, 257, 256),
+        (64, 8, 1024),
+        (66, 8, 1024),
+        (8, 3, 7),
+    ] {
+        let input = operands(rows * inner, 11);
+        let weight = operands(columns * inner, 29);
+        let actual = executor
+            .linear(
+                &executor.upload(&input).unwrap(),
+                &executor.upload(&weight).unwrap(),
+                rows,
+                columns,
+                inner,
+            )
+            .unwrap();
+        assert_eq!(
+            actual.bits(),
+            reference_linear(&input, &weight, rows, columns, inner),
+            "linear {rows}x{columns}x{inner}",
+        );
+    }
 
     // Dyadic operands whose products and partial sums are exactly representable.
     let input: Vec<u16> = [1.0_f32, -2.0, 0.5, 4.0, -1.0, 1.0, -0.5, 2.0]
         .into_iter()
+        .cycle()
+        .take(8 * 4)
         .map(bf16)
         .collect();
     let weight: Vec<u16> = [1.0_f32, 1.0, 2.0, -1.0].into_iter().map(bf16).collect();
-    let exact = executor
-        .linear(
-            &executor.upload(&input).unwrap(),
-            &executor.upload(&weight).unwrap(),
-            2,
-            1,
-            4,
-        )
-        .unwrap();
-    assert_eq!(exact.bits(), reference_linear(&input, &weight, 2, 1, 4));
+    for rows in [2, 8] {
+        let input = &input[..rows * 4];
+        let exact = executor
+            .linear(
+                &executor.upload(input).unwrap(),
+                &executor.upload(&weight).unwrap(),
+                rows,
+                1,
+                4,
+            )
+            .unwrap();
+        assert_eq!(exact.bits(), reference_linear(input, &weight, rows, 1, 4));
+    }
 }
 
 #[test]

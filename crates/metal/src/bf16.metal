@@ -20,8 +20,32 @@ kernel void bf16_linear(
     constant uint& columns [[buffer(3)]],
     constant uint& inner [[buffer(4)]],
     constant uint& total [[buffer(5)]],
+    constant uint& paired [[buffer(6)]],
     uint id [[thread_position_in_grid]])
 {
+    // The host selects whole pairs with four-wide inputs. Reuse each weight
+    // vector while preserving ascending-k additions in both accumulators.
+    if (paired != 0) {
+        if (id >= total / 2) return;
+        uint row = 2 * (id / columns);
+        uint column = id % columns;
+        device const ushort4* a0 = (device const ushort4*)(input + row * inner);
+        device const ushort4* a1 = (device const ushort4*)(input + (row + 1) * inner);
+        device const ushort4* b = (device const ushort4*)(weight + column * inner);
+        float2 sum = float2(0.0f);
+        for (uint i = 0; i < inner / 4; ++i) {
+            ushort4 av0 = a0[i];
+            ushort4 av1 = a1[i];
+            ushort4 bv = b[i];
+            sum += float2(bf16_load(av0.x), bf16_load(av1.x)) * bf16_load(bv.x);
+            sum += float2(bf16_load(av0.y), bf16_load(av1.y)) * bf16_load(bv.y);
+            sum += float2(bf16_load(av0.z), bf16_load(av1.z)) * bf16_load(bv.z);
+            sum += float2(bf16_load(av0.w), bf16_load(av1.w)) * bf16_load(bv.w);
+        }
+        output[row * columns + column] = bf16_rne(sum.x);
+        output[(row + 1) * columns + column] = bf16_rne(sum.y);
+        return;
+    }
     if (id >= total) return;
     uint row = id / columns;
     uint column = id % columns;

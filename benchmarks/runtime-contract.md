@@ -590,8 +590,8 @@ measurements do not isolate frontend cost.
 
 Reproducible diagnostic only: one M3 Max, one sequence, the archived 18-token chat
 prompt, greedy decoding, the correctness-first host-orchestrated Metal decoder
-(`crates/gemma4/examples/metal_latency.rs`). It is not a competitive comparison, an
-endpoint measurement, or a promoted optimization.
+(`crates/gemma4/examples/metal_latency.rs`). It is not a competitive comparison or an
+endpoint measurement.
 
 | Stage | First pass | Split attention |
 | --- | --- | --- |
@@ -636,8 +636,67 @@ identical. Performance did not: 0.35 s versus 0.30 s per decode token and 0.94 s
 0.81 s prefill under the same conditions, so the warp kernel and its qualification test
 were removed. One threadgroup per output issues scalar two-byte loads and one FMA per
 element; the four-wide exact kernel needs fewer instructions per element, and better
-coalescing did not offset that. The next attempt must cut instruction count (wide loads
-with register blocking), not only memory transactions.
+coalescing did not offset that. Register blocking with wide loads was the next
+experiment, rather than another layout or reduction split.
+
+### Paired-row linear qualification (2026-10-20)
+
+On the same 40-core M3 Max, macOS 26.6.2, 128 GiB host memory and Rust 1.98.0 release
+build, a four-output-column register block also lost: the 18-token prefill median rose
+from 473 to 540 ms and decode from 218 to 284 ms. All checked full logit rows matched,
+but restoring the baseline restored its timing. That candidate was removed.
+
+Pairing **input rows** instead reuses each four-wide weight load for two accumulators.
+Each output keeps the same ascending-inner-index additions and final BF16 rounding.
+Automatic selection is limited to M3 Max, even row counts **8–64**, and inner widths
+divisible by four. Other GPUs, single-token decode, small/odd chunks, larger batches
+and non-vector widths retain the original kernel. Linear preparation also rejects
+input/weight element products beyond the kernel's u32 address range before allocating
+output; checking dimensions alone did not establish safe offsets.
+
+The warmed diagnostic used the pinned BF16 package and archived 18-token chat IDs,
+repeated/truncated to lengths 1/2/4/8/18/32/64, with three repetitions per length and
+three common teacher-forced continuation tokens. Each process warmed three input tokens
+before the sweep and reset continuation for every repetition. Host load/upload are
+excluded from the measurements. All 262,144 finite logits after prefill and each
+continuation matched baseline captures exactly at every length/repetition; the chat
+case also retained its four independent reference winners.
+
+The last baseline sweep and final-kernel sweep, including every repetition:
+
+| Prompt rows | Baseline median ms | Paired median ms | Paired range ms | Median reduction |
+| --- | ---: | ---: | ---: | ---: |
+| 8 | 294.02 | 256.81 | 253.00–532.22 | 12.7% |
+| 18 | 473.66 | 365.44 | 363.69–522.72 | 22.8% |
+| 32 | 694.26 | 526.69 | 524.79–531.06 | 24.1% |
+| 64 | 1254.59 | 1002.79 | 823.64–1046.75 | 20.1% |
+
+Earlier paired sweeps also improved the 18/32/64-token cases, but timing variance was
+substantial in both baseline and candidate rounds, including some unchanged decode
+samples above 400 ms. All rounds and outliers were retained; their cause was not
+established. These sequential full-model diagnostics justify the bounded selection,
+not a serving/SLO result, a decode speedup or a general claim for other Apple GPUs.
+Raw source variants, probe and exact logit captures are qualification artifacts. The
+existing `metal_latency` example measures one cold request, not this warmed sweep.
+
+The component gate now checks exact source-order results for paired/unpaired rows,
+selection boundaries, tiny grids, column tails, non-vector widths and dyadic operands.
+The real-package decoder gate compares whole-prompt execution with one-token and
+seven-token chunks across all four full logit rows on common histories. Decoder,
+executor, text facade and `ribn run-gemma` device paths passed; the materialization test
+now skips only a missing device, not shader/pipeline failures. An injected MSL syntax
+error falsely passed the old harness and failed the repaired one; restored-source gates
+passed. Boundaries, fmt, 389 workspace tests and default/CUDA/targeted Metal clippy passed.
+
+```sh
+cargo test -p engine-metal --release --locked --test bf16 -- --test-threads=1
+# Set RIBN_GEMMA_PACKAGE and RIBN_GEMMA_REFERENCE as for the decoder gate.
+cargo test -p engine-gemma4 --features metal --release --locked \
+  --test metal_decoder --test executor --test text_path -- --ignored --test-threads=1
+```
+
+CUDA device requalification and Metal command-failure/retirement injection were not run;
+this changes neither the CUDA path nor the current Metal ownership protocol.
 
 ## Synthetic CPU benchmark
 
