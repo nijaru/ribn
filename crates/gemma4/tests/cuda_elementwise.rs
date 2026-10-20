@@ -87,11 +87,14 @@ fn assert_exact(actual: &[u16], expected: &[u16], label: &str) {
     }
 }
 
-fn assert_gelu(actual: &[u16], reference: &[u16]) {
-    for (index, (&a, &b)) in actual.iter().zip(reference).enumerate() {
+fn assert_gelu(actual: &[u16], input: &[u16], reference: &[u16]) {
+    assert_eq!(actual.len(), input.len());
+    for (index, ((&a, &x), &b)) in actual.iter().zip(input).zip(reference).enumerate() {
         let (a, b) = (value(a), value(b));
         assert!(a.is_finite() && b.is_finite(), "non-finite GELU {index}");
-        let bound = 16.0 * f32::EPSILON * value(reference[index]).abs() + ulp(reference[index]);
+        // Same evaluation bound as the host audit: FP32 error relative to the
+        // GELU input, plus one reference encoding.
+        let bound = 16.0 * f32::EPSILON * value(x).abs() + ulp(b);
         assert!(
             (a - b).abs() <= bound,
             "GELU {index}: device {a:e} reference {b:e} bound {bound:e}"
@@ -256,7 +259,7 @@ fn layer_math_matches_the_archived_stages() {
         let actual = run(&mut ops, &stream, &pool, &gate, |ops, gate, output| {
             ops.gelu_tanh_into(gate, output).unwrap();
         });
-        assert_gelu(&actual, &activated);
+        assert_gelu(&actual, &gate, &activated);
     }
 
     let raw = tap(&artifact, "chat.0.raw_logits");
