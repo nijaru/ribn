@@ -4,7 +4,19 @@
 //! stays usable on hosts that have no Apple GPU.
 #![cfg(target_os = "macos")]
 
-use engine_metal::{MetalAttentionConfig, MetalBf16Executor};
+use engine_metal::{MetalAttentionConfig, MetalBf16Error, MetalBf16Executor};
+
+/// Missing hardware skips; any compilation or pipeline failure must fail the test.
+fn executor() -> Option<MetalBf16Executor> {
+    match MetalBf16Executor::new() {
+        Ok(executor) => Some(executor),
+        Err(MetalBf16Error::Device) => {
+            eprintln!("no Metal device; skipping");
+            None
+        }
+        Err(error) => panic!("Metal preparation failed: {error}"),
+    }
+}
 
 fn bf16(value: f32) -> u16 {
     let bits = value.to_bits();
@@ -109,8 +121,7 @@ fn assert_close(actual: &[u16], expected: &[u16], label: &str) {
 
 #[test]
 fn upload_round_trips_native_encodings() {
-    let Ok(executor) = MetalBf16Executor::new() else {
-        eprintln!("no Metal device; skipping");
+    let Some(executor) = executor() else {
         return;
     };
     let bits = [0x0000_u16, 0x8000, 0x3f80, 0xbf80, 0x7fc0, 0x1234];
@@ -121,8 +132,7 @@ fn upload_round_trips_native_encodings() {
 
 #[test]
 fn linear_matches_a_host_reference_and_exact_dyadics() {
-    let Ok(executor) = MetalBf16Executor::new() else {
-        eprintln!("no Metal device; skipping");
+    let Some(executor) = executor() else {
         return;
     };
     let (rows, columns, inner) = (3, 7, 16);
@@ -163,8 +173,7 @@ fn linear_matches_a_host_reference_and_exact_dyadics() {
 
 #[test]
 fn rms_matches_a_host_reference_with_and_without_scale() {
-    let Ok(executor) = MetalBf16Executor::new() else {
-        eprintln!("no Metal device; skipping");
+    let Some(executor) = executor() else {
         return;
     };
     for width in [16_usize, 256, 2560] {
@@ -192,8 +201,7 @@ fn rms_matches_a_host_reference_with_and_without_scale() {
 
 #[test]
 fn invalid_shapes_and_epsilon_reject() {
-    let Ok(executor) = MetalBf16Executor::new() else {
-        eprintln!("no Metal device; skipping");
+    let Some(executor) = executor() else {
         return;
     };
     let input = executor.upload(&operands(8, 1)).unwrap();
@@ -291,8 +299,7 @@ fn optional_start(absolute: usize, window: usize) -> usize {
 
 #[test]
 fn attention_matches_a_host_reference_for_causal_and_sliding_spans() {
-    let Ok(executor) = MetalBf16Executor::new() else {
-        eprintln!("no Metal device; skipping");
+    let Some(executor) = executor() else {
         return;
     };
     // Dyadic operands under causal and sliding masks: every dot, probability and
@@ -374,8 +381,7 @@ fn attention_matches_a_host_reference_for_causal_and_sliding_spans() {
 
 #[test]
 fn attention_rejects_malformed_spans_and_geometry() {
-    let Ok(executor) = MetalBf16Executor::new() else {
-        eprintln!("no Metal device; skipping");
+    let Some(executor) = executor() else {
         return;
     };
     let query = executor.upload(&operands(4, 1)).unwrap();
@@ -448,8 +454,7 @@ fn reference_rotary(
 
 #[test]
 fn rotary_matches_a_host_reference_with_both_factor_halves() {
-    let Ok(executor) = MetalBf16Executor::new() else {
-        eprintln!("no Metal device; skipping");
+    let Some(executor) = executor() else {
         return;
     };
     let (rows, heads, width) = (3, 2, 4);
@@ -509,8 +514,7 @@ fn reference_softcap(input: &[u16], cap: f32) -> Vec<u16> {
 
 #[test]
 fn elementwise_operations_match_host_references() {
-    let Ok(executor) = MetalBf16Executor::new() else {
-        eprintln!("no Metal device; skipping");
+    let Some(executor) = executor() else {
         return;
     };
     let left = operands(64, 73);
@@ -563,8 +567,7 @@ fn elementwise_operations_match_host_references() {
 
 #[test]
 fn elementwise_validation_rejects_bad_operands() {
-    let Ok(executor) = MetalBf16Executor::new() else {
-        eprintln!("no Metal device; skipping");
+    let Some(executor) = executor() else {
         return;
     };
     let left = executor.upload(&operands(8, 83)).unwrap();

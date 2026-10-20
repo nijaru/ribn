@@ -14,6 +14,8 @@ mod rotary;
 mod weights;
 
 pub use attention::{AttentionConfig, attention, attention_with_weights};
+#[cfg(all(feature = "metal", target_os = "macos"))]
+pub(crate) use decoder::validate_inventory;
 pub use decoder::{Gemma4CpuDecoder, argmax};
 pub use elementwise::{add, gelu_tanh, multiply, ple_combine, scale, softcap};
 pub use linear::{bf16, linear, linear_f32, project};

@@ -139,24 +139,24 @@ kernel void bf16_rotary_apply(
     device ushort* output [[buffer(3)]],
     constant uint& columns [[buffer(4)]],
     constant uint& width [[buffer(5)]],
-    constant ulong& pairs [[buffer(6)]],
-    uint64_t id [[thread_position_in_grid]])
+    constant uint& pairs [[buffer(6)]],
+    uint id [[thread_position_in_grid]])
 {
     if (id >= pairs) return;
-    uint half = width / 2;
-    ulong head = id / half;
-    uint j = (uint)(id % half);
+    uint half_width = width / 2;
+    ulong head = id / half_width;
+    uint j = id % half_width;
     ulong row = head / (columns / width);
     ulong x = head * width + j;
     ulong factor = row * width + j;
     float a = bf16_load(input[x]);
-    float b = bf16_load(input[x + half]);
+    float b = bf16_load(input[x + half_width]);
     float ac = bf16_load(bf16_rne(a * bf16_load(cosine[factor])));
     float bs = bf16_load(bf16_rne(-b * bf16_load(sine[factor])));
-    float bc = bf16_load(bf16_rne(b * bf16_load(cosine[factor + half])));
-    float a_sine = bf16_load(bf16_rne(a * bf16_load(sine[factor + half])));
+    float bc = bf16_load(bf16_rne(b * bf16_load(cosine[factor + half_width])));
+    float a_sine = bf16_load(bf16_rne(a * bf16_load(sine[factor + half_width])));
     output[x] = bf16_rne(ac + bs);
-    output[x + half] = bf16_rne(bc + a_sine);
+    output[x + half_width] = bf16_rne(bc + a_sine);
 }
 
 // One elementwise operation per launch: 0 add, 1 multiply, 2 scale, 3 GELU
@@ -186,7 +186,7 @@ kernel void bf16_elementwise(
     } else {
         float divided = bf16_load(bf16_rne(value / scalar));
         float hyperbolic = bf16_load(bf16_rne(tanh(divided)));
-        result = bf16_load(hyperbolic) * scalar;
+        result = hyperbolic * scalar;
     }
     output[id] = bf16_rne(result);
 }

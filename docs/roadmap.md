@@ -470,8 +470,11 @@ KV span policy, donor trimming, a serving executor, long-context behaviour and d
 parity remain open; no performance or serving claim follows. On Apple silicon, a first
 Metal (GPU, not ANE) slice now runs BF16 linear, RMS, causal/sliding attention, rotary
 and elementwise operations on real hardware with independent-reference tests, and the
-validated Gemma inventory uploads bitwise to one Metal device; per-layer decoder
-wiring and measurement are next.
+validated Gemma inventory uploads bitwise to one Metal device, and a host-orchestrated
+Metal decoder reproduces the archived four greedy chat tokens; an executor and
+measurement are next. A test-harness defect that skipped every Metal test when kernel
+compilation failed was fixed, so the earlier attention/rotary/elementwise results are
+now genuinely device-executed.
 Then mixed-width local/global KV with donor spans pinned through shared-tail device reads. Use strongly typed model/backend state
 behind `GenerationExecutor`, not the current first-`kv()`/homogeneous-cache convenience
 or family branches in routing/scheduling. Qualified physical allocation/retirement and

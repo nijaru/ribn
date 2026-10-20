@@ -445,14 +445,14 @@ impl MetalBf16Executor {
             .map_err(|_| MetalBf16Error::Shape("columns exceed u32".into()))?;
         let width =
             u32::try_from(width).map_err(|_| MetalBf16Error::Shape("width exceeds u32".into()))?;
-        let pairs = u64::try_from(pairs)
-            .map_err(|_| MetalBf16Error::Shape("rotary pairs exceed u64".into()))?;
+        let pairs = u32::try_from(pairs)
+            .map_err(|_| MetalBf16Error::Shape("rotary pairs exceed u32".into()))?;
         encoder.set_bytes(4, 4, (&raw const columns).cast());
         encoder.set_bytes(5, 4, (&raw const width).cast());
-        encoder.set_bytes(6, 8, (&raw const pairs).cast());
+        encoder.set_bytes(6, 4, (&raw const pairs).cast());
         encoder.dispatch_threads(
-            MTLSize::new(pairs, 1, 1),
-            MTLSize::new(pairs.min(256), 1, 1),
+            MTLSize::new(u64::from(pairs), 1, 1),
+            MTLSize::new(u64::from(pairs).min(256), 1, 1),
         );
         encoder.end_encoding();
         command.commit();
