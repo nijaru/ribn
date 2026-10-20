@@ -155,12 +155,13 @@ fn layer_math_matches_the_archived_stages() {
             &ffn_residual,
             &ple_norm,
             &output,
-            &gate,
-            &activated,
-            &up,
-            &product,
         ] {
-            assert_eq!(tensor.len(), width, "layer {layer} width");
+            assert_eq!(tensor.len(), width, "layer {layer} residual width");
+        }
+        let mlp_width = gate.len();
+        assert_eq!(mlp_width, 10_240, "layer {layer} MLP width");
+        for tensor in [&activated, &up, &product] {
+            assert_eq!(tensor.len(), mlp_width, "layer {layer} MLP width");
         }
 
         // Exact: one IEEE operation on BF16 operands, then RNE to BF16.
