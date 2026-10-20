@@ -106,15 +106,6 @@ fn reference(
                 scores.iter().map(|score| (score - maximum).exp()).collect();
             let total: f32 = exponentials.iter().sum();
             let mut accumulator = vec![0.0_f32; width];
-            if width == 512 && position == 1 && head == 0 {
-                eprintln!(
-                    "DEBUG scores {:?} exps {:?} total {total:e} values0 {:?} values1 {:?}",
-                    &scores,
-                    &exponentials,
-                    &values[kv_head * width..kv_head * width + 4],
-                    &values[kv_heads * width + kv_head * width..kv_heads * width + kv_head * width + 4],
-                );
-            }
             for (offset, key) in (first..=last).enumerate() {
                 let weight = round(exponentials[offset] / total);
                 let value_base = key * kv_heads * width + kv_head * width;
@@ -131,9 +122,6 @@ fn reference(
                 .zip(&accumulator)
             {
                 *slot = round(accumulated);
-            }
-            if width == 512 && position == 1 && head == 0 {
-                eprintln!("DEBUG weights {:?} acc290 {:e}", scores.iter().take(last - first + 1).map(|s| (s - maximum).exp() / total).collect::<Vec<_>>(), accumulator[290]);
             }
         }
     }
