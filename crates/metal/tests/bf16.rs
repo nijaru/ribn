@@ -382,6 +382,80 @@ fn linear_rms_rejects_invalid_whole_chains_and_recovers() {
 }
 
 #[test]
+fn rms_linear_pair_preserves_both_standalone_projections() {
+    let Some(executor) = executor() else {
+        return;
+    };
+    for (rows, columns, inner) in [
+        (1, 7, 16),
+        (8, 257, 256),
+        (9, 7, 17),
+        (64, 8, 256),
+        (66, 8, 256),
+    ] {
+        let input = executor.upload(&operands(rows * inner, 11)).unwrap();
+        let left = executor.upload(&operands(columns * inner, 29)).unwrap();
+        let right = executor.upload(&operands(columns * inner, 47)).unwrap();
+        let scale = executor.upload(&operands(inner, 13)).unwrap();
+        let shape = MetalLinearShape {
+            rows,
+            columns,
+            inner,
+        };
+        for scale in [None, Some(&scale)] {
+            let normalized = executor.rms_norm(&input, rows, inner, 1e-6, scale).unwrap();
+            let expected_left = executor.linear(&normalized, &left, shape).unwrap();
+            let expected_right = executor.linear(&normalized, &right, shape).unwrap();
+            let (actual_left, actual_right) = executor
+                .rms_linear_pair(&input, &left, &right, shape, 1e-6, scale)
+                .unwrap();
+            assert_eq!(actual_left.bits(), expected_left.bits(), "left {shape:?}");
+            assert_eq!(
+                actual_right.bits(),
+                expected_right.bits(),
+                "right {shape:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn rms_linear_pair_rejects_invalid_right_weight_and_recovers() {
+    let Some(executor) = executor() else {
+        return;
+    };
+    let input = executor.upload(&operands(8, 11)).unwrap();
+    let weight = executor.upload(&operands(8, 29)).unwrap();
+    let short = executor.upload(&operands(4, 47)).unwrap();
+    let shape = MetalLinearShape {
+        rows: 2,
+        columns: 2,
+        inner: 4,
+    };
+    assert!(matches!(
+        executor.rms_linear_pair(&input, &weight, &short, shape, 1e-6, None),
+        Err(MetalBf16Error::Shape(_))
+    ));
+    assert!(
+        executor
+            .rms_linear_pair(&input, &weight, &weight, shape, 0.0, None)
+            .is_err()
+    );
+    assert!(
+        executor
+            .rms_linear_pair(&input, &weight, &weight, shape, 1e-6, Some(&weight))
+            .is_err()
+    );
+    let normalized = executor.rms_norm(&input, 2, 4, 1e-6, None).unwrap();
+    let expected = executor.linear(&normalized, &weight, shape).unwrap();
+    let (left, right) = executor
+        .rms_linear_pair(&input, &weight, &weight, shape, 1e-6, None)
+        .unwrap();
+    assert_eq!(left.bits(), expected.bits());
+    assert_eq!(right.bits(), expected.bits());
+}
+
+#[test]
 fn rms_matches_a_host_reference_with_and_without_scale() {
     let Some(executor) = executor() else {
         return;

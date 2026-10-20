@@ -214,6 +214,62 @@ impl MetalBf16Executor {
         })
     }
 
+    /// Normalize each input row, then project through two same-shaped weights.
+    ///
+    /// The normalized BF16 input remains private. Both projections use the same
+    /// kernels and rounding boundaries as three standalone operations; neither
+    /// output is published until the entire serial command completes successfully.
+    /// # Errors
+    /// Validates both weights and RMS before allocation/submission. Rejects invalid
+    /// shapes/epsilon/scale, allocation failure or unsuccessful GPU execution.
+    pub fn rms_linear_pair(
+        &self,
+        input: &MetalBf16Buffer,
+        left: &MetalBf16Buffer,
+        right: &MetalBf16Buffer,
+        shape: MetalLinearShape,
+        epsilon: f32,
+        scale: Option<&MetalBf16Buffer>,
+    ) -> Result<(MetalBf16Buffer, MetalBf16Buffer), MetalBf16Error> {
+        let left_geometry =
+            LinearGeometry::new(shape, input.elements, left.elements, self.pair_linear_rows)?;
+        let right_geometry =
+            LinearGeometry::new(shape, input.elements, right.elements, self.pair_linear_rows)?;
+        let rms = RmsGeometry::new(input.elements, shape.rows, shape.inner, epsilon, scale)?;
+        let normalized = self.allocate_shared(input.elements * 2)?;
+        let left_output = self.allocate_shared(left_geometry.elements() * 2)?;
+        let right_output = self.allocate_shared(right_geometry.elements() * 2)?;
+        let command = self.command()?;
+        let encoder = Self::compute_encoder(&command)?;
+        self.encode_rms(&encoder, &input.buffer, &normalized, scale, &rms);
+        self.encode_linear(
+            &encoder,
+            &normalized,
+            &left.buffer,
+            &left_output,
+            &left_geometry,
+        );
+        self.encode_linear(
+            &encoder,
+            &normalized,
+            &right.buffer,
+            &right_output,
+            &right_geometry,
+        );
+        encoder.end_encoding();
+        Self::submit(&command, "RMS/linear pair")?;
+        Ok((
+            MetalBf16Buffer {
+                buffer: left_output,
+                elements: left_geometry.elements(),
+            },
+            MetalBf16Buffer {
+                buffer: right_output,
+                elements: right_geometry.elements(),
+            },
+        ))
+    }
+
     fn encode_linear(
         &self,
         encoder: &ComputeCommandEncoderRef,

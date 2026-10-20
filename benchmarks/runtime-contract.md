@@ -897,6 +897,56 @@ failure, null-handle/OOM injection and recovery were **not** exercised; healthy-
 results do not qualify them. Only macOS Metal was device-tested; desktop CUDA remains
 unavailable. The CPU oracle and CUDA implementation are unchanged.
 
+### Metal FFN input-chain qualification (2026-10-20)
+
+The next fixed chain normalizes FFN input once and projects it through the gate and
+up weights in one serial command. It reuses the existing RMS and linear kernels,
+paired-row selection and BF16 intermediate boundary. Both weights validate before any
+allocation/submission; both outputs publish only after successful completion. The
+private workspace is one input-sized normalized buffer and two output-sized buffers.
+The model drops each native output owner after its CPU copy rather than deliberately
+holding both owners alongside both CPU copies. CPU GELU/multiply and subsequent
+linear/RMS chains are unchanged. This removes another **84 waits per step**, taking
+the command schedule from 579 to **495**, without changing kernel count.
+
+The predeclared gate was exact finite full logits, at least 5% warmed median decode
+improvement, and no material prefill or memory regression. The baseline was the saved
+`260cbd2` executable from the preceding qualification; the same probe/package/reference
+and M3 Max/toolchain ran three baseline and three candidate processes, with controls
+before, between and after candidate measurements. Each prefix had one warmup and three
+measured trials plus three common continuation steps. All measured samples remain:
+
+| Prompt tokens | Baseline prefill | Chain prefill | Baseline decode | Chain decode |
+| ---: | ---: | ---: | ---: | ---: |
+| 1 | 174.26 ms | 157.25 ms | 173.78 ms | 158.89 ms |
+| 8 | 215.28 ms | 201.61 ms | 172.98 ms | 159.26 ms |
+| 18 | 340.24 ms | 320.60 ms | 175.09 ms | 159.81 ms |
+| 32 | 509.11 ms | 489.18 ms | 176.55 ms | 160.10 ms |
+| 64 | 889.29 ms | 864.56 ms | 178.74 ms | 160.94 ms |
+
+Pooled warmed decode median: **175.379 → 159.809 ms**, **8.88% lower**. Individual
+run medians were 173.57/175.77/177.29 ms baseline and 159.89/159.78/159.81 ms candidate.
+No prefix's pooled prefill median regressed. These remain direct-decoder diagnostics,
+not serving throughput, SLOs or a result transferable to CUDA.
+
+All 262,144-element rows were finite and bit-identical to the prior captures for
+1/8/18/32/64-token prefixes and three common continuations. Fresh baseline/candidate
+65/511/512/513-token comparisons also stayed exact. Archived four-token greedy winners,
+reset/chunks 1/7 through the real decoder gate, executor/text delivery and the actual
+four-token CLI remained unchanged. New primitive cases compare **both** distinct-weight
+outputs with three standalone calls across scaled/unscaled RMS, paired/unpaired rows
+and tails; invalid right-weight/scale/epsilon cases cannot publish a partial pair and
+are followed by a valid recovery, including aliased immutable weights.
+
+External maximum RSS across short-prefix runs was 14.035–14.053 GiB baseline versus
+14.021–14.031 GiB candidate. The larger-prefix probes peaked at 14.245 versus 14.233
+GiB. This is no observed peak-RSS regression, not a global device-memory grant.
+All 395 workspace tests, 15 release Metal primitive tests, materialization and ignored
+real-model gates passed, as did boundaries, formatting and default/CUDA/targeted-Metal
+clippy. No new unsafe interop or asynchronous ownership was introduced. Physical OOM,
+null-handle and hardware-fault recovery remain unqualified; CPU oracle and CUDA code
+are unchanged, and the shut-down desktop was not contacted.
+
 ## Synthetic CPU benchmark
 
 ```sh

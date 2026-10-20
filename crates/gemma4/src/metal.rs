@@ -172,6 +172,27 @@ impl MetalOps<'_> {
         Ok(output.bits())
     }
 
+    fn rms_linear_pair(
+        &self,
+        input: &[u16],
+        rows: usize,
+        weights: (&MetalBf16Buffer, &MetalBf16Buffer),
+        epsilon: f32,
+        scale: Option<&MetalBf16Buffer>,
+    ) -> Result<(Vec<u16>, Vec<u16>), Gemma4Error> {
+        let (buffer, shape) = self.linear_input(input, rows, weights.0)?;
+        let (left, right) = self
+            .executor
+            .rms_linear_pair(&buffer, weights.0, weights.1, shape, epsilon, scale)
+            .map_err(|error| metal_error(&error))?;
+        drop(buffer);
+        // Retire each native output after its copy, rather than retaining both
+        // native outputs alongside both CPU vectors during the second copy.
+        let left_bits = left.bits();
+        drop(left);
+        Ok((left_bits, right.bits()))
+    }
+
     fn rms(
         &self,
         input: &[u16],
@@ -667,15 +688,16 @@ fn feedforward_forward(
         .layer(layer, LayerParameter::PreFeedforwardNorm)?
         .elements();
     let residual = hidden.to_vec();
-    let normed = ops.rms(
+    let (gate, up) = ops.rms_linear_pair(
         hidden,
         sequence,
-        hidden_size,
+        (
+            metal.layer(layer, LayerParameter::Gate)?,
+            metal.layer(layer, LayerParameter::Up)?,
+        ),
         epsilon,
         Some(metal.layer(layer, LayerParameter::PreFeedforwardNorm)?),
     )?;
-    let gate = ops.linear(&normed, sequence, metal.layer(layer, LayerParameter::Gate)?)?;
-    let up = ops.linear(&normed, sequence, metal.layer(layer, LayerParameter::Up)?)?;
     let product = multiply(&gelu_tanh(&gate)?, &up)?;
     let normed = ops.linear_rms(
         &product,

@@ -544,8 +544,10 @@ CPU work. Bounded PLE normalization batching missed its predeclared promotion ga
 and was removed; it is not a serving gain or an attribution of CUDA costs.
 The subsequent [fixed linear → RMS chain](../benchmarks/runtime-contract.md#metal-linear-rms-chain-qualification-2026-10-20)
 keeps the BF16 projection on device and removes its intermediate readback/upload and
-216 synchronous waits per step. Other activation transfers and CPU elementwise work
-remain; no universal graph or CUDA policy was introduced.
+216 synchronous waits per step. The [FFN input chain](../benchmarks/runtime-contract.md#metal-ffn-input-chain-qualification-2026-10-20)
+now removes another 84 waits by sharing normalization across the gate/up projections.
+Other activation transfers and CPU elementwise work remain; no universal graph or
+CUDA policy was introduced.
 Sampling and eviction remain open. Shader/pipeline failures now fail both primitive
 and materialization tests rather than being mistaken for missing hardware.
 Then mixed-width local/global KV with donor spans pinned through shared-tail device reads. Use strongly typed model/backend state

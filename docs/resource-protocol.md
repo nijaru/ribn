@@ -919,9 +919,16 @@ Allocate a private projection and normalized output, each `rows × columns` BF16
 elements. These are concrete per-call native buffers, not a universal graph, a shared
 workspace grant or an asynchronous output promise.
 
-Both dispatches use one default serial compute encoder. RMS reads the completed
-projection without a host readback/upload; no published immutable buffer is modified.
-The call retains inputs, weights, optional scale and both private allocations through
+A second fixed chain normalizes the input and projects it through two same-shaped
+weights. Validate both weights and RMS before allocation. Its private normalized
+input contains `rows × inner` BF16 elements; each of its two outputs contains
+`rows × columns`. Neither output is published unless all three dispatches succeed.
+Model-side copies drop each native output owner before copying the next, rather than
+deliberately retaining both owners alongside both CPU copies.
+
+All dispatches use one default serial compute encoder. Each consumer observes its
+producer's writes without a host readback/upload; no published immutable buffer is modified.
+The call retains inputs, weights, optional scale and all private allocations through
 `waitUntilCompleted`. That synchronous Metal wait establishes terminal completion,
 including aborted execution. Status must then be `Completed` before publishing any
 output; other statuses return an execution error, not an initialized result. Queue,
