@@ -65,19 +65,19 @@ fn cuda_decoder_reproduces_the_archived_greedy_tokens() {
     let prefill = Instant::now();
     let mut logits = decoder.prefill(&prompt).expect("prompt prefill");
     let prefilled = prefill.elapsed();
-    let mut decoded = Vec::with_capacity(steps.len() - 1);
+    let mut step_times = Vec::with_capacity(steps.len() - 1);
     let mut chosen = argmax(&logits).unwrap();
     assert_eq!(u64::from(chosen), u64::from(steps[0]), "step 0");
     for (index, expected) in steps.iter().enumerate().skip(1) {
         let step = Instant::now();
         logits = decoder.decode(chosen).expect("decode step");
-        decoded.push(step.elapsed());
+        step_times.push(step.elapsed());
         chosen = argmax(&logits).unwrap();
         assert_eq!(u64::from(chosen), u64::from(*expected), "step {index}");
     }
     assert_eq!(decoder.position(), prompt.len() + steps.len() - 1);
     assert_eq!(logits.len(), config.vocab_size());
-    println!("load {loaded:?}, prefill {prefilled:?}, decode {decoded:?}");
+    println!("load {loaded:?}, prefill {prefilled:?}, decode {step_times:?}");
     decoder.reset();
     assert_eq!(decoder.position(), 0);
 }
