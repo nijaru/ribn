@@ -48,14 +48,14 @@ pub(crate) fn run(arguments: &[String]) -> Result<(), String> {
 }
 
 #[cfg(all(feature = "metal", target_os = "macos"))]
-fn load_model(
+pub(crate) fn load_model(
     path: PathBuf,
 ) -> Result<(TextOwner, ribn_text::GemmaLoadReport), ribn_text::TextError> {
     TextOwner::load_gemma(path)
 }
 
 #[cfg(all(feature = "cuda", not(all(feature = "metal", target_os = "macos"))))]
-fn load_model(
+pub(crate) fn load_model(
     path: PathBuf,
 ) -> Result<(TextOwner, ribn_text::GemmaLoadReport), ribn_text::TextError> {
     TextOwner::load_gemma_cuda(path)

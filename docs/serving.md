@@ -11,6 +11,21 @@ curl -N http://127.0.0.1:8000/v1/chat/completions \
   -d '{"model":"ribn","messages":[{"role":"user","content":"Explain a mutex."}],"max_tokens":64,"stream":true}'
 ```
 
+Gemma 4 packages use the same endpoint through `serve-gemma`:
+
+```sh
+cargo run -p ribn-cli --features metal -- serve-gemma /path/to/gemma-package \
+  --bind 127.0.0.1:8000 --model-name gemma
+```
+
+Use `--features cuda` for the experimental CUDA loader. Backend selection matches
+`run-gemma`: Metal on macOS when enabled, otherwise CUDA. The Metal HTTP entry point is
+functionally qualified; CUDA HTTP execution remains unqualified. This adds no media
+support. Gemma uses the default device and its prepared context bound (4K positions on
+CUDA, the configured model bound on Metal—not long-context qualification). `--device`,
+`--context-length` and `--max-sequences` reject rather than silently changing or ignoring
+those settings.
+
 This is a documented OpenAI-style **subset**, not general OpenAI API compatibility.
 The server uses the same text facade and execution owner as CLI/Rust generation.
 It accepts only loopback IP addresses. There is no authentication, TLS, CORS policy,
@@ -60,8 +75,8 @@ HTTP error response instead. Unsupported routes return 404.
 
 ## Execution capacity
 
-`--max-sequences` selects prepared sequence capacity and the AR active-sequence
-limit (default 1). It is not capped by the runtime's conservative eight-request
+For Qwen's `serve` command, `--max-sequences` selects prepared sequence capacity and the
+AR active-sequence limit (default 1). It is not capped by the runtime's conservative eight-request
 constructor default. Assembly keeps the default global event grant or increases
 it enough to cover every requested active sequence's mailbox. Overflow in the
 active-plus-queued count or global event grant rejects before model/device access.
@@ -69,8 +84,11 @@ active-plus-queued count or global event grant rejects before model/device acces
 `--max-requests` separately limits HTTP generation slots. Application request
 permits cover preprocessing, queued work, execution and retained output/retirement;
 `TextModel::request_capacity()` reports this fixed bound, not currently free permits.
-Startup reports HTTP slots, the active-sequence limit and application capacity
-separately. Other admission/memory bounds can prevent all execution slots being used.
+Qwen startup reports HTTP slots, the active-sequence limit and application capacity
+separately. Gemma retains its executor's four-active-sequence limit and reports the
+application capacity from its loaded handle. This is not a four-row physical batch or
+a claim that every request fits. Other admission/memory bounds can prevent all execution
+slots being used.
 Increasing sequence capacity can increase state reservation and accepted host/output
 storage; it does not increase the physical kernel batch limit or prove a memory peak.
 
@@ -92,7 +110,7 @@ are discarded without retention while observing disconnect; they cannot hide EOF
 | Non-streaming serialized response; individual SSE frame | 1 MiB maximum |
 | Absolute connection lifetime | 120 seconds |
 
-`serve --help` lists configurable bounds. The absolute deadline includes body reading,
+`serve --help` and `serve-gemma --help` list their configurable bounds. The absolute deadline includes body reading,
 preparation, generation and writing; it also limits a healthy long generation. Adjust
 it for the workload, rather than interpreting it as an idle timeout.
 
@@ -145,8 +163,12 @@ faulted state until shutdown.
 ## Qualification
 
 Host TCP tests exercise the real HTTP entry point, tokenizer, text facade and driver
-with only the device substituted. The bounded CUDA HTTP gate and actual CLI streaming/
+with only the device substituted. The bounded Qwen CUDA HTTP gate and actual CLI streaming/
 SIGTERM shutdown passed, along with AIPerf and native vLLM client compatibility smokes.
+Gemma's [Metal CLI HTTP gate](../benchmarks/runtime-contract.md#gemma-http-cli-qualification-2026-10-21)
+checks real-package JSON/SSE output, request-local media rejection, disconnect recovery,
+loading/faulted health and SIGTERM cleanup. It does not qualify CUDA HTTP execution or
+competitive serving performance.
 The [load-capacity host gate](../benchmarks/runtime-contract.md#text-load-capacity-host-gate)
 covers configured active limits beyond eight; those larger configured limits remain
 host-qualified only. Whole-decode batches of two through eight rows now accept different

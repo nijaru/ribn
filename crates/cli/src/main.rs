@@ -1,5 +1,7 @@
 #[cfg(any(feature = "cuda", feature = "metal", test))]
 mod cli;
+#[cfg(any(feature = "cuda", all(feature = "metal", target_os = "macos")))]
+mod gemma;
 #[cfg(any(feature = "cuda", feature = "metal", test))]
 mod input;
 mod inspect;
@@ -8,13 +10,11 @@ mod output;
 #[cfg(feature = "cuda")]
 mod run;
 #[cfg(any(feature = "cuda", all(feature = "metal", target_os = "macos")))]
-mod run_gemma;
-#[cfg(feature = "cuda")]
 mod serve;
-#[cfg(any(feature = "cuda", test))]
+#[cfg(any(feature = "cuda", all(feature = "metal", target_os = "macos"), test))]
 mod serve_cli;
 
-const USAGE: &str = "ribn <command>\n\ncommands:\n  inspect  inspect a GGUF artifact without GPU initialization\n  run      stream one Qwen GGUF request through the experimental Ribn runtime\n  run-gemma  stream one Gemma package request through the experimental runtime (Metal or CUDA)\n  serve    serve a bounded loopback completion/chat HTTP endpoint";
+const USAGE: &str = "ribn <command>\n\ncommands:\n  inspect  inspect a GGUF artifact without GPU initialization\n  run      stream one Qwen GGUF request through the experimental Ribn runtime\n  run-gemma  stream one Gemma package request through the experimental runtime (Metal or CUDA)\n  serve    serve a Qwen GGUF over bounded loopback completion/chat HTTP\n  serve-gemma  serve a Gemma package over the same bounded HTTP endpoint";
 
 fn main() {
     let mut arguments = std::env::args().skip(1);
@@ -29,6 +29,7 @@ fn main() {
         Some("run") => run_prepared(&rest),
         Some("run-gemma") => run_gemma_prepared(&rest),
         Some("serve") => serve_prepared(&rest),
+        Some("serve-gemma") => serve_gemma_prepared(&rest),
         Some(other) => Err(format!("unknown command {other:?}\n\n{USAGE}")),
     };
     if let Err(error) = result {
@@ -44,17 +45,27 @@ fn run_prepared(arguments: &[String]) -> Result<(), String> {
 
 #[cfg(any(feature = "cuda", all(feature = "metal", target_os = "macos")))]
 fn run_gemma_prepared(arguments: &[String]) -> Result<(), String> {
-    run_gemma::run(arguments)
+    gemma::run(arguments)
 }
 
-#[cfg(feature = "cuda")]
+#[cfg(any(feature = "cuda", all(feature = "metal", target_os = "macos")))]
 fn serve_prepared(arguments: &[String]) -> Result<(), String> {
-    serve::run(arguments)
+    serve::run(arguments, serve_cli::ServeModel::Qwen)
 }
 
-#[cfg(not(feature = "cuda"))]
+#[cfg(any(feature = "cuda", all(feature = "metal", target_os = "macos")))]
+fn serve_gemma_prepared(arguments: &[String]) -> Result<(), String> {
+    serve::run(arguments, serve_cli::ServeModel::Gemma)
+}
+
+#[cfg(not(any(feature = "cuda", all(feature = "metal", target_os = "macos"))))]
 fn serve_prepared(_arguments: &[String]) -> Result<(), String> {
     Err("Qwen serving requires building ribn with --features cuda".to_owned())
+}
+
+#[cfg(not(any(feature = "cuda", all(feature = "metal", target_os = "macos"))))]
+fn serve_gemma_prepared(_arguments: &[String]) -> Result<(), String> {
+    Err("Gemma serving requires --features metal on macOS or --features cuda".to_owned())
 }
 
 #[cfg(not(feature = "cuda"))]

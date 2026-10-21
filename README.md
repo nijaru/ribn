@@ -51,7 +51,11 @@ The same owned text path also serves a loopback HTTP endpoint:
 
 ```sh
 cargo run -p ribn-cli --features cuda -- serve /path/model.gguf
+cargo run -p ribn-cli --features metal -- serve-gemma /path/to/gemma-package
 ```
+
+`serve-gemma` also builds with `--features cuda`; its CUDA HTTP path still needs device
+qualification. Both commands use the same bounded HTTP adapter.
 
 See [serving](docs/serving.md) for the supported protocol, greedy decoding, limits,
 health/metrics and shutdown. Non-local exposure is unsupported.

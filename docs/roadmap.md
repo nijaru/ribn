@@ -526,8 +526,11 @@ gates, with exact short-history logits against host append. The subsequent
 [eight-row lane](../benchmarks/gemma4-reference/README.md#bounded-eight-row-cuda-prefill-2026-10-21-utc)
 binds whole-group attention/donor spans and prepared workspace while retaining full
 histories and scalar fallback. Its greedy contract permits independently bounded
-reordered GEMMs, not presumed scalar bit equality. Trimmed/mixed-retention cache lifetime,
-HTTP serving, sampling and eviction remain open.
+reordered GEMMs, not presumed scalar bit equality. The shared `ribn serve-gemma` HTTP entry point now passes its
+[Metal functional gate](../benchmarks/runtime-contract.md#gemma-http-cli-qualification-2026-10-21),
+including JSON/SSE output, disconnect peer progress and shutdown during loading.
+CUDA HTTP execution, trimmed/mixed-retention cache lifetime, sampling and eviction
+remain unqualified; no competitive serving acceptance follows.
 The host CPU path now composes a full Gemma decoder step — embeddings, PLE, all 42
 hybrid layers with owner/shared-tail KV, attention, the remaining layer math and the
 tied head — and reproduces all four greedy tokens of the archived 18-token chat row.

@@ -2,16 +2,44 @@ use std::collections::HashSet;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 
-pub(crate) const USAGE: &str = "ribn serve <model.gguf> [--bind <loopback-ip:port>] [--model-name <name>] [--device <ordinal>] [--context-length <n>] [--max-sequences <n>] [--max-connections <n>] [--max-requests <n>] [--max-body-bytes <n>] [--max-response-bytes <n>] [--max-output-tokens <n>] [--connection-deadline-secs <n>]";
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum ServeModel {
+    Qwen,
+    Gemma,
+}
+
+impl ServeModel {
+    pub(crate) fn usage(self) -> String {
+        let (command, artifact, load) = match self {
+            Self::Qwen => (
+                "serve",
+                "model.gguf",
+                " [--device <ordinal>] [--context-length <n>] [--max-sequences <n>]",
+            ),
+            Self::Gemma => ("serve-gemma", "package-dir", ""),
+        };
+        format!(
+            "ribn {command} <{artifact}>{load} [--bind <loopback-ip:port>] [--model-name <name>] [--max-connections <n>] [--max-requests <n>] [--max-body-bytes <n>] [--max-response-bytes <n>] [--max-output-tokens <n>] [--connection-deadline-secs <n>]"
+        )
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum ModelLoad {
+    Qwen {
+        device: u16,
+        context_length: u32,
+        max_sequences: Option<usize>,
+    },
+    Gemma,
+}
 
 #[derive(Debug)]
 pub(crate) struct ServeOptions {
     pub model: PathBuf,
+    pub load: ModelLoad,
     pub bind: SocketAddr,
     pub model_name: String,
-    pub device: u16,
-    pub context_length: u32,
-    pub max_sequences: Option<usize>,
     pub max_connections: Option<usize>,
     pub max_requests: Option<usize>,
     pub max_body_bytes: Option<usize>,
@@ -20,14 +48,20 @@ pub(crate) struct ServeOptions {
     pub deadline_secs: Option<u32>,
 }
 
-pub(crate) fn parse(arguments: &[String]) -> Result<ServeOptions, String> {
+pub(crate) fn parse(arguments: &[String], kind: ServeModel) -> Result<ServeOptions, String> {
+    let usage = kind.usage();
     let mut options = ServeOptions {
         model: PathBuf::new(),
+        load: match kind {
+            ServeModel::Qwen => ModelLoad::Qwen {
+                device: 0,
+                context_length: 4096,
+                max_sequences: None,
+            },
+            ServeModel::Gemma => ModelLoad::Gemma,
+        },
         bind: "127.0.0.1:8000".parse().expect("constant loopback address"),
         model_name: "ribn".to_owned(),
-        device: 0,
-        context_length: 4096,
-        max_sequences: None,
         max_connections: None,
         max_requests: None,
         max_body_bytes: None,
@@ -48,7 +82,7 @@ pub(crate) fn parse(arguments: &[String]) -> Result<ServeOptions, String> {
         }
         let value = args
             .next()
-            .ok_or_else(|| format!("missing value for {name}; {USAGE}"))?;
+            .ok_or_else(|| format!("missing value for {name}; {usage}"))?;
         match name.as_str() {
             "--bind" => {
                 options.bind = value
@@ -59,13 +93,25 @@ pub(crate) fn parse(arguments: &[String]) -> Result<ServeOptions, String> {
                 }
             }
             "--model-name" => options.model_name.clone_from(value),
-            "--device" => {
-                options.device = value
-                    .parse()
-                    .map_err(|_| "--device expects a non-negative ordinal".to_owned())?;
+            "--device" | "--context-length" | "--max-sequences" => {
+                let ModelLoad::Qwen {
+                    device,
+                    context_length,
+                    max_sequences,
+                } = &mut options.load
+                else {
+                    return Err(format!("{name} is not supported by serve-gemma; {usage}"));
+                };
+                match name.as_str() {
+                    "--device" => {
+                        *device = value
+                            .parse()
+                            .map_err(|_| "--device expects a non-negative ordinal".to_owned())?;
+                    }
+                    "--context-length" => *context_length = positive(value, name)?,
+                    _ => *max_sequences = Some(positive(value, name)? as usize),
+                }
             }
-            "--context-length" => options.context_length = positive(value, name)?,
-            "--max-sequences" => options.max_sequences = Some(positive(value, name)? as usize),
             "--max-connections" => options.max_connections = Some(positive(value, name)? as usize),
             "--max-requests" => options.max_requests = Some(positive(value, name)? as usize),
             "--max-body-bytes" => options.max_body_bytes = Some(positive(value, name)? as usize),
@@ -74,10 +120,10 @@ pub(crate) fn parse(arguments: &[String]) -> Result<ServeOptions, String> {
             }
             "--max-output-tokens" => options.max_output_tokens = Some(positive(value, name)?),
             "--connection-deadline-secs" => options.deadline_secs = Some(positive(value, name)?),
-            _ => return Err(format!("unknown serve option {name:?}; {USAGE}")),
+            _ => return Err(format!("unknown serving option {name:?}; {usage}")),
         }
     }
-    options.model = model.ok_or_else(|| format!("model is required; {USAGE}"))?;
+    options.model = model.ok_or_else(|| format!("model is required; {usage}"))?;
     if options.model_name.is_empty() || options.model_name.len() > 256 {
         return Err("model name must contain 1..=256 bytes".to_owned());
     }
@@ -102,37 +148,86 @@ mod tests {
     }
     #[test]
     fn parses_serving_and_load_settings_separately() {
-        let options = parse(&args(&[
-            "m.gguf",
-            "--bind",
-            "[::1]:9000",
-            "--max-sequences",
-            "2",
-            "--max-requests",
-            "8",
-            "--model-name",
-            "qwen",
-        ]))
+        for kind in [ServeModel::Qwen, ServeModel::Gemma] {
+            let options = parse(
+                &args(&[
+                    "model",
+                    "--bind",
+                    "[::1]:9000",
+                    "--max-requests",
+                    "8",
+                    "--model-name",
+                    "named",
+                ]),
+                kind,
+            )
+            .unwrap();
+            assert_eq!(options.model, PathBuf::from("model"));
+            assert_eq!(options.bind.port(), 9000);
+            assert_eq!(options.max_requests, Some(8));
+            assert_eq!(options.model_name, "named");
+            assert!(matches!(
+                (kind, options.load),
+                (
+                    ServeModel::Qwen,
+                    ModelLoad::Qwen {
+                        device: 0,
+                        context_length: 4096,
+                        max_sequences: None
+                    }
+                ) | (ServeModel::Gemma, ModelLoad::Gemma)
+            ));
+        }
+        let options = parse(
+            &args(&[
+                "m.gguf",
+                "--max-sequences",
+                "2",
+                "--device",
+                "1",
+                "--context-length",
+                "512",
+            ]),
+            ServeModel::Qwen,
+        )
         .unwrap();
-        assert_eq!(options.model, PathBuf::from("m.gguf"));
-        assert_eq!(options.bind.port(), 9000);
-        assert_eq!(options.max_sequences, Some(2));
-        assert_eq!(options.max_requests, Some(8));
-        assert_eq!(options.model_name, "qwen");
-        assert_eq!(options.context_length, 4096);
+        assert!(matches!(
+            options.load,
+            ModelLoad::Qwen {
+                device: 1,
+                context_length: 512,
+                max_sequences: Some(2)
+            }
+        ));
+    }
+    #[test]
+    fn gemma_rejects_unimplemented_load_controls_instead_of_ignoring_them() {
+        for (name, value) in [
+            ("--device", "0"),
+            ("--context-length", "4096"),
+            ("--max-sequences", "4"),
+        ] {
+            let error = parse(&args(&["package", name, value]), ServeModel::Gemma).unwrap_err();
+            assert!(
+                error.contains(&format!("{name} is not supported")),
+                "{error}"
+            );
+        }
     }
     #[test]
     fn rejects_unresolved_exposure_and_invalid_flags() {
-        for values in [
-            vec![],
-            vec!["m", "--bind", "0.0.0.0:8000"],
-            vec!["m", "--max-requests", "0"],
-            vec!["m", "--device", "-1"],
-            vec!["m", "--raw"],
-            vec!["m", "other"],
-            vec!["m", "--model-name", "a", "--model-name", "b"],
-        ] {
-            assert!(parse(&args(&values)).is_err(), "{values:?}");
+        for kind in [ServeModel::Qwen, ServeModel::Gemma] {
+            for values in [
+                vec![],
+                vec!["m", "--bind", "0.0.0.0:8000"],
+                vec!["m", "--max-requests", "0"],
+                vec!["m", "--device", "-1"],
+                vec!["m", "--raw"],
+                vec!["m", "other"],
+                vec!["m", "--model-name", "a", "--model-name", "b"],
+            ] {
+                assert!(parse(&args(&values), kind).is_err(), "{kind:?} {values:?}");
+            }
         }
     }
 }

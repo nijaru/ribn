@@ -1582,6 +1582,44 @@ quality-matched competitive or RSS/device-peak result. Those remain the
 [serving acceptance matrix](../docs/roadmap.md#first-competitive-acceptance-matrix).
 The desktop's four untracked SIMT artifacts retained their content fingerprints.
 
+## Gemma HTTP CLI qualification (2026-10-21)
+
+`ribn serve-gemma` reuses `run-gemma`'s package loader/backend selection and the existing
+bounded HTTP server. There is no new scheduler, stream producer or cleanup owner.
+Gemma rejects `--device`, `--context-length` and `--max-sequences` before binding;
+transport limits remain configurable. The existing Qwen `serve` configuration is retained.
+
+The actual release CLI passed on the M3 Max, macOS 26.6.2, Rust 1.98.0 and the pinned
+[Gemma 4 E4B BF16 package](gemma4-reference/model.toml), with 665 active tensors and
+14,926,026,836 logical encoded bytes:
+
+```sh
+CARGO_BUILD_JOBS=2 cargo build -p ribn-cli --features metal --release --locked
+ribn serve-gemma /absolute/path/gemma-package --bind 127.0.0.1:0 \
+  --model-name gemma --max-requests 4 --max-output-tokens 64
+```
+
+The functional capture retained each response, process log and actual exit code:
+
+- Raw completion and chat each returned JSON and SSE with matching visible text,
+  four committed output tokens, one finish and one `[DONE]` per stream. The 18-token
+  chat's text matched the independent CPU corpus's first four predicted tokens
+  `[236776, 126641, 568, 15721]`, decoded with the checkpoint tokenizer. Raw/SSE parity
+  alone is not an independent numerical comparison.
+- A real image-token placeholder returned 400 without faulting the owner. Abandoning a
+  64-token raw stream after a generated delta preserved an already-submitted healthy
+  four-token chat peer, incremented the abandoned counter and left readiness at 200.
+- A missing package retained faulted health until SIGTERM, then exited 2 as expected.
+  A separate real-package process observed in `loading` settled its pending load and
+  exited 0 after SIGTERM. The normal serving process also exited 0 on SIGTERM.
+
+Startup reported four HTTP slots and 16 application permits; those are different bounds,
+not physical batch width or a memory guarantee. Default/Metal/CUDA CLI host tests cover
+model-specific option rejection, including the real binary before bind/device access.
+The full host gates and feature checks passed. No CUDA device was contacted or CUDA HTTP
+request executed. This is a bounded Metal transport/lifecycle gate, not new full-logit,
+long-context, failed-device-drain, physical-memory, latency or SLO-goodput qualification.
+
 ## Heterogeneous-capacity decode (2026-10-16)
 
 **Promoted for the existing whole-decode lane.** Compatible KV model geometry/dtype no

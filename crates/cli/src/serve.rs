@@ -1,26 +1,30 @@
 use std::time::Duration;
 
 use ribn_server::{Server, ServerConfig};
-use ribn_text::{LoadOptions, TextError, TextOwner};
+#[cfg(feature = "cuda")]
+use ribn_text::LoadOptions;
+use ribn_text::{TextError, TextOwner};
 
-use crate::serve_cli::{self, USAGE};
+use crate::serve_cli::{self, ModelLoad, ServeModel};
 
-pub(crate) fn run(arguments: &[String]) -> Result<(), String> {
+pub(crate) fn run(arguments: &[String], kind: ServeModel) -> Result<(), String> {
     if matches!(arguments, [help] if matches!(help.as_str(), "-h" | "--help")) {
+        let model = match kind {
+            ServeModel::Qwen => "Qwen GGUF/CUDA",
+            ServeModel::Gemma => {
+                "Gemma 4 package, using the same Metal/CUDA selection as run-gemma"
+            }
+        };
         println!(
-            "{USAGE}\n\nExperimental Qwen GGUF/CUDA HTTP server; loopback only, greedy decoding.\nSee docs/serving.md for the supported completion/chat subset and bounds."
+            "{}\n\nExperimental {model} HTTP server; loopback only, greedy decoding.\nSee docs/serving.md for the supported completion/chat subset and bounds.",
+            kind.usage()
         );
         return Ok(());
     }
-    let options = serve_cli::parse(arguments)?;
-    let load = LoadOptions {
-        device: options.device,
-        context_tokens: options.context_length,
-        max_sequences: options
-            .max_sequences
-            .unwrap_or(LoadOptions::default().max_sequences),
-        ..LoadOptions::default()
-    };
+    let options = serve_cli::parse(arguments, kind)?;
+    if kind == ServeModel::Qwen && !cfg!(feature = "cuda") {
+        return Err("Qwen serving requires building ribn with --features cuda".to_owned());
+    }
     let defaults = ServerConfig::default();
     let config = ServerConfig {
         bind: options.bind,
@@ -46,24 +50,17 @@ pub(crate) fn run(arguments: &[String]) -> Result<(), String> {
         .map_err(|e| e.to_string())?;
     runtime.block_on(async move {
         // Register signal handlers before loading so shutdown during a blocking
-        // CUDA load settles that load into an owner and then cleans it up.
+        // device load settles that load into an owner and then cleans it up.
         let shutdown = shutdown_signal()?;
         let http_slots = config.max_requests;
         let mut server = Server::bind(config).await.map_err(|e| e.to_string())?;
         eprintln!(
-            "listening on http://{}; HTTP request slots={http_slots}; loading model (experimental Qwen/CUDA)",
+            "listening on http://{}; HTTP request slots={http_slots}; loading model (experimental Ribn runtime)",
             server.local_addr()
         );
         let loading = async move {
             tokio::task::spawn_blocking(move || {
-                let (owner, memory) = TextOwner::load(options.model, load)?;
-                eprintln!(
-                    "ready: active sequence limit={}; application request capacity={}; sequence state reservation={} bytes",
-                    load.max_sequences,
-                    owner.model().request_capacity(),
-                    memory.reserved_sequence_bytes
-                );
-                Ok(owner)
+                load_model(options.model, options.load)
             })
             .await
             .map_err(|_| TextError::InvalidInput("model loading task panicked"))?
@@ -79,6 +76,45 @@ pub(crate) fn run(arguments: &[String]) -> Result<(), String> {
         }
         Ok(())
     })
+}
+
+fn load_model(path: std::path::PathBuf, load: ModelLoad) -> Result<TextOwner, TextError> {
+    match load {
+        #[cfg(feature = "cuda")]
+        ModelLoad::Qwen {
+            device,
+            context_length,
+            max_sequences,
+        } => {
+            let load = LoadOptions {
+                device,
+                context_tokens: context_length,
+                max_sequences: max_sequences.unwrap_or(LoadOptions::default().max_sequences),
+                ..LoadOptions::default()
+            };
+            let (owner, memory) = TextOwner::load(path, load)?;
+            eprintln!(
+                "ready: active sequence limit={}; application request capacity={}; sequence state reservation={} bytes",
+                load.max_sequences,
+                owner.model().request_capacity(),
+                memory.reserved_sequence_bytes
+            );
+            Ok(owner)
+        }
+        #[cfg(not(feature = "cuda"))]
+        ModelLoad::Qwen { .. } => Err(TextError::InvalidInput(
+            "Qwen serving requires --features cuda",
+        )),
+        ModelLoad::Gemma => {
+            let (owner, report) = crate::gemma::load_model(path)?;
+            eprintln!(
+                "ready: application request capacity={}; encoded model bytes={} (not resident or peak bytes)",
+                owner.model().request_capacity(),
+                report.model_bytes
+            );
+            Ok(owner)
+        }
+    }
 }
 
 #[cfg(unix)]
