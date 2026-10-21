@@ -366,9 +366,21 @@ assertion; normalized raw SSE exports are not byte-exact wire captures. Readines
 probes are explicitly disabled to avoid unrecorded inference; start with a ready
 endpoint. Zero warmup requests does not establish cold execution.
 
-Optional `[slo]` values must be positive; omit unset objectives. AIPerf's
-`inter_token_latency` is per-request average TPOT, not an individual-gap tail.
-Inspect `inter_chunk_latency` separately; chunks may contain multiple tokens.
+Optional `[slo]` values must be positive; omit unset objectives. Their boundaries are:
+
+- `ttft_ms`: request start to first nonempty content chunk, not first headers or an empty event.
+- `last_content_ms`: request start to last nonempty content chunk (AIPerf's `request_latency`).
+  It excludes later empty finish, usage and `[DONE]` frames, so it is **not stream-completion
+  E2E**. The misleading `e2e_ms` manifest key is no longer accepted.
+- `itl_ms`: the first-to-last content window divided by server-reported output tokens
+  minus one. Without per-chunk token counts, that assumes one token in the first chunk;
+  bundled/withheld output and suppressed stop tokens can change the interpretation.
+  It is not an individual-token or chunk-gap tail. Inspect `inter_chunk_latency` separately.
+
+These clocks start at actual client request initiation, not planned arrival. Zero warmup
+omits AIPerf's positive-only warmup option; it does not establish cold execution.
+The [client timing/Metal gate](runtime-contract.md#gemma-endpoint-client-qualification-2026-10-21)
+checks these bounded semantics, not aggregate metric accuracy or load-generator capacity.
 See the pinned [metrics definitions](https://docs.nvidia.com/aiperf/v0.13.0/reference/ai-perf-metrics-reference).
 
 **Raw exports contain prompts and responses.** Use public/synthetic data, keep

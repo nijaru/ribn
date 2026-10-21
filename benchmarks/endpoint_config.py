@@ -8,7 +8,8 @@ AIPERF_VERSION = "0.13.0"
 SLOS = {
     "ttft_ms": "time_to_first_token",
     "itl_ms": "inter_token_latency",
-    "e2e_ms": "request_latency",
+    # AIPerf ends this clock at content, not terminal stream completion.
+    "last_content_ms": "request_latency",
 }
 
 
@@ -260,8 +261,6 @@ def command(manifest, executable, output):
         str(workload["request_count"]),
         "--num-prompts",
         str(workload["request_count"]),
-        "--warmup-request-count",
-        str(workload["warmup_requests"]),
         "--random-seed",
         str(manifest["run"]["seed"]),
         "--use-server-token-count",
@@ -285,6 +284,8 @@ def command(manifest, executable, output):
         "--output-artifact-dir",
         str(output / "client"),
     ]
+    if workload["warmup_requests"]:
+        args += ["--warmup-request-count", str(workload["warmup_requests"])]
     if workload["request_rate"]:
         args += [
             "--request-rate",

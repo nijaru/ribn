@@ -9,6 +9,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 import unittest
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -46,6 +47,20 @@ class EndpointFixture(BaseHTTPRequestHandler):
             },
             {"object": "text_completion", "choices": [], "usage": usage},
         ]
+        if self.server.mode == "timing":
+            usage.update(completion_tokens=5, total_tokens=prompt_tokens + 5)
+            messages = [
+                {
+                    "object": "text_completion",
+                    "choices": [{"index": 0, "text": text, "finish_reason": finish}],
+                }
+                for text, finish in (
+                    ("", None),
+                    ("hello ", None),
+                    ("world", None),
+                    ("", "stop"),
+                )
+            ] + [{"object": "text_completion", "choices": [], "usage": usage}]
         if self.server.mode == "late-error":
             messages.insert(1, {"error": {"message": "fixture device fault"}})
         if self.server.mode == "no-usage":
@@ -58,11 +73,23 @@ class EndpointFixture(BaseHTTPRequestHandler):
         self.send_header("Content-Type", "text/event-stream")
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
-        self.wfile.write(body)
+        if self.server.mode == "timing":
+            events = []
+            self.server.wire_events[self.headers["X-Request-ID"]] = events
+            for frame in body.splitlines(keepends=True):
+                if frame.startswith(b"data:"):
+                    time.sleep(0.1)
+                    events.append(time.perf_counter_ns())
+                self.wfile.write(frame)
+                self.wfile.flush()
+        else:
+            self.wfile.write(body)
 
 
 class RealClientTests(unittest.TestCase):
-    def exercise(self, mode, rate=0, arrival="constant", input_stddev=0, requests=2):
+    def exercise(
+        self, mode, rate=0, arrival="constant", input_stddev=0, requests=2, warmup=1
+    ):
         with tempfile.TemporaryDirectory(prefix="ribn endpoint ") as tmp:
             directory = Path(tmp)
             tokenizer_dir = directory / "tokenizer"
@@ -86,6 +113,7 @@ class RealClientTests(unittest.TestCase):
                 server.requests = 0
                 server.tokenizer = tokenizer
                 server.prompt_lengths = []
+                server.wire_events = {}
                 thread = threading.Thread(target=server.serve_forever)
                 thread.start()
                 try:
@@ -98,7 +126,7 @@ class RealClientTests(unittest.TestCase):
                             "http://127.0.0.1:18000",
                             f"http://127.0.0.1:{server.server_port}",
                         )
-                        .replace("warmup_requests = 0", "warmup_requests = 1")
+                        .replace("warmup_requests = 0", f"warmup_requests = {warmup}")
                         .replace("request_count = 2", f"request_count = {requests}")
                         .replace(
                             "input_tokens_stddev = 0",
@@ -109,7 +137,7 @@ class RealClientTests(unittest.TestCase):
                             'arrival_pattern = "poisson"',
                             f'arrival_pattern = "{arrival}"',
                         )
-                        + "\n[slo]\nttft_ms = 1000\nitl_ms = 1000\ne2e_ms = 10000\n"
+                        + "\n[slo]\nttft_ms = 1000\nitl_ms = 1000\nlast_content_ms = 10000\n"
                     )
                     output = directory / "run"
                     result = subprocess.run(
@@ -134,13 +162,30 @@ class RealClientTests(unittest.TestCase):
                     )
                     self.assertEqual(
                         result.returncode,
-                        0 if mode in ("valid", "overload") else 1,
+                        0 if mode in ("valid", "overload", "timing") else 1,
                         result.stdout + result.stderr + log[-3000:],
                     )
                     report = json.loads((output / "validation.json").read_text())
-                    # Readiness probes are disabled: one warmup plus profiling.
-                    self.assertEqual(server.requests, requests + 1)
-                    return report, server.prompt_lengths[1:]
+                    # Readiness probes are disabled: only declared offered work.
+                    self.assertEqual(server.requests, requests + warmup)
+                    client = output / "client"
+                    return {
+                        "audit": report,
+                        "prompt_lengths": server.prompt_lengths[warmup:],
+                        "records": [
+                            json.loads(line)
+                            for line in (client / "profile_export.jsonl")
+                            .read_text()
+                            .splitlines()
+                        ],
+                        "raw": [
+                            json.loads(line)
+                            for line in (client / "profile_export_raw.jsonl")
+                            .read_text()
+                            .splitlines()
+                        ],
+                        "wire_events": server.wire_events,
+                    }
                 finally:
                     server.shutdown()
                     thread.join()
@@ -148,7 +193,7 @@ class RealClientTests(unittest.TestCase):
     def test_real_exports_accept_early_eos_and_reject_false_client_successes(self):
         for mode in ("valid", "truncated", "late-error", "no-usage"):
             with self.subTest(mode=mode):
-                report, _ = self.exercise(mode)
+                report = self.exercise(mode)["audit"]
                 if mode == "valid":
                     self.assertTrue(report["protocol_valid"])
                     self.assertEqual(report["completion_tokens"], 4)
@@ -158,7 +203,8 @@ class RealClientTests(unittest.TestCase):
                     self.assertEqual(len(report["warmup_errors"]), 1)
 
     def test_variable_inputs_reach_the_endpoint_and_preserve_actual_usage(self):
-        report, prompt_lengths = self.exercise("valid", input_stddev=8, requests=16)
+        captured = self.exercise("valid", input_stddev=8, requests=16)
+        report, prompt_lengths = captured["audit"], captured["prompt_lengths"]
         self.assertTrue(report["protocol_valid"])
         self.assertEqual(report["offered_requests"], 16)
         self.assertEqual(report["successful_requests"], 16)
@@ -166,10 +212,40 @@ class RealClientTests(unittest.TestCase):
         self.assertEqual(report["prompt_tokens"], sum(prompt_lengths))
         self.assertEqual(report["completion_tokens"], 32)
 
+    def test_zero_warmup_and_content_clocks_with_delayed_terminal_frames(self):
+        captured = self.exercise("timing", warmup=0)
+        self.assertTrue(captured["audit"]["protocol_valid"])
+        self.assertEqual(captured["audit"]["completion_tokens"], 10)
+        ordinary = {r["metadata"]["x_request_id"]: r for r in captured["records"]}
+        for raw in captured["raw"]:
+            key = raw["metadata"]["x_request_id"]
+            metrics = ordinary[key]["metrics"]
+            responses = raw["responses"]
+            self.assertEqual(len(responses), 6)
+            for response, sent in zip(
+                responses, captured["wire_events"][key], strict=True
+            ):
+                # Both processes use the same OS monotonic clock, independently.
+                self.assertGreaterEqual(response["perf_ns"], sent)
+            first, last = responses[1]["perf_ns"], responses[2]["perf_ns"]
+            start = raw["start_perf_ns"]
+            for name, expected in {
+                "time_to_first_token": (first - start) / 1e6,
+                "request_latency": (last - start) / 1e6,
+                "inter_token_latency": (last - first) / 4e6,
+            }.items():
+                self.assertEqual(metrics[name]["unit"], "ms")
+                self.assertAlmostEqual(metrics[name]["value"], expected, places=6)
+            # Server usage wins over two visible chunks or retokenized text.
+            self.assertEqual(metrics["output_sequence_length"]["value"], 5)
+            self.assertEqual(len(metrics["inter_chunk_latency"]["value"]), 1)
+            self.assertLess(last, responses[3]["perf_ns"])
+            self.assertLess(responses[3]["perf_ns"], responses[-1]["perf_ns"])
+
     def test_rate_control_preserves_partial_overload(self):
         for arrival in ("constant", "poisson"):
             with self.subTest(arrival=arrival):
-                report, _ = self.exercise("overload", rate=2, arrival=arrival)
+                report = self.exercise("overload", rate=2, arrival=arrival)["audit"]
                 self.assertTrue(report["protocol_valid"])
                 self.assertEqual(
                     (

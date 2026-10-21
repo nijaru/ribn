@@ -193,6 +193,10 @@ def export(directory, ordinary, raw, summary):
 
 
 class EndpointTests(unittest.TestCase):
+    def test_rejects_end_to_end_label_for_last_content_slo(self):
+        with self.assertRaisesRegex(ValueError, "unknown SLO"):
+            parse_manifest((MANIFEST + "\n[slo]\ne2e_ms = 1000\n").encode())
+
     def test_early_eos_uses_actual_usage_and_joins_unordered_exports(self):
         with tempfile.TemporaryDirectory() as tmp:
             directory = Path(tmp)

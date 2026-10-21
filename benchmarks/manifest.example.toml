@@ -59,9 +59,11 @@ temperature = 0.0
 ignore_eos = false
 
 # Optional SLOs; omit unset objectives rather than using zero. These are examples,
-# not approved Ribn acceptance thresholds. AIPerf ITL is per-request average TPOT,
-# NOT a bound on every individual streaming gap.
+# not approved Ribn acceptance thresholds. AIPerf ITL uses the content-delivery
+# window and server token count (assuming one token in the first chunk here),
+# NOT every individual token/chunk gap. Last-content latency excludes terminal
+# finish/usage/[DONE] delivery; it is NOT end-to-end stream completion.
 # [slo]
 # ttft_ms = 5000.0
 # itl_ms = 200.0
-# e2e_ms = 10000.0
+# last_content_ms = 10000.0

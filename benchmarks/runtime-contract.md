@@ -1620,6 +1620,41 @@ The full host gates and feature checks passed. No CUDA device was contacted or C
 request executed. This is a bounded Metal transport/lifecycle gate, not new full-logit,
 long-context, failed-device-drain, physical-memory, latency or SLO-goodput qualification.
 
+## Gemma endpoint client qualification (2026-10-21)
+
+The existing [endpoint runner](README.md#audited-endpoint-runner) now passes actual
+AIPerf 0.13.0 / Python 3.13.11 captures against the release Metal Gemma CLI at `ccf624f`
+on the M3 Max and pinned BF16 package above. One owned server process served two
+sequential client runs and exited 0 on SIGTERM. Telemetry was disabled; unified-memory
+capacity and physical peaks were not measured.
+
+Both runs used seed 42, nominal input mean/stddev 18/6, eight profiling requests, an
+eight-token output cap and greedy decoding with model stops enabled. The c1 run had
+zero warmups; c2 had two excluded warmups. Each audit accepted all eight profiling
+requests, with actual input lengths 6, 11, 14, 18, 19, 23, 25 and 29 (145 tokens total).
+Each counted 62 output tokens, not the 64-token cap total: seven length finishes and
+one six-token stop. Prompt hashes, per-prompt usage and finish reasons matched across
+runs. That is accounting evidence, not independent output-quality acceptance.
+
+A separate CPU-only delayed-stream producer and the real pinned client check the clock
+boundaries. It emits an empty event, two nonempty content chunks, a separate empty
+finish, usage and `[DONE]`, retaining independent producer monotonic timestamps and
+client exports. TTFT starts at actual client initiation and ends at first content;
+`request_latency` ends at last content, excluding the later terminal frames. The
+reported ITL divides the content window by reported output tokens minus one: five
+reported tokens and two visible chunks in the fixture do not imply five observed token
+timestamps. The integration regression checks these boundaries without a device.
+
+Two runner controls were corrected from this evidence: zero warmup now omits the
+positive-only AIPerf CLI option instead of passing an invalid zero, and the misleading
+`e2e_ms` manifest key is replaced by `last_content_ms`. The older endpoint tables below
+called this same clock “content E2E”; their labels are clarified without changing the
+stored measurements. This does not establish stream-completion E2E. Initial failures and
+successful captures are retained. All protocol/accounting audits still report
+`performance_metrics_audited = false`: aggregate metric accuracy, offered-arrival
+lateness, load-generator capacity, competitive latency/SLO goodput, CUDA execution,
+physical-memory and numerical quality remain separate gates.
+
 ## Heterogeneous-capacity decode (2026-10-16)
 
 **Promoted for the existing whole-decode lane.** Compatible KV model geometry/dtype no
@@ -1636,7 +1671,7 @@ retain their original schema keys.
 
 The predeclared budget was one implementation/qualification cycle. Promotion required
 at least 10% median throughput gain on both mixed c4/c8 cohorts, no more than 5%
-short-c1 p95 E2E regression, unchanged cohort outputs/core usage, and the numerical and
+short-c1 p95 last-content latency regression, unchanged cohort outputs/core usage, and the numerical and
 lifecycle gates below. These are experiment criteria, not product SLOs.
 [Structured results](qwen-trace/2026-10-16-heterogeneous-decode.json) retain the source
 patch/binary identities, all run results, numerical scope and native dispatch counts.
@@ -1647,7 +1682,7 @@ RTX 4090 with three alternating-order A/B, B/A, A/B repeats of the
 Medians of three run-level measurements; 16 profiling requests plus two warmups/run,
 seed 42, output cap 32, actual usage and the same client/tokenizer/settings:
 
-| Cohort | Control output tok/s | Candidate output tok/s | Gain | Control → candidate p95 content E2E ms |
+| Cohort | Control output tok/s | Candidate output tok/s | Gain | Control → candidate p95 last-content latency ms |
 | --- | ---: | ---: | ---: | ---: |
 | Short c1 | 28.23 | 28.26 | Within run variation | 1134.71 → 1132.95 |
 | Mixed c4 | 21.99 | 31.72 | 44.2% | 6423.94 → 4648.60 |
@@ -1656,7 +1691,7 @@ seed 42, output cap 32, actual usage and the same client/tokenizer/settings:
 All 18 protocol/usage audits and raw-clock checks passed. All **144 paired profiling
 visible outputs and core usage counts matched**. This is not an invertible token-ID
 comparison or distributional-quality proof. At the existing illustrative 5 s TTFT /
-200 ms average TPOT / 10 s content E2E objectives, c8 improved from 1/16 to 15/16
+200 ms average TPOT / 10 s last-content latency objectives, c8 improved from 1/16 to 15/16
 passing requests in every repeat. Its TTFT p95 barely changed (5006.06 → 4958.60 ms),
 while average-TPOT p95 fell from 297.11 to 165.86 ms. Prefill/projection throughput and
 remaining mixed-offer fallback therefore remain investigation targets, not a reason to
@@ -1758,14 +1793,14 @@ source and binary identities, all 18 run summaries and the promotion criteria.
 
 Medians of three run-level measurements:
 
-| Cohort | Control output tok/s | Candidate output tok/s | Gain | p95 TTFT ms | Control → candidate p95 content E2E ms |
+| Cohort | Control output tok/s | Candidate output tok/s | Gain | p95 TTFT ms | Control → candidate p95 last-content latency ms |
 | --- | ---: | ---: | ---: | ---: | ---: |
 | Short c1 | 28.22 | 32.72 | 16.0% | 272.68 → 116.56 (−57.3%) | 1135.52 → 979.07 |
 | Mixed c4 | 31.71 | 32.39 | 2.1% | 2309.11 → 2257.75 | 4649.63 → 4645.47 |
 | Mixed c8 | 34.91 | 35.74 | 2.4% | 4960.08 → 4789.07 | 9090.90 → 8876.23 |
 
 All predeclared criteria passed: short-c1 median p95 TTFT fell 57.3% (≥20% required), no
-cohort regressed throughput or p95 content E2E by more than 5%, and all **144 paired
+cohort regressed throughput or p95 last-content latency by more than 5%, and all **144 paired
 profiling visible outputs and core usage counts matched**. Every cohort kept its SLO pass
 count (16/16/16, 16/16/16, 15/15/15). The independent Qwen reference/cancellation/admission
 suite, the bounded CUDA HTTP parity/disconnect gate (which loads the promoted defaults
@@ -1813,7 +1848,7 @@ reader defaults both off, matching Ribn raw input. Vocabulary-derived versus dec
 stop-set equivalence remains unqualified; no early EOS occurred in this cohort.
 
 An independent check recomputed all 324 requests' first-visible-content TTFT,
-last-visible-content E2E and average TPOT from raw monotonic timestamps and usage,
+last-content latency and average TPOT from raw monotonic timestamps and usage,
 matching native metrics within 1e-6 ms absolute / 1e-9 relative tolerance. Terminal
 `[DONE]` latency was recorded separately. Active-window throughput uses actual reported
 output tokens over first profiling request start to last request end, excluding warmup
@@ -1833,7 +1868,7 @@ Medians of the three **run-level** values (not pooled population-tail estimates)
 | c8, same mixed cohort → 32 | llama.cpp | 186.57 | 373.05 | 40.47 | 16/16 |
 
 Actual mixed inputs ranged 22–119 tokens. Objectives were chosen before execution:
-TTFT <= 5000 ms, **average TPOT** <= 200 ms and content E2E <= 10000 ms. These are
+TTFT <= 5000 ms, **average TPOT** <= 200 ms and last-content latency <= 10000 ms. These are
 illustrative diagnostic thresholds, not approved product SLOs. Ribn's c8 active-window
 goodput was about 0.043 requests/s versus llama's 5.83; the small finite cohort is not a
 steady-state saturation, fairness, physical-peak or robust-tail qualification.
