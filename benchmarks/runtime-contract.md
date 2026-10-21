@@ -1251,6 +1251,17 @@ complete rows, independent-reference/scalar comparisons and immutable binaries r
 qualification artifacts. The next competitive decision needs a matched incumbent and
 serving/capacity evidence, not an extrapolation from this prefill speedup.
 
+### Gemma CUDA native/stock/prepared diagnostic (2026-10-21 UTC)
+
+The [same-artifact comparison](gemma4-cuda-baseline.md) reproduces the unchanged native
+control against released Transformers eager execution, then probes stock compiled
+advancing decode with explicit static cache ownership. It records full rows, preparation
+costs, compilation specializations, allocator/RSS statistics and direct-call latency.
+Native prefill remains substantially behind stock eager; compiled execution is neither
+bit-identical nor a tested Rust-loadable backend. This is not another promotion gate,
+engine-level incumbent baseline, or serving/SLO/quality-equivalence claim. Existing native
+qualification remains unchanged; no production engine code changed for this diagnostic.
+
 ## Synthetic CPU benchmark
 
 ```sh

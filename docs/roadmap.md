@@ -7,7 +7,7 @@ open implementation choices and acceptance gates. All v0 interfaces may change.
 
 ## Current execution order
 
-**Next: matched CUDA Gemma comparison and measured Qwen execution improvements.**
+**Next: engine-level CUDA Gemma baseline and measured Qwen execution improvements.**
 The real second decoder runs on CPU, Metal and CUDA through the synchronous greedy
 executor, token runtime, text facade and CLI. The CPU full-history decoder remains the
 independent arithmetic oracle. CUDA now has a [qualified eight-row prefill lane](../benchmarks/gemma4-reference/README.md#bounded-eight-row-cuda-prefill-2026-10-21-utc)
@@ -31,21 +31,23 @@ work. The [host multi-row oracle](../benchmarks/gemma4-reference/README.md#host-
 and [CUDA row-count preflight](../benchmarks/gemma4-reference/README.md#cuda-projection-row-count-preflight-2026-10-21-utc)
 retain the evidence that CPU bitwise batching cannot be assumed for cuBLAS.
 
-**Bounded preparation-boundary comparison:** use the existing Gemma decoder and pinned
-BF16 checkpoint to compare native CUDA with canonical external execution, including a
-compiled/prepared forward where supported. First inspect current incumbent model support
-and available environments; do not assume Flare itself runs on the 4090. Match active
-parameters, common histories, precision and warmed prefill/decode calls. Record full-row
-numerical differences, preparation/compilation time, loading/capture peaks and resident
-memory as well as latency. Keep cold costs separate and report unsupported capture paths
-rather than invent an exporter or compiler to complete the experiment. Start with direct
-calls, not a new serving framework; they do not establish competitive SLO goodput.
-The decision is whether preparation reuse and fewer host/device boundaries earn a bounded
-backend integration before more handwritten model work. Retain the native controls and
-independent CPU oracle; no executable-package format, universal graph ABI or numerical
-budget is selected. The [Flare findings](inference-engine-design.md#nvidia-flare-reviewed-2026-10-21)
-and DeepInfer/vLLM/SGLang mechanisms inform this comparison without changing hardware
-breadth or the existing ownership/qualification gates.
+**Preparation-boundary comparison — direct-call evidence:** the [matched CUDA diagnostic](../benchmarks/gemma4-cuda-baseline.md)
+uses the same active BF16 parameters and common histories. Native 18/64-token prefill
+remains 2.81x/5.81x slower than stock Transformers eager; pooled native/eager decode is
+19.33/21.18 ms. Stock whole-forward compilation works, but `dynamic=False` produced eight
+specializations for nine advancing decodes; `dynamic=True` reduced that to two, with
+63/53 s first-forward costs and changed logits. Fixed-position warm calls near 14 ms
+are not a general serving result. Full rows, cold costs, allocator/RSS observations and
+scope limits are retained; no numerical budget or automatic promotion follows.
+
+This supports further investigation of model/compiler reuse, not a selected Rust importer,
+package format or universal graph ABI. Model-support velocity, Rust-owned preparation,
+recovery and backend portability remain unqualified. Preserve the independent CPU oracle.
+Next establish the engine-level incumbent baseline; released SGLang's one-batch runner is
+a concrete entry point, with histories and host-output clocks matched before comparison.
+vLLM/SGLang source support is not device qualification, and unmodified Flare excludes
+SM89. Use their mechanisms and the [Flare findings](inference-engine-design.md#nvidia-flare-reviewed-2026-10-21)
+without narrowing hardware breadth or replacing the existing ownership gates.
 
 The same-artifact llama.cpp comparison (2026-10-18) measured 32.7 versus 39.9 tok/s at
 c1—about 18% lower Ribn throughput, with better TTFT—and 2.2x/3.3x throughput gaps at c4/c8. This is not

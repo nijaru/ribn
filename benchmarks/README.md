@@ -67,7 +67,7 @@ device and job-latency distributions under declared objectives. Keep tool delays
 prefix identity, compaction and branch/join structure in client-side replay; the engine
 is not an agent orchestrator. Structural synthetic replay does not establish speculative
 acceptance, MoE routing or output quality; use content-real cases for those comparisons.
-The [target design's research basis](../docs/inference-engine-design.md#research-basis-reviewed-2026-10-13)
+The [target design's research basis](../docs/inference-engine-design.md#research-basis)
 records the primary sources and their scope.
 
 ## Qualification evidence
@@ -79,7 +79,9 @@ records the primary sources and their scope.
 - [Runtime alignment](runtime-alignment/README.md) — host and CUDA frontend overhead.
 - [Loader memory](loader-memory/README.md) — sharded BERT host-loading peak and bit preservation.
 - [Gemma 4 reference](gemma4-reference/README.md) — pinned E4B CPU numerical inputs/tensors
-  for the second decoder; not executable Ribn model support or GPU qualification.
+  and staged native decoder qualification.
+- [Gemma 4 CUDA baseline](gemma4-cuda-baseline.md) — same-artifact native/stock/prepared
+  direct-call diagnostics; not a competitive serving or task-quality result.
 
 ## Unqualified historical tools
 

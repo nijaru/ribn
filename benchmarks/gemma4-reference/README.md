@@ -3,7 +3,9 @@
 This prepares the numerical reference for Ribn's second decoder integration:
 **Gemma 4 E4B instruction-tuned, BF16 SafeTensors, text-first**. It does not implement
 Gemma execution in Ribn or qualify image/audio input or serving quality. The stock
-CUDA fit measurement below is separate from Ribn execution.
+CUDA fit measurement below is separate from Ribn execution. The later
+[native/stock/prepared CUDA comparison](../gemma4-cuda-baseline.md) records matched
+full-row and direct-call evidence, not serving or quality-equivalent acceptance.
 The checkpoint, source checksums and reference versions are owned by
 [`model.toml`](model.toml).
 
