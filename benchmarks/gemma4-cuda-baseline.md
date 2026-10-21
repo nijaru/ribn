@@ -285,7 +285,8 @@ index or changing SGLang's dependency versions.
 With that wheel, binary-only resolution next fails on `outlines-core==0.1.26`, required
 by `outlines==0.1.11`: no compatible CPython 3.13 wheel is available. Allowing **only
 that CPU Rust extension** to use a source distribution closes the full dependency graph.
-This was metadata resolution on the Mac, not a Linux build or a CUDA import test.
+Full-graph resolution was metadata-only. The CPU extension's separate Linux build/import
+check is scoped below; it does not establish full SGLang installation or CUDA compatibility.
 Generate and retain a hash-locked environment outside the repository:
 
 ```sh
@@ -308,11 +309,33 @@ uv pip check --python <new-engine-environment>/bin/python
 
 Do not run this GPU environment installation on macOS, modify the old reference/canonical
 environments, bypass dependencies with `--no-deps`, or silently change pins/Python versions.
-The CPU extension build, actual installation, CUDA imports, driver/library compatibility,
-model loading and SM89 execution remain pending. Preserve the resolved lock, build/import
-logs and installed-package identities. After installation, qualify actual 18/511/513
+Full SGLang installation, CUDA imports, driver/library compatibility, model loading and
+SM89 execution remain pending. Preserve the resolved lock, build/import logs and
+installed-package identities. After installation, qualify actual 18/511/513
 histories and graph/eager outputs before interpreting timings; HTTP scheduling, mixed
 arrivals, capacity and SLO goodput remain separate gates.
+
+### CPU-only source-build qualification
+
+The unpatched [`outlines-core==0.1.26` sdist](https://pypi.org/pypi/outlines-core/0.1.26/json)
+(SHA256 `481c4301341e77cc8f1832d616784adb4d461b4fec65878e7c0d2cba7163a189`)
+built and imported on Linux x86_64/glibc 2.36 with CPython 3.13.11, Rust 1.98.0 and
+uv 0.13.4. This ran in an emulated Linux container on the Mac, capped at two CPUs and
+4 GiB, not on the desktop. Only Outlines Core and its six runtime dependencies were
+installed, using the same versions and hashes as the full SGLang lock. No CUDA stack,
+model weights or modified package pins were used.
+
+The source build, `uv pip check`, native extension import and Rust `FSMInfo` construction
+passed; a small regex FSM accepted/rejected the expected strings. This closes that CPU
+build/import prerequisite, not complete grammar behavior, SGLang integration, a glibc
+2.34 portability claim or GPU qualification. The generated wheel is tagged
+`cp313-cp313-linux_x86_64`, not a qualified portable manylinux release.
+
+Retain the effective `Cargo.lock` and Python build-package identities with each build:
+the sdist ships no Cargo lock, and the Python requirement lock alone does not freeze
+Rust compilation. The successful resolution used PyO3 0.22.6 and bincode 2.0.1; build
+packages included setuptools 84.2.1, setuptools-scm 10.3.4 and setuptools-rust 1.13.0.
+Recheck the complete environment on the actual CUDA host before model bring-up.
 
 ### Compare completed FP32 captures
 
@@ -353,5 +376,5 @@ with `f32::from_bits(u32::from(bits) << 16)`; stock converts the synchronized CP
 tensor to FP32. SGLang instead transfers its genuine FP32 output. This matches the host
 API contract, not internal transfer widths or kernels. Native host compilation and an
 exhaustive 65,536-encoding conversion test, real CPU-corpus reads, and analyzer data/CLI
-tests pass. Fresh native/stock/SGLang CUDA captures and Linux installation remain pending;
-there are no new timing or quality results.
+tests pass. Fresh native/stock/SGLang CUDA captures and full SGLang installation remain
+pending; there are no new timing or quality results.
