@@ -1,11 +1,12 @@
 //! Host-orchestrated Gemma 4 BF16 decoder over the qualified native components.
 //!
-//! One token is processed at a time. Embedding lookup, PLE lookup and logit
+//! Prepared eight-row groups and scalar tails share one layer implementation.
+//! Embedding lookup, PLE lookup and logit
 //! soft-capping stay on the host; projections, norms, rotary, attention and the
 //! elementwise layer algebra run on the device. KV owners keep device-resident
-//! caches; shared-tail layers read their owner's cache. K/V rows append through
-//! completion-owned device copies. Execution remains synchronous and one token at
-//! a time, so this is correctness-first, not a competitive path.
+//! caches; shared-tail layers read their owner's full group span. K/V rows append
+//! through completion-owned device copies. Execution remains synchronous and
+//! greedy-only; this is not a competitive serving claim.
 
 use super::Gemma4CudaWeights;
 use crate::cpu::CpuParameter;
@@ -27,56 +28,10 @@ const DEVICE_ONLY_STAGING: usize = 1;
 const WEIGHT_STAGING: usize = 1024 * 1024;
 const GEMM_WORKSPACE: usize = 8 * 1024 * 1024;
 
-/// Device-resident keys and values for one KV owner layer.
-struct DeviceCache {
-    keys: CudaBf16Matrix,
-    values: CudaBf16Matrix,
-}
-
-/// Per-geometry working set; local and global layers differ in head width.
-struct GeometryBuffers {
-    width: usize,
-    cos: CudaBf16Matrix,
-    sin: CudaBf16Matrix,
-    normed: CudaBf16Matrix,
-    queries: CudaBf16Matrix,
-    query_norm: CudaBf16Matrix,
-    query_rotary: CudaBf16Matrix,
-    keys: CudaBf16Matrix,
-    key_norm: CudaBf16Matrix,
-    key_rotary: CudaBf16Matrix,
-    values: CudaBf16Matrix,
-    value_norm: CudaBf16Matrix,
-    attended: CudaBf16Matrix,
-    projected: CudaBf16Matrix,
-    post_attention: CudaBf16Matrix,
-    ffn_norm: CudaBf16Matrix,
-    gate: CudaBf16Matrix,
-    up: CudaBf16Matrix,
-    activated: CudaBf16Matrix,
-    product: CudaBf16Matrix,
-    down: CudaBf16Matrix,
-    post_feedforward: CudaBf16Matrix,
-    ple_gate: CudaBf16Matrix,
-    ple_activated: CudaBf16Matrix,
-    ple_product: CudaBf16Matrix,
-    ple_projected: CudaBf16Matrix,
-    post_ple: CudaBf16Matrix,
-}
-
-/// Model-wide buffers shared by every layer.
-struct Buffers {
-    hidden: CudaBf16Matrix,
-    hidden_next: CudaBf16Matrix,
-    final_norm: CudaBf16Matrix,
-    logits: CudaBf16Matrix,
-    ple_projection: CudaBf16Matrix,
-    ple_projected_scaled: CudaBf16Matrix,
-    ple_normed: CudaBf16Matrix,
-    ple_context: CudaBf16Matrix,
-    local: GeometryBuffers,
-    global: GeometryBuffers,
-}
+mod buffers;
+mod preparation;
+use buffers::{Buffers, DeviceCache, GeometryBuffers};
+use preparation::PREFILL_ROWS;
 
 struct Executors {
     gemm: CudaBf16Gemm,
@@ -92,6 +47,7 @@ pub struct Gemma4CudaModel {
     cuda: Gemma4CudaWeights,
     executors: Executors,
     buffers: Buffers,
+    prefill: Option<Buffers>,
     factors: Vec<CudaBf16RotaryFactors>,
     stream: Arc<CudaStream>,
     pool: Arc<BytePool>,
@@ -100,7 +56,9 @@ pub struct Gemma4CudaModel {
 }
 
 impl Gemma4CudaModel {
-    /// Upload the validated inventory and prepare one token-step working set.
+    /// Upload the inventory and prepare bounded scalar/qualified prefill storage.
+    /// `scratch_entries` is an attention-scratch ceiling, not an allocation grant;
+    /// it must cover one query against the entire declared cache reach.
     /// # Errors
     /// Rejects invalid geometry, allocation/compilation failures or a load failure
     /// whose storage could not be retired.
@@ -113,12 +71,11 @@ impl Gemma4CudaModel {
         scratch_entries: usize,
     ) -> Result<Self, Gemma4Error> {
         let config = host.config().clone();
-        if max_positions == 0 || max_positions > config.max_position_embeddings() {
-            return Err(Gemma4Error::new(
-                "CUDA decoder",
-                "cache capacity outside the model context",
-            ));
-        }
+        let device = stream
+            .context()
+            .name()
+            .map_err(|error| Gemma4Error::new("CUDA decoder preparation", error.to_string()))?;
+        let prepared = preparation::prepare(&config, max_positions, scratch_entries, &device)?;
         let cuda = match Gemma4CudaWeights::load(source, Arc::clone(&stream), pool, WEIGHT_STAGING)
         {
             Ok(cuda) => cuda,
@@ -139,25 +96,13 @@ impl Gemma4CudaModel {
             rms: CudaBf16RmsNorm::new(Arc::clone(&stream)).map_err(|e| backend(&e))?,
             rotary: CudaBf16RotaryApply::new(Arc::clone(&stream)).map_err(|e| backend(&e))?,
             elementwise: CudaBf16Elementwise::new(Arc::clone(&stream)).map_err(|e| backend(&e))?,
-            attention: CudaBf16Attention::new(Arc::clone(&stream), pool, scratch_entries)
+            attention: CudaBf16Attention::new(Arc::clone(&stream), pool, prepared.scratch_entries)
                 .map_err(|e| backend(&e))?,
         };
-        let hidden = config.hidden_size();
-        let ple = config.ple_dim();
-        let packed = config.packed_ple_dim();
-        let vocab = config.vocab_size();
-        let buffers = Buffers {
-            hidden: matrix(1, hidden, &stream, pool, hidden * 2)?,
-            hidden_next: matrix(1, hidden, &stream, pool, DEVICE_ONLY_STAGING)?,
-            final_norm: matrix(1, hidden, &stream, pool, DEVICE_ONLY_STAGING)?,
-            logits: matrix(1, vocab, &stream, pool, vocab * 2)?,
-            ple_projection: matrix(1, packed, &stream, pool, DEVICE_ONLY_STAGING)?,
-            ple_projected_scaled: matrix(1, packed, &stream, pool, DEVICE_ONLY_STAGING)?,
-            ple_normed: matrix(1, packed, &stream, pool, packed * 2)?,
-            ple_context: matrix(1, ple, &stream, pool, ple * 2)?,
-            local: GeometryBuffers::new(&config, AttentionWidth::Local, &stream, pool)?,
-            global: GeometryBuffers::new(&config, AttentionWidth::Global, &stream, pool)?,
-        };
+        let buffers = Buffers::new(&config, 1, &stream, pool)?;
+        let prefill = (prepared.rows > 1)
+            .then(|| Buffers::new(&config, prepared.rows, &stream, pool))
+            .transpose()?;
         let mut factors = Vec::with_capacity(config.layers().len());
         for layer in 0..config.layers().len() {
             let width = config.layers()[layer].head_dim;
@@ -165,7 +110,7 @@ impl Gemma4CudaModel {
                 .map(|pair| config.rotary_inverse_frequency(layer, pair))
                 .collect::<Result<Vec<_>, _>>()?;
             factors.push(
-                CudaBf16RotaryFactors::new(Arc::clone(&stream), pool, &frequencies, 1)
+                CudaBf16RotaryFactors::new(Arc::clone(&stream), pool, &frequencies, prepared.rows)
                     .map_err(|e| backend(&e))?,
             );
         }
@@ -174,6 +119,7 @@ impl Gemma4CudaModel {
             cuda,
             executors,
             buffers,
+            prefill,
             factors,
             stream,
             pool: Arc::clone(pool),
@@ -190,6 +136,15 @@ impl Gemma4CudaModel {
     #[must_use]
     pub fn max_positions(&self) -> usize {
         self.max_positions
+    }
+
+    /// Prepared physical prefill width; insufficient scratch or unqualified
+    /// geometry/devices retain the scalar lane.
+    #[must_use]
+    pub fn prefill_rows(&self) -> usize {
+        self.prefill
+            .as_ref()
+            .map_or(1, |buffers| buffers.hidden.shape().0)
     }
 
     /// Retire a failed device operation retained by the last step.
@@ -220,12 +175,34 @@ impl Gemma4CudaModel {
                 cuda,
                 executors,
                 buffers,
+                prefill,
                 factors,
                 ..
             } = self;
-            // The caller validates the entire range before any cache mutation.
-            for (offset, &token) in tokens.iter().enumerate() {
-                run_token(
+            // The caller validates the whole accepted range before cache mutation.
+            // Both physical working sets and maximum-reach scratch already exist.
+            let mut offset = 0;
+            if let Some(batch) = prefill.as_mut() {
+                while tokens.len() - offset >= PREFILL_ROWS {
+                    run_rows(
+                        host.config(),
+                        host,
+                        cuda,
+                        executors,
+                        batch,
+                        factors,
+                        caches,
+                        position + offset,
+                        &tokens[offset..offset + PREFILL_ROWS],
+                    )?;
+                    offset += PREFILL_ROWS;
+                }
+                if offset == tokens.len() {
+                    return project_logits(host.config(), cuda, executors, batch);
+                }
+            }
+            for (relative, token) in tokens[offset..].iter().enumerate() {
+                run_rows(
                     host.config(),
                     host,
                     cuda,
@@ -233,8 +210,8 @@ impl Gemma4CudaModel {
                     buffers,
                     factors,
                     caches,
-                    position + offset,
-                    token,
+                    position + offset + relative,
+                    std::slice::from_ref(token),
                 )?;
             }
             project_logits(host.config(), cuda, executors, buffers)
@@ -362,7 +339,7 @@ impl Gemma4CudaDecoder {
     clippy::too_many_arguments,
     reason = "one decoder step's semantic owners, kept explicit"
 )]
-fn run_token(
+fn run_rows(
     config: &Gemma4Config,
     host: &Gemma4CpuWeights,
     cuda: &mut Gemma4CudaWeights,
@@ -371,7 +348,7 @@ fn run_token(
     factors: &mut [CudaBf16RotaryFactors],
     caches: &mut [Option<DeviceCache>],
     position: usize,
-    token: u32,
+    tokens: &[u32],
 ) -> Result<(), CudaBf16ComputeError> {
     let Buffers {
         hidden,
@@ -394,9 +371,19 @@ fn run_token(
 
     let embedding = parameter(host, ParameterId::TokenEmbedding)?;
     let ple_embedding = parameter(host, ParameterId::PleEmbedding)?;
-    let hidden_row = scaled_row(row(embedding, token)?, embed);
-    hidden.upload(&encode(&hidden_row))?;
-    let identity = scaled_row(row(ple_embedding, token)?, ple_embed);
+    let rows = tokens.len();
+    let positions: Vec<u32> = (position..position + rows)
+        .map(|value| {
+            u32::try_from(value).map_err(|_| CudaBf16Error::Invalid("position exceeds u32"))
+        })
+        .collect::<Result<_, _>>()?;
+    let mut hidden_rows = Vec::with_capacity(rows * config.hidden_size());
+    let mut identity = Vec::with_capacity(rows * packed);
+    for &token in tokens {
+        hidden_rows.extend(scaled_row(row(embedding, token)?, embed));
+        identity.extend(scaled_row(row(ple_embedding, token)?, ple_embed));
+    }
+    hidden.upload(&encode(&hidden_rows))?;
 
     cuda.linear_into(
         ParameterId::PleProjection,
@@ -415,14 +402,17 @@ fn run_token(
         ple_projected_scaled,
         ple_normed,
     )?;
-    let projection = decode_bits(&ple_normed.read_chunk(0, packed * 2)?);
+    let projection = decode_bits(&ple_normed.read_chunk(0, rows * packed * 2)?);
 
     for (layer, geometry) in config.layers().iter().enumerate() {
-        let context = crate::ple_combine(
-            &projection[layer * ple..(layer + 1) * ple],
-            &identity[layer * ple..(layer + 1) * ple],
-        )
-        .map_err(|_| CudaBf16Error::Invalid("PLE combine failed"))?;
+        let mut context = Vec::with_capacity(rows * ple);
+        for row in 0..rows {
+            let base = row * packed + layer * ple;
+            context.extend(
+                crate::ple_combine(&projection[base..base + ple], &identity[base..base + ple])
+                    .map_err(|_| CudaBf16Error::Invalid("PLE combine failed"))?,
+            );
+        }
         ple_context.upload(&encode(&context))?;
         let buffers = if geometry.head_dim == local.width {
             &mut *local
@@ -443,6 +433,7 @@ fn run_token(
             layer,
             geometry,
             position,
+            &positions,
         )?;
     }
 
@@ -457,14 +448,22 @@ fn project_logits(
 ) -> Result<Vec<u16>, CudaBf16ComputeError> {
     let Buffers {
         hidden,
+        final_input,
         final_norm,
         logits,
         ..
     } = buffers;
+    let rows = hidden.shape().0;
+    let input = if rows == 1 {
+        hidden
+    } else {
+        final_input.copy_rows_from(0, hidden, rows - 1..rows)?;
+        final_input
+    };
     cuda.rms_norm_into(
         ParameterId::FinalNorm,
         &mut executors.rms,
-        hidden,
+        input,
         final_norm,
     )?;
     cuda.linear_into(
@@ -501,6 +500,7 @@ fn layer_forward(
     layer: usize,
     geometry: &LayerGeometry,
     position: usize,
+    positions: &[u32],
 ) -> Result<(), CudaBf16ComputeError> {
     let Executors {
         gemm,
@@ -535,9 +535,7 @@ fn layer_forward(
         &mut buffers.queries,
         &mut buffers.query_norm,
     )?;
-    let position_u32 =
-        u32::try_from(position).map_err(|_| CudaBf16Error::Invalid("position exceeds u32"))?;
-    factors[layer].prepare_into(&[position_u32], &mut buffers.cos, &mut buffers.sin)?;
+    factors[layer].prepare_into(positions, &mut buffers.cos, &mut buffers.sin)?;
     rotary.apply_into(
         &mut buffers.cos,
         &mut buffers.sin,
@@ -602,7 +600,7 @@ fn layer_forward(
         AttentionSpan {
             query_start: position,
             key_start: 0,
-            key_sequence: position + 1,
+            key_sequence: position + positions.len(),
         },
         &mut buffers.attended,
     )?;
@@ -686,87 +684,6 @@ fn layer_forward(
     Ok(())
 }
 
-impl GeometryBuffers {
-    fn new(
-        config: &Gemma4Config,
-        kind: AttentionWidth,
-        stream: &Arc<CudaStream>,
-        pool: &Arc<BytePool>,
-    ) -> Result<Self, Gemma4Error> {
-        let width = kind.width(config);
-        let heads = config.num_attention_heads();
-        let kv_heads = config.num_key_value_heads();
-        let hidden = config.hidden_size();
-        let intermediate = config.intermediate_size();
-        let ple = config.ple_dim();
-        let q = heads * width;
-        let kv = kv_heads * width;
-        Ok(Self {
-            width,
-            cos: matrix(1, width, stream, pool, DEVICE_ONLY_STAGING)?,
-            sin: matrix(1, width, stream, pool, DEVICE_ONLY_STAGING)?,
-            normed: matrix(1, hidden, stream, pool, DEVICE_ONLY_STAGING)?,
-            queries: matrix(1, q, stream, pool, DEVICE_ONLY_STAGING)?,
-            query_norm: matrix(1, q, stream, pool, DEVICE_ONLY_STAGING)?,
-            query_rotary: matrix(1, q, stream, pool, DEVICE_ONLY_STAGING)?,
-            keys: matrix(1, kv, stream, pool, DEVICE_ONLY_STAGING)?,
-            key_norm: matrix(1, kv, stream, pool, DEVICE_ONLY_STAGING)?,
-            key_rotary: matrix(1, kv, stream, pool, DEVICE_ONLY_STAGING)?,
-            values: matrix(1, kv, stream, pool, DEVICE_ONLY_STAGING)?,
-            value_norm: matrix(1, kv, stream, pool, DEVICE_ONLY_STAGING)?,
-            attended: matrix(1, q, stream, pool, DEVICE_ONLY_STAGING)?,
-            projected: matrix(1, hidden, stream, pool, DEVICE_ONLY_STAGING)?,
-            post_attention: matrix(1, hidden, stream, pool, DEVICE_ONLY_STAGING)?,
-            ffn_norm: matrix(1, hidden, stream, pool, DEVICE_ONLY_STAGING)?,
-            gate: matrix(1, intermediate, stream, pool, DEVICE_ONLY_STAGING)?,
-            up: matrix(1, intermediate, stream, pool, DEVICE_ONLY_STAGING)?,
-            activated: matrix(1, intermediate, stream, pool, DEVICE_ONLY_STAGING)?,
-            product: matrix(1, intermediate, stream, pool, DEVICE_ONLY_STAGING)?,
-            down: matrix(1, hidden, stream, pool, DEVICE_ONLY_STAGING)?,
-            post_feedforward: matrix(1, hidden, stream, pool, DEVICE_ONLY_STAGING)?,
-            ple_gate: matrix(1, ple, stream, pool, DEVICE_ONLY_STAGING)?,
-            ple_activated: matrix(1, ple, stream, pool, DEVICE_ONLY_STAGING)?,
-            ple_product: matrix(1, ple, stream, pool, DEVICE_ONLY_STAGING)?,
-            ple_projected: matrix(1, hidden, stream, pool, DEVICE_ONLY_STAGING)?,
-            post_ple: matrix(1, hidden, stream, pool, DEVICE_ONLY_STAGING)?,
-        })
-    }
-}
-
-#[derive(Clone, Copy)]
-enum AttentionWidth {
-    Local,
-    Global,
-}
-
-impl AttentionWidth {
-    fn width(self, config: &Gemma4Config) -> usize {
-        let kind = match self {
-            Self::Local => AttentionKind::Sliding,
-            Self::Global => AttentionKind::Full,
-        };
-        config
-            .layers()
-            .iter()
-            .find(|layer| layer.kind == kind)
-            .map_or(0, |layer| layer.head_dim)
-    }
-}
-
-impl DeviceCache {
-    fn allocate(
-        capacity: usize,
-        columns: usize,
-        stream: &Arc<CudaStream>,
-        pool: &Arc<BytePool>,
-    ) -> Result<Self, Gemma4Error> {
-        Ok(Self {
-            keys: matrix(capacity, columns, stream, pool, DEVICE_ONLY_STAGING)?,
-            values: matrix(capacity, columns, stream, pool, DEVICE_ONLY_STAGING)?,
-        })
-    }
-}
-
 struct Scale {
     embed: f32,
     ple_embed: f32,
@@ -814,17 +731,6 @@ fn scaled_row(values: &[u16], factor: f32) -> Vec<u16> {
         .iter()
         .map(|&bits| crate::bf16(load(bits) * factor))
         .collect()
-}
-
-fn matrix(
-    rows: usize,
-    columns: usize,
-    stream: &Arc<CudaStream>,
-    pool: &Arc<BytePool>,
-    staging: usize,
-) -> Result<CudaBf16Matrix, Gemma4Error> {
-    CudaBf16Matrix::allocate(rows, columns, Arc::clone(stream), pool, staging)
-        .map_err(|e| Gemma4Error::new("CUDA decoder", e.to_string()))
 }
 
 fn backend(error: &CudaBf16ComputeError) -> Gemma4Error {

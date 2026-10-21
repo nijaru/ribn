@@ -1,11 +1,14 @@
 //! End-to-end native CUDA Gemma forwarding against archived common histories.
 #![cfg(feature = "cuda")]
 use cudarc::driver::CudaContext;
-use engine_gemma4::{Gemma4Config, Gemma4CpuWeights, Gemma4CudaDecoder, Gemma4Source, argmax};
+use engine_gemma4::{
+    Gemma4Config, Gemma4CpuWeights, Gemma4CudaDecoder, Gemma4CudaModel, Gemma4Source, argmax,
+};
 use ribn_foundation::BytePool;
 use ribn_hf::LocalModelPackage;
 use serde_json::Value;
 use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 fn environment(name: &str) -> PathBuf {
@@ -58,8 +61,9 @@ fn cuda_decoder_reproduces_the_archived_greedy_tokens() {
     let stream = context.new_stream().unwrap();
     let pool = BytePool::new(20_u64 << 30).shared();
     let started = Instant::now();
-    let mut decoder =
-        Gemma4CudaDecoder::load(&source, host, stream, &pool, 32, 512).expect("CUDA decoder");
+    let model = Gemma4CudaModel::load(&source, host, stream, &pool, 32, 512).expect("CUDA model");
+    assert_eq!(model.prefill_rows(), 1, "scalar bitwise control");
+    let mut decoder = Gemma4CudaDecoder::shared(Arc::new(Mutex::new(model))).unwrap();
     let loaded = started.elapsed();
 
     let prefill = Instant::now();
@@ -121,18 +125,28 @@ fn cuda_decoder_reproduces_archived_window_boundary_continuations() {
     let source = Gemma4Source::open(&package).unwrap();
     let config = source.config().clone();
     let capacity = config.sliding_window().checked_add(4).unwrap();
-    let scratch = capacity.checked_mul(config.num_attention_heads()).unwrap();
+    let scratch = capacity.checked_mul(config.num_attention_heads()).unwrap() * 8;
     let host = Gemma4CpuWeights::load(&source).unwrap();
     let stream = CudaContext::new(0).unwrap().new_stream().unwrap();
     let pool = BytePool::new(20_u64 << 30).shared();
-    let mut decoder =
-        Gemma4CudaDecoder::load(&source, host, stream, &pool, capacity, scratch).unwrap();
+    let model = Gemma4CudaModel::load(&source, host, stream, &pool, capacity, scratch).unwrap();
+    assert_eq!(
+        model.prefill_rows(),
+        8,
+        "requires the qualified RTX 4090/E4B lane"
+    );
+    let mut decoder = Gemma4CudaDecoder::shared(Arc::new(Mutex::new(model))).unwrap();
     drop(source);
     drop(package);
 
-    for (name, prompt_len) in [
-        ("window_511", config.sliding_window() - 1),
-        ("window_513", config.sliding_window() + 1),
+    // Ordinary tails, a no-tail 512-token head, and a group crossing position
+    // 512 internally (one scalar prefix token followed by 512 submitted tokens).
+    for (name, first_step, prefix) in [
+        ("chat", 0, 0),
+        ("window_511", 0, 0),
+        ("window_513", 0, 0),
+        ("window_511", 1, 0),
+        ("window_513", 0, 1),
     ] {
         let case = reference["cases"]
             .as_array()
@@ -140,19 +154,36 @@ fn cuda_decoder_reproduces_archived_window_boundary_continuations() {
             .iter()
             .find(|case| case["name"] == name)
             .expect("archived window case");
-        assert_eq!(case["prompt_ids"].as_array().unwrap().len(), prompt_len);
         let steps = case["steps"].as_array().unwrap();
         assert_eq!(steps.len(), 4);
         decoder.reset();
-        for (index, step) in steps.iter().enumerate() {
-            let input: Vec<u32> = step["input_ids"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .map(|value| u32::try_from(value.as_u64().unwrap()).unwrap())
-                .collect();
-            assert_eq!(input.len(), if index == 0 { prompt_len } else { 1 });
-            let logits = decoder.prefill(&input).unwrap();
+        let valid = u32::try_from(case["prompt_ids"][0].as_u64().unwrap()).unwrap();
+        let mut invalid_tail = vec![valid; 8];
+        invalid_tail.push(u32::try_from(config.vocab_size()).unwrap());
+        for invalid in [invalid_tail, vec![valid; capacity + 1]] {
+            assert!(decoder.prefill(&invalid).is_err());
+            assert_eq!(decoder.position(), 0);
+        }
+        for (index, step) in steps.iter().enumerate().skip(first_step) {
+            let input: Vec<u32> = step[if index == first_step {
+                "history_ids"
+            } else {
+                "input_ids"
+            }]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|value| u32::try_from(value.as_u64().unwrap()).unwrap())
+            .collect();
+            if index != first_step {
+                assert_eq!(input.len(), 1);
+            }
+            let logits = if index == first_step && prefix != 0 {
+                decoder.prefill(&input[..prefix]).unwrap();
+                decoder.prefill(&input[prefix..]).unwrap()
+            } else {
+                decoder.prefill(&input).unwrap()
+            };
             assert_eq!(logits.len(), config.vocab_size());
             assert!(logits.iter().all(|bits| bits & 0x7f80 != 0x7f80));
             assert_eq!(
@@ -160,7 +191,6 @@ fn cuda_decoder_reproduces_archived_window_boundary_continuations() {
                 step["chosen"].as_u64().unwrap(),
                 "{name} step {index}"
             );
-            assert_eq!(decoder.position(), prompt_len + index);
             assert_eq!(
                 decoder.position(),
                 step["history_ids"].as_array().unwrap().len()

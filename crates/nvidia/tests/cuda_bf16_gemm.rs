@@ -10,6 +10,9 @@ use engine_nvidia::{
 use ribn_foundation::BytePool;
 use std::{io::Cursor, sync::Arc};
 
+#[path = "cuda_bf16_gemm/error_bound.rs"]
+mod error_bound;
+
 fn bf16(value: f32) -> u16 {
     assert!(value.is_finite());
     let bits = value.to_bits();

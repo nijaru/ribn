@@ -1179,6 +1179,78 @@ threshold was added to the permanent suite. Independent source/SDK review found 
 soundness or lifecycle findings. Hardware failure/OOM recovery remains unqualified;
 this changes neither kernels nor CUDA execution, and the desktop was not contacted.
 
+### Bounded eight-row CUDA prefill (2026-10-21 UTC)
+
+The Gemma CUDA lane following `d481274` uses fixed eight-row groups and scalar tails,
+with model-owned bounded workspace, full-history KV and last-row-only heads. Selection
+is prepared once for the qualified RTX 4090/E4B geometry, 8–4096 cache reach and a
+sufficient scratch ceiling. Other scopes retain scalar execution. It does not batch
+separate requests, add overlap or alter scheduling policy.
+
+[Independent numerical and ownership qualification](gemma4-reference/README.md#bounded-eight-row-cuda-prefill-2026-10-21-utc)
+precedes promotion: a mathematically derived GEMM error bound, exact same-operand
+attention checks, 12 distinct archived histories across 19 prediction evaluations,
+continued/reset/rejected work, actual facade/CLI execution, and sanitizer gates. Full
+logit distributions differ; this remains experimental greedy execution, not sampling or
+quality-equivalent acceptance.
+
+Predeclared performance/memory gates were **at least 25% lower prefill latency at both
+18 and 64 tokens**, **no more than 5% decode regression**, and **at most 32 MiB additional
+charged workspace**. Same checkpoint, RTX 4090, driver 615.71.10, toolkit 13.3.73 and
+cuBLAS 13.6.0.2. One immutable probe binary toggles only the scratch ceiling between
+one-row and eight-row preparation and asserts the selected width. Both configurations
+reserve 4096-position caches. Source/package handles drop before inference.
+
+Three fresh processes per mode run sequentially in order scalar, batch, batch, scalar,
+scalar, batch. Each prefix has one warmup trial and three measured trials, reset before
+each trial and three common teacher-forced continuations. Prefixes cycle the archived
+18-token chat IDs to lengths 1/8/18/32/64/65/128. They are **not** real long-prompt quality
+cases or serving arrivals. The clock includes the decoder call and complete owned
+262,144-entry host logit row; checks, argmax and file writes occur outside it. No sample
+was removed except the declared warmups. This session serialized its model processes,
+builds and tests; other host activity was not controlled. Immediately subsequent GPU
+utilization samples can include a completed prior process; no model processes overlap.
+
+Pooled medians over nine measured trials per prefix (ms):
+
+| Prefix tokens | Scalar prefill | Eight-row prefill | Prefill change | Scalar decode | Eight-row decode |
+| ---: | ---: | ---: | ---: | ---: | ---: |
+| 1 | 17.872 | 18.143 | +1.52% | 17.891 | 18.203 |
+| 8 | 121.650 | 20.166 | −83.42% | 17.970 | 18.239 |
+| 18 | 271.934 | 68.436 | **−74.83%** | 18.356 | 18.487 |
+| 32 | 489.859 | 73.452 | −85.01% | 19.076 | 19.343 |
+| 64 | 1004.294 | 146.959 | **−85.37%** | 19.290 | 19.548 |
+| 65 | 1020.323 | 163.552 | −83.97% | 19.277 | 19.380 |
+| 128 | 2053.070 | 297.035 | −85.53% | 19.691 | 19.952 |
+
+All three process medians retain the primary improvement. At 18 tokens scalar medians
+were 271.98/271.61/271.85 ms versus 68.17/68.90/68.44 ms; at 64 they were
+1005.15/1003.94/1004.29 versus 146.39/147.70/146.96 ms. Pooled decode is
+**19.076 → 19.334 ms (+1.35%)**, with every prefix cohort below +1.75%. No decode gain
+is claimed; one-token prefill is also slightly slower.
+
+Prepared-model pool charges are **14,935,433,032 → 14,939,560,928 bytes**, an increment
+of **4,127,896 bytes (3.94 MiB)**. Including one full cache set gives
+15,170,314,056 → 15,174,441,952 bytes; charges return to zero after dropping the model
+and continuation in every probe process. These are charged physical allocations, not
+nominal token declarations or total device/driver memory. Process peak RSS ranges are
+14.5436–14.5438 GiB scalar and 14.5683–14.5701 GiB batch; RSS is not a hard bound or an
+attribution of the difference. All declared timing/charged-workspace gates pass.
+
+Three GEMM and three attention tests pass, including the new complete-output encoded-
+operand bound and maximum-reach eight-row cases. GEMM/attention and the full batched
+window decoder pass memcheck with zero errors; attention also passes initcheck. The
+prepared-capacity/vocabulary admission repairs have failing-before regressions, and a
+whole-chunk-validation mutation fails the new automatic-eight-row gate. The independent
+reviews' concrete findings are resolved. Required host gates and the unaffected Metal
+model/facade regressions pass; hardware drain/OOM failures were not injected.
+
+These are **single-sequence warmed diagnostics**, not SLO goodput, concurrency scaling,
+end-to-end serving throughput or incumbent parity. Raw sources/locks, all samples,
+complete rows, independent-reference/scalar comparisons and immutable binaries remain
+qualification artifacts. The next competitive decision needs a matched incumbent and
+serving/capacity evidence, not an extrapolation from this prefill speedup.
+
 ## Synthetic CPU benchmark
 
 ```sh

@@ -949,6 +949,98 @@ fault tests still cover failed/unwinding drain retention; hardware drain failure
 OOM were not injected. No performance gain, numerical budget change or broader device
 qualification follows from this prerequisite.
 
+## Bounded eight-row CUDA prefill (2026-10-21 UTC)
+
+CUDA preparation now selects **eight rows only on the RTX 4090 with the qualified E4B
+projection geometry**, a cache reach of 8–4096 and a sufficient caller-supplied scratch
+ceiling. Other shapes/devices/reaches or smaller feasible ceilings retain the scalar
+lane. A ceiling too small for one query against the declared reach rejects before
+weight upload. Both model-owned activation/PLE working sets and maximum-reach scratch
+are allocated before publication. Groups append complete owner K/V ranges; shared-tail
+layers read their full donors and apply per-query masks. Scalar tails and the final
+row-only head preserve the original token-facing interface. No eviction, async work,
+new GPU kernel or CPU-oracle change is introduced.
+
+### Numerical acceptance fixed before measurement
+
+The new `cuda_bf16_gemm` gate covers every selected E4B projection geometry at row
+counts 1/8, including attention-output inner widths **2048/4096**, PLE width **256**,
+hidden width **2560** and FFN width **10240**, with their actual output widths. Signed,
+nonuniform mixed-exponent operands include cancellation-heavy and rounding-sensitive
+rows. All operands are integers in units of `2^-11`; exact integer dot products and
+absolute-product sums fit below `2^46` in units of `2^-22`. Their FP64 references are
+therefore exact, and nonzero products/partial sums/final conversion stay away from
+underflow and overflow.
+
+For `d = sum(a*b)` and `S = sum(abs(a*b))`, the independently derived bound is:
+
+```text
+gamma_K = (K * 2^-23) / (1 - K * 2^-23)
+E32 = gamma_K * S
+abs(device_bf16 - d) <= E32 + 2^-7 * (abs(d) + E32)
+```
+
+The FP32 factor conservatively covers one-ULP rounding rather than assuming a reduction
+order; the BF16 factor is one full ULP (RNE unit roundoff is `2^-8`). A small FP64 bound-
+evaluation guard accounts for its arithmetic. This is a **component forward-error
+bound**, not a decoder/logit error budget. Existing exact dyadic gates remain unchanged.
+
+RMS, rotary and elementwise arithmetic remain per-row. Same-operand eight-row attention
+matches scalar queries **bit-for-bit** at key spans 8/513/4096, both head widths and
+full/sliding visibility, including scalar queries whose key span omits future rows.
+The independent host attention accuracy gate remains intact.
+
+Full-model acceptance requires complete finite vocabulary rows, exact common histories
+and positions, and all **12 distinct archived greedy predictions**. Nineteen evaluations
+also cover the coalesced 512-token no-tail head and `[1, 512]` shifted 513-token prefill
+whose last group crosses the window internally. Continued execution, reset, eight valid
+tokens followed by an invalid token, and whole-chunk capacity rejection pass. The
+scalar-selected chunk-1/chunk-7 exact gate remains exact; it was not weakened for batching.
+
+### Distribution observations, not an inferred budget
+
+FP64 reductions over all 262,144 logits give these maxima across the 19 evaluations
+(12 distinct reference histories, with alternate execution schedules):
+
+| Metric against independent stock CPU BF16 | Scalar CUDA | Eight-row CUDA |
+| --- | ---: | ---: |
+| Greedy winner agreement | 19/19 | 19/19 |
+| Maximum absolute difference | 0.9375 | 1.0 |
+| Centered RMSE | 0.126085 | 0.167896 |
+| Relative L2 | 0.029365 | 0.047227 |
+| KL(reference ∥ backend), nats | 0.001928414 | 0.008082755 |
+| Total variation | 0.026035 | 0.059304 |
+
+The batch path has **larger distribution drift on this corpus**. Its rows are not
+bit-identical to scalar CUDA; batch-versus-scalar maximum absolute delta is 1.125,
+KL(scalar ∥ batch) reaches 0.005543743 and TV reaches 0.044102. Centered RMSE subtracts
+the mean logit difference; relative L2 is the norm ratio of the uncentered difference.
+KL/TV use the full softmax distribution. All 12 ordinary scalar rows still match the
+pre-change CUDA captures bit-for-bit. No tolerance was widened from these observations.
+The component bound plus independent greedy acceptance qualifies this **experimental
+greedy scope**, not distributional equivalence, sampling fidelity or task quality.
+
+### Ownership and device gates
+
+Executor limits now use prepared cache capacity instead of the architecture's larger
+context. Vocabulary/media and unsupported non-greedy sampling reject at admission,
+before decoder state allocation. The old vocabulary-edge admission faulted a healthy
+peer; a CPU regression fails before the fix and now proves request-local failure.
+An architecture-context mutation fails the CUDA capacity gate. Removing whole-chunk
+validation likewise fails the eight-row continuation gate; both mutations were restored.
+
+All three native GEMM gates, three attention gates, both decoder tests, CUDA executor/text
+and the real CLI pass. GEMM, attention and the full batched-window decoder test pass
+memcheck with **zero errors**; eight-row attention also passes initcheck. The existing
+`cuda_decoder`, `executor_cuda`, `text_path_cuda`, `cuda_bf16_gemm` and
+`cuda_bf16_attention` commands above reproduce these tests. Preparation bounds have a
+CUDA-feature host unit; no GPU is needed for that unit. Independent numerical-policy
+and safety reviews were completed; their concrete admission/rejection findings are fixed.
+
+[Matched timing and memory evidence](../runtime-contract.md#bounded-eight-row-cuda-prefill-2026-10-21-utc)
+meets the predeclared promotion gates. Kernel selection internals, occupancy/stalls,
+hardware drain/OOM failures and competitive serving/SLO behaviour remain unqualified.
+
 ## Host rotary-frequency gate
 
 `Gemma4Config::rotary_inverse_frequency` prepares individual FP32 factors without

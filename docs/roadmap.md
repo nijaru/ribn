@@ -7,32 +7,29 @@ open implementation choices and acceptance gates. All v0 interfaces may change.
 
 ## Current execution order
 
-**Next: define and qualify batched CUDA Gemma prefill while pursuing measured Qwen
-execution improvements.** The real second decoder is integrated on CPU, Apple Metal
-and CUDA through the synchronous greedy executor, `ribn` engine, text facade and
-`ribn run-gemma`. The complete host decoder remains the correctness oracle. CUDA now
-uses completion-owned device K/V append instead of a host round trip; the archived
-short-history logits are unchanged. This establishes scoped model-local integration,
-not sampling, eviction, mixed-retention lifetime or competitive acceptance. Bind the
-accepted chunk's attention/donor spans, row/workspace bounds and completion boundary
-before batching prefill. Keep complete owner histories for the initial batching baseline;
-cache eviction is a separate experiment. The
-[host multi-row oracle](../benchmarks/gemma4-reference/README.md#host-multi-row-prefill-oracle)
-now checks exact chunk/serial logits and continued execution with nonuniform weights,
-mixed head widths, shared consumers and window boundaries; it is not GPU qualification.
-The [CUDA row-count preflight](../benchmarks/gemma4-reference/README.md#cuda-projection-row-count-preflight-2026-10-21-utc)
-now establishes that real cuBLAS projections are not bit-invariant across those row
-counts, including in an isolated pedantic-compute variant. Treat batched prefill as
-reordered device math: settle independently justified numerical bounds and common-history
-full-model gates before enabling it; the scalar path remains qualified and unchanged.
-The [initialized row-range copy gate](../benchmarks/gemma4-reference/README.md#cuda-initialized-row-range-copy-gate-2026-10-21-utc)
-now supplies completion-owned last-row extraction without host staging. Bounded batched
-activation/PLE working sets and whole-chunk attention/donor spans remain to implement;
-this prerequisite does not enable the decoder lane.
-Host-orchestration cleanup now removes tiny upload staging, the unused device PLE
-identity and intermediate prompt-token output heads. Exact common-history logits,
-continued/chunked execution, whole-chunk rejection and memcheck pass; upload-only versus
-combined diagnostics isolate the gain. [Qualification](../benchmarks/gemma4-reference/README.md#cuda-prompt-head-and-upload-cleanup).
+**Next: matched CUDA Gemma comparison and measured Qwen execution improvements.**
+The real second decoder runs on CPU, Metal and CUDA through the synchronous greedy
+executor, token runtime, text facade and CLI. The CPU full-history decoder remains the
+independent arithmetic oracle. CUDA now has a [qualified eight-row prefill lane](../benchmarks/gemma4-reference/README.md#bounded-eight-row-cuda-prefill-2026-10-21-utc)
+for RTX 4090/E4B geometry, 8–4096 cache reach and sufficient prepared scratch. Scalar
+tails/fallbacks, complete owner histories and completion-owned device K/V copies remain.
+
+The [matched diagnostic](../benchmarks/runtime-contract.md#bounded-eight-row-cuda-prefill-2026-10-21-utc)
+reduces 18/64-token prefill from 271.93/1004.29 to 68.44/146.96 ms, with +1.35% pooled
+decode latency and 3.94 MiB additional charged workspace. It meets independently declared
+GEMM/greedy, ownership, sanitizer and performance gates, including no-tail heads and a
+window crossing inside a group. All 12 archived winners agree across 19 evaluations,
+but full distributions differ more from stock CPU than scalar CUDA; no distributional,
+sampling, task-quality or competitive serving acceptance follows. Executor admission now
+uses actual prepared capacity and rejects invalid vocabulary/media/non-greedy input
+locally. Keep the scalar exact partition test scoped to its unchanged row-one arithmetic.
+
+A larger row count is not the next milestone by default. Compare a matched incumbent,
+preserve numerical-policy distinctions and measure mixed arrivals/capacity before claiming
+competitive progress. Cache eviction, sampling and mixed-retention lifetime remain separate
+work. The [host multi-row oracle](../benchmarks/gemma4-reference/README.md#host-multi-row-prefill-oracle)
+and [CUDA row-count preflight](../benchmarks/gemma4-reference/README.md#cuda-projection-row-count-preflight-2026-10-21-utc)
+retain the evidence that CPU bitwise batching cannot be assumed for cuBLAS.
 The same-artifact
 llama.cpp comparison (2026-10-18) measured 32.7 versus 39.9 tok/s at c1—about 18% lower
 Ribn throughput, with better TTFT—and 2.2x/3.3x throughput gaps at c4/c8. This is not
@@ -45,15 +42,8 @@ and prefill-host-cost experiments; they do not attribute the entire endpoint def
 to the host or prove descriptors, arenas or graph capture will close it. Measure
 remaining projection/device costs and the fixed batched layer chain as well.
 The member-descriptor candidate remains off pending its remaining lifetime, sanitizer
-and performance gates. Qualified Gemma CUDA components now cover linear,
-shared-allocation, RMS, rotary, the elementwise layer math, causal grouped-query
-attention and a host-orchestrated decoder that keeps KV owners device-resident and
-reproduces the archived greedy tokens through the executor, text facade and CLI. Device
-append reduced diagnostic decode from about 83 to 47–49 ms/token on the 4090; upload
-cleanup now measures about 18–20 ms/token with exact common-history logits. These are
-sequential diagnostics, not serving measurements. Execution still processes one token
-at a time, without sampling, eviction or mixed-retention cache lifetime.
-[Append qualification](../benchmarks/gemma4-reference/README.md#device-side-kv-append).
+and performance gates. Keep the qualified per-member path as its control; the Gemma
+prefill result does not qualify Qwen descriptors, graphs or hybrid-state lifetimes.
 
 Qualify the cross-engine numerical comparison and target remaining prefill/projection
 costs on the contiguous path. The [first endpoint diagnostic](../benchmarks/runtime-contract.md#first-equal-artifact-endpoint-diagnostic-2026-10-16)
@@ -509,12 +499,12 @@ shared-tail reads, the runtime executor and the text facade; `ribn run-gemma` se
 it when built with `--features cuda`. See the
 [decoder gate](../benchmarks/gemma4-reference/README.md#native-cuda-gemma-decoder-gate).
 Device-side K/V append now passes byte-preservation, initialized-prefix and memcheck
-gates, with exact short-history logits against host append. Next, bind the batched
-prefill attention spans and workspace to the accepted chunk, retain the full-history
-baseline and compare mixed prompt lengths before selecting a lane. The intervening
-upload/head cleanup is qualified without changing that serial lane; it does not establish
-batched execution. Mixed-width cache lifetime, HTTP serving,
-sampling and eviction remain open.
+gates, with exact short-history logits against host append. The subsequent
+[eight-row lane](../benchmarks/gemma4-reference/README.md#bounded-eight-row-cuda-prefill-2026-10-21-utc)
+binds whole-group attention/donor spans and prepared workspace while retaining full
+histories and scalar fallback. Its greedy contract permits independently bounded
+reordered GEMMs, not presumed scalar bit equality. Trimmed/mixed-retention cache lifetime,
+HTTP serving, sampling and eviction remain open.
 The host CPU path now composes a full Gemma decoder step — embeddings, PLE, all 42
 hybrid layers with owner/shared-tail KV, attention, the remaining layer math and the
 tied head — and reproduces all four greedy tokens of the archived 18-token chat row.
@@ -529,8 +519,8 @@ and elementwise operations on real hardware with independent-reference tests, an
 validated Gemma inventory uploads bitwise to one Metal device, and a host-orchestrated
 Metal decoder reproduces the archived four greedy chat tokens through the runtime
 engine and the text facade, and a synchronous greedy executor shares weights across
-admitted sequences. Splitting attention into parallel score, reduction and value
-kernels cut single-sequence decode from ~5.5 s to ~0.4-0.5 s per token on the M3 Max in
+admitted sequences. Splitting attention into ordered score, reduction and value
+dispatches cut single-sequence decode from ~5.5 s to ~0.4-0.5 s per token on the M3 Max in
 the diagnostic benchmark; that is not a competitive result. The package now also runs
 through the ordinary CLI path (`ribn run-gemma`, macOS Metal, greedy). Two
 reordered-accumulation GEMM variants (transposed weight layout and warp-cooperative

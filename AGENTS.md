@@ -25,8 +25,9 @@ possible later execution system, not inference policy.
   baseline or real-model integration prerequisites; do not accumulate unqualified
   device changes or substitute unrelated subsystem completion for competitive evidence.
 - Gemma 4 E4B is the real second decoder. The host CPU decoder is its correctness oracle.
-  Metal and CUDA both run the full decoder through the executor and text facade; CUDA is
-  correctness-first (synchronous device K/V append, one token per step) and not a competitive path.
+  Metal and CUDA both run the full decoder through the executor and text facade. They
+  remain experimental greedy paths, not competitive acceptance; backend qualification
+  scopes and fallbacks belong in `docs/roadmap.md`.
 
 ## Authority and working reference
 

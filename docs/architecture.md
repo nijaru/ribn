@@ -162,13 +162,16 @@ A host-orchestrated CUDA decoder now binds the components, keeps KV owner caches
 device-resident and reproduces the archived greedy chat tokens through the engine, the
 text facade and `ribn run-gemma` (CUDA or Metal). Completion-owned device copies append
 K/V without a host round trip; initialized-row prefixes bound cache reads and attention.
-Decode is still synchronous and one token at a time. Prefill validates a whole chunk,
-advances its tokens serially and computes only the final token's output head. Actual host
-uploads use row-sized staging; the unused device PLE identity is removed. See the
-[append qualification](../benchmarks/gemma4-reference/README.md#device-side-kv-append) and
-[upload/head cleanup](../benchmarks/gemma4-reference/README.md#cuda-prompt-head-and-upload-cleanup).
-Frequency derivation from theta, Gemma HTTP
-serving and mixed-KV lifetime remain absent.
+Decode remains synchronous and one token at a time. Qualified RTX 4090/E4B preparation
+can select fixed eight-row prefill groups with scalar tails, a second bounded working
+set and scratch covering the declared cache reach. Other devices/geometries, reaches
+outside 8–4096 and smaller feasible scratch ceilings retain scalar execution. Each
+owner appends the whole group before attention; per-query masks and full-history shared
+donors preserve causal/window semantics. Only the final token reaches the output head,
+with device-side last-row extraction for a full group. Executor admission binds to the
+prepared cache capacity and rejects invalid token/media/sampling requests locally.
+See [eight-row qualification](../benchmarks/gemma4-reference/README.md#bounded-eight-row-cuda-prefill-2026-10-21-utc).
+Sampling, Gemma HTTP serving and trimmed/mixed-retention cache lifetime remain absent.
 A host CPU path now materializes the same 665-parameter BF16 inventory into ordinary
 heap buffers and composes a complete decoder step: scaled embeddings, the per-layer
 embedding pipeline, all 42 hybrid layers with owner/shared-tail KV, causal and

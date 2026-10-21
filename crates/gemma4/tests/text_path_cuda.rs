@@ -57,7 +57,9 @@ fn cuda_text_facade_reproduces_the_archived_greedy_tokens() {
     let context = cudarc::driver::CudaContext::new(0).unwrap();
     let stream = context.new_stream().unwrap();
     let pool = BytePool::new(20_u64 << 30).shared();
-    let model = Gemma4CudaModel::load(&source, host, stream, &pool, 32, 512).unwrap();
+    let scratch = 32 * config.num_attention_heads() * 8;
+    let model = Gemma4CudaModel::load(&source, host, stream, &pool, 32, scratch).unwrap();
+    assert_eq!(model.prefill_rows(), 8, "qualified RTX 4090/E4B prefill");
     let executor = Gemma4Executor::cuda(Arc::new(Mutex::new(model))).expect("CUDA executor");
     let engine = Engine::new(
         executor,

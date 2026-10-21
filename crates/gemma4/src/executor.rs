@@ -98,6 +98,7 @@ impl Gemma4Executor<Gemma4CpuDecoder> {
         let config = weights.config().clone();
         Self::new(
             "gemma4 cpu",
+            config.max_position_embeddings(),
             config,
             Box::new(move || Gemma4CpuDecoder::shared(weights.clone())),
         )
@@ -108,16 +109,17 @@ impl Gemma4Executor<Gemma4CpuDecoder> {
 impl Gemma4Executor<crate::Gemma4CudaDecoder> {
     /// Bind the executor to an uploaded CUDA model shared by every sequence.
     /// # Errors
-    /// Rejects a poisoned model lock or a configuration whose context bound
-    /// exceeds the runtime's u32 limits.
+    /// Rejects a poisoned model lock or an invalid prepared cache bound.
     pub fn cuda(model: Arc<std::sync::Mutex<crate::Gemma4CudaModel>>) -> Result<Self, Gemma4Error> {
-        let config = model
-            .lock()
-            .map_err(|_| Gemma4Error::new("executor", "CUDA model lock poisoned"))?
-            .config()
-            .clone();
+        let (config, capacity) = {
+            let model = model
+                .lock()
+                .map_err(|_| Gemma4Error::new("executor", "CUDA model lock poisoned"))?;
+            (model.config().clone(), model.max_positions())
+        };
         Self::new(
             "gemma4 cuda",
+            capacity,
             config,
             Box::new(move || crate::Gemma4CudaDecoder::shared(model.clone())),
         )
@@ -133,6 +135,7 @@ impl Gemma4Executor<crate::Gemma4MetalDecoder> {
         let config = model.config().clone();
         Self::new(
             "gemma4 metal",
+            config.max_position_embeddings(),
             config,
             Box::new(move || crate::Gemma4MetalDecoder::shared(model.clone())),
         )
@@ -140,8 +143,19 @@ impl Gemma4Executor<crate::Gemma4MetalDecoder> {
 }
 
 impl<D: GemmaDecode> Gemma4Executor<D> {
-    fn new(name: &str, config: Gemma4Config, factory: Factory<D>) -> Result<Self, Gemma4Error> {
-        let context = u32::try_from(config.max_position_embeddings())
+    fn new(
+        name: &str,
+        capacity: usize,
+        config: Gemma4Config,
+        factory: Factory<D>,
+    ) -> Result<Self, Gemma4Error> {
+        if capacity == 0 || capacity > config.max_position_embeddings() {
+            return Err(Gemma4Error::new(
+                "executor",
+                "invalid prepared context capacity",
+            ));
+        }
+        let context = u32::try_from(capacity)
             .map_err(|_| Gemma4Error::new("executor", "context exceeds u32"))?;
         Ok(Self {
             info: ExecutorInfo {
@@ -177,6 +191,11 @@ impl<D: GemmaDecode> GenerationExecutor for Gemma4Executor<D> {
         sequence: SequenceId,
         request: &TokenRequest,
     ) -> Result<Admission, ExecutionError> {
+        if request.options.sampling.temperature != 0.0 {
+            return Err(ExecutionError::new(
+                "Gemma executor currently supports greedy sampling only",
+            ));
+        }
         let prompt = u32::try_from(request.tokens.len())
             .map_err(|_| ExecutionError::new("prompt length exceeds u32"))?;
         let output = request.options.max_output_tokens;
@@ -197,9 +216,9 @@ impl<D: GemmaDecode> GenerationExecutor for Gemma4Executor<D> {
         if self.states.contains_key(&sequence) {
             return Err(ExecutionError::new("sequence is already admitted"));
         }
-        if self.config.vocab_size() < request.tokens.iter().copied().max().unwrap_or(0) as usize {
-            return Err(ExecutionError::new("prompt token exceeds the vocabulary"));
-        }
+        self.config
+            .validate_text_tokens(&request.tokens)
+            .map_err(|error| execution(&error))?;
         let decoder = (self.factory)().map_err(|error| execution(&error))?;
         self.states.insert(
             sequence,

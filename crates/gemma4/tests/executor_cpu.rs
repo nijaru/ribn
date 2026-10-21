@@ -119,6 +119,35 @@ fn interleaved_sequences_keep_independent_continuations() {
 }
 
 #[test]
+fn invalid_input_and_unsupported_sampling_leave_a_healthy_peer_running() {
+    let dir = Dir::new();
+    let package = package(&dir, &inventory(), false);
+    let source = Gemma4Source::open(&package).unwrap();
+    let host = Arc::new(Gemma4CpuWeights::load(&source).unwrap());
+    let invalid = u32::try_from(host.config().vocab_size()).unwrap();
+    let expected = greedy(
+        &mut Gemma4CpuDecoder::shared(host.clone()).unwrap(),
+        &[1, 2],
+        3,
+    );
+    let mut engine = engine_over(host);
+    let bad = engine.enqueue(request(&[1, invalid], 3)).unwrap();
+    let mut sampling = request(&[1, 2], 3);
+    sampling.options.sampling.temperature = 0.5;
+    let unsupported = engine.enqueue(sampling).unwrap();
+    let good = engine.enqueue(request(&[1, 2], 3)).unwrap();
+    let streams = drive(&mut engine, &[(bad, 3), (unsupported, 3), (good, 3)]);
+    for (tokens, reason) in &streams[..2] {
+        assert!(tokens.is_empty());
+        assert!(matches!(reason, Some(FinishReason::Failed(_))));
+    }
+    assert_eq!(streams[2].0, expected);
+    assert_eq!(streams[2].1, Some(FinishReason::Length));
+    assert_eq!(engine.status().requests, 0);
+    engine.shutdown().unwrap();
+}
+
+#[test]
 fn engine_stop_token_ends_generation_on_the_real_executor() {
     let dir = Dir::new();
     let package = package(&dir, &inventory(), false);

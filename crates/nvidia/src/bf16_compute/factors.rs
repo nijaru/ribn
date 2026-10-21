@@ -11,9 +11,6 @@ use cudarc::{
 use ribn_foundation::BytePool;
 use std::{io::Cursor, sync::Arc};
 
-/// Positions must convert to FP32 without rounding, as the pinned eager path does.
-const MAX_EXACT_POSITION: u32 = 1 << 24;
-
 pub(super) struct FactorKernels {
     pub(super) stream: Arc<CudaStream>,
     function: CudaFunction,
@@ -33,6 +30,9 @@ pub struct CudaBf16RotaryFactors {
     poisoned: bool,
 }
 impl CudaBf16RotaryFactors {
+    /// Exclusive position bound used by preparation; permits exact FP32 positions.
+    pub const POSITION_LIMIT: u32 = 1 << 24;
+
     /// Upload the complete half-head frequency vector once and reserve the position
     /// capacity. Frequencies may be zero (proportional padding) or negative, but
     /// must be finite. Compilation uses one stable associated stream.
@@ -146,7 +146,7 @@ impl CudaBf16RotaryFactors {
         }
         if positions
             .iter()
-            .any(|&position| position >= MAX_EXACT_POSITION)
+            .any(|&position| position >= Self::POSITION_LIMIT)
         {
             return Err(CudaBf16Error::Invalid("rotary position is not FP32-exact").into());
         }

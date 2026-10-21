@@ -7,6 +7,9 @@ use engine_nvidia::{
 use ribn_foundation::BytePool;
 use std::sync::Arc;
 
+#[path = "cuda_bf16_attention/batched.rs"]
+mod batched;
+
 fn value(bits: u16) -> f32 {
     f32::from_bits(u32::from(bits) << 16)
 }

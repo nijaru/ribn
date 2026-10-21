@@ -23,7 +23,8 @@ const CUDA_POOL_BYTES: u64 = 20 << 30;
 #[cfg(feature = "cuda")]
 const CUDA_MAX_POSITIONS: usize = 4096;
 #[cfg(feature = "cuda")]
-const CUDA_SCRATCH_ENTRIES: usize = 8 * CUDA_MAX_POSITIONS;
+// A 2 MiB BF16 attention-scratch ceiling; preparation charges only its chosen lane.
+const CUDA_SCRATCH_ENTRIES: usize = 1 << 20;
 
 impl TextOwner {
     /// Load one unchanged Gemma 4 package on the default Metal device.
