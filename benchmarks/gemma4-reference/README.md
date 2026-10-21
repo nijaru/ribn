@@ -805,6 +805,115 @@ complete owner histories. CUDA batching can keep that baseline without also intr
 eviction; reordered device math still needs independently justified numerical bounds,
 common-history reference comparisons and device lifetime/memory qualification.
 
+## CUDA common-history calibration (2026-10-21 UTC)
+
+The scalar decoder at `7965b5b` now has full-row numerical observations against the
+independent stock CPU BF16 reference, not just the archived chat-token smoke. It
+executes the actual **18/511/513-token prompts**, resets between cases, then
+teacher-forces the reference's three continuation tokens. Every input/history and
+committed position matches the archive; no re-tokenization or generated-history
+comparison is involved. Source/package handles drop before inference. The reference
+tensor SHA256 is `46878e19c907f6cb4d2e88ae6077238465612d3bc1aab8441f57bfb4b83772f3`.
+
+| Metric over 12 complete vocabulary rows | CUDA observation |
+| --- | ---: |
+| Shape/finiteness | 12/12 |
+| Reference greedy winner agreement | 12/12 |
+| Bit-identical reference rows | 0/12 |
+| Maximum absolute difference | 0.9375 |
+| Per-row uncentered RMSE range | 0.05799–0.38128 |
+| Per-row relative L2 range | 0.00479–0.02937 |
+| Maximum KL(reference ∥ CUDA), nats | 0.001928414 |
+
+Metrics reconstruct BF16 values and reduce in FP64 over all 262,144 vocabulary
+entries. Relative L2 is the norm of the difference divided by the reference norm;
+KL uses the complete softmax distribution. These observations do **not** establish
+an error budget, distributional/task-quality equivalence or a batched-decoder gate.
+The stock reference is independent; the scalar GPU result is not a new oracle.
+
+The committed `cuda_decoder` suite adds a real 511/513-window-boundary test with
+continued positions through 516 and reset between the two histories. It checks
+finite full rows and independent archived greedy selections, not unjustified full-row
+bit equality or a new tolerance. The previous 18-token test cannot expose these
+absolute-window/cache-span integration failures; its rejection and exact scalar
+chunk/reset checks remain intact. Reproduce both with the existing CUDA decoder
+command above. CUDA executor/text tests and the four-token CLI also pass.
+
+A separate warmed diagnostic still reproduces all saved scalar logits at repeated-chat
+prefixes 1/18/64/129 plus continuations. Median prefill was
+17.92/272.85/1007.99/2077.89 ms respectively. Those cyclic prompts are not the actual
+511/513 reference inputs, and these timings are not a new speedup or serving result.
+
+## CUDA projection row-count preflight (2026-10-21 UTC)
+
+Before implementing batched prefill, a separate probe asked whether changing only
+cuBLAS's row count preserved the scalar BF16 result. Hardware was the RTX 4090,
+driver 615.71.10, CUDA toolkit 13.3.73 and loaded cuBLAS **13.6.0**
+(`libcublas.so.13.6.0.2`). The source was `7965b5b`, with one stable stream, an 8 MiB
+explicit cuBLAS workspace, BF16 inputs, weights and outputs, `CUBLAS_COMPUTE_32F`,
+`CUBLAS_GEMM_DEFAULT`, and reduced-precision reductions disabled.
+
+Inputs came from the pinned BF16 stock capture with layer stages: all 12 case/step
+histories, using their embedding, input norm, pre-FFN norm, gate product, post-FFN
+residual and PLE product as appropriate. The tensor file SHA256 was
+`a42f7bc1159b3280522a2bfa4d60407e21dc8787a2d23a3a0a0043ec3f9468fb`.
+The **33 prefill projections** were the model-wide PLE projection and Q/K/V,
+gate/up/down, PLE gate/projection at layers 0/5/22/23, covering local/global widths
+and both shared-tail donors. For each weight:
+
+1. Run each of the 12 input vectors as a one-row matrix and retain its full output.
+2. Cycle those same vectors into matrices with 2/4/7/8/16/18/32/64 rows. These are
+   repeated captured vectors, **not additional independent histories or full prompts**.
+3. Check output shape and finiteness, then compare every output element with its
+   corresponding one-row result. No normalization, attention, cache or sampling runs.
+
+The question and exact comparison were fixed before measurement; this was an
+invariance diagnostic, not a predeclared quality-equivalence budget. Results:
+
+| Rows | Different BF16 values | Compared values | Maximum absolute difference |
+| ---: | ---: | ---: | ---: |
+| 2 | 346 | 265,216 | 0.25 |
+| 4 | 724 | 530,432 | 0.25 |
+| 7 | 1,341 | 928,256 | 0.25 |
+| 8 | 1,549 | 1,060,864 | 0.25 |
+| 16 | 3,186 | 2,121,728 | 0.25 |
+| 18 | 2,660 | 2,386,944 | 0.25 |
+| 32 | 4,806 | 4,243,456 | 0.25 |
+| 64 | 8,864 | 8,486,912 | 0.25 |
+
+All outputs were finite. **223 of 264 projection/row-count cases differed**:
+23,476 of 20,023,808 compared encodings. A second process reproduced every non-timing
+result exactly. A separate tied-vocabulary-head diagnostic also differed, but is
+excluded from this table: the proposed decoder still needs only the last prompt row's
+head, not a batched head.
+
+An isolated one-line variant changed the compute type to
+`CUBLAS_COMPUTE_32F_PEDANTIC`, leaving the reduction flag and all other probe code
+unchanged. Comparing that mode with its own one-row results still found differences
+in **182 of 264 cases** (4,249 encodings); it did not restore invariance and was not
+promoted. These counts do not compare either mode's accuracy against an independent
+reference. NVIDIA's [compute-mode definitions](https://docs.nvidia.com/cuda/cublas/index.html#cublascomputetype-t)
+are not a promise of row-count-independent results.
+
+For diagnosis, up to 32 differing coordinates per case were recomputed as FP64 dot
+products of the identical BF16 operands. Those selected coordinates included examples
+closer to each result. This is neither exhaustive forward-error qualification nor a
+full-model error/quality budget. Kernel selection, accumulation mechanisms and occupancy
+were not profiled; the probe does not identify the numerical differences' cause.
+
+**Decision:** CUDA batching remains a useful performance candidate, but cannot inherit
+the host oracle's bitwise transformation gate. Qualify it as reordered device math:
+choose independently justified numerical bounds before the full-model experiment,
+compare common histories through chunk/window boundaries and continuations, and prove
+bounded workspace/donor lifetime before enabling the lane. Do not widen bounds from
+these observed deltas or force a global pedantic mode to obtain presumed exactness.
+The current CUDA chunk-1/chunk-7 bitwise test remains valid because both dispatch
+one-row GEMMs. A future batched lane must migrate that assertion with its independently
+accepted numerical contract, not treat it as a permanent bitwise promise or relax it
+until a candidate passes. No production code, numerical tolerance or automatic selection
+changed. Raw probe sources, locks, input manifest, complete results and the rejected
+one-line variant remain qualification artifacts, not a new benchmark framework.
+
 ## Host rotary-frequency gate
 
 `Gemma4Config::rotary_inverse_frequency` prepares individual FP32 factors without

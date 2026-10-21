@@ -20,6 +20,11 @@ cache eviction is a separate experiment. The
 [host multi-row oracle](../benchmarks/gemma4-reference/README.md#host-multi-row-prefill-oracle)
 now checks exact chunk/serial logits and continued execution with nonuniform weights,
 mixed head widths, shared consumers and window boundaries; it is not GPU qualification.
+The [CUDA row-count preflight](../benchmarks/gemma4-reference/README.md#cuda-projection-row-count-preflight-2026-10-21-utc)
+now establishes that real cuBLAS projections are not bit-invariant across those row
+counts, including in an isolated pedantic-compute variant. Treat batched prefill as
+reordered device math: settle independently justified numerical bounds and common-history
+full-model gates before enabling it; the scalar path remains qualified and unchanged.
 Host-orchestration cleanup now removes tiny upload staging, the unused device PLE
 identity and intermediate prompt-token output heads. Exact common-history logits,
 continued/chunked execution, whole-chunk rejection and memcheck pass; upload-only versus
