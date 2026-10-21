@@ -145,6 +145,9 @@ substantial commit/wait time from GPU intervals. Both measurements bypass the HT
 frontend, so this gap cannot be blamed on endpoint overhead. It is not an attribution
 of the entire gap to synchronization: kernel arithmetic, graph fusion, cache placement,
 host copies and lifetime behavior also differ. A bounded ablation must separate them.
+The subsequent [autorelease-cadence experiment](runtime-contract.md#metal-native-handle-lifetime-ablation-2026-10-21-utc)
+bounded known native-handle temporaries, but did not consistently eliminate the timing
+swings; it does not explain away the observed baseline gap.
 
 Any new Ribn path must retain its independently justified numerical contract, whole-step
 validation, private intermediate ownership and completion-before-publication. No quality

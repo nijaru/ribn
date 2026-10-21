@@ -946,6 +946,13 @@ command-buffer and encoder creation check nullable native handles before constru
 Rust references. Pre-submit failure drops only unpublished work. A terminal command
 error releases private work only after the wait; no partial output escapes.
 
+Command-buffer and encoder factories scope their known autoreleased (`+0`) handles
+inside local pools, retaining owned (`+1`) Rust wrappers before those pools drain.
+Their temporary references therefore do not accumulate until a frontend or worker
+pool happens to drain. The returned owners still outlive encoding and terminal wait;
+draining an autorelease pool is not evidence of GPU completion. Queue/buffer allocations
+with newly owned native references keep their existing ownership path.
+
 The same checked preparation/completion path owns standalone Metal commands. A decoder
 error follows the existing synchronous executor failure path; cancellation does not
 interrupt a committed command or release its storage before completion. This contract

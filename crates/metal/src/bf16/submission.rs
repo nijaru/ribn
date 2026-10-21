@@ -2,7 +2,7 @@
 
 use super::{MetalBf16Error, MetalBf16Executor};
 use metal::foreign_types::{ForeignType, ForeignTypeRef};
-use metal::objc::{Message, runtime::Sel};
+use metal::objc::{Message, rc::autoreleasepool, runtime::Sel};
 use metal::{
     CommandBuffer, CommandBufferRef, CommandQueue, ComputeCommandEncoder, ComputeCommandEncoderRef,
     DeviceRef, MTLCommandBuffer, MTLCommandBufferStatus, MTLCommandQueue, MTLComputeCommandEncoder,
@@ -24,34 +24,43 @@ impl MetalBf16Executor {
     }
 
     pub(super) fn command(&self) -> Result<CommandBuffer, MetalBf16Error> {
-        // SAFETY: commandBuffer returns a nullable autoreleased reference. The
-        // ordinary (retained-references) buffer keeps encoded resources alive.
-        let pointer: *mut MTLCommandBuffer =
-            unsafe { self.queue.send_message(Sel::register("commandBuffer"), ()) }
-                .map_err(|error| MetalBf16Error::Allocation(format!("command buffer: {error}")))?;
-        if pointer.is_null() {
-            return Err(MetalBf16Error::Allocation(
-                "command buffer returned nil".into(),
-            ));
-        }
-        // SAFETY: retain the checked +0 reference before its autorelease pool ends.
-        Ok(unsafe { CommandBufferRef::from_ptr(pointer) }.to_owned())
+        // Bound the +0 handle's autorelease even on a Rust worker without a
+        // caller pool. The returned +1 owner still lives through terminal wait.
+        autoreleasepool(|| {
+            // SAFETY: commandBuffer returns a nullable autoreleased reference. The
+            // ordinary (retained-references) buffer keeps encoded resources alive.
+            let pointer: *mut MTLCommandBuffer =
+                unsafe { self.queue.send_message(Sel::register("commandBuffer"), ()) }.map_err(
+                    |error| MetalBf16Error::Allocation(format!("command buffer: {error}")),
+                )?;
+            if pointer.is_null() {
+                return Err(MetalBf16Error::Allocation(
+                    "command buffer returned nil".into(),
+                ));
+            }
+            // SAFETY: retain the checked +0 reference before this pool drains.
+            Ok(unsafe { CommandBufferRef::from_ptr(pointer) }.to_owned())
+        })
     }
 
     pub(super) fn compute_encoder(
         command: &CommandBufferRef,
     ) -> Result<ComputeCommandEncoder, MetalBf16Error> {
-        // SAFETY: computeCommandEncoder returns a nullable +0 serial encoder.
-        let pointer: *mut MTLComputeCommandEncoder =
-            unsafe { command.send_message(Sel::register("computeCommandEncoder"), ()) }
-                .map_err(|error| MetalBf16Error::Allocation(format!("compute encoder: {error}")))?;
-        if pointer.is_null() {
-            return Err(MetalBf16Error::Allocation(
-                "compute encoder returned nil".into(),
-            ));
-        }
-        // SAFETY: retain the checked +0 reference before its autorelease pool ends.
-        Ok(unsafe { ComputeCommandEncoderRef::from_ptr(pointer) }.to_owned())
+        autoreleasepool(|| {
+            // SAFETY: computeCommandEncoder returns a nullable +0 serial encoder.
+            let pointer: *mut MTLComputeCommandEncoder =
+                unsafe { command.send_message(Sel::register("computeCommandEncoder"), ()) }
+                    .map_err(|error| {
+                        MetalBf16Error::Allocation(format!("compute encoder: {error}"))
+                    })?;
+            if pointer.is_null() {
+                return Err(MetalBf16Error::Allocation(
+                    "compute encoder returned nil".into(),
+                ));
+            }
+            // SAFETY: retain the checked +0 reference before this pool drains.
+            Ok(unsafe { ComputeCommandEncoderRef::from_ptr(pointer) }.to_owned())
+        })
     }
 
     pub(super) fn submit(

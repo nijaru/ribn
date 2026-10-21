@@ -1125,6 +1125,60 @@ addressing, selection or synchronous ownership; parent device qualification supp
 the numerical evidence. Hardware fault/OOM recovery remains unqualified. No desktop
 access, cache eviction, scheduling change or universal graph was introduced.
 
+### Metal native-handle lifetime ablation (2026-10-21 UTC)
+
+The [external MLX calibration](gemma4-metal-baseline.md) left large Ribn latency swings
+unexplained. A controlled caller-lifetime experiment changed only the probe: retain
+one outer autorelease pool, but optionally drain a nested pool after each completed
+decoder call, inside that call's clock. Kernels, math, command count and model stayed
+unchanged. Two interleaved sweeps retained all measured samples:
+
+| Probe cadence | Decode median, process 1 / 2 | Peak RSS range |
+| --- | ---: | ---: |
+| One pool around the sweep | 331.87 / 316.24 ms | 14.021–14.027 GiB |
+| Nested pool per completed call | 331.77 / 145.88 ms | 13.9665–13.9666 GiB |
+
+Per-call draining reduced host retention but did **not** consistently eliminate the
+latency swings. A later unchanged control measured 144.29 ms median decode. This does
+not establish pool cadence as their cause or justify a latency-improvement claim.
+
+Source inspection did expose a narrower ownership problem: the backend's nullable
+command-buffer/encoder factories returned autoreleased `+0` handles, retained them for
+Rust, but left their autoreleases dependent on an external pool. Rust execution workers
+do not install such a pool. A small real-device probe isolated the effect without the
+large model: 10,000 synchronous 1×1 BF16 linear calls inside one outer pool, checking
+`0.5 × 0.5 == 0.25` every time. Two runs per implementation sampled current RSS:
+
+| Completed calls | Old factory RSS, KiB | Local factory-pool RSS, KiB |
+| ---: | ---: | ---: |
+| 1 | 15,216–15,248 | 15,136–15,200 |
+| 1,000 | 17,152–17,184 | 15,296–15,328 |
+| 5,000 | 24,480–24,512 | 15,328–15,424 |
+| 10,000 | 33,776–33,792 | 15,328–15,440 |
+
+Native device allocation stayed **475,136 bytes** at every sample in both variants.
+This is growing host-side retention, not a growing GPU allocation; no allocator/object
+type profiler was used. RSS is supporting evidence, not a formal memory bound.
+
+The backend now scopes only those two known autoreleased factories with local pools,
+retaining owned Rust wrappers **before** each pool drains. Returned command/encoder
+owners remain live through the same encoding and terminal wait. Null checks, retained
+resource mode, serial ordering, output publication and failure scope are unchanged;
+no global pool framework or frontend cleanup obligation was added.
+
+Two full-model runs with the fix peaked at 13.958–13.964 GiB. Their decode medians were
+143.27/143.91 ms, but the unchanged 144.29 ms control precludes attributing the earlier
+large timing swings to this fix. Full logit rows remained finite and bit-identical at
+1/8/18/32/64/65/511/512/513-token prefixes through three common continuations.
+
+All 398 workspace tests, 17 release Metal primitive tests, selector/GELU gates,
+materialization, ignored decoder/executor/text and the actual CLI passed, as did
+boundaries, formatting and default/CUDA/targeted-Metal clippy. Existing device gates
+now exercise owned native handles after each creation pool has drained; no flaky RSS
+threshold was added to the permanent suite. Independent source/SDK review found no
+soundness or lifecycle findings. Hardware failure/OOM recovery remains unqualified;
+this changes neither kernels nor CUDA execution, and the desktop was not contacted.
+
 ## Synthetic CPU benchmark
 
 ```sh

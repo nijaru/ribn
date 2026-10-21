@@ -563,6 +563,10 @@ baseline. Large Ribn timing swings remain unexplained. The next bounded Metal ex
 should ablate command boundaries and intermediate host transfers before more row blocking,
 preserving the current numerical and ownership contracts rather than copying MLX's graph.
 This does not change CUDA sequencing or qualify capacity, recovery or SLO goodput.
+A [lifetime ablation](../benchmarks/runtime-contract.md#metal-native-handle-lifetime-ablation-2026-10-21-utc)
+now bounds autoreleased command/encoder handles at their backend factories instead of
+leaving them to a caller pool. Repeated-call host retention falls, but the latency swings
+were not consistently removed; command consolidation remains an untested hypothesis.
 Sampling and eviction remain open. Shader/pipeline failures now fail both primitive
 and materialization tests rather than being mistaken for missing hardware.
 Then mixed-width local/global KV with donor spans pinned through shared-tail device reads. Use strongly typed model/backend state
