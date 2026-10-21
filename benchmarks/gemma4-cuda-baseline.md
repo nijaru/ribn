@@ -313,3 +313,45 @@ model loading and SM89 execution remain pending. Preserve the resolved lock, bui
 logs and installed-package identities. After installation, qualify actual 18/511/513
 histories and graph/eager outputs before interpreting timings; HTTP scheduling, mixed
 arrivals, capacity and SLO goodput remain separate gates.
+
+### Compare completed FP32 captures
+
+[gemma4_compare.py](gemma4_compare.py) checks one completed capture against the archived
+CPU BF16 oracle without importing Torch or SGLang. Run it with NumPy (host-checked with
+2.5.4) and the exact producer source archived with that capture:
+
+```sh
+python3.13 benchmarks/gemma4_compare.py \
+  --report <capture-directory>/report.json --source <archived-producer-source> \
+  --reference <cpu-bf16/reference.json> --tensors <cpu-bf16/tensors.safetensors> \
+  --output <new-comparison.json>
+```
+
+The reader checks checkpoint, manifest, reference implementation/package and producer
+identities, plus hashes, byte counts, encodings and finiteness of the 12 stored quality
+rows. It validates every consumed input, position and full-row metadata record in the
+three quality sequences and 28 timing sequences; timing rows have producer finiteness
+checks, not separately archived full vectors. It rejects validation-only, failed,
+partial or reordered captures. Source hashes establish
+artifact consistency, not proof of execution: inspect the original report's hardware,
+packages and settings before comparing engines. Existing output is never overwritten.
+
+CPU BF16 rows are promoted exactly to FP32, including signed zero. Observed FP32 values
+are **not** rounded to BF16. Full-distribution diagnostics use FP64: KL is CPU-to-observed
+with natural logs, TV is half L1, centered RMSE removes the mean logit delta, and relative
+L2 is null when the reference norm is zero. Bit equality and winner agreement are
+reported separately; no acceptance budget is selected.
+
+The comparison keeps the 12 common-history rows separate from the old nine-row compiled
+scope. Per-prefix medians use three prefill and nine decode samples from one process;
+trial-zero samples remain in the source capture but are excluded from those medians.
+Do not treat these as multi-process distributions or serving/SLO evidence.
+
+The prepared native/stock experiment controls preserve BF16 model/head arithmetic and
+promote their completed host rows inside the clock. Native uses an owned FP32 vector
+with `f32::from_bits(u32::from(bits) << 16)`; stock converts the synchronized CPU BF16
+tensor to FP32. SGLang instead transfers its genuine FP32 output. This matches the host
+API contract, not internal transfer widths or kernels. Native host compilation and an
+exhaustive 65,536-encoding conversion test, real CPU-corpus reads, and analyzer data/CLI
+tests pass. Fresh native/stock/SGLang CUDA captures and Linux installation remain pending;
+there are no new timing or quality results.
