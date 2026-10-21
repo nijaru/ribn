@@ -213,3 +213,70 @@ is a concrete starting point for direct engine execution, with real runner/cache
 setup. Match histories and the host-output clock before comparing its numbers; then
 measure actual serving/SLO behavior separately. Flare's mechanisms remain relevant,
 but its unmodified hardware gate excludes SM89.
+
+### SGLang capture adapter: host-checked, CUDA pending
+
+[`gemma4_sglang.py`](gemma4_sglang.py) prepares the pinned SGLang 0.5.22 one-batch
+comparison. It has **not run on CUDA**. Its host tests protect history continuity,
+forced-token selection, malformed input rejection and preservation of failure evidence;
+they do not qualify model loading, kernels, graph replay or GPU cleanup.
+
+Validate the archived CPU BF16 input corpus without importing Torch or SGLang:
+
+```sh
+python3.13 benchmarks/gemma4_sglang.py \
+  --snapshot <local-pinned-package> --reference <cpu-bf16/reference.json> \
+  --output <new-plan-directory> --validate-only
+```
+
+The plan contains the three actual reference cases and the seven cycled-chat timing
+prefixes. Validation leaves `complete: false` and creates no logits. In a separately
+resolved Linux/CUDA environment, omit `--validate-only` to attempt capture. Use a new
+output directory for every process; existing evidence, including failures, is never
+replaced. Completed forwards are journaled before the next launch, so a later failure
+does not erase earlier samples. Run three fresh processes per configuration for the
+eventual comparison.
+
+The adapter follows the released runner's publication/bootstrap, model loading, pool,
+attention and graph initialization. It uses the original checkpoint's native
+`Gemma4ForConditionalGeneration`: the release's
+[`--language-model-only` allow-list](https://github.com/sgl-project/sglang/blob/baa9befa381511cd4d56f83980951e5a45fffc6d/python/sglang/srt/server_args.py#L334-L339)
+excludes Gemma, and its conditional constructor retains vision/audio modules. No config
+flattening, class replacement or media-weight deletion is applied. Active text inference
+uses the same checkpoint, but retained media changes preparation and memory boundaries.
+
+This first diagnostic uses one request, Triton attention, a requested 4096-token pool,
+no prefix reuse/overlap/speculation, disabled prefill graphs and a one-request full decode
+graph. `--eager` disables decode graphs too. It records resolved graph settings and each
+forward result's `can_run_graph`; configuration alone is not replay evidence. These are
+bounded bring-up settings, not a claim about SGLang's best/default serving configuration.
+The sampler is omitted; every decode consumes the next archived `input_ids`, even if
+an engine prediction differs. Pools are cleared only after successful synchronization;
+a failed forward/synchronization aborts the process rather than reusing its state.
+
+SGLang's native logits processor returns **FP32**, including FP32 final softcapping.
+The clock covers request/batch input preparation through the complete, synchronized
+262,144-element FP32 host row; checks, argmax and files stay outside it. Quality rows
+are stored as little-endian `.f32le` (1,048,576 bytes), without BF16 rounding. All four
+trials and three forced continuations per prefix are retained; trial zero is warmup.
+`complete: true` means capture finished, not numerical acceptance. **Do not compare these
+clocks directly with the earlier BF16-host table.** Rerun native/stock controls with
+FP32 host output, including their BF16-to-FP32 conversion inside the clock, and retain
+full-row diagnostics against the unchanged independent CPU reference.
+
+The released [dependency metadata](https://pypi.org/pypi/sglang/0.5.22/json) matches the
+[source pins](https://github.com/sgl-project/sglang/blob/baa9befa381511cd4d56f83980951e5a45fffc6d/python/pyproject.toml):
+Torch 2.14.1, Transformers 5.19.0, tokenizers 0.23.2, sglang-kernel 0.4.9 and FlashInfer
+Python 0.7.1. Do not modify the earlier canonical/reference environments. The tool checks
+these versions and hashes the pinned runner, batch, model and logits source files before
+importing SGLang. It records all installed package versions and checks checkpoint files.
+
+Metadata review on 2026-10-21 found Linux CPython 3.13 wheels for the engine/core packages
+(the SGLang wheel requires glibc 2.34), but the full binary-only resolver failed because
+mandatory [`cuda-tile==1.6.0rc5`](https://pypi.org/pypi/cuda-tile/1.6.0rc5/json) has only a
+source distribution. A core-only resolution succeeded; it is not a full installation.
+Source-build installation, CUDA imports, driver/library compatibility, actual model
+loading and SM89 execution remain pending. Do not bypass dependency checks or silently
+change pins. After installation, qualify actual 18/511/513 histories and graph/eager
+outputs before interpreting timings; HTTP scheduling, mixed arrivals, capacity and
+SLO goodput remain separate gates.

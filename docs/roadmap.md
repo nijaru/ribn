@@ -43,9 +43,11 @@ scope limits are retained; no numerical budget or automatic promotion follows.
 This supports further investigation of model/compiler reuse, not a selected Rust importer,
 package format or universal graph ABI. Model-support velocity, Rust-owned preparation,
 recovery and backend portability remain unqualified. Preserve the independent CPU oracle.
-Next establish the engine-level incumbent baseline; released SGLang's one-batch runner is
-a concrete entry point, with histories and host-output clocks matched before comparison.
-vLLM/SGLang source support is not device qualification, and unmodified Flare excludes
+Next establish the engine-level incumbent baseline. The [pinned SGLang adapter](../benchmarks/gemma4-cuda-baseline.md#sglang-capture-adapter-host-checked-cuda-pending)
+has host-checked common-history and failure-evidence handling; Linux installation and
+CUDA capture remain pending. Its FP32 host-output boundary requires rerunning matched
+native/stock controls, not reusing earlier BF16-host timing numbers. vLLM/SGLang source
+support is not device qualification, and unmodified Flare excludes
 SM89. Use their mechanisms and the [Flare findings](inference-engine-design.md#nvidia-flare-reviewed-2026-10-21)
 without narrowing hardware breadth or replacing the existing ownership gates.
 
