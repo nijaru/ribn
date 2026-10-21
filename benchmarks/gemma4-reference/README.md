@@ -914,6 +914,41 @@ until a candidate passes. No production code, numerical tolerance or automatic s
 changed. Raw probe sources, locks, input manifest, complete results and the rejected
 one-line variant remain qualification artifacts, not a new benchmark framework.
 
+## CUDA initialized row-range copy gate (2026-10-21 UTC)
+
+`CudaBf16Matrix::copy_rows_from(destination_row, &source, source_rows)` now selects
+an explicit, nonempty source range. The complete-source-only signature is removed;
+both Gemma K/V append callers supply their full source range. A partial source may
+supply initialized rows, but not its uninitialized tail. Destination writes still
+preserve or extend a contiguous initialized prefix without holes.
+
+This supplies the exact device-side last-row extraction needed before a batched
+prefill's single vocabulary head. It performs no arithmetic, creates no borrowed
+matrix view or host staging, and does **not** enable batched decoder execution.
+Both physical allocations and their charges remain retained through the existing
+completion/error-retirement path; selecting fewer rows does not refund their backing.
+
+The expanded two-test CUDA copy gate checks raw BF16 encodings, including signed
+zeros, infinities and NaN payloads, at widths **7/256/512/2560** and source row counts
+**1/3/8**. It exercises full/interior/final source ranges, nonzero destination offsets,
+a single-row destination, unchanged source/untouched destination bytes, initialized
+subranges of partial sources, empty/reversed/out-of-bounds ranges, destination holes,
+foreign streams and failed validation without mutation. Distinct row tags prevent an
+ignored source offset from accidentally passing. Such an offset-ignoring mutation
+failed the real device test; restoring the implementation passed.
+
+The component gate passed normally and under Compute Sanitizer memcheck with **zero
+errors**. All 12 complete CUDA vocabulary rows on the actual 18/511/513 reference
+histories and three common continuations remain **bit-identical to the pre-change CUDA
+baseline**. Both decoder tests, CUDA executor/text tests and the real four-token CLI
+also pass. Boundaries, formatting, 398 workspace tests and default/CUDA/targeted-Metal
+clippy pass. Independent source review found no safety/correctness findings.
+
+The existing `cuda_bf16_copy` command above reproduces the device gate. Host `Pending`
+fault tests still cover failed/unwinding drain retention; hardware drain failure and
+OOM were not injected. No performance gain, numerical budget change or broader device
+qualification follows from this prerequisite.
+
 ## Host rotary-frequency gate
 
 `Gemma4Config::rotary_inverse_frequency` prepares individual FP32 factors without

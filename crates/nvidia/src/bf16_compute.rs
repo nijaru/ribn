@@ -12,6 +12,15 @@ pub use cuda::{
 
 use crate::cuda_allocation::CudaBf16Error;
 use engine_core::{DataType, WeightTensorSpec};
+use std::ops::Range;
+
+#[derive(Debug, PartialEq, Eq)]
+struct RowCopy {
+    source_offset: u64,
+    destination_offset: u64,
+    bytes: u64,
+    initialized: usize,
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct MatrixShape {
@@ -71,18 +80,37 @@ impl MatrixShape {
     fn validate_copy_rows(
         self,
         source: Self,
+        source_rows: Range<usize>,
+        source_initialized: usize,
         start: usize,
         initialized: usize,
-    ) -> Result<(u64, usize), CudaBf16Error> {
+    ) -> Result<RowCopy, CudaBf16Error> {
+        if source_rows.start >= source_rows.end || source_rows.end > source.rows {
+            return Err(CudaBf16Error::Invalid(
+                "matrix copy source range is invalid",
+            ));
+        }
+        if source_rows.end > source_initialized {
+            return Err(CudaBf16Error::NotReady);
+        }
+        let rows = source_rows.end - source_rows.start;
         let end = start
-            .checked_add(source.rows)
+            .checked_add(rows)
             .ok_or(CudaBf16Error::Invalid("matrix copy row overflow"))?;
         if self.cols != source.cols || end > self.rows || start > initialized {
             return Err(CudaBf16Error::Invalid(
                 "matrix copy requires matching columns, bounded rows and no uninitialized gap",
             ));
         }
-        Ok((start as u64 * self.cols as u64 * 2, initialized.max(end)))
+        // MatrixShape already bounds each complete byte extent. Valid row ranges
+        // therefore bound these products and both offset + length sums as well.
+        let row_bytes = self.cols as u64 * 2;
+        Ok(RowCopy {
+            source_offset: source_rows.start as u64 * row_bytes,
+            destination_offset: start as u64 * row_bytes,
+            bytes: rows as u64 * row_bytes,
+            initialized: initialized.max(end),
+        })
     }
 
     fn validate_rms(self, output: Self, width: usize, epsilon: f32) -> Result<u32, CudaBf16Error> {
@@ -157,27 +185,52 @@ mod tests {
     use super::*;
 
     #[test]
-    fn row_copy_preserves_a_contiguous_initialized_prefix() {
+    fn row_copy_validates_both_ranges_and_initialized_prefixes() {
         let cache = MatrixShape::new(5, 7).unwrap();
-        let row = MatrixShape::new(1, 7).unwrap();
-        let pair = MatrixShape::new(2, 7).unwrap();
-        assert_eq!(cache.validate_copy_rows(row, 0, 0).unwrap(), (0, 1));
-        assert_eq!(cache.validate_copy_rows(pair, 1, 1).unwrap(), (14, 3));
-        assert_eq!(cache.validate_copy_rows(row, 1, 3).unwrap(), (14, 3));
-        assert_eq!(cache.validate_copy_rows(row, 4, 4).unwrap(), (56, 5));
-        for (source, start, initialized) in [
-            (row, 1, 0),
-            (row, 5, 5),
-            (pair, 4, 4),
-            (row, usize::MAX, 5),
-            (MatrixShape::new(1, 8).unwrap(), 0, 0),
+        let source = MatrixShape::new(4, 7).unwrap();
+        for (range, ready, start, initialized, expected) in [
+            (0..1, 1, 0, 0, (0, 0, 14, 1)),
+            (0..2, 2, 1, 1, (0, 14, 28, 3)),
+            (0..1, 1, 1, 3, (0, 14, 14, 3)),
+            (3..4, 4, 4, 4, (42, 56, 14, 5)),
+            (1..3, 3, 0, 0, (14, 0, 28, 2)),
+            (1..2, 2, 0, 0, (14, 0, 14, 1)),
         ] {
-            assert!(
+            assert_eq!(
                 cache
-                    .validate_copy_rows(source, start, initialized)
-                    .is_err()
+                    .validate_copy_rows(source, range, ready, start, initialized)
+                    .unwrap(),
+                RowCopy {
+                    source_offset: expected.0,
+                    destination_offset: expected.1,
+                    bytes: expected.2,
+                    initialized: expected.3,
+                }
             );
         }
+        for (begin, end, start, initialized) in [
+            (0, 1, 1, 0),
+            (0, 1, 5, 5),
+            (0, 2, 4, 4),
+            (0, 1, usize::MAX, 5),
+            (0, 0, 0, 0),
+            (2, 1, 0, 0),
+            (0, 5, 0, 0),
+            (usize::MAX, usize::MAX, 0, 0),
+        ] {
+            assert!(matches!(
+                cache.validate_copy_rows(source, begin..end, 4, start, initialized),
+                Err(CudaBf16Error::Invalid(_))
+            ));
+        }
+        assert!(matches!(
+            cache.validate_copy_rows(source, 1..3, 2, 0, 0),
+            Err(CudaBf16Error::NotReady)
+        ));
+        assert!(matches!(
+            cache.validate_copy_rows(MatrixShape::new(4, 8).unwrap(), 0..1, 1, 0, 0),
+            Err(CudaBf16Error::Invalid(_))
+        ));
     }
 
     #[test]

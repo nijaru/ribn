@@ -4,12 +4,13 @@ use super::{
     drain, error,
 };
 use cudarc::driver::result;
-use std::sync::Arc;
+use std::{ops::Range, sync::Arc};
 
 impl CudaBf16Matrix {
-    /// Copy the complete source into this matrix starting at `start_row`, without
-    /// conversion or host staging. Columns must match and both allocations must
-    /// use the same associated stream. A successful return includes completion.
+    /// Copy `source_rows` into this matrix starting at `start_row`, without
+    /// conversion or host staging. The source range must be nonempty and initialized;
+    /// other source rows need not be ready. Columns must match and both allocations
+    /// must use the same associated stream. Success includes completion.
     ///
     /// Copies may overwrite initialized rows or extend their contiguous prefix,
     /// never leave a hole. Untouched rows are unchanged; later uninitialized rows
@@ -21,28 +22,38 @@ impl CudaBf16Matrix {
         &mut self,
         start_row: usize,
         source: &Self,
+        source_rows: Range<usize>,
     ) -> Result<(), CudaBf16ComputeError> {
         self.check_open()?;
         source.check_open()?;
-        if !source.ready() {
-            return Err(CudaBf16Error::NotReady.into());
-        }
-        let (offset, initialized) =
-            self.shape
-                .validate_copy_rows(source.shape, start_row, self.ready_rows())?;
+        let copy = self.shape.validate_copy_rows(
+            source.shape,
+            source_rows,
+            source.ready_rows(),
+            start_row,
+            self.ready_rows(),
+        )?;
         let stream = &source.allocation.transport().stream;
         if !Arc::ptr_eq(stream, &self.allocation.transport().stream) {
             return Err(
                 CudaBf16Error::Invalid("matrix copy requires one associated stream").into(),
             );
         }
-        let src = source.allocation.pointer()?;
+        let src = source
+            .allocation
+            .pointer()?
+            .checked_add(copy.source_offset)
+            .ok_or(CudaBf16Error::Invalid(
+                "matrix copy source address overflow",
+            ))?;
         let dst = self
             .allocation
             .pointer()?
-            .checked_add(offset)
-            .ok_or(CudaBf16Error::Invalid("matrix copy address overflow"))?;
-        let bytes = usize::try_from(source.shape.bytes)
+            .checked_add(copy.destination_offset)
+            .ok_or(CudaBf16Error::Invalid(
+                "matrix copy destination address overflow",
+            ))?;
+        let bytes = usize::try_from(copy.bytes)
             .map_err(|_| CudaBf16Error::Invalid("matrix copy exceeds host width"))?;
         stream
             .context()
@@ -68,7 +79,7 @@ impl CudaBf16Matrix {
                 retirement: Some(Retirement::Execution(pending)),
             });
         }
-        self.state = MatrixState::Ready(initialized);
+        self.state = MatrixState::Ready(copy.initialized);
         Ok(())
     }
 }

@@ -574,8 +574,16 @@ fn layer_forward(
         let cache = caches[layer]
             .as_mut()
             .ok_or(CudaBf16Error::Invalid("missing KV owner cache"))?;
-        cache.keys.copy_rows_from(position, &buffers.key_rotary)?;
-        cache.values.copy_rows_from(position, &buffers.value_norm)?;
+        cache.keys.copy_rows_from(
+            position,
+            &buffers.key_rotary,
+            0..buffers.key_rotary.shape().0,
+        )?;
+        cache.values.copy_rows_from(
+            position,
+            &buffers.value_norm,
+            0..buffers.value_norm.shape().0,
+        )?;
     }
 
     let cache = caches[geometry.kv_owner]

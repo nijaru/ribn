@@ -25,6 +25,10 @@ now establishes that real cuBLAS projections are not bit-invariant across those 
 counts, including in an isolated pedantic-compute variant. Treat batched prefill as
 reordered device math: settle independently justified numerical bounds and common-history
 full-model gates before enabling it; the scalar path remains qualified and unchanged.
+The [initialized row-range copy gate](../benchmarks/gemma4-reference/README.md#cuda-initialized-row-range-copy-gate-2026-10-21-utc)
+now supplies completion-owned last-row extraction without host staging. Bounded batched
+activation/PLE working sets and whole-chunk attention/donor spans remain to implement;
+this prerequisite does not enable the decoder lane.
 Host-orchestration cleanup now removes tiny upload staging, the unused device PLE
 identity and intermediate prompt-token output heads. Exact common-history logits,
 continued/chunked execution, whole-chunk rejection and memcheck pass; upload-only versus

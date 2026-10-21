@@ -988,10 +988,13 @@ lifetime qualification.
 ### Native BF16 cache-row copies
 
 A same-stream device copy may overwrite or extend a matrix's contiguous initialized row
-prefix, but never create a gap or change untouched rows. Source rows must be fully
-initialized with matching column width. Whole-matrix consumers require full initialization;
-attention and diagnostic readback validate the initialized span they actually consume,
-not just allocation capacity. Invalid calls preserve prior initialization and bytes.
+prefix, but never create a gap or change untouched rows. An explicit, nonempty source
+row range must lie within both its allocation shape and initialized prefix, with matching
+column width; a partial matrix may supply that initialized subrange. Validate both row
+ranges and byte offsets before enqueue. Copies preserve raw BF16 encodings, without
+conversion or host staging. Whole-matrix consumers still require full initialization;
+attention, row copies and diagnostic readback validate the initialized span they actually
+consume, not just allocation capacity. Invalid calls preserve prior initialization and bytes.
 
 Possible enqueue retains source and destination allocations, their charges and the stable
 stream/context before device access. Success includes completion; error or unwind poisons
