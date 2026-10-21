@@ -1,6 +1,6 @@
 # Inference engine design
 
-Status: accepted target, revised 2026-10-20; not implemented support or a SOTA claim.
+Status: accepted target, revised 2026-10-21; not implemented support or a SOTA claim.
 [Resource protocol](resource-protocol.md) owns execution/resource transitions;
 [roadmap](roadmap.md) owns delivery order, open implementation choices and gates;
 [architecture](architecture.md) maps current source. Public v0 interfaces are unstable.
@@ -249,6 +249,16 @@ layer that nothing read has been removed. What remains is not the universal mode
 Replace hard-coded geometry and obsolete bridge contracts with their actual model/backend
 owners during those integrations, without creating another catch-all crate.
 
+Model preparation may reuse external model implementations and compilers rather than
+reimplement every architecture in Rust. Evaluate that boundary against native execution
+for an existing decoder before expanding handwritten integrations. This is an open
+implementation choice, not a selected package format, compiler project or universal ABI.
+Any prepared path must expose its backend-specific capacities, complete continuation
+state and owned storage/completion dependencies to the same execution owner. Preserve
+independent numerical references and qualify portability per backend; a CUDA export
+does not establish CPU or Metal support. Model-support velocity and maintenance cost
+matter alongside execution speed, memory and serving reliability.
+
 GGUF and SafeTensors expose artifact data. HF package resolution owns source/revision/files,
 not model semantics. Target byte-aware streaming materialization with bounded concurrent
 reads/conversion/upload staging; a shard-count LRU does not bound clones or transient peak
@@ -346,7 +356,10 @@ universal execution API. The [roadmap](roadmap.md) defines the next delivery gat
 
 ### Research basis
 
-These sources justify mechanisms and experiments, not Ribn performance or universal support.
+DeepInfer, vLLM, SGLang and NVIDIA engines are complementary first-class design resources.
+Choose source paths by the mechanism being investigated, not by matching the project's
+entire deployment scope. Their designs justify experiments, not Ribn performance or
+universal support. Repository ownership and reported rankings are not qualification.
 Development-head features may differ from releases; pin deployed versions for comparisons.
 Refresh this evidence when implementing the corresponding slice or when upstream contracts change.
 
@@ -367,11 +380,27 @@ Refresh this evidence when implementing the corresponding slice or when upstream
 
 DeepInfer at [`774ce244`](https://github.com/deepseek-ai/DeepInfer/tree/774ce244b87cc0eb8d4b94ab9f5de2ab22049f01)
 is a specialized, offline DeepSeek-V4.1-Flash release, not its complete production serving
-system or a matched cross-engine performance result. The following findings inform existing
-slices; they do not select a new engine architecture or reorder delivery:
+system or a matched cross-engine performance result. The investigation below traced selected
+implementation paths and descriptions; it was not an exhaustive audit or a reproduction of
+performance/economics. Its release scope limits transfer of particular results, not its
+value as an engine-design reference. The findings inform existing slices:
 
 - [Worker](https://github.com/deepseek-ai/DeepInfer/blob/774ce244b87cc0eb8d4b94ab9f5de2ab22049f01/deepinfer/worker/worker.py) and [sequence remapping](https://github.com/deepseek-ai/DeepInfer/blob/774ce244b87cc0eb8d4b94ab9f5de2ab22049f01/csrc/engine/zos.cpp): device-resident sampled tokens, stable sequence mapping, position correction and explicit events permit dependent work ahead of host result processing. This informs the later dependent-overlap contract, not just the first independent-sequence increment; “zero overhead” is not synchronization-free execution.
 - [CPU verification policy](https://github.com/deepseek-ai/DeepInfer/blob/774ce244b87cc0eb8d4b94ab9f5de2ab22049f01/csrc/engine/mtp_varlen.hpp) and [GPU confidence allocator](https://github.com/deepseek-ai/DeepInfer/blob/774ce244b87cc0eb8d4b94ab9f5de2ab22049f01/deepinfer/model_executor/layers/tilelang_ops/cuda/schedule_mtp_varlen.py): choose a bounded verification budget on the CPU, then rank cumulative acceptance estimates using newer GPU-resident confidence within that budget. Reported workload-derived throughput estimates include a low-concurrency loss; they are not Ribn gains or an online-serving comparison.
 - [Deployment Q&A](https://github.com/deepseek-ai/DeepInfer/blob/774ce244b87cc0eb8d4b94ab9f5de2ab22049f01/doc/inference_deployment_qa.md): fitted prefill-time quotas and shared 3FS block KV plus host SWA storage describe production, not the released scheduler/cache service. The [released scheduler](https://github.com/deepseek-ai/DeepInfer/blob/774ce244b87cc0eb8d4b94ab9f5de2ab22049f01/csrc/engine/scheduler.hpp) uses token/context limits. Approximate bounded SWA replay is not exact restoration; the Q&A's 128-token replay and the README's 140-token decoder compact setting describe different boundaries. Cache topology informs routing economics, not a mandatory storage hierarchy.
 - [Reproducibility scope](https://github.com/deepseek-ai/DeepInfer/blob/774ce244b87cc0eb8d4b94ab9f5de2ab22049f01/README.md): deterministic sampling requires NVIDIA, batch-invariant execution, fixed sequence seeds and variable-length verification disabled. Reproducibility and sampling correctness remain distinct qualification policies.
 - DeepSeek Recipe at [`935817c`](https://github.com/deepseek-ai/deepseek-recipe/tree/935817c66f5d6e64838f419692545f06787e485f): [encoding](https://github.com/deepseek-ai/deepseek-recipe/blob/935817c66f5d6e64838f419692545f06787e485f/deepseek-recipe-encoding/src/tokenizer.rs) distinguishes structural token IDs from ordinary text; the [incremental parser](https://github.com/deepseek-ai/deepseek-recipe/blob/935817c66f5d6e64838f419692545f06787e485f/deepseek-recipe/src/stream/output_parser.rs) retains parser state and emits argument fragments. Token provenance matters: text-only parsing cannot distinguish a literal marker from a structural token. This informs future model-owned protocol/tool parsing, not a replacement for Ribn's processor boundary or a defense against semantic prompt injection.
+
+#### NVIDIA Flare (reviewed 2026-10-21)
+
+Flare at [`5f37bd1`](https://github.com/NVIDIA/flare-local-inference/tree/5f37bd14062334f7687d168d58ea00567b9aa7fe)
+is a research prototype with Python preparation and Rust serving. This review checked
+selected source paths and design contracts, not a build, GPU qualification or benchmark.
+Its local-serving mission is not Ribn's product boundary.
+
+- **Preparation boundary:** [forward compilation](https://github.com/NVIDIA/flare-local-inference/blob/5f37bd14062334f7687d168d58ea00567b9aa7fe/ignition/preparation/compilation.py#L280-L327) reuses PyTorch while exposing storage mutations and preserving selected ATen rounding boundaries. [Native execution](https://github.com/NVIDIA/flare-local-inference/blob/5f37bd14062334f7687d168d58ea00567b9aa7fe/helios/src/execution/transport.rs#L504-L655) submits captured graphs without a Python request loop. This motivates comparing model-integration and launch costs at Ribn's existing model/backend seam; compilation does not remove numerical qualification.
+- **Scratch lifecycle:** [tuning](https://github.com/NVIDIA/flare-local-inference/blob/5f37bd14062334f7687d168d58ea00567b9aa7fe/ignition/preparation/tuning.py#L170-L233) reserves the legal candidate envelope, then [trims, refreshes bindings and freezes](https://github.com/NVIDIA/flare-local-inference/blob/5f37bd14062334f7687d168d58ea00567b9aa7fe/ignition/preparation/tuning.py#L317-L335) selected storage. Borrowed benchmark state is restored and synchronized before capture; failed restoration retains owners. Serial plans reuse scratch; simultaneous branches require disjoint regions. The principle transfers without adopting its allocator or package format.
+- **Complete checkpoints:** the [endpoint contract](https://github.com/NVIDIA/flare-local-inference/blob/5f37bd14062334f7687d168d58ea00567b9aa7fe/docs/core-design.md#a-checkpoint-represents-one-exact-consumed-prefix) includes recurrent/convolution state, private partial pages, position metadata and final hidden state, not only KV. Consumed history, sampled pending tokens and visible output are distinct. [Cache retirement](https://github.com/NVIDIA/flare-local-inference/blob/5f37bd14062334f7687d168d58ea00567b9aa7fe/helios/src/cache.rs#L430-L555) follows readiness and last-use fences, not just reference counts. Saving final hidden state is an alternative to last-token replay, not a change to Ribn's initial reuse policy.
+- **Bounded overlap:** two pinned transport frames retain pending ownership before enqueue. The [executor](https://github.com/NVIDIA/flare-local-inference/blob/5f37bd14062334f7687d168d58ea00567b9aa7fe/helios/src/execution/transport.rs#L504-L840) poisons on partial failure and retains resources if compute/copy draining fails. This supports the completion-ownership contract; neither two slots nor its failed-drain leak is a required Ribn policy or recovery proof.
+- **Useful service versus physical work:** [service accounting](https://github.com/NVIDIA/flare-local-inference/blob/5f37bd14062334f7687d168d58ea00567b9aa7fe/helios/src/scheduler/service.rs#L322-L376) prices tokens and reported output deliveries separately; an eight-token speculative burst is one delivery. [Cost learning](https://github.com/NVIDIA/flare-local-inference/blob/5f37bd14062334f7687d168d58ea00567b9aa7fe/helios/src/scheduler/cost.rs#L224-L251) separates device/readiness/handoff timing, while service uses experienced duration. These are implemented policies, not measured Ribn gains, client-receipt proof or latency guarantees. Fixed-shape cohort selection assumptions and exploration weights need workload evidence rather than transcription.
+- **Transfer limits:** the [preparation gate](https://github.com/NVIDIA/flare-local-inference/blob/5f37bd14062334f7687d168d58ea00567b9aa7fe/ignition/planning.py#L31-L32) lists SM103/120/121, not the RTX 4090's SM89. Packages reconstruct CUDA-specific execution and [recorded virtual-address reservations](https://github.com/NVIDIA/flare-local-inference/blob/5f37bd14062334f7687d168d58ea00567b9aa7fe/helios/src/runtime_package/mod.rs#L228-L247). Do not treat this as an unmodified 4090 baseline or a portable model IR. Study the mechanism before deciding whether importing executable packages earns its compatibility, trust and maintenance cost.

@@ -30,9 +30,25 @@ competitive progress. Cache eviction, sampling and mixed-retention lifetime rema
 work. The [host multi-row oracle](../benchmarks/gemma4-reference/README.md#host-multi-row-prefill-oracle)
 and [CUDA row-count preflight](../benchmarks/gemma4-reference/README.md#cuda-projection-row-count-preflight-2026-10-21-utc)
 retain the evidence that CPU bitwise batching cannot be assumed for cuBLAS.
-The same-artifact
-llama.cpp comparison (2026-10-18) measured 32.7 versus 39.9 tok/s at c1—about 18% lower
-Ribn throughput, with better TTFT—and 2.2x/3.3x throughput gaps at c4/c8. This is not
+
+**Bounded preparation-boundary comparison:** use the existing Gemma decoder and pinned
+BF16 checkpoint to compare native CUDA with canonical external execution, including a
+compiled/prepared forward where supported. First inspect current incumbent model support
+and available environments; do not assume Flare itself runs on the 4090. Match active
+parameters, common histories, precision and warmed prefill/decode calls. Record full-row
+numerical differences, preparation/compilation time, loading/capture peaks and resident
+memory as well as latency. Keep cold costs separate and report unsupported capture paths
+rather than invent an exporter or compiler to complete the experiment. Start with direct
+calls, not a new serving framework; they do not establish competitive SLO goodput.
+The decision is whether preparation reuse and fewer host/device boundaries earn a bounded
+backend integration before more handwritten model work. Retain the native controls and
+independent CPU oracle; no executable-package format, universal graph ABI or numerical
+budget is selected. The [Flare findings](inference-engine-design.md#nvidia-flare-reviewed-2026-10-21)
+and DeepInfer/vLLM/SGLang mechanisms inform this comparison without changing hardware
+breadth or the existing ownership/qualification gates.
+
+The same-artifact llama.cpp comparison (2026-10-18) measured 32.7 versus 39.9 tok/s at
+c1—about 18% lower Ribn throughput, with better TTFT—and 2.2x/3.3x throughput gaps at c4/c8. This is not
 single-stream parity or independently quality-qualified competitive acceptance.
 [Baseline](../benchmarks/runtime-contract.md#matched-cross-engine-decode-baseline-2026-10-18)
 
@@ -56,8 +72,8 @@ The earlier llama.cpp observations were 48/97/187 tok/s, but cross-engine histor
 differ and the incumbent's mixed outputs vary. Quality-equivalent competitive acceptance
 remains open; classify differences on common histories rather than chase greedy equality.
 The bounded CUDA HTTP/reference gates and host input-retention gates passed.
-Prove model-local integration with a real dense second decoder alongside this work;
-do not postpone it until hybrid caching or scheduling is complete.
+The real second decoder is now the integration test bed. Continue toward a real VLM
+alongside baseline work; do not wait for hybrid caching or scheduling completion.
 Choose physical execution and constrained-memory experiments from the measured deficit.
 Prefix-cache benefit, a second decoder/VLM, CUDA Rust migration and distributed execution
 are not prerequisites for the first baseline. They remain important product work.
@@ -150,7 +166,10 @@ paths; do not turn every unfinished subsystem into a dependency of text measurem
 3. **Decoder generality.** Deliver the real second decoder early enough to change the
    boundaries. Measure integration effort and cross-cutting edits as well as numerical
    correctness and loading peaks. A registry entry or host-only parameter mapping does
-   not establish executable support. A real VLM follows this test.
+   not establish executable support. Use the real second decoder to compare native and
+   externally prepared execution before expanding handwritten integrations; model-support
+   velocity and maintenance burden are part of the result, not inferred from host language.
+   A real VLM follows this test.
 4. **Broader qualification.** Select subsequent model/workload and hardware targets from
    observed gaps. Another NVIDIA GPU class tests performance portability; a materially
    different backend tests backend portability. Neither follows from the other.
