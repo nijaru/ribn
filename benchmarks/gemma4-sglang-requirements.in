@@ -1,0 +1,4 @@
+# Linux x86_64 / CPython 3.13. Keep the canonical/reference environments separate.
+sglang==0.5.22
+# PyPI's same-version sdist is a wheel_stub downloader for this NVIDIA index.
+cuda-tile @ https://pypi.nvidia.com/cuda-tile/cuda_tile-1.6.0rc5-cp313-cp313-manylinux2014_x86_64.whl#sha256=1f8802f7837d9ffffeff77e5e4abc8b8eb4990ddf77e73008ba13d58003aa08a

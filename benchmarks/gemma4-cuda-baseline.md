@@ -271,12 +271,45 @@ Python 0.7.1. Do not modify the earlier canonical/reference environments. The to
 these versions and hashes the pinned runner, batch, model and logits source files before
 importing SGLang. It records all installed package versions and checks checkpoint files.
 
-Metadata review on 2026-10-21 found Linux CPython 3.13 wheels for the engine/core packages
-(the SGLang wheel requires glibc 2.34), but the full binary-only resolver failed because
-mandatory [`cuda-tile==1.6.0rc5`](https://pypi.org/pypi/cuda-tile/1.6.0rc5/json) has only a
-source distribution. A core-only resolution succeeded; it is not a full installation.
-Source-build installation, CUDA imports, driver/library compatibility, actual model
-loading and SM89 execution remain pending. Do not bypass dependency checks or silently
-change pins. After installation, qualify actual 18/511/513 histories and graph/eager
-outputs before interpreting timings; HTTP scheduling, mixed arrivals, capacity and
-SLO goodput remain separate gates.
+### Isolated Linux dependency recipe
+
+The 2026-10-21 metadata review found Linux CPython 3.13 wheels for the engine/core
+packages; the SGLang wheel requires glibc 2.34. PyPI's
+[`cuda-tile==1.6.0rc5`](https://pypi.org/pypi/cuda-tile/1.6.0rc5/json) sdist is a
+`wheel_stub` downloader, **not compiler source to build**. Its `pyproject.toml` points
+to [NVIDIA's package index](https://pypi.nvidia.com/cuda-tile/), which has the matching
+CPython 3.13/x86_64 wheel. The [requirements input](gemma4-sglang-requirements.in)
+pins that same-version artifact by URL and SHA256 without adding an unrestricted extra
+index or changing SGLang's dependency versions.
+
+With that wheel, binary-only resolution next fails on `outlines-core==0.1.26`, required
+by `outlines==0.1.11`: no compatible CPython 3.13 wheel is available. Allowing **only
+that CPU Rust extension** to use a source distribution closes the full dependency graph.
+This was metadata resolution on the Mac, not a Linux build or a CUDA import test.
+Generate and retain a hash-locked environment outside the repository:
+
+```sh
+CARGO_BUILD_JOBS=2 uv pip compile benchmarks/gemma4-sglang-requirements.in \
+  --default-index https://pypi.org/simple --exclude-newer 2026-10-22 \
+  --python-platform x86_64-manylinux_2_34 --python-version 3.13.11 \
+  --only-binary :all: --no-binary outlines-core --generate-hashes \
+  --output-file <new-evidence-directory>/requirements.lock
+```
+
+On **Linux**, with the existing Rust toolchain and Python development headers available:
+
+```sh
+uv venv --python 3.13.11 <new-engine-environment>
+CARGO_BUILD_JOBS=2 uv pip sync --python <new-engine-environment>/bin/python \
+  --only-binary :all: --no-binary outlines-core --require-hashes \
+  <new-evidence-directory>/requirements.lock
+uv pip check --python <new-engine-environment>/bin/python
+```
+
+Do not run this GPU environment installation on macOS, modify the old reference/canonical
+environments, bypass dependencies with `--no-deps`, or silently change pins/Python versions.
+The CPU extension build, actual installation, CUDA imports, driver/library compatibility,
+model loading and SM89 execution remain pending. Preserve the resolved lock, build/import
+logs and installed-package identities. After installation, qualify actual 18/511/513
+histories and graph/eager outputs before interpreting timings; HTTP scheduling, mixed
+arrivals, capacity and SLO goodput remain separate gates.
