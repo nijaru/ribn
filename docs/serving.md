@@ -19,9 +19,8 @@ cargo run -p ribn-cli --features metal -- serve-gemma /path/to/gemma-package \
 ```
 
 Use `--features cuda` for the experimental CUDA loader. Backend selection matches
-`run-gemma`: Metal on macOS when enabled, otherwise CUDA. The Metal HTTP entry point is
-functionally qualified; CUDA HTTP execution remains unqualified. This adds no media
-support. Gemma uses the default device and its prepared context bound (4K positions on
+`run-gemma`: Metal on macOS when enabled, otherwise CUDA. Both HTTP entry points pass
+bounded real-package functional qualification. This adds no media support. Gemma uses the default device and its prepared context bound (4K positions on
 CUDA, the configured model bound on Metal—not long-context qualification). `--device`,
 `--context-length` and `--max-sequences` reject rather than silently changing or ignoring
 those settings.
@@ -168,10 +167,11 @@ faulted state until shutdown.
 Host TCP tests exercise the real HTTP entry point, tokenizer, text facade and driver
 with only the device substituted. The bounded Qwen CUDA HTTP gate and actual CLI streaming/
 SIGTERM shutdown passed, along with AIPerf and native vLLM client compatibility smokes.
-Gemma's [Metal CLI HTTP gate](../benchmarks/runtime-contract.md#gemma-http-cli-qualification-2026-10-21)
-checks real-package JSON/SSE output, request-local media rejection, disconnect recovery,
-loading/faulted health and SIGTERM cleanup. It does not qualify CUDA HTTP execution or
-competitive serving performance.
+Gemma's [Metal](../benchmarks/runtime-contract.md#gemma-http-cli-qualification-2026-10-21) and
+[CUDA CLI HTTP gates](../benchmarks/runtime-contract.md#cuda-device-requalification-2026-10-22)
+check real-package JSON/SSE output, decoded stops, request-local media rejection, disconnect
+recovery, loading/faulted health and SIGTERM cleanup. These do not qualify competitive
+serving performance.
 The [load-capacity host gate](../benchmarks/runtime-contract.md#text-load-capacity-host-gate)
 covers configured active limits beyond eight; those larger configured limits remain
 host-qualified only. Whole-decode batches of two through eight rows now accept different

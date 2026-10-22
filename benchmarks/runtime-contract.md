@@ -1743,7 +1743,47 @@ decoded stops, media rejection, abandonment/healthy-peer progress, readiness, fa
 and shutdown while loading. Its serial process exits are 2 (expected missing-package fault),
 0 and 0. Workspace tests, boundaries, formatting, default/CUDA/Metal Clippy and Metal-feature
 host tests pass. No kernel arithmetic or numerical acceptance policy changes.
-Physical CUDA drain/free fault qualification remains unrun while desktop access is unavailable.
+### CUDA device requalification (2026-10-22)
+
+On the restored RTX 4090, driver 615.71.10/CUDA Toolkit 13.3.73, glibc 2.43 and project
+Rust 1.98.0, six release-only device cases pass, serialized with two Cargo build jobs.
+All nine package files match the pinned E4B revision
+`ee0ef6023621cff504d758262d4e04895a5af4a2`. The existing scalar partition/full-window
+decoder, eight-row executor and text-facade cases still pass against the unchanged CPU
+reference. Two new cases cover device ownership:
+
+- Restrict pool grants to one complete key, then to a complete first layer plus the next
+  key. The following value cannot reserve. Partial construction retires the actual CUDA
+  allocations, publishes readiness and returns their full charges. Subsequent construction
+  and a finite full-row forward succeed; repeated cache close does not refund twice, and
+  dropping the last model owner
+  returns total granted bytes to zero. This is pool-budget refusal, **not driver OOM**.
+- Admit a real sequence, then begin thread-local capture on its own stream. The synchronous
+  step and shutdown encounter a real driver capture/synchronization error. All admitted
+  charges remain held while capture is invalidated. End capture, retry shutdown, and verify
+  sequence charges return, execution cannot resume and final destruction refunds the model.
+  No driver result is mocked, illegal memory accessed or GPU reset attempted. Captured
+  operations are **not executed**; this does not qualify a failed running kernel or uncertain
+  physical free. See NVIDIA's [stream-capture contract](https://docs.nvidia.com/cuda/cuda-driver-api/cuda_driver_api/group__CUDA__STREAM.html).
+
+The real CUDA `serve-gemma` HTTP gate also passes with release binary SHA-256
+`4821c97c19bf64ec51a11a00a1bd79ba9008b612e61a94441d401d87729a56a6`.
+It checks raw/chat JSON and SSE, the archived four-token chat continuation, decoded stop
+`mutex` yielding `A ` with 18 input/3 committed output/21 total usage, media rejection,
+abandonment with healthy-peer progress, readiness, loading/faulted health and SIGTERM cleanup.
+Its three serial processes exit 2 (expected missing-package fault), 0 and 0.
+
+Reproduce the device cases with the pinned local package and archived CPU reference:
+
+```sh
+CARGO_BUILD_JOBS=2 RIBN_GEMMA_PACKAGE=<package> RIBN_GEMMA_REFERENCE=<reference.json> \
+  cargo test -p engine-gemma4 --features cuda --locked --release \
+  --test cuda_decoder --test executor_cuda --test text_path_cuda \
+  -- --ignored --test-threads=1
+```
+
+These functional/ownership checks do not establish physical peak memory, arbitrary CUDA
+fault recovery, sampling quality or competitive serving acceptance.
 
 ## Heterogeneous-capacity decode (2026-10-16)
 

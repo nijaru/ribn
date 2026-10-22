@@ -207,19 +207,20 @@ drive the next bounded execution experiment.
 An engine-level incumbent comparison remains open. Source review found real Gemma 4
 loaders/decoders in released [vLLM v0.32.0](https://github.com/vllm-project/vllm/blob/5df63a7203cdb9328d824a27b682e77c7b9928be/vllm/model_executor/models/gemma4.py)
 and [SGLang v0.5.22](https://github.com/sgl-project/sglang/blob/baa9befa381511cd4d56f83980951e5a45fffc6d/python/sglang/srt/models/gemma4_causal.py),
-not just registry entries. Neither was installed or run here; source eligibility is not
-4090 qualification. SGLang's released [one-batch runner](https://github.com/sgl-project/sglang/blob/baa9befa381511cd4d56f83980951e5a45fffc6d/python/sglang/benchmark/one_batch.py)
+not just registry entries. SGLang now runs on the 4090 in the bounded direct-call
+comparison below; vLLM remains source-reviewed, not device-qualified. SGLang's released [one-batch runner](https://github.com/sgl-project/sglang/blob/baa9befa381511cd4d56f83980951e5a45fffc6d/python/sglang/benchmark/one_batch.py)
 is a concrete starting point for direct engine execution, with real runner/cache/graph
 setup. Match histories and the host-output clock before comparing its numbers; then
 measure actual serving/SLO behavior separately. Flare's mechanisms remain relevant,
 but its unmodified hardware gate excludes SM89.
 
-### SGLang capture adapter: host-checked, CUDA pending
+### SGLang capture adapter
 
-[`gemma4_sglang.py`](gemma4_sglang.py) prepares the pinned SGLang 0.5.22 one-batch
-comparison. It has **not run on CUDA**. Its host tests protect history continuity,
-forced-token selection, malformed input rejection and preservation of failure evidence;
-they do not qualify model loading, kernels, graph replay or GPU cleanup.
+[`gemma4_sglang.py`](gemma4_sglang.py) runs the pinned SGLang 0.5.22 one-batch
+comparison. Its host tests protect history continuity, forced-token selection, malformed
+input rejection and preservation of failure evidence. The CUDA capture below separately
+exercises model loading, eager execution and one-request decode graphs; it does not qualify
+arbitrary GPU failure recovery or serving.
 
 Validate the archived CPU BF16 input corpus without importing Torch or SGLang:
 
@@ -234,8 +235,7 @@ prefixes. Validation leaves `complete: false` and creates no logits. In a separa
 resolved Linux/CUDA environment, omit `--validate-only` to attempt capture. Use a new
 output directory for every process; existing evidence, including failures, is never
 replaced. Completed forwards are journaled before the next launch, so a later failure
-does not erase earlier samples. Run three fresh processes per configuration for the
-eventual comparison.
+does not erase earlier samples. Run three fresh processes per configuration; the comparison below retains all three.
 
 The adapter follows the released runner's publication/bootstrap, model loading, pool,
 attention and graph initialization. It uses the original checkpoint's native
@@ -285,8 +285,8 @@ index or changing SGLang's dependency versions.
 With that wheel, binary-only resolution next fails on `outlines-core==0.1.26`, required
 by `outlines==0.1.11`: no compatible CPython 3.13 wheel is available. Allowing **only
 that CPU Rust extension** to use a source distribution closes the full dependency graph.
-Full-graph resolution was metadata-only. The CPU extension's separate Linux build/import
-check is scoped below; it does not establish full SGLang installation or CUDA compatibility.
+Resolution was initially metadata-only. The separate CPU build/import check is scoped
+below; the subsequent full Linux installation and CUDA capture have their own evidence.
 Generate and retain a hash-locked environment outside the repository:
 
 ```sh
@@ -302,6 +302,7 @@ On **Linux**, with the existing Rust toolchain and Python development headers av
 ```sh
 uv venv --python 3.13.11 <new-engine-environment>
 CARGO_BUILD_JOBS=2 uv pip sync --python <new-engine-environment>/bin/python \
+  --exclude-newer 2026-10-22 \
   --only-binary :all: --no-binary outlines-core --require-hashes \
   <new-evidence-directory>/requirements.lock
 uv pip check --python <new-engine-environment>/bin/python
@@ -309,11 +310,23 @@ uv pip check --python <new-engine-environment>/bin/python
 
 Do not run this GPU environment installation on macOS, modify the old reference/canonical
 environments, bypass dependencies with `--no-deps`, or silently change pins/Python versions.
-Full SGLang installation, CUDA imports, driver/library compatibility, model loading and
-SM89 execution remain pending. Preserve the resolved lock, build/import logs and
-installed-package identities. After installation, qualify actual 18/511/513
-histories and graph/eager outputs before interpreting timings; HTTP scheduling, mixed
-arrivals, capacity and SLO goodput remain separate gates.
+The original resolution cutoff is explicit during sync: the desktop's relative default
+cutoff otherwise filtered out an exact locked package. No global configuration changed.
+On this Fedora host, CUDA 13.3 rejects the default GCC 16. The already-installed GCC 15
+passes a CUDA compile probe and is selected only for these SGLang processes:
+
+```sh
+CC=/usr/bin/gcc-15 CXX=/usr/bin/g++-15 NVCC_CCBIN=/usr/bin/g++-15 \
+  <new-engine-environment>/bin/python benchmarks/gemma4_sglang.py \
+  --snapshot <local-pinned-package> --reference <cpu-bf16/reference.json> \
+  --output <new-capture-directory>
+```
+
+No unsupported-compiler flag, package pin, model class or upstream source was changed.
+The full 206-package hash-checked installation, `uv pip check`, CUDA imports, model loading
+and SM89 eager/graph capture now pass. Preserve failed attempts, the effective Outlines
+Cargo lock, installed identities and all samples. HTTP scheduling, mixed arrivals, capacity
+and SLO goodput remain separate gates.
 
 ### CPU-only source-build qualification
 
@@ -376,5 +389,97 @@ with `f32::from_bits(u32::from(bits) << 16)`; stock converts the synchronized CP
 tensor to FP32. SGLang instead transfers its genuine FP32 output. This matches the host
 API contract, not internal transfer widths or kernels. Native host compilation and an
 exhaustive 65,536-encoding conversion test, real CPU-corpus reads, and analyzer data/CLI
-tests pass. Fresh native/stock/SGLang CUDA captures and full SGLang installation remain
-pending; there are no new timing or quality results.
+tests pass. The completed native/stock/SGLang captures below use this boundary. They do not select
+a numerical acceptance budget or promote a new execution variant.
+
+## Owned FP32 host-output engine comparison (2026-10-22)
+
+The restored RTX 4090 now has three completed fresh processes for each of four configurations:
+Ribn's qualified eight-row native path, stock Transformers eager, SGLang eager and SGLang
+with a full one-request decode graph. Production Ribn source is `ff7ed2d`; only qualification
+tests/documentation changed during capture. All use the pinned BF16 package and exactly the
+same archived inputs/continuations. Each process retains 12 complete quality rows and four
+trials at every timing prefix; trial zero remains recorded but is excluded below.
+
+The clock ends with an owned, synchronized **FP32 host row**. Native and stock retain BF16
+model/head arithmetic and promote the completed CPU row inside the clock; SGLang transfers
+its genuine FP32 logits, including FP32 final softcapping. Equal host interfaces do not imply
+equal internal arithmetic or transfer widths. The earlier BF16-host table is a separate
+experiment, not a source of samples for this one.
+
+### Direct-call clocks
+
+Milliseconds below are medians of three process medians. Each process contributes three
+non-warmup prefill samples per prefix; its pooled decode median uses 63 samples across the
+seven prefixes. All samples, warmups, process exits and first-call/preparation costs are
+retained. These cycled-chat prefixes are a shape diagnostic, **not representative serving
+traffic, tail latency or throughput/capacity evidence**.
+
+| Prompt tokens | Ribn native 8 | Stock eager | SGLang eager | SGLang full decode graph |
+| ---: | ---: | ---: | ---: | ---: |
+| 1 | 17.990 | 24.772 | 16.911 | 16.842 |
+| 8 | 20.283 | 23.726 | 17.879 | 17.762 |
+| 18 | 68.377 | 24.245 | 18.174 | 18.163 |
+| 32 | 73.625 | 24.303 | 18.165 | 18.318 |
+| 64 | 146.844 | 25.474 | 18.152 | 18.280 |
+| 65 | 163.449 | 27.816 | 19.018 | 18.324 |
+| 128 | 297.069 | 28.783 | 18.567 | 18.434 |
+| Decode, pooled prefixes | 19.271 | 21.235 | 16.533 | 12.037 |
+
+Across processes, native 64-token prefill medians span 146.799–147.890 ms versus
+17.881–19.174 ms for graph-configured SGLang; pooled decode spans 19.265–19.430 versus
+12.037–12.044 ms. Native is about **8.0x slower at 64-token prefill and 1.60x slower at
+decode** in this diagnostic. This is not a quality-equivalent serving comparison or a
+Rust-versus-Python attribution.
+
+Each SGLang graph process reports its real `DecodeCudaGraphRunner` and takes the graph
+branch for all 93 decode forwards, never for its 31 prefills. Eager processes take neither
+graph branch. Both resolve to Triton attention, one running request, context/pool 4096,
+page size 1, static-memory fraction 0.85 and no Torch compilation. This is the explicitly
+chosen bring-up configuration, not SGLang's best/default serving configuration.
+
+### Common-history numerical diagnostics
+
+All 12 archived histories (18/511/513-token cases and their forced continuations) have finite
+262,144-element rows and matching CPU-reference winners in every process. Full-row bits
+are stable across the three processes within each configuration. SGLang eager/graph also
+produce identical FP32 bits for these 12 rows; none of the configurations equals CPU bits.
+Maxima below are over these histories, not an independently selected acceptance budget:
+
+| Configuration | Max absolute delta | Max KL, CPU → observed | Max TV |
+| --- | ---: | ---: | ---: |
+| Native 8 | 1.000000 | 0.004639 | 0.042821 |
+| Stock eager | 1.265625 | 0.000966 | 0.013898 |
+| SGLang eager/full graph | 0.915292 | 0.004033 | 0.031622 |
+
+Winner agreement is not distributional, sampling or task-quality equivalence. Native and
+SGLang have larger KL/TV maxima than stock despite their smaller maximum absolute deltas.
+No tolerance is widened, CPU oracle changed or optimized variant promoted from these results.
+
+### Environment and limits
+
+Hardware is RTX 4090 24,564 MiB, driver 615.71.10; Fedora 44/glibc 2.43. Native uses project
+Rust 1.98.0 and CUDA Toolkit 13.3.73. Stock reuses the unchanged isolated Transformers
+5.20.2 overlay with Torch 2.14.0/tokenizers 0.23.3. SGLang uses the separate hash-locked
+0.5.22 environment with Torch 2.14.1, Transformers 5.19.0, tokenizers 0.23.2,
+sglang-kernel 0.4.9 and FlashInfer 0.7.1. Its CPU Outlines extension built with the existing
+host Rust 1.99.1 and the same effective Cargo-lock SHA256
+`f2524293a52b45872f4205c600099c16053c6123e27736ba55e1357c74dacb7e` as the prior CPU build.
+No canonical/reference environment, package pin or upstream source changed.
+
+The initial sync failure from the host's relative cutoff and first CUDA forward's unsupported
+GCC 16 JIT failure are retained. The successful run uses the original lock cutoff and
+existing GCC 15 as shown above, not an unsupported-compiler override. Native controls use
+an isolated Cargo target, the current borrowed-model binding and a freshly hashed binary.
+
+SGLang retains its conditional model's media modules; native and stock time text-only
+execution. Preparation boundaries therefore differ and are not compared as matched cold
+loads. Fresh processes do not imply cold filesystem/JIT caches. Pools are explicitly prepared;
+allocator counters or successful process cleanup do not establish physical peaks or hard
+capacity. The [CUDA lifecycle/HTTP gate](runtime-contract.md#cuda-device-requalification-2026-10-22)
+is separate functional evidence, not a serving-performance result.
+
+The measured prefill scaling and decode gap justify investigation of repeated native work
+and backend-owned reuse/fusion, not a selected compiler/importer or automatic wider-row
+promotion. Mixed lengths/arrivals, concurrency, overload/cancellation, physical memory
+pressure and latency objectives still require a matched serving experiment.

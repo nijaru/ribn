@@ -2,9 +2,11 @@
 #![cfg(feature = "cuda")]
 use cudarc::driver::CudaContext;
 use engine_gemma4::{
-    Gemma4Config, Gemma4CpuWeights, Gemma4CudaDecoder, Gemma4CudaModel, Gemma4Source, argmax,
+    Gemma4Config, Gemma4CpuWeights, Gemma4CudaDecoder, Gemma4CudaModel, Gemma4Source, GemmaDecode,
+    argmax,
 };
-use ribn_foundation::BytePool;
+use engine_nvidia::CudaBf16Matrix;
+use ribn_foundation::{BytePool, ReserveError};
 use ribn_hf::LocalModelPackage;
 use serde_json::Value;
 use std::path::PathBuf;
@@ -199,6 +201,83 @@ fn cuda_decoder_reproduces_archived_window_boundary_continuations() {
             );
         }
     }
+}
+
+#[test]
+#[ignore = "loads the 15 GB package and allocates CUDA caches; serialize device runs"]
+fn cuda_partial_cache_construction_retires_allocations_before_refund() {
+    let package = LocalModelPackage::open(environment("RIBN_GEMMA_PACKAGE")).unwrap();
+    let source = Gemma4Source::open(&package).unwrap();
+    let host = Gemma4CpuWeights::load(&source).unwrap();
+    let config = host.config().clone();
+    let stream = CudaContext::new(0).unwrap().new_stream().unwrap();
+    let pool = BytePool::new(20_u64 << 30).shared();
+    let model = Arc::new(Mutex::new(
+        Gemma4CudaModel::load(&source, host, Arc::clone(&stream), &pool, 32, 512).unwrap(),
+    ));
+    let baseline = pool.available();
+    let mut charges = Vec::new();
+    for (layer, geometry) in config.layers().iter().enumerate() {
+        if geometry.kv_owner != layer {
+            continue;
+        }
+        let mut matrix = CudaBf16Matrix::allocate(
+            32,
+            config.num_key_value_heads() * geometry.head_dim,
+            Arc::clone(&stream),
+            &pool,
+            1,
+        )
+        .unwrap();
+        charges.push(matrix.allocated_bytes());
+        assert_eq!(baseline - pool.available(), matrix.allocated_bytes());
+        matrix.close().unwrap();
+        assert_eq!(pool.available(), baseline);
+        if charges.len() == 2 {
+            break;
+        }
+    }
+    assert_eq!(charges.len(), 2);
+    // Budget refusal, NOT driver OOM: leave exactly one key, or a completed
+    // first layer plus the next key. The subsequent value cannot reserve.
+    for (available, requested) in [
+        (charges[0], charges[0]),
+        (2 * charges[0] + charges[1], charges[1]),
+    ] {
+        let pressure = pool.reserve(baseline - available).unwrap();
+        let released = pool.capacity_wait();
+        let error = Gemma4CudaDecoder::shared(&model)
+            .err()
+            .expect("value must not fit");
+        let expected = ReserveError::Exhausted {
+            requested,
+            available: 0,
+        };
+        assert!(error.to_string().contains(&expected.to_string()), "{error}");
+        assert!(
+            released.changed(),
+            "partial allocation must publish retirement"
+        );
+        assert_eq!(pool.available(), available);
+        model.lock().unwrap().retire_failure().unwrap();
+        assert_eq!(pool.available(), available);
+        drop(pressure);
+        assert_eq!(pool.available(), baseline);
+    }
+    let mut decoder = Gemma4CudaDecoder::shared(&model).unwrap();
+    assert!(pool.available() < baseline);
+    let logits = decoder.prefill(&[2]).unwrap();
+    assert_eq!(logits.len(), config.vocab_size());
+    assert!(logits.iter().all(|bits| bits & 0x7f80 != 0x7f80));
+    assert_eq!(decoder.position(), 1);
+    model.lock().unwrap().retire_failure().unwrap();
+    decoder.close().unwrap();
+    assert_eq!(pool.available(), baseline);
+    decoder.close().unwrap();
+    assert_eq!(pool.available(), baseline);
+    drop(decoder);
+    drop(model);
+    assert_eq!(pool.granted(), 0);
 }
 
 fn assert_logits(actual: &[u16], expected: &[u16]) {

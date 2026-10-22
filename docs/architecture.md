@@ -177,9 +177,10 @@ with device-side last-row extraction for a full group. Executor admission binds 
 prepared cache capacity and rejects invalid token/media/sampling requests locally.
 See [eight-row qualification](../benchmarks/gemma4-reference/README.md#bounded-eight-row-cuda-prefill-2026-10-21-utc).
 `ribn serve-gemma` loads the same text owner behind the existing bounded HTTP adapter;
-its [Metal CLI qualification](../benchmarks/runtime-contract.md#gemma-http-cli-qualification-2026-10-21)
-covers transport and shutdown, not competitive serving. CUDA HTTP execution, sampling
-and trimmed/mixed-retention cache lifetime remain unqualified.
+its [Metal](../benchmarks/runtime-contract.md#gemma-http-cli-qualification-2026-10-21) and
+[CUDA CLI qualification](../benchmarks/runtime-contract.md#cuda-device-requalification-2026-10-22)
+cover transport and shutdown, not competitive serving. Sampling and trimmed/mixed-retention
+cache lifetime remain unqualified.
 A host CPU path now materializes the same 665-parameter BF16 inventory into ordinary
 heap buffers and composes a complete decoder step: scaled embeddings, the per-layer
 embedding pipeline, all 42 hybrid layers with owner/shared-tail KV, causal and

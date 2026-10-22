@@ -7,7 +7,7 @@ open implementation choices and acceptance gates. All v0 interfaces may change.
 
 ## Current execution order
 
-**Next: engine-level CUDA Gemma baseline and measured Qwen execution improvements.**
+**Next: matched serving/capacity evidence and measured Gemma/Qwen execution improvements.**
 The real second decoder runs on CPU, Metal and CUDA through the synchronous greedy
 executor, token runtime, text facade and CLI. The CPU full-history decoder remains the
 independent arithmetic oracle. CUDA now has a [qualified eight-row prefill lane](../benchmarks/gemma4-reference/README.md#bounded-eight-row-cuda-prefill-2026-10-21-utc)
@@ -43,13 +43,19 @@ scope limits are retained; no numerical budget or automatic promotion follows.
 This supports further investigation of model/compiler reuse, not a selected Rust importer,
 package format or universal graph ABI. Model-support velocity, Rust-owned preparation,
 recovery and backend portability remain unqualified. Preserve the independent CPU oracle.
-Next establish the engine-level incumbent baseline. The [pinned SGLang adapter](../benchmarks/gemma4-cuda-baseline.md#sglang-capture-adapter-host-checked-cuda-pending)
-has host-checked common-history and failure-evidence handling; Linux installation and
-CUDA capture remain pending. Its FP32 host-output boundary requires rerunning matched
-native/stock controls, not reusing earlier BF16-host timing numbers. vLLM/SGLang source
-support is not device qualification, and unmodified Flare excludes
-SM89. Use their mechanisms and the [Flare findings](inference-engine-design.md#nvidia-flare-reviewed-2026-10-21)
-without narrowing hardware breadth or replacing the existing ownership gates.
+The [SGLang engine-level direct-call comparison](../benchmarks/gemma4-cuda-baseline.md#owned-fp32-host-output-engine-comparison-2026-10-22)
+now runs on the RTX 4090 with the full pinned Linux stack and fresh native/stock controls.
+All clocks include a completed owned FP32 host row. Across three fresh processes per
+configuration, native 64-token prefill is 146.844 ms versus 18.280 ms for graph-configured
+SGLang; pooled decode is 19.271 versus 12.037 ms—about 8.0x/1.60x slower. SGLang's full
+one-request graph runs every decode, not prefill. All 12 common-history winners agree,
+but native/SGLang KL and TV maxima exceed stock; this is not quality-equivalent acceptance.
+Old BF16-host timings are not reused. Mixed arrivals, concurrency, physical pressure and
+SLO goodput still require a matched serving experiment. Investigate the measured native
+scaling gap without selecting a universal compiler/importer or widening rows by default.
+vLLM remains source-reviewed only, and unmodified Flare excludes SM89. Use their mechanisms
+and the [Flare findings](inference-engine-design.md#nvidia-flare-reviewed-2026-10-21) without
+narrowing hardware breadth or replacing ownership gates.
 
 The same-artifact llama.cpp comparison (2026-10-18) measured 32.7 versus 39.9 tok/s at
 c1—about 18% lower Ribn throughput, with better TTFT—and 2.2x/3.3x throughput gaps at c4/c8. This is not
@@ -300,10 +306,13 @@ CUDA retirement now drains the associated stream, including transfer-only failur
 retained compute operations and explicitly closes sequence caches. Partial cache construction
 is model-owned before allocating keys/values, so failed construction cleanup remains reachable
 even without an admitted decoder; only one such bundle can remain pending. Retirement does
-not reopen a poisoned model. Physical CUDA drain/free fault qualification remains unrun;
-host cleanup injection and ordinary Metal success are not device-fault evidence. Uncertain
-free may correctly require permanent quarantine rather than an unsafe second free. This is
-safe teardown plumbing, not an in-process device/model recovery framework.
+not reopen a poisoned model. The [CUDA device gate](../benchmarks/runtime-contract.md#cuda-device-requalification-2026-10-22)
+now exercises partial cache construction under a restricted pool budget, idempotent cache
+close and a real driver synchronization refusal during thread-local stream capture. Charges
+remain held until capture ends and shutdown retry succeeds; execution stays closed. Captured
+work is not executed: this is not running-kernel failure, driver OOM or failed-free evidence.
+Uncertain free may correctly require permanent quarantine rather than an unsafe second free.
+This is safe teardown plumbing, not an in-process device/model recovery framework.
 
 The remaining defects/limitations do not weaken the owning contracts or block unrelated
 qualified paths. The first bounded execution improvement is promoted; cross-engine
@@ -552,11 +561,12 @@ gates, with exact short-history logits against host append. The subsequent
 [eight-row lane](../benchmarks/gemma4-reference/README.md#bounded-eight-row-cuda-prefill-2026-10-21-utc)
 binds whole-group attention/donor spans and prepared workspace while retaining full
 histories and scalar fallback. Its greedy contract permits independently bounded
-reordered GEMMs, not presumed scalar bit equality. The shared `ribn serve-gemma` HTTP entry point now passes its
-[Metal functional gate](../benchmarks/runtime-contract.md#gemma-http-cli-qualification-2026-10-21),
-including JSON/SSE output, disconnect peer progress and shutdown during loading.
-CUDA HTTP execution, trimmed/mixed-retention cache lifetime, sampling and eviction
-remain unqualified; no competitive serving acceptance follows.
+reordered GEMMs, not presumed scalar bit equality. The shared `ribn serve-gemma` HTTP entry
+point now passes its [Metal](../benchmarks/runtime-contract.md#gemma-http-cli-qualification-2026-10-21)
+and [CUDA functional gates](../benchmarks/runtime-contract.md#cuda-device-requalification-2026-10-22),
+including JSON/SSE output, decoded stops, disconnect peer progress and shutdown during loading.
+Trimmed/mixed-retention cache lifetime, sampling and eviction remain unqualified; no
+competitive serving acceptance follows.
 The host CPU path now composes a full Gemma decoder step — embeddings, PLE, all 42
 hybrid layers with owner/shared-tail KV, attention, the remaining layer math and the
 tied head — and reproduces all four greedy tokens of the archived 18-token chat row.

@@ -1,6 +1,7 @@
 //! Gemma through the token runtime's engine on the native CUDA decoder.
 #![cfg(feature = "cuda")]
 
+use cudarc::driver::{CudaContext, sys};
 use engine_gemma4::{
     Gemma4Config, Gemma4CpuWeights, Gemma4CudaModel, Gemma4Executor, Gemma4Source,
 };
@@ -103,4 +104,67 @@ fn cuda_executor_reproduces_the_archived_tokens_through_the_engine() {
     assert_eq!(tokens, expected, "engine greedy tokens");
     assert_eq!(engine.status().requests, 0);
     engine.shutdown().expect("shutdown");
+}
+
+#[test]
+#[ignore = "loads the 15 GB package and exercises native stream errors; serialize device runs"]
+fn cuda_failed_drain_keeps_owners_until_capture_ends() {
+    let package = LocalModelPackage::open(environment("RIBN_GEMMA_PACKAGE")).unwrap();
+    let source = Gemma4Source::open(&package).unwrap();
+    let host = Gemma4CpuWeights::load(&source).unwrap();
+    let stream = CudaContext::new(0).unwrap().new_stream().unwrap();
+    let pool = BytePool::new(20_u64 << 30).shared();
+    let model = Arc::new(Mutex::new(
+        Gemma4CudaModel::load(&source, host, Arc::clone(&stream), &pool, 32, 512).unwrap(),
+    ));
+    let model_charge = pool.granted();
+    let mut engine = Engine::with_defaults(Gemma4Executor::cuda(&model).unwrap()).unwrap();
+    engine
+        .enqueue(TokenRequest::new(
+            vec![2],
+            GenerationOptions {
+                max_output_tokens: 4,
+                ..GenerationOptions::default()
+            },
+        ))
+        .unwrap();
+    engine.step().unwrap(); // Admission/cache allocation and submission, not execution.
+    let admitted_charge = pool.granted();
+    assert!(admitted_charge > model_charge);
+    // Captured work is not executed. A synchronous decoder's wait is forbidden;
+    // this induces a real driver error without illegal accesses or a GPU reset.
+    stream
+        .begin_capture(sys::CUstreamCaptureMode::CU_STREAM_CAPTURE_MODE_THREAD_LOCAL)
+        .unwrap();
+    let execution = engine.step();
+    let shutdown = engine.shutdown();
+    let retained_charge = pool.granted();
+    let status = stream.capture_status();
+    let ended = stream.end_capture(
+        sys::CUgraphInstantiate_flags::CUDA_GRAPH_INSTANTIATE_FLAG_AUTO_FREE_ON_LAUNCH,
+    );
+    let no_graph = matches!(&ended, Ok(None) | Err(_));
+    drop(ended); // Destroy any unexpected graph before attempting allocation release.
+    let retry = engine.shutdown();
+    // End capture and attempt cleanup before assertions, including on unexpected results.
+    assert!(execution.is_err());
+    assert!(shutdown.is_err());
+    assert_eq!(retained_charge, admitted_charge);
+    assert_eq!(
+        status.unwrap(),
+        sys::CUstreamCaptureStatus::CU_STREAM_CAPTURE_STATUS_INVALIDATED
+    );
+    assert!(
+        no_graph,
+        "invalidated capture must not produce an executable graph"
+    );
+    retry.unwrap();
+    assert_eq!(pool.granted(), model_charge);
+    assert!(
+        engine.step().is_err(),
+        "retirement must not resume execution"
+    );
+    drop(engine);
+    drop(model);
+    assert_eq!(pool.granted(), 0);
 }
