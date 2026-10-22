@@ -1,9 +1,9 @@
-# Gemma 4 Metal: same-artifact MLX calibration
+# Gemma 4 Metal: baseline and execution experiments
 
 Measured 2026-10-20 on the 40-core M3 Max, 128 GiB memory, macOS 26.6.2 (25G83).
-This compares **direct decoder calls**, not HTTP endpoints, request scheduling or SLO
-goodput. It identifies a remaining latency gap; it does not establish equal task quality
-or complete the roadmap's competitive serving baseline.
+This initial calibration compares **direct decoder calls**, not HTTP endpoints,
+request scheduling or SLO goodput. It identifies a remaining latency gap; it does not
+establish equal task quality or complete the roadmap's competitive serving baseline.
 
 ## Pinned inputs and implementations
 
@@ -153,3 +153,81 @@ Any new Ribn path must retain its independently justified numerical contract, wh
 validation, private intermediate ownership and completion-before-publication. No quality
 budget was widened, implementation changed, competitive milestone declared or desktop
 CUDA qualification attempted as part of this calibration.
+
+## Intermediate-prefill output-head elision (2026-10-22)
+
+**Rejected:** removing discarded heads did not meet the predeclared 3% prefill
+improvement gate. All candidate code, API additions and candidate-only test changes
+were reverted. No new execution variant is enabled.
+
+The default token-runtime policy accepts at most 16 prompt tokens per sequence per
+submission. Only the final prompt chunk reserves output, but the Gemma executor
+calls the decoder's full `prefill` for every chunk.
+An 18/64/129-token prompt therefore computes 1/3/8 discarded heads. A four-request
+burst with prompt lengths 18/32/64/129 computes 13. This was confirmed through the
+real `Engine::with_defaults` path, not inferred solely from the scheduler source.
+
+The candidate added intermediate-prompt advancement to the model-local decoder
+contract. CPU and Metal ran the unchanged layer/cache computation, then skipped
+final RMS normalization, the tied vocabulary projection, host logit materialization
+and soft cap when no output was requested. CUDA kept its existing compute-and-discard
+execution; no CUDA kernel or device experiment was involved. Scheduling, chunk sizes,
+row arithmetic, cache retention and sampling were unchanged.
+
+### Method and acceptance
+
+The control was `58f2fbe`, with a detached baseline worktree and separate release
+target directories for control and candidate. Both probes used Rust 1.98.0 and the
+unchanged package/reference manifest above on the M3 Max, 128 GiB, macOS 26.6.2.
+All nine package files were hash-checked before each model load.
+
+Three fresh processes per variant ran in order B1/C1/C2/B2/B3/C3, one model process
+at a time, with no concurrent builds or tests from this session. Other host activity
+was not controlled. Each process ran one retained warmup and three measured trials
+per workload, with four generated tokens per request. Prompt IDs were the archived
+18-token chat cycled to the declared lengths; timing histories were not the actual
+511/513-token quality cases. Every trial created a fresh runtime and continuation
+state over the process's shared loaded model.
+
+Clocks start before runtime stepping and include admission, scheduling, execution,
+argmax and event observation; enqueue/model loading precede them, shutdown follows.
+TTFT ends at observation of the first token; the burst's last-terminal clock ends
+at the final request's terminal event. Neither is an HTTP/content/EOF measurement.
+The probe also retained per-poll submitted prefixes, input counts, output budgets
+and completed-call durations. These reconcile to the declared chunk plans and
+discard counts.
+
+Before implementing the candidate, the screen required at least 3% lower
+64- and 129-token TTFT, no more than 2% decode-interval regression, bit-identical
+complete logits on common histories and unchanged generated tokens. Entries below
+are medians of three process medians, not pooled individual samples.
+
+| Runtime metric | Control ms | Candidate ms | Change |
+| --- | ---: | ---: | ---: |
+| c1 TTFT, 18 input tokens | 367.376 | 363.914 | −0.94% |
+| c1 TTFT, 64 input tokens | 867.916 | 852.148 | −1.82% |
+| c1 TTFT, 129 input tokens | 1897.099 | 1879.224 | −0.94% |
+| c4 mixed, median request TTFT | 2383.349 | 2365.962 | −0.73% |
+| c4 mixed, last terminal | 5402.905 | 5336.669 | −1.23% |
+
+The 64-token process medians ranged from 851.192–870.093 ms for the control and
+850.951–852.189 ms for the candidate; 129-token ranges were 1859.794–1905.051 ms and
+1869.054–1896.340 ms. All three c1 decode-interval cohorts stayed within the 2%
+regression limit: the largest increase was 0.42%. The failed prefill gate, not a
+numerical failure, rejected the candidate. These small changes do not isolate the
+head's standalone cost or establish a repeatable benefit under other policies or
+backends.
+
+All 12 full-vocabulary BF16 rows from each of the six processes were finite and
+bit-identical across variants/processes. Inputs were the stock CPU reference's
+18/511/513-token histories plus three teacher-forced continuations, with identical
+16-token prefill partitions. All 72 winners matched stock CPU BF16, and all runtime
+token sequences matched across the six processes. No numerical tolerance was
+widened; token agreement is not task-quality acceptance.
+
+All six model processes exited zero. Raw evidence is retained under
+`~/ribn-qualification/gemma4-prefill-head/20261022T212720Z/`: input/acceptance
+`plan.json`, `candidate.patch`, isolated worktree/builds, probe and analyzer sources,
+invocations and exit codes, full rows, runtime traces and `analysis.json`.
+This is a local token-runtime diagnostic, not a new MLX comparison, HTTP study,
+capacity/recovery gate or CUDA qualification.

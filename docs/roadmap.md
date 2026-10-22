@@ -767,6 +767,10 @@ and distributed training need separate qualification. Training is not an AR sche
   The candidate preserved all 12 captured full rows, but 64-token prefill improved only
   0.16% and decode was 0.29% slower. All candidate code was reverted; this does not qualify
   a device-resident variant or isolate the original round trip's standalone cost.
+- **Metal intermediate-prefill heads:** eliding discarded heads preserved all captured
+  logits but [failed its 3% runtime prefill gate](../benchmarks/gemma4-metal-baseline.md#intermediate-prefill-output-head-elision-2026-10-22):
+  64/129-token TTFT improved only 1.82%/0.94%. Candidate APIs, code and test changes were
+  reverted. This does not measure CUDA head cost or justify changing the chunk policy.
 - **Kernel losers:** do not repeat four rows per warp, shared IQ4 codebook or pre-elimination
   decayed keys without new evidence. Keep qualified small-M fallback while scaling work runs.
 - **Approximate hybrid replay:** recent suffix-replay research changes numerical/quality
