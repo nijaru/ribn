@@ -1696,6 +1696,50 @@ This is text ownership/protocol qualification, not new decoder arithmetic, physi
 memory, competitive serving or CUDA execution evidence. CUDA-feature compilation does not
 close the separately recorded Gemma executor preflight/failed-retirement gaps.
 
+## Gemma executor transaction and quarantine (2026-10-22)
+
+`Gemma4Executor` now owns one bounded preparation/submission transaction. Preparation
+checks all rows before decoder execution: sequence identity and uniqueness, prefix and
+actual decoder position, positive ranges, aggregate token limits, remaining output,
+prefill boundaries and one-token decode budgets. Submission must match that exact offer;
+polling a wrong or consumed submission cannot execute it. The row vector is reused rather
+than cloned into a new allocation at every submission. Logical cursor, input and remaining
+output update only after every decoder row succeeds.
+
+Four host regressions fail against unchanged production source at `7ec7dad`, with the unit
+module enabled and one read-only state projection adjusted to its old field location.
+All four pass after repair, as do the six existing CPU executor tests. The malformed-offer
+table covers a bad later prefix, duplicate sequence, zero input budget, missing final
+output, premature decode and aggregate limit excess with individually valid rows. Previously
+one or two real CPU decoder calls occurred before these batches failed; now none occur.
+The other cases exercise exact preparation/identity, failed cleanup retention and direct
+Drop/error-unwind ownership. Failure injection is at the decoder boundary after an earlier
+real CPU row succeeds; it is not a simulated successful CUDA drain. An independent
+source review found no material correctness issue; its logical-commit coverage concern
+was addressed with explicit frontier/input/budget assertions.
+
+A row execution error or unwind now makes the entire owner retirement-only. Further execution,
+release and synchronization error; defensive Drop retains the factory/shared model, all
+sequences and the offered work together. **This is permanent quarantine, not recovery:**
+those allocations remain retained for the process lifetime. Successful synchronous work
+and never-executed preparations still shut down normally. No backend/kernel arithmetic,
+physical allocation API or CUDA retirement implementation changed.
+
+On the M3 Max, the release Metal executor test reproduces the archived four chat token IDs
+through the real engine. A separately built CLI, SHA-256
+`3ee1dbe02eda1c192d0084975cb4b28d502982c2f50b356fd4356dabb62b4169`, also passes the
+pinned-package HTTP gate: raw/chat JSON and SSE, decoded stop matching, media rejection,
+abandoned-stream/healthy-peer progress, readiness, faulted loading and shutdown while
+loading. Its three serial process exits are 2 (expected missing-package fault), 0 and 0.
+All nine package files match the pinned sizes and hashes. The existing full-row Metal
+chunk/continuation test also passes without changing its numerical policy. Boundaries,
+formatting, workspace tests, default/CUDA/Metal Clippy and Metal-feature host tests pass.
+
+These are transaction, host ownership and Metal success-path results, not performance,
+physical peak, a widened numerical acceptance scope or CUDA fault evidence. Backend-owned retirement must
+still handle transfer-only failure, failed construction and fallible allocation cleanup;
+CPU injection and ordinary Metal success do not qualify CUDA drain/free/recovery.
+
 ## Heterogeneous-capacity decode (2026-10-16)
 
 **Promoted for the existing whole-decode lane.** Compatible KV model geometry/dtype no

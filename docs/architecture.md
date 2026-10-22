@@ -221,12 +221,15 @@ Output publication requires successful completion;
 remaining activation transfers and CPU elementwise work still limit the path.
 The archived 18-token chat row reproduces all four greedy tokens on
 the M3 Max, and again through the token runtime's engine and the text facade with the
-real Gemma tokenizer and chat assets. `Gemma4Executor` currently validates rows during
-synchronous polling rather than preflighting the whole submission; remaining executor gaps
-are recorded in the [roadmap](roadmap.md#immediate-bounds-and-lifecycle-repairs). It shares
-loaded weights across admitted sequences, runs the decoder synchronously and
-reports one completion per submitted row; a fast host test checks the same executor
-over the CPU decoder against that decoder's direct greedy path. The decoders keep
+real Gemma tokenizer and chat assets. `Gemma4Executor` preflights the whole offered batch,
+retains one exact preparation/submission and checks its completion identity. It shares
+loaded weights across sequences and commits logical cursor/input/output state only after
+all synchronous rows succeed. A failed or unwinding decoder makes the complete execution
+owner retirement-only: release and synchronization error, and defensive Drop quarantines
+model, sequences and pending work. This deliberately prevents false cleanup success; it
+is permanent retention, not backend recovery. The [roadmap](roadmap.md#immediate-bounds-and-lifecycle-repairs)
+records the missing retirement implementation and device qualification. A host test checks
+successful execution over the CPU decoder against its direct greedy path. The decoders keep
 complete per-owner history; cache eviction and sampling remain absent, and the
 single-sequence Metal decode timing is diagnostic only. Tests on the
 M3 Max compare against an independent host reference, including exact dyadic products

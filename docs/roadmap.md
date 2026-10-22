@@ -284,13 +284,24 @@ broad quality from short token equality or widen tolerances to hide disagreement
 within an explicitly qualified scope can proceed; broader performance comparisons need
 that scope independently justified.
 
-A further source audit found two Gemma executor gaps that success-path smokes do not
-qualify: row checks occur inside `poll`, so an invalid later row can follow mutation of
-an earlier continuation; `synchronize` clears states without calling the CUDA model's
-retained-failure retirement. Add whole-submission preflight and propagate failed drain
-through the same retry owner before claiming Gemma executor fault/cleanup qualification.
-The CUDA failure case is source-traced, not an injected device result; ordinary synchronous
-Metal success and text-stop qualification do not establish that recovery contract.
+Gemma executor preparation now validates the whole offered batch before decoder mutation,
+retains the exact offer through submission and checks completion identity. Malformed later
+rows no longer follow earlier continuation execution; logical state commits only after
+all rows succeed. Decoder errors/unwinds permanently close that execution owner to reuse:
+release and synchronization return errors, while defensive Drop retains the entire shared
+model/factory, sequence and batch envelope. This fail-closed quarantine replaces false
+cleanup success, but does not implement recovery or return the retained memory to its pool.
+Host regressions and the real Metal success-path gate are recorded in
+[executor transaction qualification](../benchmarks/runtime-contract.md#gemma-executor-transaction-and-quarantine-2026-10-22).
+
+Backend-specific retirement remains open. CUDA must settle retained compute operations,
+transfer-only failures without such a record, and fallible cache allocation/free cleanup;
+calling `retire_failure()` alone is insufficient. Retirement must be model-owned even
+with no admitted decoder or failed decoder creation, retain failed cleanup for retry, and
+never reopen a poisoned model. Physical CUDA drain/free/recovery qualification is still
+unrun; synchronous Metal success and host-injected quarantine do not establish it. Until
+then, a decoder failure deliberately retains its owner for the process lifetime rather
+than pretending shutdown freed its memory.
 
 The remaining defects/limitations do not weaken the owning contracts or block unrelated
 qualified paths. The first bounded execution improvement is promoted; cross-engine
