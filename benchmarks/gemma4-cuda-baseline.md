@@ -1,10 +1,12 @@
-# Gemma 4 CUDA: native, stock and prepared execution
+# Gemma 4 CUDA: prepared execution and serving diagnostics
 
 Measured 2026-10-21 on the RTX 4090, 24,564 MiB, driver 615.71.10.
 **Native prefill remains 2.81×/5.81× slower than stock Transformers at 18/64 tokens.**
 Native warmed decode is modestly faster than stock eager. Stock compilation demonstrates
 reusable whole-forward execution, but specialization, numerical differences and ownership
-still matter. This is a direct-call diagnostic, not competitive serving or quality acceptance.
+still matter. That preparation experiment is a direct-call diagnostic, not competitive
+serving or quality acceptance. Later sections add [owned-FP32 direct calls](#owned-fp32-host-output-engine-comparison-2026-10-22)
+and a [loopback serving diagnostic](#matched-loopback-serving-diagnostic-2026-10-22).
 
 ## Pinned implementations and call contract
 
@@ -481,5 +483,130 @@ is separate functional evidence, not a serving-performance result.
 
 The measured prefill scaling and decode gap justify investigation of repeated native work
 and backend-owned reuse/fusion, not a selected compiler/importer or automatic wider-row
-promotion. Mixed lengths/arrivals, concurrency, overload/cancellation, physical memory
-pressure and latency objectives still require a matched serving experiment.
+promotion. The following serving diagnostic adds mixed inputs, concurrency and admission
+overload; representative quality, physical-pressure and recovery acceptance remain open.
+
+## Matched loopback serving diagnostic (2026-10-22)
+
+**Native throughput stays near 38 output tokens/s as concurrency rises.** SGLang reaches
+281–291 at c4/c8; native c8 TTFT p95 rises to 4.68 s versus 0.49 s. These are measured
+serving deficits, **not quality-equivalent ratios**: generated continuations differ.
+
+### Workload and controls
+
+- Same pinned BF16 package, RTX 4090 and driver as above. All nine package files were
+  freshly hash-checked, including the weights. Ribn uses the qualified release CUDA HTTP
+  binary SHA256 `4821c97c19bf64ec51a11a00a1bd79ba9008b612e61a94441d401d87729a56a6`,
+  production code `ff7ed2d` (unchanged by qualifier `fd1c5b1`). SGLang uses the unchanged
+  full hash-locked 0.5.22 environment above; no upstream source, model class or pins changed.
+- AIPerf 0.13.0 runs on desktop loopback, in a separate Python 3.13.11 environment with
+  Transformers 5.20.1/tokenizers 0.23.3. Full dependency pins/hashes, installed identities,
+  commands, native exports and server logs are retained. Neither the SGLang nor reference
+  environment was modified. The client's tokenizer files match the package byte-for-byte.
+- Every phase sends the same 48 synthetic prompts, seed 42, nominal input 64±48 tokens,
+  fixed output cap 32, temperature zero and EOS enabled. Actual inputs are 1–179 tokens,
+  median 67, p95 145.95, totaling **3,382**. Raw prompt hashes/multiplicities match across
+  all 24 phases; successful server prompt usage also matches independent tokenization.
+  There are no decoded-text stops, minimum-output constraints or EOS bypasses.
+- Three fresh server processes per engine, one full-model GPU process at a time. Order
+  alternates across repetitions. Each process runs c1, c4, c8 and constant-rate 4 requests/s
+  with a c32 ceiling. Server startup/warmup and one canonical four-token HTTP preflight
+  precede measurement; each phase additionally excludes four client warmup requests.
+  All six servers and all 24 clients exit zero; owned GPU processes/groups settle before
+  the next launch. Fresh processes are not cold filesystem/JIT caches.
+- Both engines allow four active sequences and context 4096, with prefix reuse disabled.
+  Ribn retains its default 16 application permits and 20 GiB model pool, allocating a full
+  4096-position cache per admitted sequence. SGLang uses TP1, Triton attention, page size 1,
+  total KV pool 4096, at most 12 queued requests, static memory fraction 0.85, full decode
+  graphs through batch size four, and disabled prefill graphs. Other serving defaults,
+  including overlap, are retained. Its logs show four-row running/prefill batches and
+  graph decode. These are explicit bounded configurations, not identical physical-memory
+  grants or a claim about the best/default SGLang configuration.
+
+### Independently reconciled results
+
+For each phase, raw monotonic timestamps reproduce actual-init TTFT and last-nonempty-content
+latency. `[DONE]` receipt is checked separately, not called HTTP EOF. Finite-phase throughput
+uses actual terminal usage divided by aggregate `end_time - start_time`, including drain;
+using the content-window `benchmark_duration` instead would change the denominator.
+The reported clocks, rates and joint deadline counts reproduce the native exports.
+General `performance_metrics_audited` remains false; this does not audit every AIPerf metric
+or qualify token-gap tails, exact EOF timing or load-generator capacity.
+
+Before measurement, diagnostic objectives were set to **TTFT ≤1,000 ms and last content
+≤5,000 ms together**. They are not product SLOs. Failed attempts never pass; diagnostic
+goodput is passing requests divided by the finite phase duration. Latency percentiles below
+cover successful requests only. Each cell is the median of three process results; p95 is
+computed within each 48-attempt phase before taking that median.
+
+| Engine / client load | Successes / 48 | Output tokens/s | TTFT p95 ms | Last-content p95 ms | Diagnostic goodput requests/s |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Ribn c1 | 48 | 37.63 | 397.6 | 1027.9 | 1.225 |
+| SGLang c1 | 48 | 85.30 | 30.5 | 381.0 | 2.724 |
+| Ribn c4 | 48 | 37.73 | 1055.2 | 3811.7 | 1.100 |
+| SGLang c4 | 48 | 281.16 | 53.2 | 466.0 | 8.985 |
+| Ribn c8 | 48 | 37.75 | 4680.3 | 7665.3 | 0.102 |
+| SGLang c8 | 48 | 290.98 | 487.5 | 906.6 | 9.299 |
+| Ribn nominal 4/s, c32 | 29 | 38.25 | 9292.1 | 12057.4 | 0.176 |
+| SGLang nominal 4/s, c32 | 48 | 121.14 | 44.7 | 441.5 | 3.869 |
+
+Native diagnostic passes are 48/43/4/4 in those load shapes; SGLang passes all 48.
+Native c4 output throughput spans 37.69–37.76 tokens/s across processes; SGLang spans
+269.72–281.57. Native c8 spans 37.73–37.78 versus 290.96–291.09. Preserve all repetitions,
+not just their medians. The rate-controlled native phase has **19 HTTP 503 failures** in
+every repetition; all attempts remain accounted for, without crediting failed token work.
+Actual start windows span 11.748–11.750 s for 48 rate-controlled attempts on both engines.
+AIPerf can suppress scheduled ticks at its concurrency ceiling and reanchor late schedules;
+this is bounded rate-controlled traffic, not an independently exogenous arrival ledger.
+See [client measurement contracts](README.md#audited-endpoint-runner).
+
+### Quality limits and next decision
+
+EOS changes realized work. Native closed-loop phases each generate 1,475 committed tokens,
+including four stop finishes; SGLang c1 generates 1,503 with three stop finishes. SGLang c4
+varies from 1,477 to 1,502 tokens, and c8 generates 1,502. Output counts are not substituted
+with `48 * 32`. At c1, visible text, usage and finish agree between engines on **34/48**
+prompts in each repetition. Native successful outputs remain identical across its load
+shapes, while SGLang's batched outputs can change with scheduling. This diagnostic neither
+classifies those differences against the independent CPU oracle nor establishes task-quality,
+distributional or sampling equivalence. The earlier 12 common-history winner checks do not
+extend to every generated continuation here. Do not turn these throughput ratios into a
+quality-qualified competitive claim.
+
+The flat native c1/c4/c8 throughput and growing queue-visible latency make cross-sequence
+physical execution and prefill scaling concrete optimization candidates. Four logical
+sequences currently execute decoder calls sequentially; that source fact is not a measured
+attribution of the whole deficit. Choose a bounded experiment with end-to-end repeats and
+numerical gates, rather than widening rows or selecting a universal compiler by default.
+Physical peak/tight-grant recovery, long contexts, realistic content/arrivals, independent
+quality acceptance and an incumbent-native client cross-check remain open. This is not the
+complete competitive acceptance matrix.
+
+### Reproduce
+
+Use the isolated Linux dependency recipe above and existing supported GCC 15 for SGLang.
+The server commands are:
+
+```sh
+ribn serve-gemma <pinned-package> --bind 127.0.0.1:18080 --model-name gemma
+CC=/usr/bin/gcc-15 CXX=/usr/bin/g++-15 NVCC_CCBIN=/usr/bin/g++-15 MAX_JOBS=2 \
+  sglang serve --model-path <pinned-package> --served-model-name gemma \
+  --host 127.0.0.1 --port 18081 --dtype bfloat16 --context-length 4096 \
+  --max-total-tokens 4096 --max-running-requests 4 --max-queued-requests 12 \
+  --mem-fraction-static 0.85 --attention-backend triton --page-size 1 \
+  --cuda-graph-max-bs-decode 4 --cuda-graph-backend-prefill disabled --disable-radix-cache
+```
+
+Run only one full-model server at a time. Fill the existing endpoint manifest with the
+cohort, server identity and diagnostic objectives above; vary concurrency/rate, preserve
+new output directories, and repeat with fresh servers. In AIPerf 0.13 offline mode, use
+`google/gemma-4-E4B-it` plus its exact revision and a populated cache, not an absolute
+package path: that code path calls the Hub cache resolver even for a directory. This study
+uses a private `HF_HUB_CACHE` with byte-checked `config.json`, `tokenizer.json` and
+`tokenizer_config.json` under `models--google--gemma-4-E4B-it/snapshots/<revision>`.
+
+The two failed absolute-path client attempts are retained and excluded from results.
+A separate startup pilot used process-group SIGTERM, killing SGLang workers before its
+parent could drain; its resulting -9 exit is retained, not reported as graceful shutdown.
+The actual study signals only each parent, verifies settled owned processes and records
+six zero exits. Neither fix changes library code or canonical caches/environments.

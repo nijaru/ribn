@@ -7,7 +7,7 @@ open implementation choices and acceptance gates. All v0 interfaces may change.
 
 ## Current execution order
 
-**Next: matched serving/capacity evidence and measured Gemma/Qwen execution improvements.**
+**Next: measured Gemma/Qwen execution improvements and remaining quality/capacity gates.**
 The real second decoder runs on CPU, Metal and CUDA through the synchronous greedy
 executor, token runtime, text facade and CLI. The CPU full-history decoder remains the
 independent arithmetic oracle. CUDA now has a [qualified eight-row prefill lane](../benchmarks/gemma4-reference/README.md#bounded-eight-row-cuda-prefill-2026-10-21-utc)
@@ -50,9 +50,17 @@ configuration, native 64-token prefill is 146.844 ms versus 18.280 ms for graph-
 SGLang; pooled decode is 19.271 versus 12.037 ms—about 8.0x/1.60x slower. SGLang's full
 one-request graph runs every decode, not prefill. All 12 common-history winners agree,
 but native/SGLang KL and TV maxima exceed stock; this is not quality-equivalent acceptance.
-Old BF16-host timings are not reused. Mixed arrivals, concurrency, physical pressure and
-SLO goodput still require a matched serving experiment. Investigate the measured native
-scaling gap without selecting a universal compiler/importer or widening rows by default.
+Old BF16-host timings are not reused. A [bounded loopback serving study](../benchmarks/gemma4-cuda-baseline.md#matched-loopback-serving-diagnostic-2026-10-22)
+now adds 48 common variable-length prompts, c1/c4/c8 and rate-controlled admission overload,
+with three fresh server processes per engine. Native stays near 38 output tokens/s while
+SGLang reaches 281–291 at c4/c8; c8 TTFT p95 is 4.68 s versus 0.49 s. Raw client clocks,
+actual usage, phase-window rates and joint diagnostic deadlines reconcile across all 24
+phases; six servers exit cleanly. At c1 only 34/48 continuations match, so these are not
+quality-equivalent ratios. AIPerf can suppress concurrency-gated arrival ticks; its issued
+cohort is not a planned-arrival ledger. Physical pressure/recovery, independent quality,
+representative SLO acceptance and incumbent-native client cross-checks remain open.
+Target the measured concurrency/prefill deficit without selecting a universal compiler/importer
+or widening rows by default.
 vLLM remains source-reviewed only, and unmodified Flare excludes SM89. Use their mechanisms
 and the [Flare findings](inference-engine-design.md#nvidia-flare-reviewed-2026-10-21) without
 narrowing hardware breadth or replacing ownership gates.

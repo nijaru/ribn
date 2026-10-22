@@ -81,7 +81,8 @@ records the primary sources and their scope.
 - [Gemma 4 reference](gemma4-reference/README.md) — pinned E4B CPU numerical inputs/tensors
   and staged native decoder qualification.
 - [Gemma 4 CUDA baseline](gemma4-cuda-baseline.md) — same-artifact native/stock/prepared
-  direct-call diagnostics; not a competitive serving or task-quality result.
+  direct-call and bounded loopback serving diagnostics; not quality-equivalent competitive
+  acceptance or a task-quality result.
 
 ## Unqualified historical tools
 
