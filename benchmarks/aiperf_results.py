@@ -264,7 +264,8 @@ def validate(directory):
     return {
         "protocol_valid": not invalid and not warmup_errors and successful > 0,
         "quality_scope": manifest["run"]["quality_scope"],
-        "offered_requests": expected,
+        "attempted_requests": expected,
+        "planned_arrivals_audited": False,
         "successful_requests": successful,
         "failed_requests": len(failures),
         "invalid_requests": invalid,

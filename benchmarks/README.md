@@ -350,7 +350,8 @@ assertions, not discovered or verified against the remote server. Preserve serve
 logs/configuration independently. The runner does not launch or stop the server.
 
 Validation reconciles the effective client configuration, record identities,
-profiling/warmup counts and usage totals. A successful stream must have a finish
+profiling/warmup counts and usage totals. `attempted_requests` counts issued profiling
+records, including failures; it is not a ledger of every planned arrival. A successful stream must have a finish
 reason, coherent integer usage and `[DONE]`, without late errors or extra data.
 Cleanly truncated streams can pass AIPerf itself, so ordinary summaries and HTTP
 trace metadata alone are insufficient. Failed requests remain in offered-work
@@ -377,8 +378,21 @@ Optional `[slo]` values must be positive; omit unset objectives. Their boundarie
   bundled/withheld output and suppressed stop tokens can change the interpretation.
   It is not an individual-token or chunk-gap tail. Inspect `inter_chunk_latency` separately.
 
-These clocks start at actual client request initiation, not planned arrival. Zero warmup
-omits AIPerf's positive-only warmup option; it does not establish cold execution.
+These clocks start at actual client request initiation, not planned arrival. With a
+positive request rate, AIPerf skips scheduled ticks when its concurrency ceiling is full
+and can reanchor a late schedule. The count target covers issued requests, not suppressed
+ticks; exported credit times are stamped after admission to the concurrency gate. Report
+nominal rate separately from actual starts and achieved throughput. `planned_arrivals_audited`
+remains false: neither a complete planned-arrival ledger nor planned-arrival SLO goodput
+can be recovered from these exports.
+
+Raw `start_perf_ns` and response `perf_ns` allow independent first/last-content and
+`[DONE]`-receipt clocks. DONE receipt is not HTTP EOF. For finite-phase throughput, divide
+actual successful request/token totals by the aggregate `end_time - start_time`, including
+drain—not `benchmark_duration`, which ends at content. General performance metrics remain
+unaudited; a study must cross-check the specific clocks and rates it reports.
+
+Zero warmup omits AIPerf's positive-only warmup option; it does not establish cold execution.
 The [client timing/Metal gate](runtime-contract.md#gemma-endpoint-client-qualification-2026-10-21)
 checks these bounded semantics, not aggregate metric accuracy or load-generator capacity.
 See the pinned [metrics definitions](https://docs.nvidia.com/aiperf/v0.13.0/reference/ai-perf-metrics-reference).

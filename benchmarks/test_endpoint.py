@@ -1,4 +1,4 @@
-"""Protection against accepting incomplete streams or miscounting offered work."""
+"""Protection against accepting incomplete streams or miscounting attempted work."""
 
 import copy
 import hashlib
@@ -204,7 +204,8 @@ class EndpointTests(unittest.TestCase):
             export(directory, ordinary, raw[::-1], summary)
             report = validate(directory)
             self.assertTrue(report["protocol_valid"])
-            self.assertEqual(report["offered_requests"], 2)
+            self.assertEqual(report["attempted_requests"], 2)
+            self.assertFalse(report["planned_arrivals_audited"])
             self.assertEqual(
                 report["completion_tokens"], 4
             )  # Not 2 requests * cap 8, nor chunk count.
@@ -267,7 +268,7 @@ class EndpointTests(unittest.TestCase):
                 self.assertEqual(report["successful_requests"], 1)
                 self.assertEqual(len(report["invalid_requests"]), 1)
 
-    def test_failures_remain_in_offered_work_and_do_not_inflate_tokens(self):
+    def test_failures_remain_in_attempted_work_and_do_not_inflate_tokens(self):
         with tempfile.TemporaryDirectory() as tmp:
             directory = Path(tmp)
             ordinary, raw, summary = fixture(directory)
@@ -283,7 +284,7 @@ class EndpointTests(unittest.TestCase):
             self.assertTrue(report["protocol_valid"])
             self.assertEqual(
                 (
-                    report["offered_requests"],
+                    report["attempted_requests"],
                     report["successful_requests"],
                     report["failed_requests"],
                 ),
@@ -374,7 +375,7 @@ class EndpointTests(unittest.TestCase):
             export(directory, ordinary, raw, summary)
             report = validate(directory)
             self.assertFalse(report["protocol_valid"])
-            self.assertEqual(report["failed_requests"], report["offered_requests"])
+            self.assertEqual(report["failed_requests"], report["attempted_requests"])
             self.assertEqual(report["completion_tokens"], 0)
 
     def test_run_refuses_existing_or_raced_output_without_replacing_evidence(self):

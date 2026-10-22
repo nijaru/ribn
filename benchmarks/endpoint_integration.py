@@ -166,7 +166,7 @@ class RealClientTests(unittest.TestCase):
                         result.stdout + result.stderr + log[-3000:],
                     )
                     report = json.loads((output / "validation.json").read_text())
-                    # Readiness probes are disabled: only declared offered work.
+                    # Readiness probes are disabled: only declared issued attempts.
                     self.assertEqual(server.requests, requests + warmup)
                     client = output / "client"
                     return {
@@ -206,7 +206,7 @@ class RealClientTests(unittest.TestCase):
         captured = self.exercise("valid", input_stddev=8, requests=16)
         report, prompt_lengths = captured["audit"], captured["prompt_lengths"]
         self.assertTrue(report["protocol_valid"])
-        self.assertEqual(report["offered_requests"], 16)
+        self.assertEqual(report["attempted_requests"], 16)
         self.assertEqual(report["successful_requests"], 16)
         self.assertGreater(len(set(prompt_lengths)), 1, prompt_lengths)
         self.assertEqual(report["prompt_tokens"], sum(prompt_lengths))
@@ -242,6 +242,17 @@ class RealClientTests(unittest.TestCase):
             self.assertLess(last, responses[3]["perf_ns"])
             self.assertLess(responses[3]["perf_ns"], responses[-1]["perf_ns"])
 
+    def test_rate_ceiling_does_not_establish_nominal_offered_load(self):
+        captured = self.exercise("timing", rate=20, warmup=0)
+        report = captured["audit"]
+        self.assertTrue(report["protocol_valid"])
+        self.assertEqual(report["attempted_requests"], 2)
+        self.assertFalse(report["planned_arrivals_audited"])
+        starts = sorted(r["start_perf_ns"] for r in captured["raw"])
+        # One slot stays occupied through six delayed frames. The requested
+        # 50 ms arrival interval is not an independently offered-work ledger.
+        self.assertGreater(starts[1] - starts[0], 500_000_000)
+
     def test_rate_control_preserves_partial_overload(self):
         for arrival in ("constant", "poisson"):
             with self.subTest(arrival=arrival):
@@ -249,7 +260,7 @@ class RealClientTests(unittest.TestCase):
                 self.assertTrue(report["protocol_valid"])
                 self.assertEqual(
                     (
-                        report["offered_requests"],
+                        report["attempted_requests"],
                         report["successful_requests"],
                         report["failed_requests"],
                     ),

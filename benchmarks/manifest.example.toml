@@ -49,7 +49,9 @@ output_tokens_stddev = 0
 request_count = 100
 warmup_requests = 2
 max_concurrency = 1
-# Zero means concurrency-limited, as-fast-as-possible traffic, not an open-loop rate.
+# Zero means concurrency-limited, as-fast-as-possible traffic. Positive rates
+# are still gated by max_concurrency: AIPerf can skip scheduled arrivals when full.
+# Neither setting establishes an independently exogenous offered-load ledger.
 request_rate = 0.0
 arrival_pattern = "poisson"
 request_timeout_seconds = 120
