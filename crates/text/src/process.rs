@@ -9,13 +9,13 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 
 use flume::{Receiver, Sender};
-use ribn::GenerationOptions;
 use ribn::TokenRequest;
-use ribn::driver::{DeliveryLease, RequestPermit};
+use ribn::driver::RequestPermit;
 
 use crate::error::TextError;
 use crate::input::{Message, TextInput};
 use crate::model::TextRequest;
+use crate::stream::RequestDecoder;
 
 /// Separate bounds for input payload, owned allocations, rendering and decode output.
 ///
@@ -26,7 +26,7 @@ pub struct ProcessorLimits {
     /// Raw prompt text, summed message role/content, or token payload bytes.
     pub max_input_bytes: usize,
     /// Owned input and generation-option heap capacity before preprocessing.
-    /// Includes chat-container storage, string/vector spare capacity and stop IDs;
+    /// Includes chat/stop containers, string/vector spare capacity and stop IDs;
     /// fixed job objects and allocator overhead are not part of this envelope.
     pub max_retained_bytes: usize,
     /// Rendered chat-template bytes per request.
@@ -35,7 +35,8 @@ pub struct ProcessorLimits {
     pub max_prompt_tokens: usize,
     /// Decoded vocabulary-piece bytes, before delayed-run expansion/fusion.
     pub max_decoded_token_bytes: usize,
-    /// Bytes retained across token events by one decoder.
+    /// Bytes retained across token events by the model codec. The text-stop
+    /// matcher has its separate [`crate::MAX_STOP_BYTES`] workspace envelope.
     pub max_decode_pending_bytes: usize,
     /// Bytes emitted in one delta, including a delayed run or terminal flush.
     pub max_decoded_delta_bytes: usize,
@@ -119,18 +120,26 @@ impl ProcessorLimits {
         Ok(())
     }
 
-    fn check_request(
-        self,
-        input: &TextInput,
-        options: &GenerationOptions,
-    ) -> Result<(), TextError> {
-        self.check_input(input)?;
-        let bytes = Self::retained_bytes(input).checked_add(
-            options
-                .stop_tokens
-                .capacity()
-                .saturating_mul(size_of::<u32>()),
-        );
+    fn check_request(self, request: &TextRequest) -> Result<(), TextError> {
+        self.check_input(&request.input)?;
+        crate::stream::validate_stops(&request.stops)?;
+        let bytes = Self::retained_bytes(&request.input)
+            .checked_add(
+                request
+                    .options
+                    .stop_tokens
+                    .capacity()
+                    .saturating_mul(size_of::<u32>()),
+            )
+            .and_then(|bytes| {
+                bytes.checked_add(request.stops.capacity().saturating_mul(size_of::<String>()))
+            })
+            .and_then(|bytes| {
+                request
+                    .stops
+                    .iter()
+                    .try_fold(bytes, |total, stop| total.checked_add(stop.capacity()))
+            });
         match bytes {
             Some(bytes) => self.check_retained("retained request bytes", bytes),
             None => Err(TextError::limit(
@@ -202,8 +211,9 @@ pub trait TextProcessor: Send + Sync + 'static {
     fn decoder(self: Arc<Self>, output_tokens: usize) -> Result<Box<dyn TextDecoder>, TextError>;
 }
 
-/// Request-owned model semantics. Fragments must be irrevocable; every normal or
-/// cancelled terminal consumes the finalizer, while owner failure drops it unflushed.
+/// Request-owned model semantics. Fragments must be irrevocable. Normal/cancelled
+/// termination consumes the finalizer unless a decoded-text stop already closed output;
+/// that stop and owner failure drop the decoder without flushing discarded text.
 pub trait TextDecoder: Send {
     /// # Errors
     /// A request-local token, encoding or output-bound failure.
@@ -213,29 +223,11 @@ pub trait TextDecoder: Send {
     fn finish(self: Box<Self>) -> Result<String, TextError>;
 }
 
-/// Decoder state and its existing grant travel together, including cancelled
-/// acknowledgement waits. Field order frees state before capacity on implicit Drop.
-pub(crate) struct RequestDecoder {
-    inner: Box<dyn TextDecoder>,
-    delivery: DeliveryLease,
-}
-impl RequestDecoder {
-    pub(crate) fn push(&mut self, token: u32) -> Result<String, TextError> {
-        self.inner.push(token)
-    }
-    pub(crate) fn finish(self) -> Result<String, TextError> {
-        let result = self.inner.finish();
-        drop(self.delivery);
-        result
-    }
-}
-
 /// Encoded input that still owns its admission permit.
 pub(crate) struct Prepared {
     pub(crate) request: TokenRequest,
     pub(crate) permit: RequestPermit,
     pub(crate) decoder: RequestDecoder,
-    pub(crate) stops: Vec<String>,
 }
 
 struct Job {
@@ -386,10 +378,7 @@ impl PoolClient {
         request: TextRequest,
         permit: RequestPermit,
     ) -> Result<Receiver<Result<Prepared, TextError>>, TextError> {
-        self.state
-            .limits
-            .check_request(&request.input, &request.options)?;
-        crate::stream::validate_stops(&request.stops)?;
+        self.state.limits.check_request(&request)?;
         // Even without prompt tokens, these options must fit the driver's stop
         // storage plus runtime-copy allowance. Do not queue an impossible job.
         permit
@@ -465,15 +454,16 @@ fn prepare(
         .map_err(TextError::Admission)?;
     let output_tokens = usize::try_from(options.max_output_tokens)
         .map_err(|_| TextError::InvalidInput("output token budget exceeds address space"))?;
-    let decoder = RequestDecoder {
-        inner: processor.clone().decoder(output_tokens)?,
-        delivery: permit.retain_delivery(),
-    };
+    let decoder = RequestDecoder::new(
+        processor.clone().decoder(output_tokens)?,
+        stops,
+        permit.retain_delivery(),
+        processor.limits().max_decoded_delta_bytes,
+    )?;
     Ok(Prepared {
         request: TokenRequest::new(tokens, options),
         permit,
         decoder,
-        stops,
     })
 }
 
@@ -485,8 +475,8 @@ mod tests {
     use ribn::driver::{Driver, DriverConfig};
     use ribn::{
         Admission, BatchItem, BatchPreparation, Engine, EngineConfig, ExecutionError, ExecutorInfo,
-        GenerationExecutor, GenerationLimits, RequestId, SchedulePolicy, SequenceId,
-        StepCompletion, SubmissionId,
+        GenerationExecutor, GenerationLimits, GenerationOptions, RequestId, SchedulePolicy,
+        SequenceId, StepCompletion, SubmissionId,
     };
 
     use super::*;

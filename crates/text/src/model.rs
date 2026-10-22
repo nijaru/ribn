@@ -166,7 +166,7 @@ impl TextModel {
             .stream(prepared.request)
             .await
             .map_err(TextError::Admission)?;
-        TextStream::new(prepared.decoder, stream, prepared.stops)
+        Ok(TextStream::new(prepared.decoder, stream))
     }
 
     /// Blocking counterpart of [`Self::stream`]. Not for async executor tasks.
@@ -191,7 +191,7 @@ impl TextModel {
             .permit
             .stream_blocking(prepared.request)
             .map_err(TextError::Admission)?;
-        TextStream::new(prepared.decoder, stream, prepared.stops)
+        Ok(TextStream::new(prepared.decoder, stream))
     }
 
     /// Generate one response to completion.
@@ -395,6 +395,7 @@ impl TextOwner {
         if limits
             .max_retained_bytes
             .checked_add(limits.max_decoded_token_bytes)
+            .and_then(|n| n.checked_add(crate::stream::MAX_STOP_BYTES))
             .and_then(|n| n.checked_add(limits.max_decode_pending_bytes))
             .and_then(|n| n.checked_add(limits.max_decoded_delta_bytes))
             .and_then(|n| n.checked_mul(handle.capacity()))

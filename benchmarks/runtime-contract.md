@@ -1655,6 +1655,47 @@ successful captures are retained. All protocol/accounting audits still report
 lateness, load-generator capacity, competitive latency/SLO goodput, CUDA execution,
 physical-memory and numerical quality remain separate gates.
 
+## Text stop ownership repair (2026-10-22)
+
+The shared text facade now treats codec state, decoded-text stop matching and their
+delivery lease as one request-owned output state. Three defects were reproduced:
+
+- Stop-container and string spare capacity bypassed the retained-request envelope.
+  Those allocations now join input and stop-token capacity before preprocessing queue
+  insertion. A blocked-worker case rejects a one-character string with 1 MiB capacity
+  and an empty stop vector with 65,536 slots; a joint-bound case accepts exactly 256
+  bytes and rejects 257 without normalization or copying.
+- A matched stop still decoded/finalized its discarded suffix. Buffered invalid GGUF
+  UTF-8 or an oversized Gemma fallback expansion could turn successful stopping into
+  an error. Matching now drops codec/matcher scratch unflushed, preserves committed
+  token IDs/usage, and retains the grant while observing actual runtime settlement.
+  Owner failure after a match still reports an owner error, not fabricated success.
+- Withheld stop prefixes could exceed the declared delta bound when released on a later
+  chunk or at termination. The bound now applies after matching as well as inside the
+  model codec; overflow remains request-local and a healthy peer still progresses.
+
+The initial updated facade tests ran against unchanged production source at `fbe43fc` in
+an isolated worktree: six regressions failed, while the other 37 passed. A further assembly
+case failed before the bounded matcher workspace was included in aggregate overflow
+validation. The repaired facade passes all 43. The tests use actual GGUF/Gemma processors
+and the real driver; only token execution is scripted. Existing owner-failure fixture races were fixed by
+keeping decode held until polling observes the injected fault, without relaxing their
+error assertions. Normal/cancelled finalizers, cancelled prepared replies, early scratch
+release and terminal exhaustion retain their protection.
+
+A newly built release Metal CLI also passed the pinned full-package HTTP gate: ordinary
+raw/chat JSON and SSE still produce the archived four-token chat text, while
+`stop=["mutex"]` yields exactly `A ` with one stop terminal in both JSON and SSE.
+Each stop response reports 18 input / 3 committed output tokens; the third token was
+already committed, not made visible or retroactively refunded. Media rejection, abandoned
+stream/healthy-peer progress, readiness, faulted loading and shutdown during loading also
+passed. The three serial server exits were 2 (expected missing-package failure), 0 and 0.
+The binary SHA-256 is `cd884c8275b62f738eafc5d6c3c67524585ff2047426cb0e4e1abe470af1615a`.
+
+This is text ownership/protocol qualification, not new decoder arithmetic, physical peak
+memory, competitive serving or CUDA execution evidence. CUDA-feature compilation does not
+close the separately recorded Gemma executor preflight/failed-retirement gaps.
+
 ## Heterogeneous-capacity decode (2026-10-16)
 
 **Promoted for the existing whole-decode lane.** Compatible KV model geometry/dtype no

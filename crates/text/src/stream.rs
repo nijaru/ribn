@@ -1,10 +1,10 @@
 //! Owned text delivery with request-local model decoding.
 
-use ribn::driver::GenerationStream;
+use ribn::driver::{DeliveryLease, GenerationStream};
 use ribn::{Event, FinishReason, RequestId, Usage};
 
 use crate::error::TextError;
-use crate::process::RequestDecoder;
+use crate::process::TextDecoder;
 
 /// Incremental text event. Token IDs remain available even when one token does
 /// not independently form valid UTF-8 and therefore has an empty text delta.
@@ -144,6 +144,86 @@ impl StopMatcher {
     }
 }
 
+/// Decode state, stop matching and their existing delivery grant have one owner.
+/// Field order frees all retained output state before returning capacity on Drop.
+pub(crate) struct RequestDecoder {
+    stops: Option<StopMatcher>,
+    inner: Option<Box<dyn TextDecoder>>,
+    _delivery: DeliveryLease,
+    delta_limit: usize,
+    stopped: bool,
+}
+
+impl RequestDecoder {
+    pub(crate) fn new(
+        inner: Box<dyn TextDecoder>,
+        stops: Vec<String>,
+        delivery: DeliveryLease,
+        delta_limit: usize,
+    ) -> Result<Self, TextError> {
+        Ok(Self {
+            stops: StopMatcher::new(stops)?,
+            inner: Some(inner),
+            _delivery: delivery,
+            delta_limit,
+            stopped: false,
+        })
+    }
+
+    fn check_delta(&self, text: &str) -> Result<(), TextError> {
+        if text.len() > self.delta_limit {
+            return Err(TextError::limit(
+                "decoded delta bytes",
+                self.delta_limit,
+                text.len(),
+            ));
+        }
+        Ok(())
+    }
+
+    fn push(&mut self, token: u32) -> Result<String, TextError> {
+        if self.stopped {
+            return Ok(String::new());
+        }
+        let text = self
+            .inner
+            .as_mut()
+            .expect("open output owns a decoder")
+            .push(token)?;
+        let text = match self.stops.as_mut() {
+            None => text,
+            Some(stops) => stops.push(&text),
+        };
+        self.check_delta(&text)?;
+        if self.stops.as_ref().is_some_and(|stops| stops.hit) {
+            self.stopped = true;
+            // Later committed tokens still carry IDs/usage, but their text cannot
+            // alter an irrevocable stop or fail its now-irrelevant finalizer.
+            self.stops = None;
+            self.inner = None;
+        }
+        Ok(text)
+    }
+
+    fn finish(mut self) -> Result<(String, bool), TextError> {
+        let trailing = match self.inner.take() {
+            Some(decoder) => decoder.finish()?,
+            None => String::new(),
+        };
+        let text = match self.stops.as_mut() {
+            None => trailing,
+            Some(stops) => {
+                let mut text = stops.push(&trailing);
+                text.push_str(&stops.finish());
+                self.stopped = stops.hit;
+                text
+            }
+        };
+        self.check_delta(&text)?;
+        Ok((text, self.stopped))
+    }
+}
+
 /// One owned text request. Dropping an unfinished stream abandons delivery
 /// without waiting for device completion; the execution owner retains retirement.
 pub struct TextStream {
@@ -151,65 +231,17 @@ pub struct TextStream {
     stream: Option<GenerationStream>,
     decoder: Option<RequestDecoder>,
     pending: Option<(FinishReason, Usage)>,
-    stops: Option<StopMatcher>,
-    stopping: bool,
     done: bool,
 }
 
 impl TextStream {
-    pub(crate) fn new(
-        decoder: RequestDecoder,
-        stream: GenerationStream,
-        stops: Vec<String>,
-    ) -> Result<Self, TextError> {
-        let request = stream.request_id();
-        Ok(Self {
-            request,
+    pub(crate) fn new(decoder: RequestDecoder, stream: GenerationStream) -> Self {
+        Self {
+            request: stream.request_id(),
             stream: Some(stream),
             decoder: Some(decoder),
             pending: None,
-            stops: StopMatcher::new(stops)?,
-            stopping: false,
             done: false,
-        })
-    }
-
-    fn stopped(&self) -> bool {
-        self.stops.as_ref().is_some_and(|stops| stops.hit)
-    }
-
-    /// Match one decoded token, cancelling the runtime once a stop is complete.
-    fn delta(&mut self, token: Option<u32>, text: String) -> TextEvent {
-        let text = match self.stops.as_mut() {
-            None => text,
-            Some(stops) => {
-                let emitted = stops.push(&text);
-                self.cancel_after_stop();
-                emitted
-            }
-        };
-        TextEvent::Delta { token, text }
-    }
-
-    fn cancel_after_stop(&mut self) {
-        if self.stopping || !self.stopped() {
-            return;
-        }
-        self.stopping = true;
-        if let Some(stream) = &self.stream {
-            stream.cancel();
-        }
-    }
-
-    /// Decoder terminal flush; a stop may complete exactly on this boundary.
-    fn flush(&mut self, trailing: String) -> String {
-        match self.stops.as_mut() {
-            None => trailing,
-            Some(stops) => {
-                let mut text = stops.push(&trailing);
-                text.push_str(&stops.finish());
-                text
-            }
         }
     }
 
@@ -269,27 +301,30 @@ impl TextStream {
     ) -> Result<TextEvent, TextError> {
         match event {
             Ok(Event::Token { token, .. }) => {
-                let text = self
+                let decoder = self
                     .decoder
                     .as_mut()
-                    .expect("active stream owns its decoder")
-                    .push(token)
-                    .map_err(|error| self.abandon(error))?;
-                Ok(self.delta(Some(token), text))
+                    .expect("active stream owns its decoder");
+                let was_stopped = decoder.stopped;
+                let text = decoder.push(token);
+                let newly_stopped = !was_stopped && decoder.stopped;
+                let text = text.map_err(|error| self.abandon(error))?;
+                if newly_stopped && let Some(stream) = &self.stream {
+                    stream.cancel();
+                }
+                Ok(TextEvent::Delta {
+                    token: Some(token),
+                    text,
+                })
             }
             Ok(Event::Finished { reason, usage, .. }) => {
-                let trailing = self
+                let (trailing, stopped) = self
                     .decoder
                     .take()
                     .expect("active stream owns its decoder")
                     .finish()
                     .map_err(|error| self.abandon(error))?;
-                let trailing = self.flush(trailing);
-                let reason = if self.stopped() {
-                    FinishReason::Stop
-                } else {
-                    reason
-                };
+                let reason = if stopped { FinishReason::Stop } else { reason };
                 // No decoder/assets or driver delivery remain in a terminated stream.
                 self.stream = None;
                 if trailing.is_empty() {

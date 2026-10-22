@@ -57,14 +57,17 @@ Unknown fields, query parameters, content encodings and request trailers reject.
 Arrays of prompts, token-ID prompts, multimodal content, tools, logprob output,
 structured output, stochastic sampling and alternate operations are unsupported.
 Streamed stop matching withholds a suffix that could still complete a configured
-stop, so no delta publishes a partial or complete stop sequence. Artifact EOS and
-rendered chat control-token stops remain model-owned unless `ignore_eos` is set.
+stop, so no delta publishes a partial or complete stop sequence. After a match,
+discarded buffered text is not decoded or finalized, but execution retirement and
+owner-error observation still complete normally. Artifact EOS and rendered chat
+control-token stops remain model-owned unless `ignore_eos` is set.
 
 Non-streaming responses contain one choice, finish reason and token usage.
 Streaming uses SSE `data: <JSON>\n\n` frames: ordered text/content deltas, one finish
 chunk (`stop` or `length`), optional usage-only chunk with empty choices, then
 `data: [DONE]\n\n`. Chat starts with an assistant-role chunk. Usage counts committed
-tokens, including suppressed generated stop tokens. A stream failure after headers
+tokens, including suppressed generated stop tokens and already-committed output
+beyond a text-stop match; those tokens are not retroactively refunded. A stream failure after headers
 emits one `{"error":...}` frame and `[DONE]`, without successful finish/usage.
 A broken connection or deadline may end delivery without a terminal frame.
 

@@ -223,6 +223,11 @@ Source audits at `093cd28` and `70e5586` found gaps that passing fixtures do not
    before prepared replies. Real-facade regressions failed on the original spare-capacity
    and blocked-worker options defects; host gates now cover these, exact joint bounds,
    runtime stop copies, local errors, permit return and invalid aggregate configuration.
+   Decoded-text stop containers/string capacities now join that same pre-queue envelope.
+   Their matcher and codec share the delivery grant; a matched stop cannot decode or
+   finalize a discarded suffix, and released stop prefixes obey the delta bound.
+   [Stop-boundary regressions](../benchmarks/runtime-contract.md#text-stop-ownership-repair-2026-10-22)
+   exercise these gaps on the actual facade with GGUF/Gemma processors.
    This does not qualify allocator overhead, arbitrary processor workspace or process RSS.
 2. **Non-AR application access.** `BatchRuntime` in `crates/batch/src/lib.rs` bounds counts,
    not submitted input bytes, selects FIFO prefixes and lacks local close/shutdown.
@@ -278,6 +283,14 @@ common-history distributions/state and independent task-quality evidence; do not
 broad quality from short token equality or widen tolerances to hide disagreement. Timing
 within an explicitly qualified scope can proceed; broader performance comparisons need
 that scope independently justified.
+
+A further source audit found two Gemma executor gaps that success-path smokes do not
+qualify: row checks occur inside `poll`, so an invalid later row can follow mutation of
+an earlier continuation; `synchronize` clears states without calling the CUDA model's
+retained-failure retirement. Add whole-submission preflight and propagate failed drain
+through the same retry owner before claiming Gemma executor fault/cleanup qualification.
+The CUDA failure case is source-traced, not an injected device result; ordinary synchronous
+Metal success and text-stop qualification do not establish that recovery contract.
 
 The remaining defects/limitations do not weaken the owning contracts or block unrelated
 qualified paths. The first bounded execution improvement is promoted; cross-engine

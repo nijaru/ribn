@@ -190,6 +190,26 @@ fn push_and_finalization_bounds_settle_only_the_failing_batch_item() {
     }
 }
 
+#[test]
+fn a_text_stop_cannot_turn_into_a_buffered_push_or_finalization_error() {
+    for script in [vec![10, byte(0xff), 1], vec![10, byte(0xff), 11, 1]] {
+        let harness = harness(processor(ProcessorLimits {
+            max_decoded_delta_bytes: 1,
+            ..gemma_limits()
+        }));
+        harness.plan.script(10, &script);
+        let request = ribn_text::TextRequest::new(input(10), options()).with_stops(["X"]);
+        let mut stream = harness.model.stream_request_blocking(request).unwrap();
+        wait_until(|| harness.plan.polls() >= script.len());
+        let result = drain_until_error(&mut stream);
+        assert!(result.error.is_none(), "{script:?}: {:?}", result.error);
+        assert!(result.text.is_empty());
+        assert_eq!(result.tokens, script[..script.len() - 1]);
+        assert_eq!(result.terminals, [FinishReason::Stop]);
+        assert!(stream.next_blocking().is_none());
+    }
+}
+
 type Gate = (flume::Sender<()>, flume::Receiver<()>);
 
 struct TrackedProcessor {
@@ -252,6 +272,45 @@ impl Drop for TrackedDecoder {
         }
         self.live.fetch_sub(1, Ordering::SeqCst);
     }
+}
+
+#[test]
+fn a_matched_stop_drops_decode_scratch_without_hiding_owner_failure() {
+    let live = Arc::new(AtomicUsize::new(0));
+    let finalized = Arc::new(AtomicUsize::new(0));
+    let harness = harness(Arc::new(TrackedProcessor {
+        inner: processor(gemma_limits()),
+        live: live.clone(),
+        finalized: finalized.clone(),
+        finish_gate: None,
+        constructor_gate: Mutex::new(None),
+        drop_gate: Mutex::new(None),
+    }));
+    harness.plan.script(10, &[10, 10, 1]);
+    harness.plan.holding(true);
+    let request = ribn_text::TextRequest::new(input(10), options()).with_stops(["X"]);
+    let mut stream = harness.model.stream_request_blocking(request).unwrap();
+    wait_until(|| harness.plan.polls() >= 1);
+    harness.plan.failing_polls(true);
+    wait_until(|| harness.model.check_open().is_err());
+    assert_eq!(
+        stream.next_blocking().unwrap().unwrap(),
+        TextEvent::Delta {
+            token: Some(10),
+            text: String::new(),
+        }
+    );
+    assert_eq!(
+        live.load(Ordering::SeqCst),
+        0,
+        "matched output no longer needs decode scratch"
+    );
+    assert_eq!(finalized.load(Ordering::SeqCst), 0);
+    assert!(matches!(
+        stream.next_blocking(),
+        Some(Err(TextError::Owner(_)))
+    ));
+    assert!(stream.next_blocking().is_none());
 }
 
 #[test]
@@ -357,9 +416,12 @@ fn every_terminal_releases_decoder_and_owner_failure_never_flushes() {
             stream.cancel();
         }
         if mode == "owner" {
+            // Leave decode held until polling observes the fault, rather than
+            // racing a poll that already checked the failure flag.
             harness.plan.failing_polls(true);
+        } else {
+            harness.plan.holding(false);
         }
-        harness.plan.holding(false);
         let output = drain_until_error(&mut stream);
         match mode {
             "stop" | "cancel" => {

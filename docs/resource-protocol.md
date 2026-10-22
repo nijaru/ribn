@@ -1,6 +1,6 @@
 # Resource, submission and snapshot protocol
 
-Status: accepted execution contract, revised 2026-10-20. Implemented behavior and
+Status: accepted execution contract, revised 2026-10-22. Implemented behavior and
 qualification limits are identified below; targets do not retroactively qualify source.
 AR preparation control is host-qualified. Dynamic Qwen growth, bounded overlap,
 non-AR application lifecycle and snapshot replacement remain unimplemented. Accepted text
@@ -680,7 +680,8 @@ above it and must be bounded independently:
 - `ProcessorLimits::max_retained_bytes` bounds owned input and generation-option heap
   capacity **before** queue insertion, separately from `max_input_bytes` payload length.
   Include string/token capacity, `Vec<Message>` capacity and role/content allocations,
-  plus caller stop-vector capacity. Reject excess capacity without copying/shrinking;
+  caller stop-token capacity, `Vec<String>` stop-container capacity and every stop string's
+  capacity. Text-stop count/payload limits are separate from these retained allocations. Reject excess capacity without copying/shrinking;
   many empty messages cannot bypass container accounting. Fixed jobs are count-bounded,
   and allocator overhead is outside this envelope. Assembly rejects aggregate-bound
   overflow; queued input/options capacity is at most permits times this envelope.
@@ -704,15 +705,17 @@ above it and must be bounded independently:
 - Preparation creates one owned model-specific decoder, under the request permit,
   before publishing its prepared reply or submitting to execution. Constructor errors
   return the unused permit. Cancelled preparation drops the decoder with its reply.
-  Preparation couples the decoder to a delivery lease on the same permit, before
-  moving the permit into submission. That owned pair survives acknowledgement waits,
-  failed/cancelled submissions and finalization/drop: consuming the underlying token
-  terminal must not return capacity while decoder state is still live. This extends the existing grant, not a second
-  accounting authority or device reservation. Raw token streams keep their existing
+  Preparation couples the decoder and decoded-text stop matcher to a delivery lease on
+  the same permit, before moving the permit into submission. That owned pair survives
+  acknowledgement waits, failed/cancelled submissions and finalization/drop: consuming the
+  underlying token terminal must not return capacity while decoder or stop-matching state
+  is still live. This extends the existing grant, not a second accounting authority or
+  device reservation. Raw token streams keep their existing
   terminal-delivery release semantics. Shared immutable vocabulary is not cloned per
-  request. Pending bytes and delta bytes have explicit per-request bounds; assembly checks aggregate arithmetic with
-  the permit count. These are payload/state envelopes, not allocator or process-RSS
-  guarantees. Immutable vocabulary and caller-collected results are outside them.
+  request. Model-codec pending bytes and emitted delta bytes have explicit per-request
+  bounds; assembly includes the separate `MAX_STOP_BYTES` matcher workspace when checking
+  aggregate arithmetic with the permit count. These are payload/state envelopes, not
+  allocator or process-RSS guarantees. Immutable vocabulary and caller-collected results are outside them.
 - Gemma's worst-case pending run is one byte per generated token. Its decoder factory
   rejects output budgets exceeding the pending-byte envelope before enqueue, and
   reserves that run once. A malformed run can expand to three bytes per byte;
@@ -727,13 +730,18 @@ above it and must be bounded independently:
   byte makes every byte in that run a replacement character, including a formerly
   valid-looking prefix. Neither policy belongs in the token runtime.
 - A normal or explicitly cancelled terminal consumes the decoder's finalizer once,
-  including when the stop token itself was not ingested. Any trailing text is a
-  token-less delta before the text terminal. GGUF replaces an incomplete final code
-  point once; Gemma flushes the final fallback run. Finalization may fail.
+  including when the stop token itself was not ingested, unless a decoded-text stop
+  already closed output. That match drops decoder/matcher scratch without finalizing
+  irrelevant text. Continue consuming committed token IDs and the actual runtime outcome:
+  cancellation is intent, the delivery grant remains live, and owner failure still errors.
+  Otherwise any trailing text is a token-less delta before the text terminal. GGUF replaces
+  an incomplete final code point once; Gemma flushes the final fallback run. Finalization may fail.
 - A push or finalization error abandons only its own request. Peers continue, and
   the failing request yields one typed error instead of a text terminal.
-- A terminated stream releases its decode scratch and keeps only its terminal
-  outcome until its consumer reads it, so a retained finished stream does not
+- Stop-prefix release and terminal matching obey the same decoded-delta byte bound as
+  the model codec; combining withheld text with a later chunk grants no extra allowance.
+- A terminated stream releases its decoder and stop-matching scratch and keeps only its
+  terminal outcome until its consumer reads it, so a retained finished stream does not
   accumulate request payload.
 - Owner failure preserves events already handed to stream channels, then yields
   one owner error. It does not invent successful usage or perform an ordinary

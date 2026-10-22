@@ -19,14 +19,19 @@ CLI run / HTTP (CLI serve → ribn-server)
 `TextOwner::load` assembles the Qwen GGUF/CUDA path. `TextOwner` owns shutdown;
 cloneable `TextModel` handles share its token worker. Preprocessing uses a permit-bounded
 pool, not a second execution loop. Separate payload and retained-heap envelopes reject
-excess string/token capacity, chat-container storage and generation options before queue
-insertion. Stop capacity plus the runtime copy must also fit the driver's encoded envelope;
+excess string/token capacity, chat/stop-container storage and generation options before
+queue insertion, including each decoded-text stop string's spare capacity. Stop-token
+capacity plus the runtime copy must also fit the driver's encoded envelope;
 model-added stops and actual encoded tokens are checked before publishing a prepared reply.
-Prepared replies also own one request-local model decoder, constructed under the
-permit before runtime enqueue. Pending-byte and emitted-delta bounds are separate
-from vocabulary-piece bytes; the stream consumes its finalizer on normal/cancelled
-termination and drops all decoder state on failure. GGUF's strict UTF-8 policy and
-Gemma's whole-run byte fallback are model-local, not branches in delivery or scheduling.
+Prepared replies own one request-local output decoder: model codec, decoded-text stop
+matcher and their delivery lease together, constructed under the permit before runtime
+enqueue. Pending-byte and emitted-delta bounds are separate from vocabulary-piece bytes;
+post-matching deltas obey the same output bound. A matched text stop drops codec/matcher
+scratch without finalizing irrelevant buffered text, while retaining the grant through
+runtime settlement/error. Other normal/cancelled termination finalizes the codec once;
+all termination/error paths free matching state before returning its grant. GGUF's strict
+UTF-8 policy and Gemma's whole-run byte fallback are model-local, not branches in delivery
+or scheduling.
 Fixed job objects are count-bounded; allocator overhead and processor workspace are not
 included in the retained-input envelope. These host checks are not a process-RSS bound.
 Offline batching consumes a bounded window and
@@ -216,8 +221,10 @@ Output publication requires successful completion;
 remaining activation transfers and CPU elementwise work still limit the path.
 The archived 18-token chat row reproduces all four greedy tokens on
 the M3 Max, and again through the token runtime's engine and the text facade with the
-real Gemma tokenizer and chat assets. `Gemma4Executor` validates whole submissions,
-shares loaded weights across admitted sequences, runs the decoder synchronously and
+real Gemma tokenizer and chat assets. `Gemma4Executor` currently validates rows during
+synchronous polling rather than preflighting the whole submission; remaining executor gaps
+are recorded in the [roadmap](roadmap.md#immediate-bounds-and-lifecycle-repairs). It shares
+loaded weights across admitted sequences, runs the decoder synchronously and
 reports one completion per submitted row; a fast host test checks the same executor
 over the CPU decoder against that decoder's direct greedy path. The decoders keep
 complete per-owner history; cache eviction and sampling remain absent, and the
