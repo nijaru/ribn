@@ -224,12 +224,15 @@ the M3 Max, and again through the token runtime's engine and the text facade wit
 real Gemma tokenizer and chat assets. `Gemma4Executor` preflights the whole offered batch,
 retains one exact preparation/submission and checks its completion identity. It shares
 loaded weights across sequences and commits logical cursor/input/output state only after
-all synchronous rows succeed. A failed or unwinding decoder makes the complete execution
-owner retirement-only: release and synchronization error, and defensive Drop quarantines
-model, sequences and pending work. This deliberately prevents false cleanup success; it
-is permanent retention, not backend recovery. The [roadmap](roadmap.md#immediate-bounds-and-lifecycle-repairs)
-records the missing retirement implementation and device qualification. A host test checks
-successful execution over the CPU decoder against its direct greedy path. The decoders keep
+all synchronous rows succeed. Failed continuation cannot resume, but teardown can succeed:
+paired model creation/completion ownership and explicit sequence close establish when
+resources may be destroyed. CPU calls and terminal Metal commands need no further drain;
+CUDA settles its associated stream and retained operations before closing caches. Partial
+CUDA cache construction stays model-owned, including an unfinished key when value allocation
+fails. Failed completion or close preserves the same owner and charges for retry; defensive
+Drop quarantines only unresolved cleanup. This does not reset a poisoned model. The
+[roadmap](roadmap.md#immediate-bounds-and-lifecycle-repairs) records device qualification
+limits. A host test checks successful CPU execution against the decoder's direct path. The decoders keep
 complete per-owner history; cache eviction and sampling remain absent, and the
 single-sequence Metal decode timing is diagnostic only. Tests on the
 M3 Max compare against an independent host reference, including exact dyadic products

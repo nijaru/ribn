@@ -1696,49 +1696,54 @@ This is text ownership/protocol qualification, not new decoder arithmetic, physi
 memory, competitive serving or CUDA execution evidence. CUDA-feature compilation does not
 close the separately recorded Gemma executor preflight/failed-retirement gaps.
 
-## Gemma executor transaction and quarantine (2026-10-22)
+## Gemma executor transaction and teardown (2026-10-22)
 
-`Gemma4Executor` now owns one bounded preparation/submission transaction. Preparation
-checks all rows before decoder execution: sequence identity and uniqueness, prefix and
-actual decoder position, positive ranges, aggregate token limits, remaining output,
-prefill boundaries and one-token decode budgets. Submission must match that exact offer;
-polling a wrong or consumed submission cannot execute it. The row vector is reused rather
-than cloned into a new allocation at every submission. Logical cursor, input and remaining
-output update only after every decoder row succeeds.
+Whole-batch validation and exact preparation/submission identity remain in place.
+The malformed-offer cases reproduce internal-contract violations, not a normal HTTP
+request failure: a bad later prefix, duplicate sequence, zero inputs, missing final
+output, premature decode or aggregate limit excess previously followed one or two real
+CPU decoder calls. Preparation now rejects those offers before any decoder call.
+Logical cursor, input and remaining output commit only after all rows succeed.
 
-Four host regressions fail against unchanged production source at `7ec7dad`, with the unit
-module enabled and one read-only state projection adjusted to its old field location.
-All four pass after repair, as do the six existing CPU executor tests. The malformed-offer
-table covers a bad later prefix, duplicate sequence, zero input budget, missing final
-output, premature decode and aggregate limit excess with individually valid rows. Previously
-one or two real CPU decoder calls occurred before these batches failed; now none occur.
-The other cases exercise exact preparation/identity, failed cleanup retention and direct
-Drop/error-unwind ownership. Failure injection is at the decoder boundary after an earlier
-real CPU row succeeds; it is not a simulated successful CUDA drain. An independent
-source review found no material correctness issue; its logical-commit coverage concern
-was addressed with explicit frontier/input/budget assertions.
+The original cleanup policy in `7abb830` was overbroad. Its two retention tests required
+permanent ownership after a completed CPU error; those expectations did not establish a
+need for quarantine. Corrected tests instead require safe teardown without resuming the
+invalid continuation. Both fail against `7abb830`; the preflight and identity tests still
+pass there. This corrects the earlier characterization of all four as necessary regressions.
 
-A row execution error or unwind now makes the entire owner retirement-only. Further execution,
-release and synchronization error; defensive Drop retains the factory/shared model, all
-sequences and the offered work together. **This is permanent quarantine, not recovery:**
-those allocations remain retained for the process lifetime. Successful synchronous work
-and never-executed preparations still shut down normally. No backend/kernel arithmetic,
-physical allocation API or CUDA retirement implementation changed.
+Creation and completion now capture the same concrete backend model. CPU errors leave no
+asynchronous accesses; Metal waits for terminal command completion before reporting status.
+CUDA settlement drains its associated stream, including transfer-only failure, retires
+the retained compute operation and explicitly closes sequence caches. An unfinished CUDA
+key and completed cache layers remain model-owned if value/later allocation fails.
+Failed construction cleanup stays reachable even without an admitted decoder; at most one
+such bundle may remain pending. CUDA binding borrows the caller's shared model handle so
+failure does not consume its retirement owner; the unused combined decoder-load constructor
+was removed rather than retaining that ownership trap.
 
-On the M3 Max, the release Metal executor test reproduces the archived four chat token IDs
-through the real engine. A separately built CLI, SHA-256
-`3ee1dbe02eda1c192d0084975cb4b28d502982c2f50b356fd4356dabb62b4169`, also passes the
-pinned-package HTTP gate: raw/chat JSON and SSE, decoded stop matching, media rejection,
-abandoned-stream/healthy-peer progress, readiness, faulted loading and shutdown while
-loading. Its three serial process exits are 2 (expected missing-package fault), 0 and 0.
-All nine package files match the pinned sizes and hashes. The existing full-row Metal
-chunk/continuation test also passes without changing its numerical policy. Boundaries,
-formatting, workspace tests, default/CUDA/Metal Clippy and Metal-feature host tests pass.
+Execution remains closed after failure. Successful completion/close permits destruction;
+failed completion or partial close retains the same resources and charges for retry.
+Defensive Drop attempts the same teardown and retains its complete envelope only if cleanup
+fails or unwinds. Poisoned execution is never reopened, and uncertain free is never blindly
+retried. This is teardown, not an in-process model/device recovery framework.
 
-These are transaction, host ownership and Metal success-path results, not performance,
-physical peak, a widened numerical acceptance scope or CUDA fault evidence. Backend-owned retirement must
-still handle transfer-only failure, failed construction and fallible allocation cleanup;
-CPU injection and ordinary Metal success do not qualify CUDA drain/free/recovery.
+Nine host cases cover the retained transaction checks, completed-error/unwind teardown,
+pending completion, partial close, close-unwind fencing, partial construction without a
+decoder and unresolved cleanup during Drop. Cleanup injection uses real pool leases, including a lease acquired
+before construction fails, and verifies retention followed by refund after successful
+retirement. The six existing CPU executor cases also pass. Independent source review found
+the partial-construction retry-owner gap during implementation; the model-owned construction
+guard and borrowed binding interfaces address it. These host cases do not inject physical
+CUDA driver failure.
+
+The local release Metal executor and existing full-row chunk/continuation gates pass.
+The CLI HTTP gate also passes with binary SHA-256
+`7a3d0fa2d8ae5e5349402bfc9b4ce46229a456a20eef41a8ca268baff6e93a88`: raw/chat JSON and SSE,
+decoded stops, media rejection, abandonment/healthy-peer progress, readiness, faulted loading
+and shutdown while loading. Its serial process exits are 2 (expected missing-package fault),
+0 and 0. Workspace tests, boundaries, formatting, default/CUDA/Metal Clippy and Metal-feature
+host tests pass. No kernel arithmetic or numerical acceptance policy changes.
+Physical CUDA drain/free fault qualification remains unrun while desktop access is unavailable.
 
 ## Heterogeneous-capacity decode (2026-10-16)
 

@@ -1,20 +1,55 @@
 //! Adversarial work crosses the real Gemma executor and CPU decoder boundary.
 use super::*;
+use crate::{Gemma4CpuDecoder, Gemma4CpuWeights};
 use ribn::{Engine, Event, GenerationOptions, RequestId, StepKind};
-use std::sync::atomic::{AtomicUsize, Ordering};
+use ribn_foundation::{BytePool, PoolLease};
+use std::sync::{
+    Mutex, Weak,
+    atomic::{AtomicBool, AtomicUsize, Ordering},
+};
 
+mod retirement;
 #[path = "../../tests/common/weights.rs"]
 mod weights;
 
 #[derive(Default)]
+enum Completion {
+    #[default]
+    Ready,
+    Waiting,
+    Unwind,
+}
 struct Probe {
     calls: AtomicUsize,
     live: AtomicUsize,
+    completion: Mutex<Completion>,
+    close_calls: AtomicUsize,
+    fail_close_at: AtomicUsize,
+    close_unwind: AtomicBool,
+    pool: Arc<BytePool>,
+    model: Mutex<Weak<Gemma4CpuWeights>>,
+    partial: Mutex<Option<PoolLease>>,
+}
+impl Default for Probe {
+    fn default() -> Self {
+        Self {
+            calls: AtomicUsize::new(0),
+            live: AtomicUsize::new(0),
+            completion: Mutex::default(),
+            close_calls: AtomicUsize::new(0),
+            fail_close_at: AtomicUsize::new(0),
+            close_unwind: AtomicBool::new(false),
+            pool: BytePool::new(64).shared(),
+            model: Mutex::default(),
+            partial: Mutex::default(),
+        }
+    }
 }
 struct CountedDecoder {
     inner: Gemma4CpuDecoder,
     probe: Arc<Probe>,
     failure: Option<Mode>,
+    lease: Option<PoolLease>,
 }
 impl CountedDecoder {
     fn enter(&self) -> Result<(), Gemma4Error> {
@@ -47,6 +82,21 @@ impl GemmaDecode for CountedDecoder {
     fn position(&self) -> usize {
         self.inner.position()
     }
+    fn close(&mut self) -> Result<(), Gemma4Error> {
+        if self.lease.is_some() {
+            assert!(
+                !self.probe.close_unwind.swap(false, Ordering::SeqCst),
+                "injected close unwind"
+            );
+            let call = self.probe.close_calls.fetch_add(1, Ordering::SeqCst) + 1;
+            if call == self.probe.fail_close_at.load(Ordering::SeqCst) {
+                return Err(Gemma4Error::new("test close", "injected release failure"));
+            }
+            GemmaDecode::close(&mut self.inner)?;
+            self.lease = None;
+        }
+        Ok(())
+    }
 }
 
 fn counted(probe: Arc<Probe>, failure: Option<Mode>) -> Gemma4Executor<CountedDecoder> {
@@ -54,19 +104,47 @@ fn counted(probe: Arc<Probe>, failure: Option<Mode>) -> Gemma4Executor<CountedDe
     let package = weights::package(&dir, &weights::inventory(), false);
     let source = crate::Gemma4Source::open(&package).unwrap();
     let host = Arc::new(Gemma4CpuWeights::load(&source).unwrap());
+    *probe.model.lock().unwrap() = Arc::downgrade(&host);
+    let completion = probe.clone();
     Gemma4Executor::new(
         "counted CPU",
         host.config().max_position_embeddings(),
         host.config().clone(),
-        Box::new(move || {
-            let inner = Gemma4CpuDecoder::shared(host.clone())?;
-            probe.live.fetch_add(1, Ordering::SeqCst);
-            Ok(CountedDecoder {
-                inner,
-                probe: probe.clone(),
-                failure,
-            })
-        }),
+        Backend {
+            create: Box::new(move || {
+                if failure == Some(Mode::AdmissionFailure) {
+                    let completed = matches!(*probe.completion.lock().unwrap(), Completion::Ready);
+                    let mut partial = probe.partial.lock().unwrap();
+                    if partial.is_none() {
+                        *partial = Some(probe.pool.reserve(32).unwrap());
+                    }
+                    if completed {
+                        *partial = None;
+                    }
+                    return Err(Gemma4Error::new(
+                        "test creation",
+                        "injected failure after partial allocation",
+                    ));
+                }
+                let inner = Gemma4CpuDecoder::shared(host.clone())?;
+                let lease = probe.pool.reserve(32).unwrap();
+                probe.live.fetch_add(1, Ordering::SeqCst);
+                Ok(CountedDecoder {
+                    inner,
+                    probe: probe.clone(),
+                    failure,
+                    lease: Some(lease),
+                })
+            }),
+            settle: Box::new(move || match *completion.completion.lock().unwrap() {
+                Completion::Ready => {
+                    *completion.partial.lock().unwrap() = None;
+                    Ok(())
+                }
+                Completion::Waiting => Err(Gemma4Error::new("test completion", "still pending")),
+                Completion::Unwind => panic!("injected cleanup unwind"),
+            }),
+        },
     )
     .unwrap()
 }
@@ -87,6 +165,8 @@ enum Mode {
     Failure,
     DropFailure,
     DropUnwind,
+    AdmissionFailure,
+    ReleaseUnwind,
 }
 
 struct Boundary {
@@ -201,6 +281,21 @@ impl GenerationExecutor for Boundary {
         Ok(rows)
     }
     fn release(&mut self, sequence: SequenceId) -> Result<(), ExecutionError> {
+        if self.mode == Mode::ReleaseUnwind
+            && self.inner.execution.as_ref().unwrap().phase != Phase::Closed
+        {
+            assert!(
+                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    self.inner.release(sequence)
+                }))
+                .is_err()
+            );
+            assert!(
+                self.inner.execution.as_ref().unwrap().phase == Phase::Retiring,
+                "close must forbid execution before a fallible hook can unwind"
+            );
+            return Err(ExecutionError::new("caught close unwind"));
+        }
         self.inner.release(sequence)?;
         self.inner.release(sequence)
     }
@@ -284,44 +379,4 @@ fn preparation_submission_and_poll_identity_are_one_transaction() {
     assert_eq!(probe.calls.load(Ordering::SeqCst), 4);
     assert_eq!(probe.live.load(Ordering::SeqCst), 0);
     engine.shutdown().unwrap();
-}
-
-#[test]
-fn partial_execution_failure_never_reports_cleanup_or_releases_owners() {
-    let probe = Arc::new(Probe::default());
-    let mut engine = engine(probe.clone(), Mode::Failure);
-    engine.step().unwrap();
-    assert!(engine.step().is_err());
-    while let Some(event) = engine.pop_event() {
-        assert!(matches!(
-            event,
-            Event::Finished {
-                reason: ribn::FinishReason::Failed(_),
-                ..
-            }
-        ));
-    }
-    for _ in 0..2 {
-        assert!(engine.shutdown().is_err());
-        assert_eq!(probe.live.load(Ordering::SeqCst), 2);
-    }
-    drop(engine);
-    assert_eq!(probe.calls.load(Ordering::SeqCst), 2);
-    assert_eq!(
-        probe.live.load(Ordering::SeqCst),
-        2,
-        "complete owner quarantined"
-    );
-}
-
-#[test]
-fn direct_executor_drop_retains_failed_and_unwinding_batches() {
-    for mode in [Mode::DropFailure, Mode::DropUnwind] {
-        let probe = Arc::new(Probe::default());
-        let mut engine = engine(probe.clone(), mode);
-        engine.step().unwrap();
-        assert!(engine.step().is_err());
-        drop(engine);
-        assert_eq!(probe.live.load(Ordering::SeqCst), 2, "{mode:?}");
-    }
 }

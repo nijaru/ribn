@@ -30,7 +30,7 @@ const GEMM_WORKSPACE: usize = 8 * 1024 * 1024;
 
 mod buffers;
 mod preparation;
-use buffers::{Buffers, DeviceCache, GeometryBuffers};
+use buffers::{Buffers, CacheConstruction, DeviceCache, GeometryBuffers};
 use preparation::PREFILL_ROWS;
 
 struct Executors {
@@ -53,6 +53,7 @@ pub struct Gemma4CudaModel {
     pool: Arc<BytePool>,
     max_positions: usize,
     failure: Option<CudaBf16ComputeError>,
+    cache_retirement: Option<CacheConstruction>,
 }
 
 impl Gemma4CudaModel {
@@ -125,6 +126,7 @@ impl Gemma4CudaModel {
             pool: Arc::clone(pool),
             max_positions,
             failure: None,
+            cache_retirement: None,
         })
     }
 
@@ -147,14 +149,26 @@ impl Gemma4CudaModel {
             .map_or(1, |buffers| buffers.hidden.shape().0)
     }
 
-    /// Retire a failed device operation retained by the last step.
+    /// Establish associated-stream completion and retire any retained operation.
+    /// This also covers transfer errors whose retirement lives in allocations,
+    /// not in a compute-error record. A faulted model is never reopened.
     /// # Errors
-    /// Returns the backend's drain/cleanup failure for another attempt.
+    /// Failed drain/cleanup leaves this same owner available for another attempt.
     pub fn retire_failure(&mut self) -> Result<(), CudaBf16Error> {
-        match self.failure.as_mut() {
-            Some(failure) => failure.retire(),
-            None => Ok(()),
+        self.stream
+            .synchronize()
+            .map_err(|source| CudaBf16Error::Transport {
+                operation: "Gemma model completion",
+                source: Box::new(source),
+            })?;
+        if let Some(failure) = self.failure.as_mut() {
+            failure.retire()?;
         }
+        if let Some(caches) = self.cache_retirement.as_mut() {
+            caches.close()?;
+        }
+        self.cache_retirement = None;
+        Ok(())
     }
 
     fn step(
@@ -163,10 +177,16 @@ impl Gemma4CudaModel {
         position: usize,
         caches: &mut [Option<DeviceCache>],
     ) -> Result<Vec<u16>, Gemma4Error> {
+        if self.cache_retirement.is_some() {
+            return Err(Gemma4Error::new(
+                "CUDA decoder",
+                "cache construction cleanup is unresolved",
+            ));
+        }
         if let Some(failure) = self.failure.as_ref() {
             return Err(Gemma4Error::new(
                 "CUDA decoder",
-                format!("device failure is not retired: {}", failure.cause()),
+                format!("model is faulted: {}", failure.cause()),
             ));
         }
         let result = (|| {
@@ -235,51 +255,21 @@ pub struct Gemma4CudaDecoder {
 }
 
 impl Gemma4CudaDecoder {
-    /// Bind one continuation to a shared device model.
+    /// Bind one continuation without consuming the caller's model owner.
     /// # Errors
-    /// Rejects a poisoned model lock or cache-allocation failure.
-    pub fn shared(model: Arc<Mutex<Gemma4CudaModel>>) -> Result<Self, Gemma4Error> {
-        let guard = model
+    /// Rejects a poisoned lock or cache allocation/cleanup failure. Keep the
+    /// model handle to retry [`Gemma4CudaModel::retire_failure`] on failure.
+    pub fn shared(model: &Arc<Mutex<Gemma4CudaModel>>) -> Result<Self, Gemma4Error> {
+        let mut guard = model
             .lock()
             .map_err(|_| Gemma4Error::new("CUDA decoder", "model lock poisoned"))?;
-        let config = guard.config();
-        let mut caches = Vec::with_capacity(config.layers().len());
-        for (layer, geometry) in config.layers().iter().enumerate() {
-            caches.push(
-                (geometry.kv_owner == layer)
-                    .then(|| {
-                        DeviceCache::allocate(
-                            guard.max_positions,
-                            config.num_key_value_heads() * geometry.head_dim,
-                            &guard.stream,
-                            &guard.pool,
-                        )
-                    })
-                    .transpose()?,
-            );
-        }
+        let caches = guard.allocate_caches()?;
         drop(guard);
         Ok(Self {
-            model,
+            model: Arc::clone(model),
             caches,
             position: 0,
         })
-    }
-
-    /// Prepare and bind a fresh model and sequence.
-    /// # Errors
-    /// As [`Gemma4CudaModel::load`] or [`Self::shared`].
-    pub fn load(
-        source: &Gemma4Source,
-        host: Gemma4CpuWeights,
-        stream: Arc<CudaStream>,
-        pool: &Arc<BytePool>,
-        max_positions: usize,
-        scratch_entries: usize,
-    ) -> Result<Self, Gemma4Error> {
-        let model =
-            Gemma4CudaModel::load(source, host, stream, pool, max_positions, scratch_entries)?;
-        Self::shared(Arc::new(Mutex::new(model)))
     }
 
     /// Append a prompt chunk and return logits for its last token. Intermediate
@@ -327,6 +317,16 @@ impl Gemma4CudaDecoder {
     #[must_use]
     pub fn position(&self) -> usize {
         self.position
+    }
+
+    /// Release sequence allocations while retaining every failed close for retry.
+    pub(crate) fn retire_caches(&mut self) -> Result<(), Gemma4Error> {
+        for cache in self.caches.iter_mut().flatten() {
+            cache
+                .close()
+                .map_err(|error| Gemma4Error::new("CUDA cache retirement", error.to_string()))?;
+        }
+        Ok(())
     }
 
     /// Clear continuation state; weights stay bound.

@@ -73,8 +73,8 @@ impl TextOwner {
             CUDA_SCRATCH_ENTRIES,
         )
         .map_err(TextError::processor)?;
-        let executor = Gemma4Executor::cuda(Arc::new(std::sync::Mutex::new(model)))
-            .map_err(TextError::processor)?;
+        let model = Arc::new(std::sync::Mutex::new(model));
+        let executor = Gemma4Executor::cuda(&model).map_err(TextError::processor)?;
         assemble(&package, executor, model_bytes)
     }
 }

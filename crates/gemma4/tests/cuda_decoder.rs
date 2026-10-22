@@ -63,7 +63,8 @@ fn cuda_decoder_reproduces_the_archived_greedy_tokens() {
     let started = Instant::now();
     let model = Gemma4CudaModel::load(&source, host, stream, &pool, 32, 512).expect("CUDA model");
     assert_eq!(model.prefill_rows(), 1, "scalar bitwise control");
-    let mut decoder = Gemma4CudaDecoder::shared(Arc::new(Mutex::new(model))).unwrap();
+    let model = Arc::new(Mutex::new(model));
+    let mut decoder = Gemma4CudaDecoder::shared(&model).unwrap();
     let loaded = started.elapsed();
 
     let prefill = Instant::now();
@@ -135,7 +136,8 @@ fn cuda_decoder_reproduces_archived_window_boundary_continuations() {
         8,
         "requires the qualified RTX 4090/E4B lane"
     );
-    let mut decoder = Gemma4CudaDecoder::shared(Arc::new(Mutex::new(model))).unwrap();
+    let model = Arc::new(Mutex::new(model));
+    let mut decoder = Gemma4CudaDecoder::shared(&model).unwrap();
     drop(source);
     drop(package);
 

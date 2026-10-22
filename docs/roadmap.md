@@ -287,21 +287,23 @@ that scope independently justified.
 Gemma executor preparation now validates the whole offered batch before decoder mutation,
 retains the exact offer through submission and checks completion identity. Malformed later
 rows no longer follow earlier continuation execution; logical state commits only after
-all rows succeed. Decoder errors/unwinds permanently close that execution owner to reuse:
-release and synchronization return errors, while defensive Drop retains the entire shared
-model/factory, sequence and batch envelope. This fail-closed quarantine replaces false
-cleanup success, but does not implement recovery or return the retained memory to its pool.
-Host regressions and the real Metal success-path gate are recorded in
-[executor transaction qualification](../benchmarks/runtime-contract.md#gemma-executor-transaction-and-quarantine-2026-10-22).
+all rows succeed. The initial blanket quarantine in `7abb830` incorrectly treated every
+execution failure as unretired device access, permanently retaining even completed CPU
+work. That policy and its retention assertions are replaced by backend-owned teardown:
+execution stays faulted, but CPU and terminal-Metal resources can be destroyed. Failed
+completion or sequence close retains the owner and its charges for another attempt;
+defensive Drop retains the complete envelope only if cleanup fails or unwinds.
+[Executor transaction and teardown qualification](../benchmarks/runtime-contract.md#gemma-executor-transaction-and-teardown-2026-10-22)
+distinguishes the reproduced leak, internal-contract hardening and injected cleanup cases.
 
-Backend-specific retirement remains open. CUDA must settle retained compute operations,
-transfer-only failures without such a record, and fallible cache allocation/free cleanup;
-calling `retire_failure()` alone is insufficient. Retirement must be model-owned even
-with no admitted decoder or failed decoder creation, retain failed cleanup for retry, and
-never reopen a poisoned model. Physical CUDA drain/free/recovery qualification is still
-unrun; synchronous Metal success and host-injected quarantine do not establish it. Until
-then, a decoder failure deliberately retains its owner for the process lifetime rather
-than pretending shutdown freed its memory.
+CUDA retirement now drains the associated stream, including transfer-only failure, retires
+retained compute operations and explicitly closes sequence caches. Partial cache construction
+is model-owned before allocating keys/values, so failed construction cleanup remains reachable
+even without an admitted decoder; only one such bundle can remain pending. Retirement does
+not reopen a poisoned model. Physical CUDA drain/free fault qualification remains unrun;
+host cleanup injection and ordinary Metal success are not device-fault evidence. Uncertain
+free may correctly require permanent quarantine rather than an unsafe second free. This is
+safe teardown plumbing, not an in-process device/model recovery framework.
 
 The remaining defects/limitations do not weaken the owning contracts or block unrelated
 qualified paths. The first bounded execution improvement is promoted; cross-engine

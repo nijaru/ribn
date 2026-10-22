@@ -2,7 +2,7 @@
 use super::DEVICE_ONLY_STAGING;
 use crate::{AttentionKind, Gemma4Config, Gemma4Error};
 use cudarc::driver::CudaStream;
-use engine_nvidia::CudaBf16Matrix;
+use engine_nvidia::{CudaBf16Error, CudaBf16Matrix};
 use ribn_foundation::BytePool;
 use std::sync::Arc;
 
@@ -166,16 +166,112 @@ impl AttentionWidth {
 }
 
 impl DeviceCache {
-    pub(super) fn allocate(
+    pub(super) fn close(&mut self) -> Result<(), CudaBf16Error> {
+        self.keys.close()?;
+        self.values.close()
+    }
+}
+
+/// Installed in the model before any sequence allocation. The unfinished key
+/// remains owned here if allocating its value fails; completed layers also stay
+/// reachable until cleanup succeeds or the bundle transfers to a decoder.
+pub(super) struct CacheConstruction {
+    caches: Vec<Option<DeviceCache>>,
+    key: Option<CudaBf16Matrix>,
+}
+impl CacheConstruction {
+    fn new(layers: usize) -> Self {
+        Self {
+            caches: Vec::with_capacity(layers),
+            key: None,
+        }
+    }
+
+    fn build(
+        &mut self,
+        config: &Gemma4Config,
         capacity: usize,
-        columns: usize,
         stream: &Arc<CudaStream>,
         pool: &Arc<BytePool>,
-    ) -> Result<Self, Gemma4Error> {
-        Ok(Self {
-            keys: matrix(capacity, columns, stream, pool, DEVICE_ONLY_STAGING)?,
-            values: matrix(capacity, columns, stream, pool, DEVICE_ONLY_STAGING)?,
-        })
+    ) -> Result<(), Gemma4Error> {
+        for (layer, geometry) in config.layers().iter().enumerate() {
+            if geometry.kv_owner != layer {
+                self.caches.push(None);
+                continue;
+            }
+            let columns = config.num_key_value_heads() * geometry.head_dim;
+            self.key = Some(matrix(
+                capacity,
+                columns,
+                stream,
+                pool,
+                DEVICE_ONLY_STAGING,
+            )?);
+            let values = matrix(capacity, columns, stream, pool, DEVICE_ONLY_STAGING)?;
+            let keys = self
+                .key
+                .take()
+                .expect("allocated key stays owned until value exists");
+            // Capacity was reserved before device allocation; this handoff does
+            // not allocate or run fallible cleanup between key/value ownership.
+            self.caches.push(Some(DeviceCache { keys, values }));
+        }
+        Ok(())
+    }
+
+    pub(super) fn close(&mut self) -> Result<(), CudaBf16Error> {
+        if let Some(key) = self.key.as_mut() {
+            key.close()?;
+        }
+        for cache in self.caches.iter_mut().flatten() {
+            cache.close()?;
+        }
+        Ok(())
+    }
+}
+
+impl super::Gemma4CudaModel {
+    pub(super) fn allocate_caches(&mut self) -> Result<Vec<Option<DeviceCache>>, Gemma4Error> {
+        if self.failure.is_some() {
+            return Err(Gemma4Error::new(
+                "CUDA cache construction",
+                "model is faulted",
+            ));
+        }
+        if self.cache_retirement.is_some() {
+            self.retire_failure()
+                .map_err(|error| Gemma4Error::new("CUDA cache retirement", error.to_string()))?;
+        }
+        self.cache_retirement = Some(CacheConstruction::new(self.config().layers().len()));
+        let result = {
+            let Self {
+                host,
+                stream,
+                pool,
+                max_positions,
+                cache_retirement,
+                ..
+            } = self;
+            cache_retirement
+                .as_mut()
+                .expect("construction owner installed before allocation")
+                .build(host.config(), *max_positions, stream, pool)
+        };
+        if let Err(error) = result {
+            // Do not discard partial keys/layers even if their cleanup also fails.
+            return match self.retire_failure() {
+                Ok(()) => Err(error),
+                Err(cleanup) => Err(Gemma4Error::new(
+                    "CUDA cache construction",
+                    format!("{error}; cleanup remains pending: {cleanup}"),
+                )),
+            };
+        }
+        Ok(self
+            .cache_retirement
+            .take()
+            .expect("successful cache construction")
+            .caches)
     }
 }
 

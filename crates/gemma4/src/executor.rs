@@ -5,8 +5,7 @@
 //! work. Weights are shared across sequences and each admitted sequence owns its
 //! cache and position. Unretired failures keep the complete execution owner.
 
-use crate::cpu::Gemma4CpuDecoder;
-use crate::{Gemma4Config, Gemma4CpuWeights, Gemma4Error};
+use crate::{Gemma4Config, Gemma4Error};
 use ribn::{
     Admission, BatchItem, BatchPreparation, ExecutionError, ExecutorInfo, GenerationExecutor,
     GenerationLimits, SequenceId, StepCompletion, SubmissionId, TokenRequest,
@@ -14,65 +13,14 @@ use ribn::{
 use std::collections::HashMap;
 use std::sync::Arc;
 
+mod backend;
 mod batch;
 #[cfg(test)]
 mod tests;
 
-/// Sequence-level decoder operations; the executor does not inspect backend state.
-/// Successful calls establish completion. An error need not establish retirement,
-/// so the generic executor treats decoder errors and unwinds as owner-fatal.
-pub trait GemmaDecode: Send {
-    /// Append a prompt chunk and return logits for its last token.
-    /// # Errors
-    /// Rejects invalid tokens or a chunk past the model's context.
-    fn prefill(&mut self, tokens: &[u32]) -> Result<Vec<u16>, Gemma4Error>;
-    /// Append one generated token and return the next logits.
-    /// # Errors
-    /// Rejects an invalid token or a step past the model's context.
-    fn decode(&mut self, token: u32) -> Result<Vec<u16>, Gemma4Error>;
-    /// Tokens currently owned by this continuation.
-    fn position(&self) -> usize;
-}
+use backend::Backend;
+pub use backend::GemmaDecode;
 
-impl GemmaDecode for Gemma4CpuDecoder {
-    fn prefill(&mut self, tokens: &[u32]) -> Result<Vec<u16>, Gemma4Error> {
-        Self::prefill(self, tokens)
-    }
-    fn decode(&mut self, token: u32) -> Result<Vec<u16>, Gemma4Error> {
-        Self::decode(self, token)
-    }
-    fn position(&self) -> usize {
-        Self::position(self)
-    }
-}
-
-#[cfg(feature = "cuda")]
-impl GemmaDecode for crate::Gemma4CudaDecoder {
-    fn prefill(&mut self, tokens: &[u32]) -> Result<Vec<u16>, Gemma4Error> {
-        Self::prefill(self, tokens)
-    }
-    fn decode(&mut self, token: u32) -> Result<Vec<u16>, Gemma4Error> {
-        Self::decode(self, token)
-    }
-    fn position(&self) -> usize {
-        Self::position(self)
-    }
-}
-
-#[cfg(all(feature = "metal", target_os = "macos"))]
-impl GemmaDecode for crate::Gemma4MetalDecoder {
-    fn prefill(&mut self, tokens: &[u32]) -> Result<Vec<u16>, Gemma4Error> {
-        Self::prefill(self, tokens)
-    }
-    fn decode(&mut self, token: u32) -> Result<Vec<u16>, Gemma4Error> {
-        Self::decode(self, token)
-    }
-    fn position(&self) -> usize {
-        Self::position(self)
-    }
-}
-
-type Factory<D> = Box<dyn FnMut() -> Result<D, Gemma4Error> + Send>;
 const MAX_SEQUENCES: usize = 4;
 
 struct SequenceState<D> {
@@ -89,12 +37,13 @@ enum Phase {
     Prepared,
     Submitted(SubmissionId),
     Failed,
+    Retiring,
     Closed,
 }
 
 /// One retirement envelope, including the factory's shared model ownership.
 struct Execution<D> {
-    factory: Factory<D>,
+    backend: Backend<D>,
     states: HashMap<SequenceId, SequenceState<D>>,
     items: Vec<BatchItem>,
     phase: Phase,
@@ -103,78 +52,43 @@ struct Execution<D> {
 
 /// Greedy executor over one Gemma 4 package.
 ///
-/// Whole-batch preparation precedes execution. Successful calls are synchronous;
-/// a failed batch is retirement-only and cannot be replayed or released. Backend
-/// recovery is not yet implemented: shutdown reports failure and defensive Drop
-/// quarantines the complete owner rather than claiming completion.
-pub struct Gemma4Executor<D> {
+/// Whole-batch preparation precedes execution. A failed continuation cannot resume,
+/// but may be destroyed once backend completion is established. Failed teardown
+/// retains ownership for retry; defensive Drop quarantines only unresolved cleanup.
+pub struct Gemma4Executor<D: GemmaDecode> {
     info: ExecutorInfo,
     config: Gemma4Config,
     // Present throughout ordinary use; taken only by defensive Drop.
     execution: Option<Execution<D>>,
 }
 
-impl<D> Drop for Gemma4Executor<D> {
+impl<D: GemmaDecode> Drop for Gemma4Executor<D> {
     fn drop(&mut self) {
-        if self
-            .execution
-            .as_ref()
-            .is_some_and(|e| e.phase == Phase::Failed)
-        {
-            std::mem::forget(self.execution.take());
+        if let Some(execution) = self.execution.take() {
+            // Cleanup can fail or unwind. Keep the complete envelope until its
+            // completion and sequence release have both been acknowledged.
+            let mut execution = std::mem::ManuallyDrop::new(execution);
+            if execution.retire().is_ok() {
+                drop(std::mem::ManuallyDrop::into_inner(execution));
+            }
         }
     }
 }
 
-impl Gemma4Executor<Gemma4CpuDecoder> {
-    /// Bind the executor to host CPU weights shared by every sequence.
-    /// # Errors
-    /// Rejects a configuration whose context bound exceeds the runtime's u32 limits.
-    pub fn cpu(weights: Arc<Gemma4CpuWeights>) -> Result<Self, Gemma4Error> {
-        let config = weights.config().clone();
-        Self::new(
-            "gemma4 cpu",
-            config.max_position_embeddings(),
-            config,
-            Box::new(move || Gemma4CpuDecoder::shared(weights.clone())),
-        )
-    }
-}
-
-#[cfg(feature = "cuda")]
-impl Gemma4Executor<crate::Gemma4CudaDecoder> {
-    /// Bind the executor to an uploaded CUDA model shared by every sequence.
-    /// # Errors
-    /// Rejects a poisoned model lock or an invalid prepared cache bound.
-    pub fn cuda(model: Arc<std::sync::Mutex<crate::Gemma4CudaModel>>) -> Result<Self, Gemma4Error> {
-        let (config, capacity) = {
-            let model = model
-                .lock()
-                .map_err(|_| Gemma4Error::new("executor", "CUDA model lock poisoned"))?;
-            (model.config().clone(), model.max_positions())
-        };
-        Self::new(
-            "gemma4 cuda",
-            capacity,
-            config,
-            Box::new(move || crate::Gemma4CudaDecoder::shared(model.clone())),
-        )
-    }
-}
-
-#[cfg(all(feature = "metal", target_os = "macos"))]
-impl Gemma4Executor<crate::Gemma4MetalDecoder> {
-    /// Bind the executor to an uploaded Metal model shared by every sequence.
-    /// # Errors
-    /// Rejects a configuration whose context bound exceeds the runtime's u32 limits.
-    pub fn metal(model: Arc<crate::Gemma4MetalModel>) -> Result<Self, Gemma4Error> {
-        let config = model.config().clone();
-        Self::new(
-            "gemma4 metal",
-            config.max_position_embeddings(),
-            config,
-            Box::new(move || crate::Gemma4MetalDecoder::shared(model.clone())),
-        )
+impl<D: GemmaDecode> Execution<D> {
+    fn retire(&mut self) -> Result<(), Gemma4Error> {
+        if self.phase == Phase::Closed {
+            return Ok(());
+        }
+        self.phase = Phase::Retiring;
+        (self.backend.settle)()?;
+        self.items.clear();
+        for state in self.states.values_mut() {
+            state.decoder.close()?;
+        }
+        self.states.clear();
+        self.phase = Phase::Closed;
+        Ok(())
     }
 }
 
@@ -183,7 +97,7 @@ impl<D: GemmaDecode> Gemma4Executor<D> {
         name: &str,
         capacity: usize,
         config: Gemma4Config,
-        factory: Factory<D>,
+        backend: Backend<D>,
     ) -> Result<Self, Gemma4Error> {
         if capacity == 0 || capacity > config.max_position_embeddings() {
             return Err(Gemma4Error::new(
@@ -205,7 +119,7 @@ impl<D: GemmaDecode> Gemma4Executor<D> {
             },
             config,
             execution: Some(Execution {
-                factory,
+                backend,
                 states: HashMap::new(),
                 items: Vec::with_capacity(MAX_SEQUENCES),
                 phase: Phase::Idle,
@@ -264,7 +178,7 @@ impl<D: GemmaDecode> GenerationExecutor for Gemma4Executor<D> {
         self.config
             .validate_text_tokens(&request.tokens)
             .map_err(|error| execution(&error))?;
-        let decoder = (owner.factory)().map_err(|error| execution(&error))?;
+        let decoder = (owner.backend.create)().map_err(|error| execution(&error))?;
         owner.states.insert(
             sequence,
             SequenceState {
@@ -299,7 +213,7 @@ impl<D: GemmaDecode> GenerationExecutor for Gemma4Executor<D> {
                 owner.phase = Phase::Idle;
             }
             Phase::Idle | Phase::Closed => {}
-            Phase::Submitted(_) | Phase::Failed => {
+            Phase::Submitted(_) | Phase::Failed | Phase::Retiring => {
                 return Err(ExecutionError::new(
                     "cannot abandon submitted or failed work",
                 ));
@@ -351,28 +265,25 @@ impl<D: GemmaDecode> GenerationExecutor for Gemma4Executor<D> {
 
     fn release(&mut self, sequence: SequenceId) -> Result<(), ExecutionError> {
         let owner = self.execution.as_mut().expect("executor owns execution");
-        if owner.phase == Phase::Failed || owner.items.iter().any(|item| item.sequence == sequence)
+        if matches!(owner.phase, Phase::Failed | Phase::Retiring)
+            || owner.items.iter().any(|item| item.sequence == sequence)
         {
             return Err(ExecutionError::new(
                 "cannot release prepared, submitted or failed state",
             ));
         }
-        owner.states.remove(&sequence);
+        if let Some(state) = owner.states.get_mut(&sequence) {
+            let previous = owner.phase;
+            owner.phase = Phase::Retiring;
+            state.decoder.close().map_err(|error| execution(&error))?;
+            owner.states.remove(&sequence);
+            owner.phase = previous;
+        }
         Ok(())
     }
 
     fn synchronize(&mut self) -> Result<(), ExecutionError> {
         let owner = self.execution.as_mut().expect("executor owns execution");
-        if owner.phase == Phase::Failed {
-            return Err(ExecutionError::new(
-                "failed Gemma batch retained: backend retirement is not implemented",
-            ));
-        }
-        // Submitted work has not executed until poll. Successful polls are
-        // synchronous; only those cases permit ordinary state destruction.
-        owner.items.clear();
-        owner.states.clear();
-        owner.phase = Phase::Closed;
-        Ok(())
+        owner.retire().map_err(|error| execution(&error))
     }
 }
