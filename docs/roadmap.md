@@ -762,6 +762,11 @@ and distributed training need separate qualification. Training is not an AR sche
 - **Decode subgroups:** bounded device cases passed, but matched mixed traces showed no
   benefit and zero SLO goodput. Promotion also needs failed-drain evidence: no uncertain
   pinned-slot reuse and exactly-once recycling after proven drain. See [qualification](../benchmarks/runtime-contract.md#compatible-decode-subgroup-candidate).
+- **Synchronous CUDA PLE:** replacing the projection readback and per-layer uploads with
+  device combines [failed its predeclared 3% prefill gate](../benchmarks/gemma4-cuda-baseline.md#synchronous-device-ple-experiment-2026-10-22).
+  The candidate preserved all 12 captured full rows, but 64-token prefill improved only
+  0.16% and decode was 0.29% slower. All candidate code was reverted; this does not qualify
+  a device-resident variant or isolate the original round trip's standalone cost.
 - **Kernel losers:** do not repeat four rows per warp, shared IQ4 codebook or pre-elimination
   decayed keys without new evidence. Keep qualified small-M fallback while scaling work runs.
 - **Approximate hybrid replay:** recent suffix-replay research changes numerical/quality

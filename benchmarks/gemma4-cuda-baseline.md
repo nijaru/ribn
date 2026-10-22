@@ -610,3 +610,70 @@ A separate startup pilot used process-group SIGTERM, killing SGLang workers befo
 parent could drain; its resulting -9 exit is retained, not reported as graceful shutdown.
 The actual study signals only each parent, verifies settled owned processes and records
 six zero exits. Neither fix changes library code or canonical caches/environments.
+
+## Synchronous device PLE experiment (2026-10-22)
+
+**Rejected; all candidate code and candidate-only tests reverted.** Removing the PLE
+projection readback and per-layer uploads did not meet the predeclared performance gate.
+This does not measure the round trip's standalone cost: the replacement still completed
+one device operation per layer. It does not rule out amortizing completion across a
+larger device-resident execution unit.
+
+The baseline is `aa75df1`, whose production decoder is unchanged from `ff7ed2d`. The
+candidate reused the raw projection allocation after scaling and RMS normalization had
+completed, uploading the packed token identity there once. A strided kernel then read
+one layer's columns from that identity and the resident normalized projection. It
+preserved the CPU operation's two separate BF16 roundings:
+`bf16(bf16(context + identity) * 0.70710677f)`. Each physical group replaced one packed
+D2H read and 42 H2D uploads with one packed H2D upload and 42 synchronous kernel calls.
+No additional device allocation was introduced. Selection was limited to the existing
+RTX 4090/E4B eight-row preparation scope, including its scalar tails; other preparation
+kept the host route.
+
+Before implementation, the screen required at least **3% lower median prefill latency
+at both 18 and 64 tokens**, with no more than **2% higher pooled decode latency**.
+Serving, full-KV and sanitizer qualification were conditional on passing that screen.
+The experiment allowed one candidate and at most one correctness repair, within a
+90-minute device-investigation budget; no arithmetic repair or variant sweep was needed.
+
+The same pinned package, RTX 4090, driver 615.71.10, CUDA 13.3.73, Rust 1.98.0 and
+[owned-FP32 control plan](#owned-fp32-host-output-engine-comparison-2026-10-22) were used.
+Three fresh processes per variant ran in baseline/candidate, candidate/baseline,
+baseline/candidate order, serialized with idle GPU checks. Each process retained trial
+zero as warmup and excluded it from medians. Each prefill median uses three nonwarmup
+samples; decode pools 63 nonwarmup samples over the seven prefix lengths. These are
+completed full-host-row direct calls, not HTTP clocks.
+
+| Prefix tokens | Baseline ms | Device PLE ms |
+| ---: | ---: | ---: |
+| 1 | 17.910 | 17.979 |
+| 8 | 20.200 | 20.297 |
+| 18 | 68.375 | 68.454 |
+| 32 | 73.383 | 73.427 |
+| 64 | 146.905 | 146.663 |
+| 65 | 163.329 | 163.262 |
+| 128 | 297.144 | 296.926 |
+| Pooled decode | 19.234 | 19.290 |
+
+Values are medians of the three process medians. At 18 tokens the candidate was 0.12%
+slower; at 64 tokens it was 0.16% faster; decode was 0.29% slower. Process-median ranges
+were 68.202–68.923 versus 68.313–68.859 ms at 18 tokens, 146.454–147.843 versus
+146.170–147.831 ms at 64 tokens, and 19.225–19.443 versus 19.271–19.603 ms for decode.
+The observed differences do not establish a repeatable benefit and fail the 3% gate.
+
+All six accepted model processes and the three component tests exited zero. The component
+gate checked exact two-round arithmetic, packed row strides, column tails and rejection
+before enqueue. Each model process captured all 262,144 logits for the same 12 common
+histories; those rows were bit-identical across all six processes. Independent comparison
+against the unchanged CPU oracle retained all 12 winners and the previous distributional
+errors, not CPU bit equality or new task-quality acceptance. The one-cache, 4096-position
+BytePool charge was identical at 15,174,441,952 bytes; this is not a physical-peak or
+pressure/recovery result. A narrow independent source review found no material arithmetic,
+bounds or ownership defect.
+
+One earlier harness attempt stopped because a rolling GPU-utilization sample remained
+6% after the model process had exited, despite no live compute process. Its captures are
+retained and excluded; the accepted harness waits for an idle sample before proceeding.
+The failing performance screen ended the experiment: no serving run, full-KV comparison
+or sanitizer run followed, and no new execution variant is enabled. The qualified host
+PLE route remains unchanged.
