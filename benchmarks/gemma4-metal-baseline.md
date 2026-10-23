@@ -743,6 +743,8 @@ peak RSS is about **600 MiB**, not a full-model or whole-device physical peak.
 replacement. Independent full-model numerical acceptance and a bounded materialization/
 memory envelope remain prerequisites. Compare BF16-storage vendor/native alternatives
 before committing to full-model FP32 weight shadows; retain the qualified BF16 path.
+The [BF16-storage follow-up](#bf16-storage-vendor-pre-screen-2026-10-23) below now
+establishes an MPSGraph component candidate without caller-created FP32 shadows.
 
 Evidence: `~/ribn-qualification/gemma4-metal-ffn-components/20261023T083429Z/`.
 It retains predeclared plans/schedules, isolated source worktrees, pinned capture and
@@ -750,3 +752,82 @@ component binaries, raw operands/results, FP64 dots, both vendor probes/analyses
 actual exit records. One cleanup launcher aborted before spawning; its correction record
 identifies a replaced first-screen GPU idle snapshot. Numerical captures were unaffected.
 All capture, native component and both vendor-screen GPU processes exited zero.
+
+## BF16-storage vendor pre-screen (2026-10-23)
+
+**MPSGraph is a viable BF16-storage component candidate on this host; direct
+MPSMatrix BF16 input is not.** This resolves a preparation choice, not numerical,
+full-model, memory-envelope or production Rust acceptance. Production code remains unchanged.
+
+### Actual datatype capability
+
+Two isolated `MPSMatrixMultiplication` probes use real 16-row layer-zero gate operands,
+BF16 A/W, `MPSKernelOptionsNone` and either BF16 or FP32 output. BF16 descriptors and
+recommended pitches construct successfully, but both calls abort at encoding with
+**SIGABRT (-6)** before the caller commits. The runtime assertion allows FP32, FP16,
+Int8 or Int16 inputs, not BF16. The failures are retained; they are not missing-device
+skips. This is scoped to M3 Max/macOS 26.6.2, not a claim about future Apple runtimes.
+
+A separate MPSGraph probe compiles **BF16 A/W/output placeholders**, weight transpose
+and matmul for the same 1/16/64-row gate/up/down shapes. Compilation targets the explicit
+Metal device with optimization level 0 and `reducedPrecisionFastMath=None`; no caller
+FP32 weight buffer or activation-conversion kernel is created. Buffer-backed tensor
+data keeps the prepared BF16 inventory, rather than baking weights into graph constants.
+BF16 dtype and this precision setting still do not establish an accumulator/reduction-order
+contract over untested inputs.
+
+### Matched component result
+
+The previous real E4B operands, native Rust component captures and independent FP64
+dots are reused unchanged. Three fresh processes execute **648 measured pairs/1,296 calls**,
+plus 54 warmup and 27 initial pairs per process, across layers 0/20/41 and the three
+row counts. Eight measured rounds per instance balance native-first/Graph-first order.
+All native results match the qualified MSL/Rust captures.
+
+The host clock starts with resident BF16 inputs/weights and includes BF16 output
+allocation, tensor wrapping, blocking executable execution, completion-callback
+acknowledgment, owned BF16 CPU copy and per-call ARC/autorelease-pool cleanup. Graph's
+internal command count and execution intervals are opaque here. Its API may commit
+internally, so this does not preserve or qualify the existing single-command chain.
+
+| Call | Gate Graph/native wall ratio | Up ratio | Down ratio |
+| --- | ---: | ---: | ---: |
+| Decode after 18 | 0.8370 (0.8122–0.8440) | 0.8362 (0.8245–0.8386) | 0.4374 (0.4302–0.4473) |
+| Whole prefill 16 | 0.5096 (0.4821–0.5448) | 0.5453 (0.5063–0.6154) | 0.5976 (0.5847–0.6656) |
+| Whole prefill 64 | 0.4653 (0.4578–0.4678) | 0.4688 (0.4537–0.4752) | 0.5139 (0.5121–0.5341) |
+
+Values are median paired ratios over eight rounds/three layers per process, then the
+median across processes; parentheses span the three process medians, not a confidence
+interval. This screen uses a new matched native control, not the earlier FP32 screen's
+clocks. Background GPU clients/state remain uncontrolled. Hot Objective-C component
+loops do not establish Rust, whole-model or serving speedups.
+
+All complete Graph outputs are finite, stable across calls/processes and **bit-identical
+to the previous FP32 MPS outputs** in all 27 sampled case/layer/projection instances.
+Thus the same **86 of 5,598,720** elements differ from native BF16 across nine instances;
+full-array FP64 error comparisons are retained. This neither proves FP32 accumulation
+generally nor grants a new numerical error budget.
+
+### Preparation, memory and next gate
+
+The nine compiled shape/role graphs take **17.154–22.844 ms total** across the three
+processes. The first process observes a **149.768 ms** initial execution; later processes
+reuse system caches. Initial calls for later instances can also reuse shapes and are
+not a cold-start distribution.
+
+The caller retains **150 MiB BF16 weights per tested layer** and allocates **zero
+FP32 weight shadows**, avoiding the explicit extra 300 MiB from the earlier candidate.
+Process peak RSS is **301–348 MiB**; Metal allocated size after scoped weights/results
+retire is about **2.45 MiB**. Neither snapshots nor source inspection prove the absence
+of internal FP32 conversion/repacking/workspace or qualify full-model physical peaks.
+
+**Next:** a bounded native Rust prepared-execution pilot can now target this BF16
+Graph path rather than full-model FP32 shadows. Resolve its completion/resource
+ownership and independent full-model numerical acceptance first; do not insert the
+opaque Graph run into a single-command chain by assumption. Keep the qualified
+native BF16 path as control/fallback.
+
+Evidence: `~/ribn-qualification/gemma4-metal-bf16-vendor/20261023T092014Z/`.
+It retains plans/schedules, both Matrix abort logs/checkpoints/actual exits, Graph source/
+binary/hashes, three successful process invocations, full result matrices and analysis.
+No MAX internals, dependencies, compiler pins or production interfaces changed.

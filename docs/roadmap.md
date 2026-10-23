@@ -638,10 +638,15 @@ conversion and per-call resource release. Prefill component calls improve, but d
 gate/up regress; retained FP32 shadows add 300 MiB per layer and 86 BF16 elements differ
 across the 27 sampled tuples. No production variant is promoted. Resolve independent
 full-model numerical acceptance and a bounded materialization/memory envelope before
-prefill-lane integration; compare BF16-storage vendor/native alternatives before choosing
-full-model FP32 shadows. These command intervals are not kernel busy time, and broader
-residency/synchronization gains remain possible. Preserve the current numerical and
-ownership contracts rather than copying MLX's graph.
+prefill-lane integration. A [BF16-storage vendor follow-up](../benchmarks/gemma4-metal-baseline.md#bf16-storage-vendor-pre-screen-2026-10-23)
+now runs MPSGraph directly on the same BF16 operands without caller FP32 weight shadows;
+all 27 sampled outputs match the earlier FP32 MPS results. Direct MPSMatrix BF16 inputs
+abort at encoding on the tested runtime. A bounded native Rust prepared-execution pilot
+should resolve Graph completion/resource ownership and independent full-model numerical
+acceptance, not assume its opaque submissions fit the current single-command chain.
+Neither internal storage nor physical full-model bounds are qualified. Keep native BF16
+as control/fallback. These intervals are not kernel busy time, and broader residency/
+synchronization gains remain possible; no universal Graph ABI or new kernel strategy is selected.
 This does not change CUDA sequencing or qualify capacity, recovery or SLO goodput.
 A [lifetime ablation](../benchmarks/runtime-contract.md#metal-native-handle-lifetime-ablation-2026-10-21-utc)
 now bounds autoreleased command/encoder handles at their backend factories instead of
