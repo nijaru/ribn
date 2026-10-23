@@ -1516,12 +1516,32 @@ retirement coverage. The pinned Qwen artifact above was verified before running.
 Two descriptor memcheck attempts were operator-interrupted for excessive qualification
 cost: the unfiltered run exited 15 after 636 seconds; the five-member-kernel-filtered
 attempt was also interrupted. Neither is a pass, regardless of the tool's zero-error
-summary on termination. The cause of sanitizer overhead was not measured. Descriptor
-memory-safety qualification remains pending; do not substitute the successful native
-BF16 copy-only memcheck for this gate.
+summary on termination. The cause of sanitizer overhead was not measured.
 
-Before promotion, complete descriptor memcheck and exercise descriptor reuse/disable,
-partial enqueue and failed drain through the asynchronous serving owner; host tests do not qualify those lifetimes.
+On **2026-10-23**, a fresh release/locked build at `5bdad2a` passed the isolated
+descriptor gate again on the RTX 4090, now driver **615.71.10** (previously 615.71.09),
+CUDA toolkit **13.3.73**, Compute Sanitizer **2026.2.1.0**, and Rust **1.98.0**.
+The normal run passed **1/1 in 34.31 s, exit 0**, without a missing-device skip.
+The source worktree was clean; the same pinned model and fixture were hash-verified.
+The test executable came from Cargo's compiler-artifact JSON, with SHA-256
+`afe91ea1f6851e081ec87d6bc6a5df771cadeca38ebbb693442afad679be8010`.
+
+**One filtered memcheck completed: 1/1 passed in 1,156.12 s, exit 0,
+`ERROR SUMMARY: 0 errors`.** It used that same executable and isolated test,
+`--tool memcheck --error-exitcode 99`, and additive `--kernel-name kernel_name=`
+filters for `gdn_conv_members`, `gdn_gather_qk_members`, `gdn_state_members`,
+`kv_append_members` and `attn_members`. The predeclared 2,400-second deadline
+was not reached. Each device launch began idle, with no other compute process.
+This completes memcheck for those five member kernels on the tested cases, not for
+the control-path kernels or the whole engine; it is not racecheck or synccheck.
+
+Evidence: `desktop:~/ribn-qualification/member-descriptor-memcheck/20261023T103624Z/`.
+The plan, source, executable, hashes, prelaunch snapshots, exact invocations, logs and
+actual build/test/memcheck exit codes are retained there.
+
+Before promotion, exercise descriptor reuse/disable, partial enqueue and failed drain
+through the asynchronous serving owner; host tests and this eager numerical gate do not
+qualify those lifetimes.
 Then repeat matched native c1/c4/c8 runs with identical prompt/chunk/token/diagnostic
 settings, toggling only `--member-descriptors`, followed by the endpoint comparison if
 that scope is enabled. Count launches and host enqueue time as well as device/total time,

@@ -75,8 +75,10 @@ enqueue, and 0.9–1.5 s host enqueue for an eight-row short prefill. They motiv
 and prefill-host-cost experiments; they do not attribute the entire endpoint deficit
 to the host or prove descriptors, arenas or graph capture will close it. Measure
 remaining projection/device costs and the fixed batched layer chain as well.
-The member-descriptor candidate remains off pending its remaining lifetime, sanitizer
-and performance gates. Keep the qualified per-member path as its control; the Gemma
+The member-descriptor candidate remains off pending its serving-owner lifetime and
+performance gates. Its isolated numerical recheck and five-member-kernel memcheck now
+pass on driver 615.71.10; that is not whole-engine sanitizer qualification.
+Keep the qualified per-member path as its control; the Gemma
 prefill result does not qualify Qwen descriptors, graphs or hybrid-state lifetimes.
 
 Qualify the cross-engine numerical comparison and target remaining prefill/projection
@@ -131,7 +133,8 @@ Packet assembly/bounds are host-tested; Rust CUDA-feature checks cover the bindi
 access-guard lifetimes, not device completion. Publication explicitly waits for the H2D
 copy before reusing its host packet; uncertain copies retain or quarantine that packet.
 The qualified per-member path remains the default; prefill, arenas and graphs are unchanged.
-[Numerical/retirement and timing gates remain pending](../benchmarks/runtime-contract.md#member-descriptor-candidate-device-gates-pending).
+Numerical parity and a complete five-kernel memcheck pass on the RTX 4090.
+[Asynchronous-owner lifetime and timing gates remain pending](../benchmarks/runtime-contract.md#member-descriptor-candidate-device-gates-pending).
 The launch target below remains unproven: projections, norms and residual operations
 already batch members, so removing state loops alone cannot imply a batch-width reduction
 of the entire step. Profile the remaining fixed layer chain before choosing further fusion.
