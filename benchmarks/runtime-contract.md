@@ -693,10 +693,15 @@ error falsely passed the old harness and failed the repaired one; restored-sourc
 passed. Boundaries, fmt, 389 workspace tests and default/CUDA/targeted Metal clippy passed.
 
 ```sh
-cargo test -p engine-metal --release --locked --test bf16 -- --test-threads=1
+CARGO_BUILD_JOBS=2 cargo test -p engine-metal --release --locked --test bf16 -- --test-threads=1
 # Set RIBN_GEMMA_PACKAGE and RIBN_GEMMA_REFERENCE as for the decoder gate.
-cargo test -p engine-gemma4 --features metal --release --locked \
-  --test metal_decoder --test executor --test text_path -- --ignored --test-threads=1
+CARGO_BUILD_JOBS=2 cargo test -p engine-gemma4 --features metal --release --locked \
+  --test metal_decoder --test executor -- --ignored --test-threads=1
+# The public-loader gate lives with ribn-text and exercises Native plus the M3 Max
+# experimental Graph policy. Its separate Graph ownership/KV gates are documented
+# in gemma4-metal-baseline.md#model-local-graph-integration-2026-10-23.
+CARGO_BUILD_JOBS=2 cargo test -p ribn-text --features metal --release --locked \
+  --test gemma_metal -- --ignored --test-threads=1
 ```
 
 CUDA device requalification and Metal command-failure/retirement injection were not run;

@@ -13,7 +13,9 @@ pub use cuda::{
     Gemma4CudaDecoder, Gemma4CudaError, Gemma4CudaLoadError, Gemma4CudaModel, Gemma4CudaWeights,
 };
 #[cfg(all(feature = "metal", target_os = "macos"))]
-pub use metal::{Gemma4MetalDecoder, Gemma4MetalModel, Gemma4MetalWeights, metal_argmax};
+pub use metal::{
+    Gemma4MetalDecoder, Gemma4MetalFfn, Gemma4MetalModel, Gemma4MetalWeights, metal_argmax,
+};
 
 mod config;
 mod continuation;

@@ -265,11 +265,11 @@ impl MetalBf16Executor {
             self.block_linear_rows,
         )?;
         let output = self.allocate_shared(geometry.elements() * 2)?;
-        let command = self.command()?;
+        let mut command = self.command()?;
         let encoder = Self::compute_encoder(&command)?;
         self.encode_linear(&encoder, &input.buffer, &weight.buffer, &output, &geometry);
         encoder.end_encoding();
-        Self::submit(&command, "linear")?;
+        command.submit("linear")?;
         Ok(MetalBf16Buffer {
             buffer: output,
             elements: geometry.elements(),
@@ -289,11 +289,11 @@ impl MetalBf16Executor {
     ) -> Result<MetalBf16Buffer, MetalBf16Error> {
         let geometry = RmsGeometry::new(input.elements, rows, width, epsilon, scale)?;
         let output = self.allocate_shared(input.elements * 2)?;
-        let command = self.command()?;
+        let mut command = self.command()?;
         let encoder = Self::compute_encoder(&command)?;
         self.encode_rms(&encoder, &input.buffer, &output, scale, &geometry);
         encoder.end_encoding();
-        Self::submit(&command, "RMS")?;
+        command.submit("RMS")?;
         Ok(MetalBf16Buffer {
             buffer: output,
             elements: input.elements,
@@ -302,7 +302,8 @@ impl MetalBf16Executor {
 
     /// Project, normalize contiguous groups and optionally rotate each head.
     ///
-    /// Existing kernels share a serial command; their BF16 boundaries remain.
+    /// Native kernels share a serial command; the experimental FFN Down shape
+    /// uses a prepared Graph followed by native RMS. BF16 boundaries remain.
     /// All private intermediates and inputs stay owned through terminal completion.
     /// # Errors
     /// Validates the complete chain before allocation/submission. Rejects invalid
@@ -314,27 +315,48 @@ impl MetalBf16Executor {
         shape: MetalLinearShape,
         norm: MetalProjectionNorm<'_>,
     ) -> Result<MetalBf16Buffer, MetalBf16Error> {
-        let buffers = ProjectionGeometry::new(
+        let geometry = ProjectionGeometry::new(
             shape,
             input.elements,
             weight.elements,
             norm,
             self.block_linear_rows,
-        )?
-        .allocate(self)?;
-        let command = self.command()?;
+        )?;
+        if self.ffn_shape.is_some_and(|ffn| ffn.down(shape))
+            && norm.width == shape.columns
+            && norm.rotary.is_none()
+        {
+            let output = self.allocate_shared(geometry.linear.elements() * 2)?;
+            self.owner()?.run_graph(
+                super::graph::GraphIndex::Down64,
+                super::graph::GraphBindings {
+                    input: input.buffer.clone(),
+                    weight0: weight.buffer.clone(),
+                    weight1: None,
+                    output0: output.clone(),
+                    output1: None,
+                },
+            )?;
+            let projected = MetalBf16Buffer {
+                buffer: output,
+                elements: geometry.linear.elements(),
+            };
+            return self.rms_norm(&projected, shape.rows, norm.width, norm.epsilon, norm.scale);
+        }
+        let buffers = geometry.allocate(self)?;
+        let mut command = self.command()?;
         let encoder = Self::compute_encoder(&command)?;
         buffers.encode(self, &encoder, &input.buffer, &weight.buffer);
         encoder.end_encoding();
-        Self::submit(&command, "normalized projection")?;
+        command.submit("normalized projection")?;
         Ok(buffers.into_output())
     }
 
     /// Normalize each input row, then project through two same-shaped weights.
     ///
-    /// The normalized BF16 input remains private. Both projections use the same
-    /// kernels and rounding boundaries as three standalone operations; neither
-    /// output is published until the entire serial command completes successfully.
+    /// The normalized BF16 input remains private. Native execution encodes all
+    /// three dispatches together; the opt-in FFN path submits Graph after native
+    /// RMS. Neither output is published until all submitted work succeeds.
     /// # Errors
     /// Validates both weights and RMS before allocation/submission. Rejects invalid
     /// shapes/epsilon/scale, allocation failure or unsuccessful GPU execution.
@@ -356,10 +378,35 @@ impl MetalBf16Executor {
             self.block_linear_rows,
         )?;
         let rms = RmsGeometry::new(input.elements, shape.rows, shape.inner, epsilon, scale)?;
+        if let Some(index) = self.ffn_shape.and_then(|ffn| ffn.pair(shape)) {
+            let left_output = self.allocate_shared(left_geometry.elements() * 2)?;
+            let right_output = self.allocate_shared(right_geometry.elements() * 2)?;
+            let normalized = self.rms_norm(input, shape.rows, shape.inner, epsilon, scale)?;
+            self.owner()?.run_graph(
+                index,
+                super::graph::GraphBindings {
+                    input: normalized.buffer.clone(),
+                    weight0: left.buffer.clone(),
+                    weight1: Some(right.buffer.clone()),
+                    output0: left_output.clone(),
+                    output1: Some(right_output.clone()),
+                },
+            )?;
+            return Ok((
+                MetalBf16Buffer {
+                    buffer: left_output,
+                    elements: left_geometry.elements(),
+                },
+                MetalBf16Buffer {
+                    buffer: right_output,
+                    elements: right_geometry.elements(),
+                },
+            ));
+        }
         let normalized = self.allocate_shared(input.elements * 2)?;
         let left_output = self.allocate_shared(left_geometry.elements() * 2)?;
         let right_output = self.allocate_shared(right_geometry.elements() * 2)?;
-        let command = self.command()?;
+        let mut command = self.command()?;
         let encoder = Self::compute_encoder(&command)?;
         self.encode_rms(&encoder, &input.buffer, &normalized, scale, &rms);
         self.encode_linear(
@@ -377,7 +424,7 @@ impl MetalBf16Executor {
             &right_geometry,
         );
         encoder.end_encoding();
-        Self::submit(&command, "RMS/linear pair")?;
+        command.submit("RMS/linear pair")?;
         Ok((
             MetalBf16Buffer {
                 buffer: left_output,

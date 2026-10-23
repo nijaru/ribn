@@ -224,9 +224,20 @@ larger chunks/geometries retain separate calls. See the
 Attention can similarly feed its output projection and RMS in one bounded serial
 command; larger chunks, histories and scratch payloads retain separate calls. See the
 [attention-output qualification](../benchmarks/gemma4-metal-baseline.md#attention-output-projection-chain-2026-10-23).
-Normalized projections share one serial command buffer and private BF16 intermediates. Query/key projections also rotate in that command, sharing immutable
-per-position factors without changing kernels or rounding boundaries. FFN input normalization and its gate/up projections
-also share one command and a private normalized input, returning both completed outputs.
+Native normalized projections share one serial command buffer and private BF16
+intermediates. Query/key projections also rotate in that command, sharing immutable
+per-position factors without changing kernels or rounding boundaries. Native FFN input
+normalization and gate/up projections likewise share one command. An explicit Rust
+`Gemma4MetalFfn::ExperimentalGraph` policy instead prepares BF16 Gate/Up pairs at
+16/64 rows and Down at 64 rows for the qualified M3 Max/E4B scope, keeping native RMS
+and native fallback elsewhere. It reuses immutable BF16 weights; CLI/HTTP and ordinary
+decoder loading remain native. SDK/runtime rejection precedes weight loading without
+raising the native deployment floor. See the [qualification and limits](../benchmarks/gemma4-metal-baseline.md#model-local-graph-integration-2026-10-23).
+One execution mutex owns native and Graph submissions. Before possible enqueue it
+retains the complete access envelope; only a successful terminal result publishes outputs.
+Possible-enqueue or cleanup uncertainty closes that owner, while explicit retirement
+queries completion and unresolved Drop quarantines its resources. Graph's callback,
+not an unrelated fence or reference count, establishes physical completion.
 Output publication requires successful completion;
 remaining activation transfers and CPU elementwise work stay host-orchestrated.
 The archived 18-token chat row reproduces all four greedy tokens on
@@ -236,8 +247,9 @@ retains one exact preparation/submission and checks its completion identity. It 
 loaded weights across sequences and commits logical cursor/input/output state only after
 all synchronous rows succeed. Failed continuation cannot resume, but teardown can succeed:
 paired model creation/completion ownership and explicit sequence close establish when
-resources may be destroyed. CPU calls and terminal Metal commands need no further drain;
-CUDA settles its associated stream and retained operations before closing caches. Partial
+resources may be destroyed. CPU calls need no device drain; Metal settles the same shared
+model owner even if decoder construction failed, and CUDA settles its associated stream
+and retained operations before closing caches. Partial
 CUDA cache construction stays model-owned, including an unfinished key when value allocation
 fails. Failed completion or close preserves the same owner and charges for retry; defensive
 Drop quarantines only unresolved cleanup. This does not reset a poisoned model. The

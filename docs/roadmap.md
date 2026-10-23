@@ -657,13 +657,21 @@ now replaces fail-stop with callback-owned retention, model-local closure, retry
 settlement and defensive quarantine. Nine real device/owner cases pass, including delayed
 writes, exception-after-enqueue, full-model shutdown and a nonblocking native-retirement
 regression. Another 117 exact logit/cache pairs preserve numerical behavior; 48 new prefill
-pairs observe 15.29/27.32% lower paired wall time. This remains private, not promoted.
-Next integrate per-owner preparation/availability without the global pilot switch, then
-qualify the actual selection and memory envelope. Do not assume opaque Graph submissions
-fit a single-command chain.
-Keep native BF16 as control/fallback. Serving, internal Graph storage and physical
-full-model bounds remain unqualified. These intervals are not kernel busy time, and broader
-residency/synchronization gains remain possible; no universal Graph ABI is selected.
+pairs observe 15.29/27.32% lower paired wall time. That proof remains historical evidence,
+not an automatic selection policy.
+
+The [integrated model-local option](../benchmarks/gemma4-metal-baseline.md#model-local-graph-integration-2026-10-23)
+now exposes `Gemma4MetalFfn::ExperimentalGraph` through Rust model/text loading, with
+SDK/runtime checks and the native deployment floor preserved. Native remains the
+default and CLI/HTTP policy. Actual selection passes 117 exact full-logit pairs,
+26 complete KV-state comparisons, public text loading and real runtime retry/Drop
+qualification. Forty-eight new paired prefills observe **14.24/27.44%** reductions at
+16/64 rows; a separate frozen-native comparison passes its ≤3% regression gate.
+This is an experimental opt-in, not automatic promotion. Next resolve Graph internal
+storage/workspace and physical full-model bounds before widening selection, and qualify
+mixed-arrival serving rather than treating direct-prefill clocks as SLO evidence.
+Opaque Graph submissions are not a single-command chain. Broader residency/synchronization
+gains remain possible; no universal Graph ABI is selected.
 This does not change CUDA sequencing or qualify capacity, recovery or SLO goodput.
 A [lifetime ablation](../benchmarks/runtime-contract.md#metal-native-handle-lifetime-ablation-2026-10-21-utc)
 now bounds autoreleased command/encoder handles at their backend factories instead of

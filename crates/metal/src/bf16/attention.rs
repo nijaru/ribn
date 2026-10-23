@@ -235,11 +235,11 @@ impl MetalBf16Executor {
             key_start,
         )?;
         let buffers = AttentionBuffers::allocate(self, geometry)?;
-        let command = self.command()?;
+        let mut command = self.command()?;
         let encoder = Self::compute_encoder(&command)?;
         buffers.encode(self, &encoder, query, keys, values);
         encoder.end_encoding();
-        Self::submit(&command, "attention")?;
+        command.submit("attention")?;
         Ok(buffers.into_output())
     }
 
@@ -286,12 +286,12 @@ impl MetalBf16Executor {
         )?;
         let attention = AttentionBuffers::allocate(self, geometry)?;
         let output = projection_geometry.allocate(self)?;
-        let command = self.command()?;
+        let mut command = self.command()?;
         let encoder = Self::compute_encoder(&command)?;
         attention.encode(self, &encoder, query, keys, values);
         output.encode(self, &encoder, &attention.output, &projection.weight.buffer);
         encoder.end_encoding();
-        Self::submit(&command, "attention output projection")?;
+        command.submit("attention output projection")?;
         Ok(output.into_output())
     }
 }

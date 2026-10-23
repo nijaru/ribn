@@ -87,11 +87,11 @@ impl MetalBf16Executor {
         };
         let geometry = RotaryGeometry::new(input.elements, rows, width, factors)?;
         let output = self.allocate_shared(input.elements * 2)?;
-        let command = self.command()?;
+        let mut command = self.command()?;
         let encoder = Self::compute_encoder(&command)?;
         self.encode_rotary(&encoder, &input.buffer, &output, factors, &geometry);
         encoder.end_encoding();
-        Self::submit(&command, "rotary")?;
+        command.submit("rotary")?;
         Ok(MetalBf16Buffer {
             buffer: output,
             elements: input.elements,

@@ -27,7 +27,11 @@ const CUDA_MAX_POSITIONS: usize = 4096;
 const CUDA_SCRATCH_ENTRIES: usize = 1 << 20;
 
 impl TextOwner {
-    /// Load one unchanged Gemma 4 package on the default Metal device.
+    /// Load one unchanged Gemma 4 package with an explicit model-local FFN policy.
+    ///
+    /// `Gemma4MetalFfn::Native` is the default policy. `ExperimentalGraph` opts
+    /// into the bounded M3 Max/E4B lane; unsupported preparation rejects before
+    /// weight loading. CLI/HTTP loading continues to choose native execution.
     ///
     /// # Errors
     /// Rejects invalid package assets, weight loading or Metal preparation, and
@@ -35,11 +39,13 @@ impl TextOwner {
     #[cfg(all(feature = "metal", target_os = "macos"))]
     pub fn load_gemma(
         path: impl Into<std::path::PathBuf>,
+        ffn: engine_gemma4::Gemma4MetalFfn,
     ) -> Result<(Self, GemmaLoadReport), TextError> {
         let package = LocalModelPackage::open(path).map_err(TextError::processor)?;
         let source = Gemma4Source::open(&package).map_err(TextError::processor)?;
-        let model =
-            Arc::new(engine_gemma4::Gemma4MetalModel::load(&source).map_err(TextError::processor)?);
+        let model = Arc::new(
+            engine_gemma4::Gemma4MetalModel::load(&source, ffn).map_err(TextError::processor)?,
+        );
         let model_bytes = u64::try_from(source.encoded_bytes()).map_err(TextError::processor)?;
         let executor = Gemma4Executor::metal(model).map_err(TextError::processor)?;
         assemble(&package, executor, model_bytes)

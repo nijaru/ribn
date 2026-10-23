@@ -51,7 +51,7 @@ pub(crate) fn run(arguments: &[String]) -> Result<(), String> {
 pub(crate) fn load_model(
     path: PathBuf,
 ) -> Result<(TextOwner, ribn_text::GemmaLoadReport), ribn_text::TextError> {
-    TextOwner::load_gemma(path)
+    TextOwner::load_gemma(path, ribn_text::Gemma4MetalFfn::Native)
 }
 
 #[cfg(all(feature = "cuda", not(all(feature = "metal", target_os = "macos"))))]

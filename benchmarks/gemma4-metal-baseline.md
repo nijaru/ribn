@@ -908,11 +908,10 @@ at 16/64 rows (observed reductions **15.29% / 27.32%**); process medians are
 not an overhead comparison against the earlier prototype. Timing remains nonisolated;
 no serving, hardware-fault recovery, physical-memory or general-device claim follows.
 
-**Next:** integrate the owned protocol into the production backend, replacing the
-private global selection switch with preparation-time per-owner selection and preserving
-supported availability. Qualify that actual selection and its memory envelope before
-promotion. Keep native BF16 as control/fallback; opaque Graph submission is not a
-single-command chain.
+This private proof led to the [model-local experimental integration](#model-local-graph-integration-2026-10-23)
+below. It does not itself qualify that implementation, its availability or its physical
+memory envelope. Native BF16 remains the default/control/fallback; opaque Graph
+submission is not a single-command chain.
 
 Retirement evidence:
 `~/ribn-qualification/gemma4-metal-graph-retirement/20261023T102653Z/`.
@@ -932,3 +931,125 @@ Evidence: `~/ribn-qualification/gemma4-metal-bf16-vendor/20261023T092014Z/`.
 It retains plans/schedules, both Matrix abort logs/checkpoints/actual exits, Graph source/
 binary/hashes, three successful process invocations, full result matrices and analysis.
 No MAX internals, dependencies, compiler pins or production interfaces changed.
+
+## Model-local Graph integration (2026-10-23)
+
+The backend now implements the owned protocol as an **experimental Rust opt-in**.
+`Gemma4MetalFfn::Native` remains the default; CLI/HTTP and ordinary decoder loading
+choose native execution. Advanced callers prepare `Gemma4MetalModel::load(&source, ffn)`
+and share it with decoders, or use the actual text loader:
+
+```rust
+use ribn_text::{Gemma4MetalFfn, TextOwner};
+
+let (owner, report) =
+    TextOwner::load_gemma(package_path, Gemma4MetalFfn::ExperimentalGraph)?;
+```
+
+This option prepares Gate/Up pairs at 16/64 rows and Down at 64 rows, with native RMS
+and native fallbacks. The scope is E4B 2560/10240 FFN geometry on the M3 Max. Unsupported
+SDK/runtime/device/geometry rejects before weights load; it does not silently select
+native while reporting Graph. There is no process-global execution switch or CLI flag.
+
+### Qualification
+
+The same pinned BF16 package, Rust 1.98.0, M3 Max and macOS 26.6.2 were used with SDK
+27.0/Clang 21; dependencies and environment pins were unchanged. Each model retains
+one existing BF16 inventory, without caller-authored FP32 shadows. Unlike the private
+global-switch pilot, the matched comparison prepares **two independent model inventories
+and queues**, one native and one Graph. This is not a physical-memory comparison.
+
+- Three fresh processes pass **117 paired full-logit states**: all **234 saved
+  262,144-element BF16 rows** are finite and bit-exact. The 511/513-token histories,
+  teacher-forced continuation, selected 16/64-row shapes and native 7/32-row fallbacks
+  are preserved. **72 saved rows** also match previously qualified cost-profile captures.
+  External SDK observation records 4,158 successful quality Graph calls and zero for native.
+- A committed full-model unit compares **all retained owner K/V bytes**, not only logits
+  or hashes, across **26 paired states**. It adds 65-row fallback and selected shapes
+  crossing the sliding-window boundary. These are separate protections; the private
+  numerical probe does not export or fabricate cache hashes.
+- Native decoder/executor gates and the public text-loader gate pass. The latter now
+  lives in `ribn-text`, not a hand-assembled Gemma test facade: both policies reproduce
+  the four archived greedy tokens twice, compare a selected 16-row prefix and shut down
+  explicitly. A separate public-loader probe observes **42 actual SDK calls per 16-row
+  request**, zero for native, and equal four-token responses across two requests each.
+- Isolated public-SDK fault injection passes clean prelaunch reuse, terminal-result
+  rejection, the real 30-second missing-callback deadline, exception after enqueue,
+  late GPU writes after owner Drop, retry and permanent quarantine. No injection or
+  observation hook is present in production.
+- Two fresh **full E4B runtime** processes fail two owned requests without publishing
+  tokens. Failed shutdown retains the same model/factory/state envelope; callback then
+  retry releases it, while unresolved runtime Drop permanently quarantines it.
+
+**48 paired prefills**, with eight balanced mode-order rounds per shape/process and
+warmup outside the clock, pass the predeclared ≥5% improvement gate at both shapes:
+
+| Direct decoder prefill | Median paired Graph/native ratio | Three process medians | Observed reduction |
+| --- | ---: | --- | ---: |
+| 16 rows | 0.8576 | 0.8206 / 0.8662 / 0.8576 | 14.24% |
+| 64 rows | 0.7256 | 0.7208 / 0.7297 / 0.7256 | 27.44% |
+
+All 96 timed rows remain paired bit-exact. The clock covers prefill through owned host
+logits, excluding preparation, decoder construction/drop and validation. It is not GPU
+busy time. Timing remains nonisolated: 16-row native calls span 172.5–448.2 ms and Graph
+142.2–512.2 ms; no process or trial was excluded.
+
+A separate six-process comparison against pristine `b3bb3c1` uses one native inventory
+per process and eight trials after warmup at decode/16/64 rows. The median of three
+process-paired ratios of trial medians is **0.9932 / 0.9947 / 0.9983**, passing the
+predeclared ≤3% regression gate. The first pair has large timing drift; later pairs
+are near unity. This is evidence against a material observed native regression, not
+a claim that the ownership machinery speeds native execution.
+
+### Availability and failure limits
+
+Warnings-as-errors C compilation and linkage pass at ARM macOS **11.0** and x86 macOS
+**10.12**, preserving the Rust target floors. Load commands contain no mandatory
+MPS/Graph framework; class lookup and framework loading occur only for explicit Graph
+preparation. A forced older-SDK stub and Clang static analysis pass. Actual execution
+on an older OS was **not** tested. A fresh release link exposed the Clang availability
+helper omitted by Rust's `-nodefaultlibs`; linking the compiler's own support archive
+fixes it without raising deployment targets.
+
+Review also found that failure retirement could wait on a concurrently held execution
+mutex. A focused test fails on that implementation and passes with `try_lock`: a busy
+owner returns unresolved ownership, while existing event-gated native status queries
+remain nonblocking. Settlement never reopens the failed owner.
+
+An early fault-test assumption was wrong: holding a GPU event for 30 seconds produced
+a real SDK GPU-timeout error before the bridge deadline. Final mode 2 instead withholds
+the original SDK callback acknowledgment on a **host** semaphore; it proves the actual
+deadline/retention path, not late GPU writes. Mode 4 gates real GPU work and throws
+immediately after enqueue, allowing the gate to be released before the OS watchdog;
+this separately proves late writes after caller/owner drops. The bridge's 30-second
+deadline begins only after the asynchronous SDK CPU method returns and does not bound
+that method itself.
+
+Boundaries, fmt, locked workspace tests, default/CUDA clippy and targeted Metal clippy
+pass with `CARGO_BUILD_JOBS=2`. Run the Graph gates explicitly: the native
+`--test metal_decoder` target does not include the full-KV library unit.
+
+```sh
+# M3 Max, capable SDK/runtime; set the pinned package and reference environment.
+CARGO_BUILD_JOBS=2 cargo test -p engine-metal --release --locked -- --test-threads=1
+CARGO_BUILD_JOBS=2 cargo test -p engine-metal --release --locked \
+  --test graph_retirement -- --ignored --test-threads=1
+CARGO_BUILD_JOBS=2 cargo test -p engine-gemma4 --features metal --release --locked \
+  --lib graph_tests -- --ignored --test-threads=1
+CARGO_BUILD_JOBS=2 cargo test -p ribn-text --features metal --release --locked \
+  --test gemma_metal -- --ignored --test-threads=1
+```
+
+Internal Graph precision, repacking/workspace, full-model physical peaks, hardware-fault
+recovery and mixed-arrival serving/SLO acceptance remain unqualified. These results do
+not promote automatic Graph selection or establish competitive serving performance.
+
+Evidence: `~/ribn-qualification/gemma4-metal-graph-integration/20261023T200555Z/`.
+Plans, source manifests/snapshots, prearchived binaries, actual exits, complete rows and
+`analysis.json` retain the numerical/timing cohort. `native-overhead/frozen/` and
+`runs-1/` retain its separate native control; `availability-final/` retains build/link
+checks. The final mutex-retirement fix changes no measured compute path; its focused
+red/green proof and renewed ownership gates are retained separately. Failed and superseded
+captures remain preserved, including the release-link error, watchdog assumption,
+test-fixture compile failure and a runtime test corrected to distinguish still-owned
+model weights from private Graph intermediates.

@@ -19,6 +19,8 @@ mod stream;
 
 #[cfg(feature = "cuda")]
 pub use cuda::{LoadOptions, MemoryReport};
+#[cfg(all(feature = "metal", target_os = "macos"))]
+pub use engine_gemma4::Gemma4MetalFfn;
 pub use error::TextError;
 #[cfg(any(all(feature = "metal", target_os = "macos"), feature = "cuda"))]
 pub use gemma_load::GemmaLoadReport;

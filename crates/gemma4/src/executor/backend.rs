@@ -129,8 +129,8 @@ impl GemmaDecode for crate::Gemma4MetalDecoder {
         Self::position(self)
     }
     fn close(&mut self) -> Result<(), Gemma4Error> {
-        // Metal waits for terminal command completion before returning errors;
-        // this decoder's continuation is host-owned data, safe to destroy.
+        // The backend settles the shared model's device access envelope before
+        // releasing this decoder's host-owned continuation.
         Ok(())
     }
 }
@@ -142,14 +142,16 @@ impl Gemma4Executor<crate::Gemma4MetalDecoder> {
     /// Rejects a configuration whose context exceeds the runtime's u32 limits.
     pub fn metal(model: Arc<crate::Gemma4MetalModel>) -> Result<Self, Gemma4Error> {
         let config = model.config().clone();
+        let completion = Arc::clone(&model);
         Self::new(
             "gemma4 metal",
             config.max_position_embeddings(),
             config,
             Backend {
                 create: Box::new(move || crate::Gemma4MetalDecoder::shared(model.clone())),
-                // All submitted commands reach terminal completion inside each call.
-                settle: Box::new(|| Ok(())),
+                // Retain the SAME model even if no decoder was constructed. An
+                // uncertain Graph submission cannot release its access envelope.
+                settle: Box::new(move || completion.retire_failure()),
             },
         )
     }

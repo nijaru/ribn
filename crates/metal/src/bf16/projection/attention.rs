@@ -92,7 +92,7 @@ impl MetalBf16Executor {
                 ))
             })
             .transpose()?;
-        let command = self.command()?;
+        let mut command = self.command()?;
         let encoder = Self::compute_encoder(&command)?;
         self.encode_rms(&encoder, &input.buffer, &normalized, input_scale, &rms);
         query_buffers.encode(self, &encoder, &normalized, &query.weight.buffer);
@@ -101,7 +101,7 @@ impl MetalBf16Executor {
             value.encode(self, &encoder, &normalized, &value_weight.buffer);
         }
         encoder.end_encoding();
-        Self::submit(&command, "attention input projections")?;
+        command.submit("attention input projections")?;
         Ok(MetalAttentionProjections {
             query: query_buffers.into_output(),
             key_value: key_value_buffers

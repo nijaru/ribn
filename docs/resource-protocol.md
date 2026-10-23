@@ -984,7 +984,15 @@ The CPU full-history oracle and CUDA execution/retirement contracts remain indep
 
 #### Prepared Metal Graph retirement
 
-The planned BF16 Graph lane keeps one submission owner per Metal executor, shared by
+BF16 Graph selection is explicit and immutable for each prepared Metal model. Native
+execution remains the default. The experimental Rust load option prepares Gate/Up
+pairs at 16/64 rows and Down at 64 rows for E4B geometry on the M3 Max; other shapes
+use native kernels. It rejects unavailable SDK/runtime support or unqualified device/
+model geometry before weight loading, without raising the native deployment floor.
+Preparation binds existing BF16 weights, not FP32 shadows or a second weight inventory.
+Internal Graph storage and physical-memory acceptance remain separate qualification.
+
+The BF16 Graph lane keeps one submission owner per Metal executor, shared by
 native commands and prepared Graph calls. Before possible enqueue it retains all
 accessible buffers, compiled execution, tensor wrappers, device and queue. A successful
 terminal callback establishes physical completion; result validity is a separate check.
@@ -1000,13 +1008,18 @@ Drop quarantines the unresolved envelope instead of asserting completion. The Ge
 runtime must settle the shared model before releasing sequence state, including when
 no decoder was successfully constructed.
 
-A [private retirement proof](../benchmarks/gemma4-metal-baseline.md#completion-owned-graph-retirement-proof)
-exercises this contract, including real delayed writes and runtime shutdown. Production
-Graph support is not promoted. Normal synchronous native submission still waits;
-failure settlement queries pending native status rather than adding an unbounded wait.
-A reported failure may also be terminal work whose cleanup raised, not only unknown
-enqueue. Logical submission/cancellation stays with the existing runtime; no extra worker,
-frontend retry list, universal graph API or physical-memory grant follows from it.
+The [integrated experimental path](../benchmarks/gemma4-metal-baseline.md#model-local-graph-integration-2026-10-23)
+exercises this contract through actual delayed writes, runtime shutdown and the public
+text loader. CLI/HTTP loading still selects native execution. Clean prelaunch rejection
+leaves the owner usable only after verified cleanup; uncertain cleanup closes it even
+without known enqueue. A reported failure may also be terminal work whose cleanup raised.
+
+Normal synchronous native submission still waits; failure settlement refuses a busy
+execution mutex and queries pending native status rather than adding an unbounded wait. The Graph bridge's 30-second
+missing-callback deadline starts **after** the SDK's asynchronous CPU method returns;
+it does not bound that method itself. Logical submission/cancellation stays with the
+existing runtime; no extra worker, frontend retry list, universal graph API or
+physical-memory grant follows from this experimental option.
 
 ### Native BF16 linear execution
 

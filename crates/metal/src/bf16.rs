@@ -3,8 +3,11 @@
 use metal::{Buffer, CommandQueue, CompileOptions, ComputePipelineState, Device, MTLSize};
 use std::error::Error;
 use std::fmt;
+use std::{mem::ManuallyDrop, sync::Mutex};
 
 mod attention;
+mod execution;
+mod graph;
 mod loading;
 mod projection;
 mod rotary;
@@ -20,6 +23,7 @@ pub use rotary::MetalRotaryFactors;
 #[derive(Debug)]
 pub enum MetalBf16Error {
     Device,
+    Unsupported(&'static str),
     Library(String),
     Function(String),
     Pipeline(String),
@@ -34,6 +38,7 @@ impl fmt::Display for MetalBf16Error {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Device => formatter.write_str("no Metal device is available"),
+            Self::Unsupported(message) => write!(formatter, "Metal unsupported: {message}"),
             Self::Library(message) => write!(formatter, "Metal library: {message}"),
             Self::Function(message) => write!(formatter, "Metal function: {message}"),
             Self::Pipeline(message) => write!(formatter, "Metal pipeline: {message}"),
@@ -92,6 +97,8 @@ impl MetalBf16Buffer {
 
 /// BF16 linear, RMS and attention pipelines on one Metal device and queue.
 pub struct MetalBf16Executor {
+    execution: ManuallyDrop<Mutex<execution::Execution>>,
+    ffn_shape: Option<graph::FfnShape>,
     device: Device,
     queue: CommandQueue,
     linear: ComputePipelineState,
@@ -105,12 +112,50 @@ pub struct MetalBf16Executor {
     elementwise: ComputePipelineState,
 }
 
+impl Drop for MetalBf16Executor {
+    fn drop(&mut self) {
+        let owner = self
+            .execution
+            .get_mut()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if owner.retire().is_ok() {
+            // SAFETY: terminal retirement acknowledged. Drop exactly once; an
+            // unresolved envelope instead stays permanently quarantined.
+            unsafe {
+                ManuallyDrop::drop(&mut self.execution);
+            }
+        }
+    }
+}
+
 impl MetalBf16Executor {
     /// Compile the kernels at runtime on the default Apple GPU.
     /// # Errors
     /// Rejects a missing device, MSL compilation or pipeline creation failure.
     pub fn new() -> Result<Self, MetalBf16Error> {
+        Self::prepare(None)
+    }
+
+    /// Prepare experimental BF16 FFN Graphs on the qualified M3 Max backend.
+    ///
+    /// Pair projections select 16/64 rows; Down selects 64. All other shapes
+    /// remain native. No extra weight inventory is created. This is explicit
+    /// opt-in, not physical-memory or serving qualification.
+    /// # Errors
+    /// Rejects unavailable SDK/runtime/device support, invalid geometry or
+    /// compilation failure before any model weights are loaded.
+    pub fn with_ffn_graphs(hidden: usize, intermediate: usize) -> Result<Self, MetalBf16Error> {
+        Self::prepare(Some(graph::FfnShape {
+            hidden,
+            intermediate,
+        }))
+    }
+
+    fn prepare(ffn_shape: Option<graph::FfnShape>) -> Result<Self, MetalBf16Error> {
         let device = Device::system_default().ok_or(MetalBf16Error::Device)?;
+        if ffn_shape.is_some() {
+            graph::FfnGraphs::check_available(&device)?;
+        }
         let source = include_str!("bf16.metal");
         let library = device
             .new_library_with_source(source, &CompileOptions::new())
@@ -166,7 +211,15 @@ impl MetalBf16Executor {
         let queue = Self::command_queue(&device)?;
         // Do not extend an optimization measured on M3 Max to other Apple GPUs.
         let block_linear_rows = device.name() == "Apple M3 Max";
+        let graphs = ffn_shape
+            .map(|shape| graph::FfnGraphs::new(&device, &queue, shape))
+            .transpose()?;
+        let execution = ManuallyDrop::new(Mutex::new(execution::Execution::new(
+            &device, &queue, graphs,
+        )));
         Ok(Self {
+            execution,
+            ffn_shape,
             device,
             queue,
             linear,
@@ -255,7 +308,7 @@ impl MetalBf16Executor {
         let total = u32::try_from(left.elements)
             .map_err(|_| MetalBf16Error::Shape("elementwise length exceeds u32".into()))?;
         let output = self.allocate_shared(left.elements * 2)?;
-        let command = self.command()?;
+        let mut command = self.command()?;
         let encoder = Self::compute_encoder(&command)?;
         encoder.set_compute_pipeline_state(&self.elementwise);
         encoder.set_buffer(0, Some(&left.buffer), 0);
@@ -270,7 +323,7 @@ impl MetalBf16Executor {
             MTLSize::new(u64::from(total).min(THREADS), 1, 1),
         );
         encoder.end_encoding();
-        Self::submit(&command, "elementwise")?;
+        command.submit("elementwise")?;
         Ok(MetalBf16Buffer {
             buffer: output,
             elements: left.elements,

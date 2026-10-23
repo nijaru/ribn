@@ -49,7 +49,8 @@ fn metal_executor_reproduces_the_archived_tokens_through_the_engine() {
     assert_eq!(expected.len(), 4);
 
     assert_eq!(source.config(), &config);
-    let model = Arc::new(Gemma4MetalModel::load(&source).unwrap());
+    let model =
+        Arc::new(Gemma4MetalModel::load(&source, engine_gemma4::Gemma4MetalFfn::Native).unwrap());
     let executor = Gemma4Executor::metal(model).expect("Metal executor");
     let limits = executor.info().limits;
     assert_eq!(limits.max_decode_tokens, 1);

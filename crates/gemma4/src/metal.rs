@@ -106,6 +106,8 @@ use crate::cpu::{add, argmax, factors, multiply, ple_combine, scale, softcap};
 
 mod activation;
 mod attention;
+#[cfg(test)]
+mod graph_tests;
 use activation::GeluTable;
 use attention::attention_forward;
 use engine_metal::{MetalAttentionConfig, MetalBf16Error, MetalLinearShape, MetalProjectionNorm};
@@ -272,6 +274,16 @@ struct OwnerCache {
     values: Vec<u16>,
 }
 
+/// Model-local FFN preparation policy. Native remains the default.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum Gemma4MetalFfn {
+    #[default]
+    Native,
+    /// BF16 Graph pairs at 16/64 rows and Down at 64 rows, native elsewhere.
+    /// Experimental M3 Max/E4B scope; not a physical-memory or serving guarantee.
+    ExperimentalGraph,
+}
+
 /// Prepared Gemma weights and execution resources on one Metal device.
 ///
 /// Matmuls, normalization, rotary and attention run on the GPU; embedding lookups,
@@ -288,9 +300,22 @@ impl Gemma4MetalModel {
     /// Materialize the preflighted source directly in shared Metal storage.
     /// # Errors
     /// Rejects source reads, allocations or Metal preparation failures.
-    pub fn load(source: &Gemma4Source) -> Result<Self, Gemma4Error> {
+    pub fn load(source: &Gemma4Source, ffn: Gemma4MetalFfn) -> Result<Self, Gemma4Error> {
+        let config = source.config();
+        let executor = match ffn {
+            Gemma4MetalFfn::Native => MetalBf16Executor::new(),
+            Gemma4MetalFfn::ExperimentalGraph => {
+                if config.hidden_size() != 2560 || config.intermediate_size() != 10240 {
+                    return Err(Gemma4Error::new(
+                        "Metal FFN",
+                        "experimental Graph requires E4B 2560/10240 geometry",
+                    ));
+                }
+                MetalBf16Executor::with_ffn_graphs(config.hidden_size(), config.intermediate_size())
+            }
+        }
+        .map_err(|error| metal_error(&error))?;
         let gelu = GeluTable::new()?;
-        let executor = MetalBf16Executor::new().map_err(|error| metal_error(&error))?;
         let metal = Gemma4MetalWeights::load(source, &executor)?;
         Ok(Self {
             metal,
@@ -302,6 +327,15 @@ impl Gemma4MetalModel {
     #[must_use]
     pub fn config(&self) -> &Gemma4Config {
         self.metal.config()
+    }
+
+    /// Observe physical completion without reopening a failed model.
+    /// # Errors
+    /// Unresolved work stays model-owned until explicit retry or quarantine.
+    pub fn retire_failure(&self) -> Result<(), Gemma4Error> {
+        self.executor
+            .retire_failure()
+            .map_err(|error| metal_error(&error))
     }
 }
 
@@ -318,13 +352,20 @@ impl Gemma4MetalDecoder {
     /// # Errors
     /// Rejects source reads, allocations or Metal preparation failures.
     pub fn load(source: &Gemma4Source) -> Result<Self, Gemma4Error> {
-        Self::shared(Arc::new(Gemma4MetalModel::load(source)?))
+        Self::shared(Arc::new(Gemma4MetalModel::load(
+            source,
+            Gemma4MetalFfn::Native,
+        )?))
     }
 
     /// Prepare one sequence over an already-loaded model.
     /// # Errors
     /// Rejects a key/value owner that follows its consumer.
     pub fn shared(model: Arc<Gemma4MetalModel>) -> Result<Self, Gemma4Error> {
+        model
+            .executor
+            .check_healthy()
+            .map_err(|error| metal_error(&error))?;
         let config = model.config();
         let mut caches = Vec::with_capacity(config.layers().len());
         for (layer, geometry) in config.layers().iter().enumerate() {
@@ -375,6 +416,10 @@ impl Gemma4MetalDecoder {
     }
 
     fn step(&mut self, tokens: &[u32]) -> Result<Vec<u16>, Gemma4Error> {
+        self.model
+            .executor
+            .check_healthy()
+            .map_err(|error| metal_error(&error))?;
         let sequence = tokens.len();
         let end = self
             .position
@@ -413,6 +458,13 @@ impl Gemma4MetalDecoder {
             position,
             tokens,
         );
+        let result = result.and_then(|logits| {
+            self.model
+                .executor
+                .check_healthy()
+                .map_err(|error| metal_error(&error))?;
+            Ok(logits)
+        });
         match result {
             Ok(logits) => {
                 self.position = end;
