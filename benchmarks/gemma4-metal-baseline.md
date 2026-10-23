@@ -442,3 +442,104 @@ declared supplemental plan, captures and analyzer. All six model processes exite
 CPU/CUDA, scheduling and cache retention are unchanged. This remains an M3 Max/E4B
 execution improvement, not serving/SLO, physical-pressure/recovery, independent
 task-quality or other-device performance acceptance.
+
+## Attention-output projection chain (2026-10-23)
+
+**Promoted:** attention's BF16 output now feeds its output projection and grouped RMS
+in the same serial command, using the unchanged score/reduce/values, linear and RMS
+kernels. The attended value remains a real BF16 intermediate, but no longer needs a
+host copy/upload between operations. Gemma's CPU residual add still consumes the
+completed normalized output. Input Q/K/V chaining and packed PLE remain enabled.
+
+Each selected layer removes one synchronous boundary: E4B's 42 layers reduce the
+selected step from **298 to 256 commands**, with unchanged GPU dispatch counts.
+It also removes 42 host attended-vector copies and 42 native attended-input uploads
+per selected step. These are source counts, not a measured latency attribution.
+
+### Bound and ownership
+
+Selection requires **1–64 input rows**, **1–576 cached key positions**, and a checked
+total of at most **4 MiB** for all simultaneously live native chain buffers:
+BF16 scores, two FP32 summaries per query/head row, BF16 attended values and the
+projected/normalized BF16 outputs. The exact payload is
+`rows × (heads × (2 × keys + 8 + 2 × head_width) + 4 × hidden)`.
+Gemma's preflighted output weight has `columns == hidden`, with full-width RMS and
+no rotation. At 64 rows/576 keys the E4B full layer uses **1,773,568 bytes**.
+Larger chunks, histories or payloads retain the separate calls.
+
+This merges lifetimes that were previously disjoint: attention scratch and Q/K/V
+inputs remain live through projection. Input uploads, persistent parameters, host
+result copies, allocator rounding and driver storage are outside the payload cap.
+It is not an additional-allocation estimate, physical peak or concurrent memory grant.
+
+Standalone attention and this chain share geometry, allocation and encoding in one
+cohesive backend module. Both complete attention spans/actual K/V extents and the entire
+projection/normalization validate before any scratch or output allocation. All private
+buffers survive the terminal wait; only the final normalized result publishes after
+success. No shader, arithmetic policy, scheduler, cache retention or CPU/CUDA path changed.
+
+### Matched runtime screen
+
+The predeclared [paired method](#randomized-within-process-ablation) and 3% primary,
+bootstrap-upper-bound and 2% cohort gates are unchanged: three fresh model processes,
+eight retained warmups per process, 12 balanced randomized pairs per c1 length
+18/64/129 and six mixed c4 burst pairs per process. Four generated tokens and default
+16-token chunks give **126 measured pairs**. Control/candidate share the same loaded
+weights, pipelines, queue and host structure; only this chain changes between fully
+completed/shut-down trials. No production ablation flag ships.
+
+Process median pooled c1 paired ratios were **0.955815/0.937168/0.956216**,
+or **4.42/6.28/4.38%** lower decode interval. The primary reduction is **4.42%**,
+with a 10,000-draw hierarchical-bootstrap 95% interval of **3.40–6.33%**
+(seed `2026102303`). All declared gates pass.
+
+| Workload | Paired TTFT change | Paired decode-interval change | Paired last-terminal change |
+| --- | ---: | ---: | ---: |
+| c1, 18 input tokens | −4.18% | −5.94% | −5.84% |
+| c1, 64 input tokens | −3.13% | −4.05% | −3.09% |
+| c1, 129 input tokens | −5.65% | −4.38% | −5.14% |
+| c4 mixed burst | −2.99% | −1.93% | −2.56% |
+
+These are median process medians of within-pair ratios, not ratios of pooled clocks.
+Uncontrolled host variability is substantial: c1/18 absolute process median decode
+clocks were 157.308 → 199.327, 108.712 → 103.166 and 126.432 → 143.809 ms.
+The within-pair estimator avoids substituting those confounded marginal medians.
+Variation remains even within cohorts: process-one c4 TTFT/last-terminal paired ratios
+regressed **11.84/4.70%**, while the other processes improved. Promotion follows the
+predeclared aggregate diagnostic gates, not a claim that every repetition improves.
+No thermal, occupancy or scheduler cause is inferred. Model process wall times were
+313.888/254.947/442.089 seconds, all exit zero.
+
+### Shapes, history transition and correctness
+
+The independently declared direct-prefill screen ran another **96 balanced pairs**
+across three fresh processes at whole lengths 7/8/32/64. All per-shape aggregate
+non-regression gates pass; paired reductions are **4.90/5.86/3.25/2.99%**.
+The third process's 32-row median paired ratio regressed **4.04%**; the aggregate
+3.25% improvement is not universal per-process performance. These clocks return an
+owned full BF16 row and are not pooled with runtime TTFT/decode.
+
+All **72 full 262,144-element primary BF16 rows** are finite and bit-identical across
+modes/processes and the archived promoted `4822a99` captures. All stock CPU winners
+and full-distribution diagnostics are unchanged; every runtime pair generated identical
+tokens. All 192 supplemental paired rows compare exactly and are finite, with 24
+representative raw rows retained. A real 512-token prefix followed by a whole 64-token
+chunk exercises 576 keys; the next decode crosses to the 577-key fallback. All 12
+boundary/continuation rows across modes/processes are finite and bit-identical.
+
+Primitive tests compare the combined path with actual standalone attention plus host
+roundtrip and normalized projection, covering positive key offsets, causal/sliding
+masks, odd/two-row/four-row classes, 64/65 rows, 576 keys, tails and optional scales/
+rotation. Invalid late projection parameters and unequal K/V lengths reject; a
+subsequent valid call recovers. Pure selector tests cover exact byte/history/row bounds
+and overflow. Actual release decoder/executor/text-facade gates and repository checks
+pass. Independent read-only review found no blocking issue and confirmed the exact
+allocation formula for the model-owned descriptor.
+
+Evidence: `~/ribn-qualification/gemma4-metal-attention-output/20261023T052027Z/`.
+The primary `plan.json`, `candidate.patch`, isolated source/control diffs and native
+probes, `paired/analysis.json`, `shapes/analysis.json`, full rows, traces, process/GPU
+snapshots and actual exits retain the experiment. All six timed model processes
+exited zero, without another model/build/test from this session overlapping timing.
+This is an M3 Max/E4B execution diagnostic, not a fresh incumbent/HTTP/SLO comparison,
+physical-pressure/recovery, independent task-quality or other-device acceptance.

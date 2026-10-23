@@ -220,6 +220,9 @@ Attention input RMS and Q/K/V preparation can also share one bounded serial comm
 with the normalized input kept private and no K/V work for shared-tail consumers;
 larger chunks/geometries retain separate calls. See the
 [attention-chain qualification](../benchmarks/gemma4-metal-baseline.md#attention-input-projection-chain-2026-10-23).
+Attention can similarly feed its output projection and RMS in one bounded serial
+command; larger chunks, histories and scratch payloads retain separate calls. See the
+[attention-output qualification](../benchmarks/gemma4-metal-baseline.md#attention-output-projection-chain-2026-10-23).
 Normalized projections share one serial command buffer and private BF16 intermediates. Query/key projections also rotate in that command, sharing immutable
 per-position factors without changing kernels or rounding boundaries. FFN input normalization and its gate/up projections
 also share one command and a private normalized input, returning both completed outputs.

@@ -139,8 +139,8 @@ impl RmsGeometry {
     }
 }
 
-/// Geometry-only preflight, shared by standalone and attention-input chains.
-struct ProjectionGeometry<'a> {
+/// Geometry-only preflight, shared by standalone and fixed attention chains.
+pub(super) struct ProjectionGeometry<'a> {
     linear: LinearGeometry,
     rms: RmsGeometry,
     scale: Option<&'a MetalBf16Buffer>,
@@ -148,7 +148,7 @@ struct ProjectionGeometry<'a> {
 }
 
 impl<'a> ProjectionGeometry<'a> {
-    fn new(
+    pub(super) fn new(
         shape: MetalLinearShape,
         input: usize,
         weight: usize,
@@ -182,7 +182,7 @@ impl<'a> ProjectionGeometry<'a> {
         })
     }
 
-    fn allocate(
+    pub(super) fn allocate(
         self,
         executor: &MetalBf16Executor,
     ) -> Result<ProjectionBuffers<'a>, MetalBf16Error> {
@@ -208,7 +208,7 @@ impl<'a> ProjectionGeometry<'a> {
 }
 
 /// Every intermediate remains owned until the enclosing command's terminal wait.
-struct ProjectionBuffers<'a> {
+pub(super) struct ProjectionBuffers<'a> {
     linear: LinearGeometry,
     rms: RmsGeometry,
     scale: Option<&'a MetalBf16Buffer>,
@@ -218,7 +218,7 @@ struct ProjectionBuffers<'a> {
 }
 
 impl ProjectionBuffers<'_> {
-    fn encode(
+    pub(super) fn encode(
         &self,
         executor: &MetalBf16Executor,
         encoder: &ComputeCommandEncoderRef,
@@ -238,7 +238,7 @@ impl ProjectionBuffers<'_> {
         }
     }
 
-    fn into_output(self) -> MetalBf16Buffer {
+    pub(super) fn into_output(self) -> MetalBf16Buffer {
         MetalBf16Buffer {
             buffer: self
                 .rotation

@@ -8,11 +8,13 @@ use engine_metal::{
     MetalProjectionNorm, MetalRotaryFactors,
 };
 
-// All simultaneously live native buffers allocated by the combined chain:
-// normalized input, three Q buffers, three K buffers and two V buffers.
-// Inputs, immutable weights/factors, copied host results and driver overhead are separate.
+// Each chain separately bounds its live native payload. The input fork counts
+// normalized input, three Q buffers, three K buffers and two V buffers; output sizing
+// is below. Inputs, immutable weights/factors, host results and driver overhead are separate.
 const MAX_CHAIN_BYTES: usize = 4 * 1024 * 1024;
 const MAX_CHAIN_TOKENS: usize = 64;
+// Bound the history-dependent scratch to the independently exercised key span.
+const MAX_OUTPUT_CHAIN_KEYS: usize = 576;
 
 fn chain_bytes(rows: usize, inner: usize, query: usize, key_value: Option<usize>) -> Option<usize> {
     let kv = key_value.unwrap_or(0).checked_mul(5)?;
@@ -26,6 +28,71 @@ fn chain_bytes(rows: usize, inner: usize, query: usize, key_value: Option<usize>
 fn chain_eligible(rows: usize, inner: usize, query: usize, key_value: Option<usize>) -> bool {
     (1..=MAX_CHAIN_TOKENS).contains(&rows)
         && chain_bytes(rows, inner, query, key_value).is_some_and(|bytes| bytes <= MAX_CHAIN_BYTES)
+}
+
+// Gemma's output projection has columns == hidden, full-width RMS and no rotation.
+// BF16 scores, two FP32 row summaries, attended values and two projected outputs.
+fn output_chain_bytes(
+    rows: usize,
+    heads: usize,
+    width: usize,
+    keys: usize,
+    hidden: usize,
+) -> Option<usize> {
+    let per_head = keys
+        .checked_mul(2)?
+        .checked_add(8)?
+        .checked_add(width.checked_mul(2)?)?;
+    heads
+        .checked_mul(per_head)?
+        .checked_add(hidden.checked_mul(4)?)?
+        .checked_mul(rows)
+}
+
+fn output_chain_eligible(
+    rows: usize,
+    config: MetalAttentionConfig,
+    keys: usize,
+    hidden: usize,
+) -> bool {
+    (1..=MAX_CHAIN_TOKENS).contains(&rows)
+        && (1..=MAX_OUTPUT_CHAIN_KEYS).contains(&keys)
+        && output_chain_bytes(rows, config.heads, config.width, keys, hidden)
+            .is_some_and(|bytes| bytes <= MAX_CHAIN_BYTES)
+}
+
+fn project_attention(
+    ops: &MetalOps<'_>,
+    queries: &[u16],
+    cache: &OwnerCache,
+    config: MetalAttentionConfig,
+    position: usize,
+    rows: usize,
+    projection: MetalNormalizedProjection<'_>,
+) -> Result<Vec<u16>, Gemma4Error> {
+    let keys = cache.keys.len() / (config.kv_heads * config.width);
+    if output_chain_eligible(rows, config, keys, projection.norm.width) {
+        let query = ops
+            .executor
+            .upload(queries)
+            .map_err(|error| metal_error(&error))?;
+        let keys = ops
+            .executor
+            .upload(&cache.keys)
+            .map_err(|error| metal_error(&error))?;
+        let values = ops
+            .executor
+            .upload(&cache.values)
+            .map_err(|error| metal_error(&error))?;
+        let output = ops
+            .executor
+            .attention_project_normalized(&query, &keys, &values, config, position, 0, projection)
+            .map_err(|error| metal_error(&error))?;
+        Ok(output.bits())
+    } else {
+        let attended = ops.attention(queries, &cache.keys, &cache.values, config, position, 0)?;
+        ops.project_normalized(&attended, rows, projection.weight, projection.norm)
+    }
 }
 
 struct AttentionInputs {
@@ -193,10 +260,10 @@ pub(super) fn attention_forward(
         AttentionKind::Sliding => Some(config.sliding_window()),
         AttentionKind::Full => None,
     };
-    let attended = ops.attention(
+    let normed = project_attention(
+        ops,
         &queries,
-        &cache.keys,
-        &cache.values,
+        cache,
         MetalAttentionConfig {
             heads,
             kv_heads,
@@ -204,17 +271,15 @@ pub(super) fn attention_forward(
             window,
         },
         position,
-        0,
-    )?;
-    let normed = ops.project_normalized(
-        &attended,
         sequence,
-        metal.layer(layer, LayerParameter::AttentionOutput)?,
-        MetalProjectionNorm {
-            width: hidden_size,
-            epsilon,
-            scale: Some(metal.layer(layer, LayerParameter::PostAttentionNorm)?),
-            rotary: None,
+        MetalNormalizedProjection {
+            weight: metal.layer(layer, LayerParameter::AttentionOutput)?,
+            norm: MetalProjectionNorm {
+                width: hidden_size,
+                epsilon,
+                scale: Some(metal.layer(layer, LayerParameter::PostAttentionNorm)?),
+                rotary: None,
+            },
         },
     )?;
     add(hidden, &normed)
@@ -222,7 +287,41 @@ pub(super) fn attention_forward(
 
 #[cfg(test)]
 mod tests {
-    use super::{MAX_CHAIN_BYTES, chain_bytes, chain_eligible};
+    use super::{
+        MAX_CHAIN_BYTES, chain_bytes, chain_eligible, output_chain_bytes, output_chain_eligible,
+    };
+    use engine_metal::MetalAttentionConfig;
+
+    #[test]
+    fn attention_output_chain_bounds_live_scratch_and_history() {
+        let config = MetalAttentionConfig {
+            heads: 8,
+            kv_heads: 2,
+            width: 512,
+            window: None,
+        };
+        assert_eq!(output_chain_bytes(64, 8, 512, 576, 2560), Some(1_773_568));
+        assert!(output_chain_eligible(64, config, 576, 2560));
+        assert!(!output_chain_eligible(65, config, 576, 2560));
+        assert!(!output_chain_eligible(1, config, 577, 2560));
+        assert!(!output_chain_eligible(0, config, 1, 2560));
+        assert!(!output_chain_eligible(1, config, 0, 2560));
+        let tiny = MetalAttentionConfig {
+            heads: 1,
+            kv_heads: 1,
+            width: 1,
+            window: None,
+        };
+        let hidden = (MAX_CHAIN_BYTES - 12) / 4;
+        assert_eq!(
+            output_chain_bytes(1, 1, 1, 1, hidden),
+            Some(MAX_CHAIN_BYTES)
+        );
+        assert!(output_chain_eligible(1, tiny, 1, hidden));
+        assert!(!output_chain_eligible(1, tiny, 1, hidden + 1));
+        assert_eq!(output_chain_bytes(1, usize::MAX, 1, 1, 1), None);
+        assert!(!output_chain_eligible(1, tiny, 1, usize::MAX));
+    }
 
     #[test]
     fn attention_chain_has_a_byte_bound_and_a_large_shape_fallback() {

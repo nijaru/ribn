@@ -1016,6 +1016,16 @@ step. It passes exact full-row, bounded-workspace, application and matched runti
 gates; the linked owner records timing variability and the lack of serving/pressure
 acceptance. Attention now also rejects mismatched K/V extents before allocation.
 
+### Metal attention-output projection chain (2026-10-23)
+
+The [bounded output-chain screen](gemma4-metal-baseline.md#attention-output-projection-chain-2026-10-23)
+keeps attention, output projection and RMS in one serial command with unchanged kernels
+and BF16 boundaries. Selected E4B steps remove 42 more waits: 298 → 256. Exact full-row,
+64/65-row and 576/577-key continuation/fallback gates pass. Matched runtime and whole-chunk
+aggregate gates pass, with substantial timing variability and some per-process cohort
+regressions retained by the linked evidence owner. No serving, physical-pressure or
+other-device acceptance follows.
+
 ### Metal exact GELU table qualification (2026-10-20)
 
 A refreshed temporary profile on `ba1906a` observed **429** synchronous commands

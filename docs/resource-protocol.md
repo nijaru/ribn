@@ -952,6 +952,13 @@ or partial key/value output is published before the whole command succeeds. Mode
 simultaneously live native intermediates and outputs and retains separate calls outside
 that envelope; this is not a shared device-memory grant.
 
+Attention may also feed its completed BF16 values directly into an output projection
+and grouped RMS in the same serial command. Validate attention spans, actual K/V
+extents and the entire projection/normalization before allocating scratch or outputs.
+Keep scores, row summaries, attended values and projection intermediates private until
+the whole command completes. Model selection bounds their checked total payload;
+separate calls remain available outside that envelope.
+
 All dispatches use one default serial compute encoder. Each consumer observes its
 producer's writes without a host readback/upload; no published immutable buffer is modified.
 The call retains inputs, weights, optional scale/factors and all private allocations through

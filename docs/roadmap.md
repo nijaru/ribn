@@ -651,6 +651,14 @@ rows and unchanged runtime tokens. A separate 96-pair whole-chunk screen passed 
 7/8/32/64 tokens. Selection is bounded to 64 tokens and 4 MiB of total native chain
 buffers, with the old calls retained above either bound. CPU/CUDA and scheduling are
 unchanged; this is not a new incumbent, SLO or physical-pressure qualification.
+The [attention-output chain](../benchmarks/gemma4-metal-baseline.md#attention-output-projection-chain-2026-10-23)
+also removes 42 waits per selected step (298 → 256), preserving the attended BF16
+boundary without its host roundtrip. It passes exact full-row and matched runtime gates:
+4.42% lower primary decode interval over 126 pairs (process gains 4.38–6.28%), plus
+96 whole-chunk pairs and the 576/577-key continuation boundary. Selection is limited
+to 64 input rows, 576 keys and 4 MiB total native chain-buffer payload. Some individual
+process cohorts regressed; the linked owner records variability and the predeclared
+aggregate diagnostic gates. This is not serving/SLO or physical-pressure acceptance.
 Sampling and eviction remain open. Shader/pipeline failures now fail both primitive
 and materialization tests rather than being mistaken for missing hardware.
 Then mixed-width local/global KV with donor spans pinned through shared-tail device reads. Use strongly typed model/backend state
