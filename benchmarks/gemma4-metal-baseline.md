@@ -543,3 +543,96 @@ snapshots and actual exits retain the experiment. All six timed model processes
 exited zero, without another model/build/test from this session overlapping timing.
 This is an M3 Max/E4B execution diagnostic, not a fresh incumbent/HTTP/SLO comparison,
 physical-pressure/recovery, independent task-quality or other-device acceptance.
+
+## Execution-cost refresh (2026-10-23)
+
+A temporary instrumented `ba9e119` refreshes the cost breakdown after command
+consolidation. **No production code, profiling switch or execution variant ships.**
+The result selects a bounded FFN component investigation, not another optimization
+promotion or a new incumbent comparison.
+
+### Capture and accounting
+
+Three fresh processes each loaded the pinned BF16 E4B once, then ran four balanced
+randomized profile-on/off pairs for each of five cases: whole 16/64-token prefill,
+and one teacher-forced decode after 18/129/513-token prefixes. Prefix preparation uses
+16-token partitions outside the measured call. There are **60 pairs/120 measured calls**,
+plus retained warmups. Both modes use the same instrumented binary; off mode disables
+collection but is not an untouched production executable.
+
+In-memory thread-local spans record native dispatch APIs, shared-buffer allocation,
+upload/readback, selected CPU operations and model phases. Every command records host
+commit/wait/status duration and reads `GPUStartTime`/`GPUEndTime` only after successful
+terminal completion. The installed SDK documents those properties as host seconds,
+available since macOS 10.15. No trace formatting or file output occurs during a call;
+collection is bounded to 8,192 records and draining/serialization happens afterward.
+
+All **60 traced steps** reconcile **256 commands each**, or **15,360** retained command
+intervals. GPU intervals are positive and serial/nonoverlapping; none exceeds its
+corresponding host submission duration. A command interval is not individual-kernel
+busy time, occupancy or a measurement of the entire GPU's utilization.
+
+The analyzer checks interval containment/disjointness before adding leaf costs.
+Native API spans include preparation, allocation, encoding, submission and release;
+command and allocation spans are nested within them. Upload spans include their
+allocation, and CPU leaf spans cover only the explicitly instrumented operations.
+These categories must not all be added together. Model phases are another enclosing
+view, not extra cost. The nonoverlapping API/upload/readback/CPU leaves fit within each
+measured step, with the remainder retained rather than labeled as CPU computation.
+
+### Current observations
+
+Each column takes the median of four traced calls per process, then the median of
+those three process values. Separate column medians need not add.
+
+| Call | Traced wall ms | Commit/wait/status ms | GPU-command intervals ms | Selected CPU leaves ms | Host upload/readback ms |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Whole prefill, 16 rows | 306.964 | 276.945 | 214.309 | 8.381 | 5.507 / 3.516 |
+| Whole prefill, 64 rows | 541.566 | 480.714 | 417.169 | 28.478 | 12.825 / 12.028 |
+| Decode after 18 tokens | 156.196 | 145.309 | 97.344 | 2.306 | 2.604 / 0.427 |
+| Decode after 129 tokens | 215.672 | 202.840 | 151.084 | 2.453 | 3.889 / 0.507 |
+| Decode after 513 tokens | 200.018 | 186.074 | 137.817 | 3.088 | 6.039 / 0.407 |
+
+The compound FFN gate/up and down commands account for **70.86/76.09%** of summed
+GPU-command intervals at 16/64-row prefill; process-median ranges are
+**70.14–72.17% / 75.82–76.63%**. Their shares for decode after 18/129/513 tokens are
+**54.44/50.67/42.86%**, with process ranges **53.17–54.85 / 49.51–51.54 /
+42.69–44.16%**. Shares are computed within each call before process aggregation,
+not from ratios of independently summarized table columns. These commands include
+RMS; the data does not isolate GEMM from normalization or internal GPU gaps.
+
+Prepared GELU-table lookup totals **3.134/12.657 ms** at 16/64-row prefill and
+**0.247–0.312 ms** in the three decode cohorts. Host multiply totals **1.531/6.182 ms**
+at prefill. Soft cap accounts for **1.566–2.518 ms** across the five cohorts.
+Uploads/readbacks move **29.07/41.52 MiB** at 16 rows and **116.26/164.57 MiB** at 64;
+decode upload volume grows from **3.55 to 50.92 MiB** over the measured histories.
+These are copied payloads, not resident-memory or physical peak measurements.
+
+### Interpretation and limits
+
+Profile-on/off median paired wall ratios are **0.8942/1.0618/0.9996/1.0110/0.9896**
+in table order. Individual process ratios range from **0.8020 to 1.2625**. Collection
+perturbs execution and uncontrolled host/device state remains substantial; these
+differences are neither pure profiler overhead nor a speedup. Absolute traced clocks
+must not replace the earlier untraced paired performance gates.
+
+The next experiment should isolate the actual FFN projection components and compare
+complete costs before choosing a backend-native lane. Small GELU/multiply host times
+do not rule out broader residency gains from removing transfers and synchronization.
+This evidence prioritizes the FFN region; it does not prove a particular kernel cause,
+select a new algorithm/row width, or justify abandoning command/transfer optimization.
+
+All **72 full common-history quality rows** are finite and bit-identical across on/off
+and processes and to the archived promoted `ba9e119` rows. All 120 measured-call rows
+also pass shape/finiteness and paired equality, with hashes agreeing across processes;
+30 representative timing rows are retained. These timing rows are not all independent
+prior-reference comparisons. No numerical tolerance or CPU oracle changed.
+
+Evidence: `~/ribn-qualification/gemma4-metal-cost-profile/20261023T075312Z/`.
+It retains the predeclared plan, isolated instrumented worktree/patch, pinned probe,
+SDK header, source/binary hashes, raw rows/traces, GPU/process snapshots, invocation/
+exit records and `analysis.json`. All three model processes exited zero
+(216.156/251.776/213.114 seconds); this session ran no overlapping model/build/test.
+Independent read-only review reproduced the accounting and summary values. Production
+CPU/CUDA/Metal code remains unchanged. This is a bounded direct-call diagnosis, not
+HTTP/SLO, physical-pressure/recovery, task-quality or other-device acceptance.

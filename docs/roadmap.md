@@ -626,12 +626,16 @@ further reduces 32/64-token prefill by 30/31% with exact logits, selected only f
 32–64-row chunks divisible by four and vector-width inner dimensions; qualified two-row
 and original kernels remain the fallbacks. Other activation transfers and CPU elementwise
 work remain; no universal graph or CUDA policy was introduced.
-A [same-artifact MLX calibration](../benchmarks/gemma4-metal-baseline.md) now measures
-148.5 ms versus 31.1 ms pooled warmed direct decode. Both backends match the 12 archived
+The 2026-10-20 [same-artifact MLX calibration](../benchmarks/gemma4-metal-baseline.md)
+measured 148.5 ms versus 31.1 ms pooled warmed direct decode. Both backends match the 12 archived
 winners but differ from stock CPU full logits; this is not a quality-equivalent serving
-baseline. Large Ribn timing swings remain unexplained. The next bounded Metal experiment
-should ablate command boundaries and intermediate host transfers before more row blocking,
-preserving the current numerical and ownership contracts rather than copying MLX's graph.
+baseline. Large Ribn timing swings remain unexplained. After the bounded command/transfer chains below, a
+[fresh execution-cost profile](../benchmarks/gemma4-metal-baseline.md#execution-cost-refresh-2026-10-23)
+puts 71–76% of prefill GPU-command intervals in the compound FFN gate/up and down chains.
+Prioritize a bounded comparison of the actual FFN projection components and complete
+costs before selecting another lane or row width. These intervals include RMS and do
+not isolate kernel busy time; broader residency/synchronization gains remain possible.
+Preserve the current numerical and ownership contracts rather than copying MLX's graph.
 This does not change CUDA sequencing or qualify capacity, recovery or SLO goodput.
 A [lifetime ablation](../benchmarks/runtime-contract.md#metal-native-handle-lifetime-ablation-2026-10-21-utc)
 now bounds autoreleased command/encoder handles at their backend factories instead of

@@ -227,7 +227,7 @@ Normalized projections share one serial command buffer and private BF16 intermed
 per-position factors without changing kernels or rounding boundaries. FFN input normalization and its gate/up projections
 also share one command and a private normalized input, returning both completed outputs.
 Output publication requires successful completion;
-remaining activation transfers and CPU elementwise work still limit the path.
+remaining activation transfers and CPU elementwise work stay host-orchestrated.
 The archived 18-token chat row reproduces all four greedy tokens on
 the M3 Max, and again through the token runtime's engine and the text facade with the
 real Gemma tokenizer and chat assets. `Gemma4Executor` preflights the whole offered batch,
