@@ -632,10 +632,16 @@ winners but differ from stock CPU full logits; this is not a quality-equivalent 
 baseline. Large Ribn timing swings remain unexplained. After the bounded command/transfer chains below, a
 [fresh execution-cost profile](../benchmarks/gemma4-metal-baseline.md#execution-cost-refresh-2026-10-23)
 puts 71–76% of prefill GPU-command intervals in the compound FFN gate/up and down chains.
-Prioritize a bounded comparison of the actual FFN projection components and complete
-costs before selecting another lane or row width. These intervals include RMS and do
-not isolate kernel busy time; broader residency/synchronization gains remain possible.
-Preserve the current numerical and ownership contracts rather than copying MLX's graph.
+A [real-input FFN component pre-screen](../benchmarks/gemma4-metal-baseline.md#ffn-projection-component-pre-screen-2026-10-23)
+now separates RMS from projections and compares a native FP32 MPS candidate including
+conversion and per-call resource release. Prefill component calls improve, but decode
+gate/up regress; retained FP32 shadows add 300 MiB per layer and 86 BF16 elements differ
+across the 27 sampled tuples. No production variant is promoted. Resolve independent
+full-model numerical acceptance and a bounded materialization/memory envelope before
+prefill-lane integration; compare BF16-storage vendor/native alternatives before choosing
+full-model FP32 shadows. These command intervals are not kernel busy time, and broader
+residency/synchronization gains remain possible. Preserve the current numerical and
+ownership contracts rather than copying MLX's graph.
 This does not change CUDA sequencing or qualify capacity, recovery or SLO goodput.
 A [lifetime ablation](../benchmarks/runtime-contract.md#metal-native-handle-lifetime-ablation-2026-10-21-utc)
 now bounds autoreleased command/encoder handles at their backend factories instead of

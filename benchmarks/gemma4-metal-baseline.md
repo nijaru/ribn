@@ -636,3 +636,117 @@ exit records and `analysis.json`. All three model processes exited zero
 Independent read-only review reproduced the accounting and summary values. Production
 CPU/CUDA/Metal code remains unchanged. This is a bounded direct-call diagnosis, not
 HTTP/SLO, physical-pressure/recovery, task-quality or other-device acceptance.
+
+## FFN projection component pre-screen (2026-10-23)
+
+**Projection work, rather than RMS, warrants the next bounded backend comparison.**
+An FP32 MPS pre-screen reduces measured prefill projection-call cost, but is **not
+promoted**: it adds prepared weight storage, regresses decode gate/up calls and changes
+some BF16 results. No production source, dependency, profiler or automatic selector changes.
+
+### Native decomposition
+
+A temporary `a88486d` worktree captures real FFN operands at layers **0/20/41** for
+whole 16/64-token prefill and one decode after the 18-token chat prefix. The three full
+262,144-element final logit rows match the previous cost-profile captures bit-for-bit.
+Standalone input RMS, gate/up projections, down projection and output RMS reproduce the
+captured model gate/up/normalized-down outputs. Combined commands reproduce the
+standalone outputs too. All checks include shapes and finiteness.
+
+Three fresh Rust component processes run two warmup and eight randomized measured
+rounds per layer/case: **1,512 measured commands**, plus 378 warmups. The table gives
+median GPU-command intervals across three layers/eight rounds within each process,
+then the median across processes. These are separate commands, not timestamps inserted
+inside the actual chains: this M3 Max reports dispatch-boundary counter sampling
+unsupported. They do not measure kernel busy time or preserve the full model's cache state.
+
+| Rows | Input RMS ms | Gate ms | Up ms | Down ms | Output RMS ms |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| 1, decode after 18 | 0.0116 | 0.1563 | 0.1552 | 0.3453 | 0.0117 |
+| 16, whole prefill | 0.0112 | 0.5901 | 0.5909 | 0.4016 | 0.0112 |
+| 64, whole prefill | 0.0114 | 1.3558 | 1.3763 | 0.9617 | 0.0115 |
+
+### Native vendor candidate and measured scope
+
+The candidate uses Apple
+[`MPSMatrixMultiplication`](https://developer.apple.com/documentation/metalperformanceshaders/mpsmatrixmultiplication)
+with FP32 operands/results, `MPSKernelOptionsNone`, unit alpha, zero beta and logical
+weight transpose. BF16 weights expand exactly into prepared FP32 buffers; each call
+expands BF16 activations on the GPU, performs GEMM and packs with Ribn's unchanged
+BF16-RNE helper. The requested MPS pitches equal tight row-major pitches for these shapes.
+Direct BF16 vendor GEMM with an FP32-accumulation contract remains unverified; an SDK
+BF16 enum or Graph dtype support alone does not establish that contract.
+
+A standalone Objective-C harness compares this path with the exact production MSL and
+qualified 1/2/4-row dispatch geometry. Its native outputs must match the archived Rust
+components. Both modes start with resident BF16 input and prepared weights; the host
+clock includes per-call output/scratch allocation, MPS matrix wrapping, encoding,
+conversion, terminal wait/status, owned BF16 CPU copy and per-call GPU-resource release/
+autorelease-pool drain. Only the owned CPU result escapes. One command buffer completes
+each call; MPS is checked not to commit it while encoding. This is not Rust integration,
+a full FFN-chain comparison, or a model/runtime/HTTP speedup.
+
+Three fresh processes run **648 measured pairs/1,296 calls**, plus 54 warmup pairs
+and 27 separately retained initial pairs per process. Each measured cohort has four native-first and four MPS-first pairs per process/layer. The table uses
+within-pair MPS/native wall ratios, median over eight rounds/three layers per process,
+then median over processes; the range is the three process medians.
+
+| Call | Gate ratio (range) | Up ratio (range) | Down ratio (range) |
+| --- | ---: | ---: | ---: |
+| Decode after 18 | 1.0866 (1.0763–1.1195) | 1.1626 (1.0946–1.3272) | 0.6191 (0.5867–0.8020) |
+| Whole prefill 16 | 0.5844 (0.5670–0.6114) | 0.6065 (0.5764–0.6742) | 0.6972 (0.6876–0.7258) |
+| Whole prefill 64 | 0.5640 (0.5613–0.5642) | 0.5692 (0.5657–0.5892) | 0.7372 (0.6668–0.7560) |
+
+Ratios below one favor MPS. These conditional paired estimates are not ratios of
+marginal medians, which can disagree or reverse under the observed state swings.
+Hot component loops, the Objective-C host path, MPS cache effects and per-call
+conversions differ from the production model's 15 GB parameter walk. The host was not
+isolated: pre-run GPU-utilization snapshots were nonzero and unrelated desktop/browser
+GPU clients existed. Only owned model processes were serialized; fixed clocks or an
+otherwise idle GPU are not established. Do not extrapolate the table into precise
+end-to-end latency or SLO goodput.
+
+An earlier retained screen stopped its clock before GPU-resource reclamation.
+The table above uses a separately frozen cleanup-inclusive follow-up, not that screen.
+The original source/binary/numeric captures remain available. The first screen observed
+a 130.128 ms first-use MPS call and 55.961 ms library compile; later fresh processes
+reuse system compiler caches. Other initial calls reuse already-executed MPS shapes,
+so the retained initial-call range is not a cold-start distribution. Follow-up weight expansion costs **5.403–5.706 ms host /
+2.198–2.203 ms GPU** per matrix (ranges of process medians), separate from steady calls.
+
+### Numerical and memory limits
+
+Every measured result is finite; native results match Rust component captures, and MPS
+results are stable within/across processes. The candidate changes **86 of 5,598,720**
+BF16 elements across **9 of 27** distinct case/layer/projection tuples, with maximum
+absolute change **0.125**. All nine 64-row tuples are bit-identical in this sample;
+that does not qualify other layers, prompts, rows or automatic selection. Differences
+are not evidence of worse accuracy; prior bit-preserving-chain qualification simply
+cannot establish acceptance for this reordered path.
+
+Independent NumPy FP64 dots use the exact captured BF16 operands. Error reporting
+compares complete outputs to those dots and directly rounds FP64 to BF16 for an extra
+mismatch diagnostic, avoiding FP32 double-rounding. Both paths have relative L2 error
+roughly **0.00134–0.00179** against the FP64 dots. These are post-BF16-rounding
+output errors, not raw FP32 accumulator errors. These observations grant **no extra
+error budget** and do not establish full-model/task quality; no new numerical tolerance
+is selected.
+
+Each prepared matrix expands **50 MiB BF16 → 100 MiB FP32**. Keeping all three FP32
+copies alongside their BF16 fallback adds **300 MiB per tested layer**; doing so for
+all 42 layers would add **12.30 GiB**, an unmeasured extrapolation, not a memory grant.
+Per-projection FP32 activation/result scratch reaches **3.125 MiB** at 64 rows,
+excluding BF16 buffers, CPU copies and opaque library storage. The cleanup processes'
+peak RSS is about **600 MiB**, not a full-model or whole-device physical peak.
+
+**Decision:** investigate a prefill-oriented projection lane, not blanket FP32
+replacement. Independent full-model numerical acceptance and a bounded materialization/
+memory envelope remain prerequisites. Compare BF16-storage vendor/native alternatives
+before committing to full-model FP32 weight shadows; retain the qualified BF16 path.
+
+Evidence: `~/ribn-qualification/gemma4-metal-ffn-components/20261023T083429Z/`.
+It retains predeclared plans/schedules, isolated source worktrees, pinned capture and
+component binaries, raw operands/results, FP64 dots, both vendor probes/analyses and
+actual exit records. One cleanup launcher aborted before spawning; its correction record
+identifies a replaced first-screen GPU idle snapshot. Numerical captures were unaffected.
+All capture, native component and both vendor-screen GPU processes exited zero.
