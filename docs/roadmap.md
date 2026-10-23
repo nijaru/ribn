@@ -609,8 +609,9 @@ using at most 64 KiB of read/copy scratch
 This is one synchronous load, not a global concurrent-loader grant.
 A [command-buffer profile](../benchmarks/runtime-contract.md#metal-command-buffer-profile-and-ple-batching-experiment-2026-10-20)
 now distinguishes repeated short-op synchronization from GPU intervals and model-side
-CPU work. Bounded PLE normalization batching missed its predeclared promotion gate
-and was removed; it is not a serving gain or an attribution of CUDA costs.
+CPU work. The initial bounded PLE normalization batching candidate missed its
+predeclared promotion gate and was removed. A later rescreen after the other chains
+and GELU changes is qualified below; neither study attributes CUDA costs.
 The subsequent [fixed linear → RMS chain](../benchmarks/runtime-contract.md#metal-linear-rms-chain-qualification-2026-10-20)
 keeps the BF16 projection on device and removes its intermediate readback/upload and
 216 synchronous waits per step. The [FFN input chain](../benchmarks/runtime-contract.md#metal-ffn-input-chain-qualification-2026-10-20)
@@ -635,8 +636,14 @@ This does not change CUDA sequencing or qualify capacity, recovery or SLO goodpu
 A [lifetime ablation](../benchmarks/runtime-contract.md#metal-native-handle-lifetime-ablation-2026-10-21-utc)
 now bounds autoreleased command/encoder handles at their backend factories instead of
 leaving them to a caller pool. Repeated-call host retention falls, but the latency swings
-were not consistently removed; command consolidation remains an untested hypothesis.
-Sampling and eviction remain open. Shader/pipeline failures now fail both primitive
+were not consistently removed. A [bounded PLE RMS rescreen](../benchmarks/gemma4-metal-baseline.md#bounded-packed-ple-rms-rescreen-2026-10-23)
+now uses randomized old/new trials within each warmed process: 126 runtime pairs show
+5.23% lower c1 decode interval, with bit-identical full logits and unchanged generated
+tokens. Metal groups the existing RMS kernel only for chunks up to 64 tokens and packed
+payloads up to 2 MiB each; larger chunks/geometries keep the per-layer path. Actual
+64/65-token decoder-boundary, executor and text-facade tests pass. This is M3 Max/E4B
+execution evidence, not HTTP/SLO, physical-pressure or CUDA qualification. Sampling
+and eviction remain open. Shader/pipeline failures now fail both primitive
 and materialization tests rather than being mistaken for missing hardware.
 Then mixed-width local/global KV with donor spans pinned through shared-tail device reads. Use strongly typed model/backend state
 behind `GenerationExecutor`, not the current first-`kv()`/homogeneous-cache convenience

@@ -231,3 +231,105 @@ All six model processes exited zero. Raw evidence is retained under
 invocations and exit codes, full rows, runtime traces and `analysis.json`.
 This is a local token-runtime diagnostic, not a new MLX comparison, HTTP study,
 capacity/recovery gate or CUDA qualification.
+
+## Bounded packed PLE RMS rescreen (2026-10-23)
+
+**Promoted:** the bounded Metal path normalizes independent token/layer PLE groups
+in one existing RMS call instead of one call per layer. On E4B this removes 41
+synchronous RMS calls per selected decoder step. The kernel, each group's reduction
+order, BF16 boundaries and shared normalization scale are unchanged. CPU and CUDA
+execution are unchanged.
+
+Selection requires at most 64 input tokens and at most 1,048,576 BF16 projection
+elements. Each packed upload, native result and copied host result is therefore
+at most 2 MiB of encoded payload; these three temporary payloads can overlap.
+Larger chunks or PLE geometries retain layer-at-a-time normalization. This bounds
+the added packed scratch, not process RSS, driver allocation overhead or a shared
+device-memory grant. The current E4B geometry uses 21 KiB per packed buffer for
+decode, 336 KiB for a 16-token runtime chunk and 1,344 KiB at the 64-token boundary.
+
+### Why revisit the earlier rejection?
+
+The [2026-10-20 candidate](runtime-contract.md#metal-command-buffer-profile-and-ple-batching-experiment-2026-10-20)
+missed its 3% decode gate on the older 795-command decoder. The subsequent linear/RMS,
+FFN-input and rotary chains plus the prepared GELU table changed that execution
+baseline. This rescreen uses the later decoder rather than rounding the old 2.995%
+result into a pass.
+
+The first fresh-process screen was not eligible for promotion: its candidate omitted
+the workspace bound, and the control's pooled c1 process medians
+336.019/152.739/235.844 ms versus 145.291/145.060/223.680 ms for the candidate were
+confounded by the known timing swings. The apparent 38.4% difference is **not a
+speedup claim**. Those six captures remain archived and excluded from the promotion
+measurement. Read-only review found no arithmetic/cache defect but identified both
+the workspace and measurement problems; the bounded implementation and matched
+experiment below resolve them.
+
+### Randomized within-process ablation
+
+Each of three fresh processes loaded the same hash-verified package once. An isolated
+diagnostic worktree added a per-model control solely to choose old per-layer or new
+bounded packed PLE normalization between completed trials; both modes shared weights,
+pipelines, queue and host-buffer handling. No runtime flag, mutable model control or
+instrumentation from that worktree is retained in production.
+
+The workload and clocks follow the preceding runtime experiment: default 16-token
+prefill chunks, four generated tokens, c1 prompt lengths 18/64/129 and a c4 burst
+with lengths 18/32/64/129. Every trial creates a fresh runtime and continuations.
+Each process warms both modes once per workload, then runs 12 old/new pairs per c1
+length and six c4 pairs. Pair order is balanced within each workload, randomized,
+and shuffled across workloads with recorded seeds. This yields **126 measured pairs**
+over three processes. Model processes ran serially without this session's builds or
+tests overlapping them; other host activity was not controlled.
+
+For each pair, candidate/control ratios use matched TTFT, median decode interval and
+last-terminal clocks. The primary estimator pools the 36 c1 decode ratios per process,
+takes their median, then takes the median of the three process medians. It is not a
+ratio of separately pooled process timings. The predeclared gate requires at least
+3% lower decode interval, a hierarchical-bootstrap 95% upper ratio below 1, and at
+most 2% regression in each c1 TTFT/decode cohort and c4 last-terminal time.
+The bootstrap resamples processes and then pairs within each c1 workload, using
+10,000 draws and the recorded seed; it describes these captures, not universal
+hardware or workload confidence.
+
+The primary process median ratios were **0.950063/0.946107/0.947691**: a
+**5.23% lower decode interval**, with a 95% bootstrap reduction interval of
+**4.88–5.40%**. All non-regression gates passed.
+
+| Workload | Paired TTFT change | Paired decode-interval change | Paired last-terminal change |
+| --- | ---: | ---: | ---: |
+| c1, 18 input tokens | −4.48% | −5.26% | −4.89% |
+| c1, 64 input tokens | −3.51% | −5.33% | −3.95% |
+| c1, 129 input tokens | −3.71% | −5.12% | −4.07% |
+| c4 mixed burst | −3.88% | −4.61% | −4.23% |
+
+Table entries are medians of process median paired ratios. For c4, TTFT and decode
+intervals summarize the four requests; last-terminal time ends after every request
+finishes. These are token-runtime clocks, not HTTP/content/EOF metrics or SLO goodput.
+Absolute timings still vary; no occupancy, thermal or scheduling cause is inferred.
+
+### Numerical, boundary and application checks
+
+All **72** captured 262,144-element BF16 rows—12 common-history rows in each mode
+and process—were finite and bit-identical across modes/processes. All winners matched
+the independent stock CPU BF16 reference, with unchanged full-distribution diagnostics.
+Every measured pair generated identical runtime tokens in both modes. No tolerance
+was widened and the CPU oracle was not changed.
+
+The existing RMS host-reference gate now covers packed token/layer group counts
+through the 2 MiB payload boundary, retaining its original one-BF16-ULP limit.
+The real Metal decoder test compares 16/32/64-token partitions and a whole 65-token
+fallback chunk, including exact full rows and continued cache use. The actual Metal
+decoder, runtime executor and text-facade release tests pass. Pipeline/kernel errors
+remain failures, not missing-device skips. Existing synchronous terminal waits still
+precede output publication and native-buffer retirement.
+
+All three paired model processes exited zero. The evidence root is
+`~/ribn-qualification/gemma4-metal-ple-norm/20261022T235759Z/`.
+The initial six-process screen is at that root; authoritative promotion evidence is
+under `paired/`: the predeclared `plan.json`, isolated ablation patch/source, probe,
+randomized schedules, invocations/exits, full rows, per-poll work traces, analyzer,
+absolute clocks, paired ratios and bootstrap output in `analysis.json`.
+The shipped source retains only the bounded grouping and its qualified fallback.
+This is an internal M3 Max/E4B execution improvement, not a new MLX comparison,
+competitive serving acceptance, pressure/recovery qualification or CUDA evidence.

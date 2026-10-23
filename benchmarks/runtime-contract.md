@@ -838,6 +838,9 @@ All tracing was removed too; no Rust implementation or test changes remain from 
 experiment. The next useful experiment is a concrete larger command chain with declared
 numerical and workspace bounds, not an assumption that another kernel variant fixes
 synchronous orchestration. No serving/SLO gain or hardware-failure recovery is claimed.
+The [2026-10-23 bounded rescreen](gemma4-metal-baseline.md#bounded-packed-ple-rms-rescreen-2026-10-23)
+revisits this grouping after the later chains and GELU changes, using matched randomized
+trials within each warmed process; it does not revise this older experiment's result.
 
 ### Metal linear-RMS chain qualification (2026-10-20)
 

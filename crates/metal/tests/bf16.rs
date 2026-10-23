@@ -641,8 +641,16 @@ fn rms_matches_a_host_reference_with_and_without_scale() {
     let Some(executor) = executor() else {
         return;
     };
-    for width in [16_usize, 256, 2560] {
-        let rows = 2;
+    // Packed Gemma PLE uses 42 groups per token, bounded to 64 tokens.
+    for (rows, width) in [
+        (2, 16),
+        (2, 256),
+        (2, 2560),
+        (42, 256),
+        (16 * 42, 256),
+        (64 * 42, 256),
+        (4096, 256), // 2 MiB encoded input/result at the packed normalization limit.
+    ] {
         let input = operands(rows * width, 7);
         let scale = operands(width, 13);
         let buffer = executor.upload(&input).unwrap();

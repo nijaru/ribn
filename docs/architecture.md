@@ -213,8 +213,10 @@ decoder runs the full step: matmuls, normalization, rotary and attention execute
 the GPU while embeddings, elementwise algebra and the soft cap reuse the validated
 host primitives. GELU uses a model-owned 128 KiB table prepared from the unchanged
 CPU reference, exact over every finite BF16 encoding and still rejecting non-finite
-inputs; the CPU decoder remains the independent arithmetic oracle. Normalized projections
-share one serial command buffer and private
+inputs; the CPU decoder remains the independent arithmetic oracle. PLE normalization
+can group token/layer rows in one bounded RMS call; larger chunks or packed payloads
+retain per-layer normalization. See the [matched qualification](../benchmarks/gemma4-metal-baseline.md#bounded-packed-ple-rms-rescreen-2026-10-23).
+Normalized projections share one serial command buffer and private
 BF16 intermediates. Query/key projections also rotate in that command, sharing immutable
 per-position factors without changing kernels or rounding boundaries. FFN input normalization and its gate/up projections
 also share one command and a private normalized input, returning both completed outputs.

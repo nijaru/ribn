@@ -111,6 +111,11 @@ use engine_metal::{
     MetalAttentionConfig, MetalBf16Error, MetalLinearShape, MetalProjectionNorm, MetalRotaryFactors,
 };
 
+// Bound the encoded packed RMS upload, native result and host result to 2 MiB each.
+// Larger prompt chunks or PLE geometries retain layer-at-a-time normalization.
+const MAX_PACKED_PLE_TOKENS: usize = 64;
+const MAX_PACKED_PLE_ELEMENTS: usize = 1 << 20;
+
 /// Host orchestration for one Metal decoder step.
 struct MetalOps<'a> {
     executor: &'a MetalBf16Executor,
@@ -458,17 +463,30 @@ fn run_step(
         let row = token_row(ple_embedding, token as usize, packed)?;
         identity.extend(scale(row, ple_scale)?);
     }
-    let projection = ops.linear(
+    let mut projection = ops.linear(
         &hidden,
         sequence,
         metal
             .parameter(ParameterId::PleProjection)
             .ok_or_else(|| Gemma4Error::new("Metal decoder", "missing PLE projection"))?,
     )?;
-    let projection = scale(&projection, 1.0 / usize_to_f32(hidden_size).sqrt())?;
+    projection = scale(&projection, 1.0 / usize_to_f32(hidden_size).sqrt())?;
     let ple_norm = metal
         .parameter(ParameterId::PleNorm)
         .ok_or_else(|| Gemma4Error::new("Metal decoder", "missing PLE norm"))?;
+    // [token, layer, PLE] contains independent contiguous RMS groups sharing one scale.
+    // Keep each group's reduction unchanged without growing scratch with long chunks.
+    let packed_ple =
+        sequence <= MAX_PACKED_PLE_TOKENS && projection.len() <= MAX_PACKED_PLE_ELEMENTS;
+    if packed_ple {
+        projection = ops.rms(
+            &projection,
+            sequence * config.layers().len(),
+            ple,
+            epsilon,
+            Some(ple_norm),
+        )?;
+    }
     let mut per_layer = Vec::with_capacity(config.layers().len());
     for layer in 0..config.layers().len() {
         let mut slice = Vec::with_capacity(sequence * ple);
@@ -478,7 +496,11 @@ fn run_step(
             slice.extend_from_slice(&projection[base..base + ple]);
             token_slice.extend_from_slice(&identity[base..base + ple]);
         }
-        let context = ops.rms(&slice, sequence, ple, epsilon, Some(ple_norm))?;
+        let context = if packed_ple {
+            slice
+        } else {
+            ops.rms(&slice, sequence, ple, epsilon, Some(ple_norm))?
+        };
         per_layer.push(ple_combine(&context, &token_slice)?);
     }
 
