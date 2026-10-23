@@ -982,6 +982,32 @@ interrupt a committed command or release its storage before completion. This con
 does not establish a concurrent device-memory grant or qualify hardware-fault recovery.
 The CPU full-history oracle and CUDA execution/retirement contracts remain independent.
 
+#### Prepared Metal Graph retirement
+
+The planned BF16 Graph lane keeps one submission owner per Metal executor, shared by
+native commands and prepared Graph calls. Before possible enqueue it retains all
+accessible buffers, compiled execution, tensor wrappers, device and queue. A successful
+terminal callback establishes physical completion; result validity is a separate check.
+A synchronous API return, reference count or later queue fence is not a substitute for
+Graph completion after an exception or partial enqueue.
+
+Any possible-enqueue failure closes that execution owner to further native and Graph
+work, without closing independent models/devices. At most one unresolved submission
+remains in its retirement envelope. Explicit settlement may retry terminal observation;
+until it succeeds, buffers and their existing ownership/charges cannot be released or
+reused. Settlement discards partial outputs and never reopens a faulted owner. Defensive
+Drop quarantines the unresolved envelope instead of asserting completion. The Gemma
+runtime must settle the shared model before releasing sequence state, including when
+no decoder was successfully constructed.
+
+A [private retirement proof](../benchmarks/gemma4-metal-baseline.md#completion-owned-graph-retirement-proof)
+exercises this contract, including real delayed writes and runtime shutdown. Production
+Graph support is not promoted. Normal synchronous native submission still waits;
+failure settlement queries pending native status rather than adding an unbounded wait.
+A reported failure may also be terminal work whose cleanup raised, not only unknown
+enqueue. Logical submission/cancellation stays with the existing runtime; no extra worker,
+frontend retry list, universal graph API or physical-memory grant follows from it.
+
 ### Native BF16 linear execution
 
 The linear execution slice computes row-major `output = input × weightᵀ` through

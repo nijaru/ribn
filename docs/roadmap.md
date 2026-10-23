@@ -644,11 +644,16 @@ all 27 sampled outputs match the earlier FP32 MPS results. Direct MPSMatrix BF16
 abort at encoding on the tested runtime. The private native Rust full-model pilot now
 passes 117 exact paired logit/cache states and observes **14.61/28.11%** lower paired
 direct-prefill wall time at 16/64 rows over 48 pairs/three processes. It reuses BF16 weights,
-with native RMS around prepared pair/Down graphs. This is not promoted: uncertain
-submission deliberately fail-stops the diagnostic process, not recoverable owner-local
-retirement, and the macOS 26 build floor is private. Next resolve bounded executor-owned
-Graph quarantine/retirement and failure scope, then qualify the actual selection and
-memory envelope; do not assume opaque Graph submissions fit a single-command chain.
+with native RMS around prepared pair/Down graphs. A subsequent
+[private owned-retirement proof](../benchmarks/gemma4-metal-baseline.md#completion-owned-graph-retirement-proof)
+now replaces fail-stop with callback-owned retention, model-local closure, retryable
+settlement and defensive quarantine. Nine real device/owner cases pass, including delayed
+writes, exception-after-enqueue, full-model shutdown and a nonblocking native-retirement
+regression. Another 117 exact logit/cache pairs preserve numerical behavior; 48 new prefill
+pairs observe 15.29/27.32% lower paired wall time. This remains private, not promoted.
+Next integrate per-owner preparation/availability without the global pilot switch, then
+qualify the actual selection and memory envelope. Do not assume opaque Graph submissions
+fit a single-command chain.
 Keep native BF16 as control/fallback. Serving, internal Graph storage and physical
 full-model bounds remain unqualified. These intervals are not kernel busy time, and broader
 residency/synchronization gains remain possible; no universal Graph ABI is selected.

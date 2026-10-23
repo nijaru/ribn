@@ -869,11 +869,58 @@ A stuck synchronous call has a separate 600-second process supervisor. Successfu
 do not qualify recoverable failure/retirement behavior; fault recovery was not injected.
 The bridge also uses a private macOS 26 deployment target, not a new supported floor.
 
-**Next:** preserve this numerical/performance result while implementing a bounded,
-executor-owned retirement/quarantine path and owner-local failure semantics before
-production promotion. Do not assume Graph's opaque submissions fit the existing
-single-command chain or infer full selection-scope numerical acceptance from these
-sampled histories. Keep qualified native BF16 as control/fallback.
+### Completion-owned Graph retirement proof
+
+A subsequent **private** worktree at `5bdad2a` replaces the fail-stop bridge with
+an explicit owner. One mutex serializes native commands and all three FFN Graphs.
+Before possible enqueue, the owner retains buffers, tensor wrappers, compiled
+execution, device and queue. Graph runs asynchronously inside the synchronous backend
+call; only its terminal callback authorizes output publication or physical retirement.
+
+A possible-enqueue failure closes that model owner to both native and Graph work.
+Explicit settlement queries completion without reopening it; defensive Drop permanently
+quarantines an unresolved envelope. There is at most one unresolved submission per
+owner, not a global device poison. This is not a new shared-pool or physical-byte grant.
+
+**Nine actual device/owner cases pass** on the final archived executables:
+
+- Exact sparse-dot success; clean prelaunch rejection followed by successful reuse;
+  terminal failed-result rejection without partial output publication.
+- Event-gated queued failure and an Objective-C exception after enqueue: all five
+  accessible buffers survive caller-handle drops and repeated failed settlement.
+  Native work on that owner rejects; an independent executor/queue progresses.
+  After signaling the gate, the real callback permits reading correct late GPU
+  writes, then explicit retirement releases the buffers without reopening execution.
+- Drop before completion preserves the buffers and allows those late GPU writes;
+  this defensive quarantine is intentionally permanent until process exit.
+- Two real E4B runtime cases fail both owned requests without token publication.
+  Failed shutdown retains the model/factory/state envelope; retry after completion
+  releases it. Dropping unresolved runtime ownership quarantines the whole model.
+- A native event-gated command also has nonblocking failure settlement. Review found
+  an unbounded native wait in the first prototype; restoring it in a separate source
+  reproduces a two-second supervisor timeout, while the corrected query passes.
+
+The final source also repeats **117 exact logit/cache pairs, 234 finite saved rows**
+and **48 paired prefill trials** across three fresh processes. The 72 prior-reference
+rows remain exact. Median paired Graph/native ratios are **0.8471 / 0.7268**
+at 16/64 rows (observed reductions **15.29% / 27.32%**); process medians are
+0.8471/0.8619/0.8430 and 0.7284/0.7268/0.7206. These are new matched controls,
+not an overhead comparison against the earlier prototype. Timing remains nonisolated;
+no serving, hardware-fault recovery, physical-memory or general-device claim follows.
+
+**Next:** integrate the owned protocol into the production backend, replacing the
+private global selection switch with preparation-time per-owner selection and preserving
+supported availability. Qualify that actual selection and its memory envelope before
+promotion. Keep native BF16 as control/fallback; opaque Graph submission is not a
+single-command chain.
+
+Retirement evidence:
+`~/ribn-qualification/gemma4-metal-graph-retirement/20261023T102653Z/`.
+Only `runs/final-*`, `final-source/`, prearchived `binaries/<sha>/` and
+`final-analysis.json` are final qualification evidence. Earlier prototype executables
+were overwritten by rebuilds; an aborted launcher also replaced two superseded
+prelaunch snapshots before spawning any child. Those cohorts are not primary evidence;
+`capture-corrections.json` records the limits without reconstructing provenance.
 
 Rust-pilot evidence:
 `~/ribn-qualification/gemma4-metal-graph-pilot/20261023T094336Z/` retains the frozen plan,
