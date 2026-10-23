@@ -667,9 +667,14 @@ default and CLI/HTTP policy. Actual selection passes 117 exact full-logit pairs,
 26 complete KV-state comparisons, public text loading and real runtime retry/Drop
 qualification. Forty-eight new paired prefills observe **14.24/27.44%** reductions at
 16/64 rows; a separate frozen-native comparison passes its ≤3% regression gate.
-This is an experimental opt-in, not automatic promotion. Next resolve Graph internal
-storage/workspace and physical full-model bounds before widening selection, and qualify
-mixed-arrival serving rather than treating direct-prefill clocks as SLO evidence.
+This is an experimental opt-in, not automatic promotion. A matched
+[memory screen](../benchmarks/gemma4-metal-baseline.md#model-local-graph-memory-screen-2026-10-23)
+now observes equal sampled Metal allocation maxima and flat post-Drop Metal totals
+across three model reloads per process; all 195 full-row pairs remain exact. The
+reviewed SDK exposes no Graph allocator hook or worst-case workspace query. Sampling
+and process high-water counters do not resolve internal allocation authority or hard
+physical bounds. Resolve that external-pool accounting/envelope policy before widening
+selection, and qualify mixed-arrival serving separately from direct-prefill clocks.
 Opaque Graph submissions are not a single-command chain. Broader residency/synchronization
 gains remain possible; no universal Graph ABI is selected.
 This does not change CUDA sequencing or qualify capacity, recovery or SLO goodput.

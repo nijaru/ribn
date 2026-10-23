@@ -991,6 +991,10 @@ use native kernels. It rejects unavailable SDK/runtime support or unqualified de
 model geometry before weight loading, without raising the native deployment floor.
 Preparation binds existing BF16 weights, not FP32 shadows or a second weight inventory.
 Internal Graph storage and physical-memory acceptance remain separate qualification.
+The [SDK/memory screen](../benchmarks/gemma4-metal-baseline.md#model-local-graph-memory-screen-2026-10-23)
+found no public Graph allocator hook or worst-case workspace query in SDK 27.0.
+Caller-owned I/O and sampled allocation totals do not establish complete accounting
+for opaque SDK storage or pre-enqueue reservation authority.
 
 The BF16 Graph lane keeps one submission owner per Metal executor, shared by
 native commands and prepared Graph calls. Before possible enqueue it retains all

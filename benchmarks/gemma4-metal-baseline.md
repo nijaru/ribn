@@ -1053,3 +1053,100 @@ red/green proof and renewed ownership gates are retained separately. Failed and 
 captures remain preserved, including the release-link error, watchdog assumption,
 test-fixture compile failure and a runtime test corrected to distinguish still-owned
 model weights from private Graph intermediates.
+
+## Model-local Graph memory screen (2026-10-23)
+
+**Native and Graph reach the same sampled Metal allocation maximum in this cohort;
+this is not a hard physical-memory bound.** Graph remains an experimental Rust opt-in.
+No production source, dependency, environment pin or selection policy changes.
+
+### Method and SDK boundary
+
+Six fresh processes use one frozen private executable linked to unchanged `8bbf0a2`,
+with Native/Graph order N/G, G/N, N/G. Each process loads, executes and drops **three models sequentially**;
+only one weight inventory is live at a time. This avoids the two-inventory comparison
+used for the earlier timing integration. The BF16 package, Rust 1.98.0 and M3 Max remain
+unchanged: macOS 26.6.2, Xcode 27.1, **SDK 27.0** and Clang 21.
+
+Cycle one covers 53 common-history states at 7/16/32/64/65 rows, archived chat and
+511/513-token histories, including selected 16/64-row continuations through 592 tokens.
+Four further alternating 16/64-row rounds reuse the prepared model with fresh histories.
+Cycles two and three each execute a fresh 16/64-row prefix. All **390 saved full BF16
+rows**, or **195 matched pairs including repetitions**, are finite and bit-exact across
+policies and processes. The analyzer derives exact unique call names, positions and
+token counts from the frozen plan; equal record counts alone are insufficient.
+
+The reviewed SDK's Graph compilation/execution descriptors, executable and device APIs
+expose **no internal allocator/heap hook, worst-case workspace query or aggregate cap**.
+Caller-supplied results and compile-completion control do not constrain intermediates.
+Related MPS temporary-memory hints and NDArray-kernel allocators are not Graph allocation
+authority. This is a finding within the reviewed public SDK surface, not a universal
+negative or a claim about private APIs.
+
+### Observed envelope
+
+The private observer samples `MTLDevice.currentAllocatedSize` and revision-checked
+`TASK_VM_INFO` fields, including current footprint and its process-lifetime high-water
+ledger. A 32 MiB host allocation and 64 MiB shared Metal buffer calibrate the queries;
+both default-device handles see the buffer, and its weak reference clears before
+model loading. Fresh-load counter growth covers the **14,926,026,836-byte** active BF16
+payload. Later reload deltas can include reclamation of earlier resources and are not
+weight-inventory measurements.
+
+A fixed **81,600,000-byte** sampler buffer is allocated and touched before baseline.
+Across **148,268 samples**, median intervals are 1.256–1.264 ms, p99 intervals
+1.267–1.518 ms and the largest gap is **62.744 ms**. Sampling can miss short-lived
+allocations; these are maxima of the API counter, not exact whole-device physical peaks
+or an inventory of Graph intermediates. Queries are sequential, not atomic
+cross-domain snapshots.
+Process lifetime peaks include instrumentation and calibration; they are not cycle-local.
+CPU/Metal counters overlap on unified memory and are **not added together**.
+
+All sizes below are MiB. Every process has the same sampled Metal maximum:
+**14,239.078 MiB (14,930,755,584 bytes)**. Loaded-model snapshots are 14,234.953 MiB.
+
+| Repetition / policy | Process lifetime footprint peak | Footprint 1 s after third model Drop |
+| --- | ---: | ---: |
+| 1 Native | 14,639.495 | 225.766 |
+| 1 Graph | 14,651.620 | 208.813 |
+| 2 Native | 14,662.698 | 241.141 |
+| 2 Graph | 14,635.417 | 223.720 |
+| 3 Native | 14,658.276 | 227.376 |
+| 3 Graph | 14,622.214 | 206.141 |
+
+One second after **every** model Drop, the observed Metal total is **475,136 bytes
+(0.453 MiB)** in both policies: no growing Metal residual appears over these three
+reloads. Process footprint residuals vary and some grow modestly; they are not proof
+of a leak or a causal Graph memory saving. Cycle workloads differ. The observer retains
+a device reference during these measurements, which can prolong context/cache lifetime;
+this is not device teardown. Final task-only queries after observer release also succeed.
+Neither equal sampled maxima nor post-Drop residuals prove zero internal Graph workspace.
+
+### Qualification limits and evidence
+
+All six final processes and the corrected analyzer exit zero. Private release build
+and clippy pass with `CARGO_BUILD_JOBS=2`; registry pins are an audited subset of the
+unchanged workspace lock. Existing production/model ownership evidence remains tied
+to unchanged `8bbf0a2`; this docs-only follow-up does not rerun every workspace/device gate.
+
+Independent review exposed analyzer gaps, corrected before accepting these results:
+validate the exact state manifest, separate instantaneous maxima from lifetime high-water
+readings, exclude boundary-crossing samples from phase attribution, include endpoints
+and reject failed final queries.
+The final observer-release sleeps are incremental, nominally 0/100/1100 ms. Abrupt exit
+or timeout can lose the RAM sampler trace; such runs cannot establish peaks. No final
+process timed out, hit the experimental 48 GiB observed stop or reported a query error.
+
+Evidence: `~/ribn-qualification/gemma4-metal-graph-memory/20261023T222343Z/` retains
+`plan-v3.json`, `frozen-v3/`, `manifest-v3.json`, immutable binary
+`2a209abf797141a356b0825d6b9e449111876cb6bcfc497b79bc411b63586b46`,
+`runs-v3/`, complete rows/samples, SDK headers, `analysis-v3.json` and `verification.json`.
+Earlier captures remain preserved: one stopped on an invalid reload-delta assertion;
+another caught an autoreleased calibration buffer. A standalone pool-drain probe and
+local factory pool fix validate the measuring fixture, not production behavior.
+
+**Decision:** no weight-scale regression was observed, but sampling does not settle
+opaque SDK storage, reservation authority or worst-case full-model bounds. Resolve the
+external-pool accounting/envelope policy before widening selection. Memory-pressure,
+failed-retirement memory envelopes, full-context capacity and mixed-arrival serving/SLO
+qualification remain open; this screen supplies no new latency or competitive claim.
