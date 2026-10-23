@@ -821,11 +821,65 @@ Process peak RSS is **301–348 MiB**; Metal allocated size after scoped weights
 retire is about **2.45 MiB**. Neither snapshots nor source inspection prove the absence
 of internal FP32 conversion/repacking/workspace or qualify full-model physical peaks.
 
-**Next:** a bounded native Rust prepared-execution pilot can now target this BF16
-Graph path rather than full-model FP32 shadows. Resolve its completion/resource
-ownership and independent full-model numerical acceptance first; do not insert the
-opaque Graph run into a single-command chain by assumption. Keep the qualified
-native BF16 path as control/fallback.
+### Native Rust full-model pilot
+
+A private worktree at `1379b51` now integrates three prepared BF16 executables with the
+real Rust E4B decoder: a **Gate/Up pair at exactly 16 or 64 rows**, and a **Down projection
+at exactly 64 rows**. The existing native RMS runs before the pair and after Down, with
+terminal completion at each handoff. Graph borrows the existing immutable BF16 weight
+buffers; it does not build a second weight inventory. Per-context mutexes serialize
+execution. Other shapes keep native execution. These are concrete FFN graphs, not an
+operator registry or universal Graph ABI.
+
+The native control and candidate share one release binary, weight inventory and all
+three prepared graphs; only the private selection switch changes. Three fresh processes
+pass **117 paired full-logit/cache states**: **234 saved 262,144-element BF16 rows**
+are finite and bit-exact, and complete cached K/V hashes match after every step.
+The histories include 511/513-token prefixes in 64-token chunks, continued teacher-forced
+decode, whole 16/64-row prefills and 7/32-row fallbacks. **72 rows also match the previously
+qualified cost-profile captures exactly.** No tolerance was widened. Successful Graph
+execution counts confirm 42 pair calls per 16-row step, 84 pair/Down calls per 64-row step,
+and zero calls for fallback steps.
+
+After that numerical gate, **48 matched prefill pairs** measure eight balanced
+native-first/Graph-first rounds per row count/process, with warmup outside the clock.
+Mode order alternates deterministically; only row-count order is seeded-shuffled:
+
+| Direct decoder prefill | Median paired Graph/native ratio | Three process medians | Observed reduction |
+| --- | ---: | --- | ---: |
+| 16 rows | 0.8539 | 0.8581 / 0.7914 / 0.8539 | 14.61% |
+| 64 rows | 0.7189 | 0.7189 / 0.7038 / 0.7217 | 28.11% |
+
+Each headline is the median of the three within-process paired medians. All 96 timed
+rows are finite and paired bit-exact. The clock covers `decoder.prefill` through its
+owned CPU logits, excluding decoder construction/drop, load/compilation and output/cache
+validation. Process two has large within-process timing swings: 64-row native calls
+range about **314–826 ms**, versus **220–505 ms** for Graph. Ratios of marginal medians
+can therefore disagree with the paired statistic. No replicate is excluded post hoc;
+three fresh processes do not imply three isolated timing samples. Background GPU
+clients/state remain uncontrolled; these are conditional direct-prefill observations, not HTTP/SLO, cold-start,
+memory-pressure, decode or general-device speedups. Graph's internal repacks, workspace,
+command count and physical full-model peak remain unqualified.
+
+**No production promotion.** The diagnostic bridge returns only before launch or after
+both blocking execution and its terminal completion callback. An execution exception
+with uncertain submission, or an absent callback after the synchronous call, deliberately
+fail-stops the private process rather than returning and freeing potentially live buffers.
+A stuck synchronous call has a separate 600-second process supervisor. Successful runs
+do not qualify recoverable failure/retirement behavior; fault recovery was not injected.
+The bridge also uses a private macOS 26 deployment target, not a new supported floor.
+
+**Next:** preserve this numerical/performance result while implementing a bounded,
+executor-owned retirement/quarantine path and owner-local failure semantics before
+production promotion. Do not assume Graph's opaque submissions fit the existing
+single-command chain or infer full selection-scope numerical acceptance from these
+sampled histories. Keep qualified native BF16 as control/fallback.
+
+Rust-pilot evidence:
+`~/ribn-qualification/gemma4-metal-graph-pilot/20261023T094336Z/` retains the frozen plan,
+separate source/bridge worktrees, compiler/static-analysis output, actual three-process
+exits, source/binary/lock hashes, full rows/cache hashes, balanced schedules and analyses.
+The pilot builds with the prior registry dependency versions and Rust 1.98.0 unchanged.
 
 Evidence: `~/ribn-qualification/gemma4-metal-bf16-vendor/20261023T092014Z/`.
 It retains plans/schedules, both Matrix abort logs/checkpoints/actual exits, Graph source/

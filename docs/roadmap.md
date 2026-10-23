@@ -641,12 +641,17 @@ full-model numerical acceptance and a bounded materialization/memory envelope be
 prefill-lane integration. A [BF16-storage vendor follow-up](../benchmarks/gemma4-metal-baseline.md#bf16-storage-vendor-pre-screen-2026-10-23)
 now runs MPSGraph directly on the same BF16 operands without caller FP32 weight shadows;
 all 27 sampled outputs match the earlier FP32 MPS results. Direct MPSMatrix BF16 inputs
-abort at encoding on the tested runtime. A bounded native Rust prepared-execution pilot
-should resolve Graph completion/resource ownership and independent full-model numerical
-acceptance, not assume its opaque submissions fit the current single-command chain.
-Neither internal storage nor physical full-model bounds are qualified. Keep native BF16
-as control/fallback. These intervals are not kernel busy time, and broader residency/
-synchronization gains remain possible; no universal Graph ABI or new kernel strategy is selected.
+abort at encoding on the tested runtime. The private native Rust full-model pilot now
+passes 117 exact paired logit/cache states and observes **14.61/28.11%** lower paired
+direct-prefill wall time at 16/64 rows over 48 pairs/three processes. It reuses BF16 weights,
+with native RMS around prepared pair/Down graphs. This is not promoted: uncertain
+submission deliberately fail-stops the diagnostic process, not recoverable owner-local
+retirement, and the macOS 26 build floor is private. Next resolve bounded executor-owned
+Graph quarantine/retirement and failure scope, then qualify the actual selection and
+memory envelope; do not assume opaque Graph submissions fit a single-command chain.
+Keep native BF16 as control/fallback. Serving, internal Graph storage and physical
+full-model bounds remain unqualified. These intervals are not kernel busy time, and broader
+residency/synchronization gains remain possible; no universal Graph ABI is selected.
 This does not change CUDA sequencing or qualify capacity, recovery or SLO goodput.
 A [lifetime ablation](../benchmarks/runtime-contract.md#metal-native-handle-lifetime-ablation-2026-10-21-utc)
 now bounds autoreleased command/encoder handles at their backend factories instead of
