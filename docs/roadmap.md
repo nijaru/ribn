@@ -70,16 +70,17 @@ c1—about 18% lower Ribn throughput, with better TTFT—and 2.2x/3.3x throughpu
 single-stream parity or independently quality-qualified competitive acceptance.
 [Baseline](../benchmarks/runtime-contract.md#matched-cross-engine-decode-baseline-2026-10-18)
 
-Native diagnostics measured 3,862 launches per eight-row decode step, 32.5 ms host
-enqueue, and 0.9–1.5 s host enqueue for an eight-row short prefill. They motivate launch
-and prefill-host-cost experiments; they do not attribute the entire endpoint deficit
-to the host or prove descriptors, arenas or graph capture will close it. Measure
-remaining projection/device costs and the fixed batched layer chain as well.
-The member-descriptor candidate remains off pending its serving-owner lifetime and
-performance gates. Its isolated numerical recheck and five-member-kernel memcheck now
-pass on driver 615.71.10; that is not whole-engine sanitizer qualification.
-Keep the qualified per-member path as its control; the Gemma
-prefill result does not qualify Qwen descriptors, graphs or hybrid-state lifetimes.
+Fresh [Qwen descriptor A/B evidence](../benchmarks/runtime-contract.md#member-descriptor-native-ab-2026-10-23)
+measures 1,764→1,252 decode launches per eight-row step, superseding the historical
+3,862 count for this scope. Three paired native repetitions improve burst throughput
+4.26%/6.91% at c4/c8, but only 0.31% on the mixed-arrival trace. The candidate misses
+its predeclared >=5% gain at both widths; joint diagnostic-deadline goodput stays zero.
+Keep it default-off and defer further lifetime qualification without new bottleneck
+evidence. Its parity and five-kernel memcheck pass, not whole-engine sanitizer or
+serving-owner lifetime qualification. The qualified per-member path remains the control.
+Historical prefill-host-cost observations and the modest mixed benefit motivate measuring
+remaining prefill/projection/device costs, not attributing the entire gap to the host.
+The Gemma prefill result does not qualify Qwen descriptors, graphs or hybrid-state lifetimes.
 
 Qualify the cross-engine numerical comparison and target remaining prefill/projection
 costs on the contiguous path. The [first endpoint diagnostic](../benchmarks/runtime-contract.md#first-equal-artifact-endpoint-diagnostic-2026-10-16)
@@ -120,10 +121,11 @@ and GDN regressions. Do not start gate 3 or build a compiler project around it.
 
 ### Planned slices: batch-width launch reduction
 
-Ordered from the 2026-10-18 measurement (3,862 launches and 32.5 ms host enqueue per
-eight-row decode step; 0.94-1.5 s host enqueue per eight-row short prefill). Slices 1-2
-and part of 4 are implementable and host-testable without a device; every acceptance
-below that names device evidence stays unproven until the RTX 4090 suites run.
+The original order followed the 2026-10-18 host-cost diagnostic. Fresh decode-only
+profiles now measure 1,764 control launches at eight rows, not the historical 3,862.
+The default-off candidate reaches 1,252, misses its native advancement gate, and leaves
+mixed throughput nearly unchanged. These are mechanisms to reconsider from measured
+costs, not a mandatory implementation staircase; unpassed acceptance below stays open.
 
 **Slices 1–2 have a default-off decode candidate, not a promotion.**
 `QwenLoadOptions::member_descriptors` and the native benchmark's `--member-descriptors`
@@ -134,7 +136,9 @@ access-guard lifetimes, not device completion. Publication explicitly waits for 
 copy before reusing its host packet; uncertain copies retain or quarantine that packet.
 The qualified per-member path remains the default; prefill, arenas and graphs are unchanged.
 Numerical parity and a complete five-kernel memcheck pass on the RTX 4090.
-[Asynchronous-owner lifetime and timing gates remain pending](../benchmarks/runtime-contract.md#member-descriptor-candidate-device-gates-pending).
+The [native timing screen](../benchmarks/runtime-contract.md#member-descriptor-native-ab-2026-10-23)
+does not meet its advancement gate. Asynchronous-owner lifetime and broader performance
+qualification remain open if new evidence warrants revisiting it.
 The launch target below remains unproven: projections, norms and residual operations
 already batch members, so removing state loops alone cannot imply a batch-width reduction
 of the entire step. Profile the remaining fixed layer chain before choosing further fusion.
@@ -142,12 +146,12 @@ of the entire step. Profile the remaining fixed layer chain before choosing furt
 1. **Member descriptor.** One device descriptor per step: per-member KV layer pointers and
    page-table pointers, per-member recurrent matrix and convolution-history pointers, and
    the member count, published in a single host-to-device copy. Host-tested assembly,
-   bounds and lifetime; replaces the per-member view arguments that make every op a
-   separate launch.
+   bounds and lifetime; replaces per-member view arguments for state-access operations.
 2. **Member-dimension kernels.** KV append, paged attention, GDN convolution and state
    update, and per-member copies consume the descriptor. Acceptance (device): launches per
-   eight-row step fall from 3,862 to below ~600, with bit-identical hidden state, KV and
-   sampled tokens against the current path on `cuda_reference` and the Qwen reference gate.
+   eight-row step fall below ~600 (fresh control 1,764; candidate 1,252), with bit-identical
+   hidden state, KV and sampled tokens against the current path on `cuda_reference` and the
+   Qwen reference gate.
    Keep the per-member path until that passes.
 3. **Prefill descriptor.** The same descriptor at chunk granularity. Acceptance (device):
    eight-row 30-token prefill host enqueue below ~100 ms (from 0.94-1.5 s) with unchanged

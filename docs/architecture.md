@@ -104,8 +104,9 @@ prefill/decode and larger offers retain their fallbacks. See the
 [qualification](../benchmarks/runtime-contract.md#heterogeneous-capacity-decode-2026-10-16).
 The default-off member-descriptor candidate lowers state access through
 `nvidia/src/decode/member_state.rs`, with host packet layout in `member_descriptor.rs`
-and CUDA binding/guards in `state/descriptor.rs`. NVRTC and device bit-equality gates
-pass, but sanitizer, asynchronous lifetime and performance qualification remain pending;
+and CUDA binding/guards in `state/descriptor.rs`. NVRTC, device bit-equality and
+five-member-kernel memcheck gates pass. The bounded native A/B misses its advancement
+gate; asynchronous lifetime and broader performance qualification remain open;
 the [pending gates](../benchmarks/runtime-contract.md#member-descriptor-candidate-device-gates-pending)
 own numerical, retirement and performance acceptance.
 The eight-token same-sequence prefill lane samples its final chunk row by default, so a

@@ -1435,9 +1435,8 @@ and 3.3x at c8. This is a decode/prefill *batch* gap, not a per-token kernel gap
 
 #### Where the batch gap lives
 
-Measured on the same commit with the direct-engine bench
-(`cargo run --release -p engine-qwen --features cuda --example qwen_serving_bench --
---concurrency=N --tokens=32 --dispatch-diagnostics`), which skips HTTP:
+The historical 2026-10-18 direct-engine diagnostic used
+`qwen_serving_bench --concurrency=N --tokens=32 --dispatch-diagnostics`, skipping HTTP:
 
 | concurrency | engine tok/s | host enqueue per step | batch width used |
 | --- | --- | --- | --- |
@@ -1446,39 +1445,36 @@ Measured on the same commit with the direct-engine bench
 | 4 | 70.7 | 35.9 ms | 4 |
 | 8 | 94.7 | 32.5 ms | 8 |
 
-Batched lanes are in use (`decode_lane_calls_by_width[8]`), and the weights-read-once
-batch kernels amortize weight traffic: per-step GPU time at eight rows is about 75 ms
-instead of eight times the single-row step. What does *not* amortize is the host.
+Batched lanes were in use (`decode_lane_calls_by_width[8]`). These observations
+motivated reducing host enqueue and state-access overhead; they do not establish that
+launch count alone explains the endpoint deficit.
 
-`nsys` on the same workload counts **3,862 kernel launches per eight-row decode step**,
-against 32.5 ms of host enqueue time — roughly 8 us per launch, with launches in the
-microbenchmark costing 0.8-1.5 us. The count, not the cost of one launch, is the problem:
-`l2_norm_heads` 864/step, `gdn_conv_silu` 432, `residual_add` 284, `rms_norm` 160,
-`kv_append_f16` and `attn_score_paged` 144 each, all issued *per member per layer* because
-each member's KV and recurrent state is a separate allocation.
+**Launch-count correction:** the earlier **3,862 launches/step** statement is superseded
+for this workload by the [fresh decode-only decomposition](#member-descriptor-native-ab-2026-10-23):
+**1,764 control / 1,252 candidate** at eight rows. Every one of 31 decode steps has
+that count, with scalar prefill separated by embedding boundaries and totals reconciled
+to kernel events. The historical count is not reconciled to this split; do not use
+it, its per-kernel breakdown or a derived per-launch cost as a current baseline.
 
-Serving adds a second, larger cost on the prefill side. With `RIBN_DIAG` instrumentation
-(not committed) an eight-row 30-token prefill took 0.94 s and 1.50 s of host enqueue
-against 34 ms for an eight-row decode step, and it is one submission regardless of the
-`--prefill-chunk` setting. Prefill host cost, not decode, dominates the c8 TTFT and the
-served throughput gap.
+Historical `RIBN_DIAG` instrumentation (not committed) reported 0.94 s and 1.50 s
+of host enqueue for an eight-row 30-token prefill, against 34 ms for an eight-row decode
+step. That prefill was one submission regardless of the `--prefill-chunk` setting.
+These scoped observations motivate prefill investigation; they neither separate all
+current endpoint costs nor establish the cause of the whole competitive gap.
 
-`ec47bc5` reduced this by normalizing each batched GDN q/k buffer in one launch instead of
+`ec47bc5` reduced decode host cost by normalizing each batched GDN q/k buffer in one launch instead of
 two per member: decode host enqueue fell from 39.1 ms to 32.5 ms per eight-row step
 (-17%) and engine throughput rose from 91.2 to 94.7 tok/s. Device gates on that commit:
 `cuda_reference` 63/63, Qwen CUDA runtime 5/5, `cuda_http`, in-flight retirement, and the
 sampled-final bit-identity memcheck, all exit 0.
 
-The two remaining levers are structural and need stable addresses before either is cheap:
-member-dimension kernels that take a device array of per-member state pointers (one launch
-per op per step, cutting the count by roughly the batch width), and CUDA graph capture of
-the decode step, which vLLM and llama.cpp both rely on and which requires a resident arena
-so the captured pointers do not move. Prefill needs the same treatment at chunk
-granularity. A default-off decode descriptor candidate is now available below; prefill,
-arenas and graphs remain unimplemented. Most projection/norm/residual operations already
-batch members, so eliminating the state loops does not imply an eightfold reduction in
-all launches. Re-profile the candidate before attributing its residual cost or revising
-the roadmap's launch target.
+Member-dimension state kernels and persistent metadata/graphs were candidate mechanisms,
+not established fixes for the whole gap. The default-off descriptor candidate below
+changes decode state access without a resident arena. Prefill descriptors, arenas and
+graphs remain unimplemented. Most projection/norm/residual operations already batch
+members, so removing state loops cannot imply an eightfold reduction in all launches.
+Graph replay still needs stable captured addresses and completion-safe updates; that
+does not establish a universal arena prerequisite.
 
 #### Member-descriptor candidate (device gates pending)
 
@@ -1489,7 +1485,7 @@ are unchanged. One member-major u64 packet holds layer pointer pairs and page me
 convolution, recurrent update, KV append and attention consume it, with disjoint score
 scratch for concurrently executing members. Q/k gathering changes copies, not normalization.
 The eager candidate explicitly waits for metadata publication, retaining its host packet
-through failed copies/drains. This wait is part of its future timing, not hidden overhead.
+through failed copies/drains. The native screen includes this wait; it is not hidden overhead.
 
 Host evidence: packet assembly, missing/misaligned addresses, page reach and count bounds
 pass without CUDA. Rust CUDA-feature checks compile the binding and optional load/benchmark
@@ -1542,12 +1538,78 @@ actual build/test/memcheck exit codes are retained there.
 Before promotion, exercise descriptor reuse/disable, partial enqueue and failed drain
 through the asynchronous serving owner; host tests and this eager numerical gate do not
 qualify those lifetimes.
-Then repeat matched native c1/c4/c8 runs with identical prompt/chunk/token/diagnostic
-settings, toggling only `--member-descriptors`, followed by the endpoint comparison if
-that scope is enabled. Count launches and host enqueue time as well as device/total time,
-retained descriptor/score bytes and output agreement. NVRTC acceptance and bounded
-bit equality are established; no speedup or competitive improvement is claimed, and
-the candidate remains default-off.
+The matched native c1/c4/c8 screen below now measures the unchanged candidate, but
+does not meet its advancement gate. Broader performance and endpoint comparison remain
+unqualified if that scope is revisited. Keep prompt/chunk/token/diagnostic settings
+matched and count launches, host enqueue, device/total time, descriptor/score payloads
+and output agreement. NVRTC acceptance and bounded bit equality do not establish
+competitive improvement; the candidate remains default-off.
+
+##### Member-descriptor native A/B (2026-10-23)
+
+**Decision: keep default-off and defer further lifetime qualification without new
+bottleneck evidence.** The candidate misses the predeclared advancement gate: at least
+5% median paired throughput gain at **both c4 and c8**, exact outputs, at most 3%
+c1 throughput regression, and at most 3% mixed throughput/TTFT-p95/ITL-p95 regression.
+Only the c4 gain condition fails. These are experiment thresholds, not product SLOs.
+
+[Structured results](qwen-trace/2026-10-23-member-descriptor-ab.json) record a clean
+`8b7294f` worktree, pinned artifact/fixture, Rust 1.98.0 and fresh release/locked build
+with `CARGO_BUILD_JOBS=2`. RTX 4090, driver 615.71.10, toolkit 13.3.73.
+One executable, archived by SHA-256 before execution, serves both modes.
+
+Three fresh-process pairs per width, with off/on order varied, use the existing
+five-token timing prompt, 32 outputs/request, warp GEMV, serial prefill, diagnostics
+and token logging.
+Only `--member-descriptors` changes selection. No execution warmup; load/compilation
+are outside the native measurement. Gains below are medians of paired ratios, not
+ratios of marginal medians.
+
+| Concurrency | Control tok/s range | Candidate tok/s range | Paired gain |
+| --- | --- | --- | --- |
+| 1 | 32.25–32.32 | 32.29–32.35 | +0.12% |
+| 4 | 72.00–72.09 | 75.05–75.19 | +4.26% |
+| 8 | 94.72–94.78 | 101.28–101.37 | +6.91% |
+
+Median total host submit wall time falls **1,042.57→711.32 ms** at c4 and
+**1,983.98→1,286.85 ms** at c8. These totals include prefill and 31 decode submissions,
+routing, enqueue/event recording and the candidate's publication wait—not CPU-only
+or decode-only time. TTFT is essentially unchanged; mean ITL improves about 5.82%/10.62%.
+
+Three paired replays of the existing eight-request mixed-arrival trace use four active
+slots, four queued slots, a 500 MiB continuation grant and eight-token prefill chunks.
+All runs complete **8/8, 136 tokens, no failures/rejections**; actual decode widths
+are 1/2/3, not four throughout. Paired throughput improves only **0.31%**
+(marginal medians 14.894→14.941 tok/s). TTFT p95 is 8,238.7→8,207.4 ms and ITL p95
+291.636→291.538 ms. Joint diagnostic-deadline completions remain **0/8 in both modes**.
+All 2,496 unprofiled burst tokens and 816 mixed tokens agree on common inputs;
+this is not new full-logit/state or independent task-quality qualification.
+
+Six separate Nsight Systems profiles—not throughput repetitions—split scalar prefill
+from 31 decode steps. Decode launches/step are **1,204→1,204 / 1,444→1,252 /
+1,764→1,252** at c1/c4/c8. Median summed kernel durations are respectively
+26.946→26.924 / 39.110→37.281 / 51.403→47.055 ms. The candidate still misses the
+roadmap's below-600 launch target. Profiled clocks do not establish native timing,
+occupancy or stall causes.
+
+Source-derived burst payloads at the page-rounded 48-token reach: c4/c8 selected packets
+are 4,248/8,472 bytes **each on host and device**; all prepared lane packets retain
+9,576/37,128 bytes each. Selected batched score payload grows from 4,608 bytes to
+18,432/36,864 bytes. These are requested payloads, not measured live/backing/allocator
+peaks, physical-byte grants or a memory-pressure gate.
+
+Evidence: `desktop:~/ribn-qualification/member-descriptor-ab/20261023T185422Z/`.
+All **30 model processes, six profile exports and both analyzers exit 0**.
+A cached utilization sample falsely blocked the first candidate before launch; a frozen
+idle-settle amendment resumed only unexecuted cases, retaining the first control and
+original order, sample count, thresholds and deadline. No capture was overwritten or
+excluded based on performance. Results were verified before desktop SSH became
+unreachable; a subsequent artifact-copy/additional cross-check attempt was blocked.
+
+The modest burst benefit does not close the mixed workload deficit. Do not promote,
+widen scope or repeat this unchanged screen. Remaining serving-owner lifetime gates
+still apply if new evidence justifies revisiting the candidate. Select the next bounded
+prefill/projection experiment from the measured remaining costs.
 
 ## Experimental CLI
 

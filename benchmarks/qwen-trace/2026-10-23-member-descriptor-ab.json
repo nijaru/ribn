@@ -1,0 +1,95 @@
+{
+  "schema_version": 1,
+  "source_commit": "8b7294fec538bb2e0b5679d58fd3a6b7b110829f",
+  "binary_sha256": "d1f68da4c31f2a71934866ca07a7b417db907ecaa29623935cd51510b8774ec3",
+  "evidence_root": "desktop:~/ribn-qualification/member-descriptor-ab/20261023T185422Z/",
+  "hardware": "RTX 4090, driver 615.71.10, CUDA toolkit 13.3.73, Nsight Systems 2026.3.2.476",
+  "toolchain": "Rust/Cargo 1.98.0, locked dependencies, CARGO_BUILD_JOBS=2",
+  "model_sha256": "322e194ff79741c7baa497c240f677f54b201b0efab44ca8e50f122b39123482",
+  "fixture_sha256": "8adbe34bfe568aa3e90d797b720c795109b43128a4445ce7bdde100d328982c5",
+  "scope": "Unchanged default-off candidate vs per-member control through the real AR Engine. Three paired fresh-process repetitions per burst width and mixed trace. No execution warmup. Load/compile excluded. Six separate profiles are not throughput samples. Source unchanged; no promotion.",
+  "burst": {
+    "prompt_tokens": [760, 6511, 314, 9338, 369],
+    "output_tokens_per_request": 32,
+    "flags": ["--gemv=warp", "--prefill-chunk=off", "--dispatch-diagnostics", "--print-tokens"],
+    "selection_difference": "--member-descriptors",
+    "by_concurrency": {
+      "1": {
+        "off_tokens_per_s": [32.31, 32.32, 32.25],
+        "on_tokens_per_s": [32.35, 32.29, 32.3],
+        "median_paired_throughput_ratio": 1.0012380068090374,
+        "off_host_submit_ms": [282.479768, 282.070835, 283.147415],
+        "on_host_submit_ms": [282.308797, 282.803702, 282.693019]
+      },
+      "4": {
+        "off_tokens_per_s": [72.0, 72.09, 72.0],
+        "on_tokens_per_s": [75.05, 75.16, 75.19],
+        "median_paired_throughput_ratio": 1.0425856568178664,
+        "off_host_submit_ms": [1043.448465, 1041.444414, 1042.57285],
+        "on_host_submit_ms": [713.339569, 711.092421, 711.322588]
+      },
+      "8": {
+        "off_tokens_per_s": [94.78, 94.72, 94.73],
+        "on_tokens_per_s": [101.3, 101.37, 101.28],
+        "median_paired_throughput_ratio": 1.0691438826137443,
+        "off_host_submit_ms": [1982.745909, 1984.323529, 1983.98203],
+        "on_host_submit_ms": [1286.852151, 1285.211857, 1286.924224]
+      }
+    },
+    "host_timing_scope": "Total routing/enqueue/event-recording wall time over prefill plus 31 decode submissions; includes eager descriptor publication wait. Not decode-only, CPU-only or device time."
+  },
+  "mixed": {
+    "workload": "benchmarks/workloads/qwen-mixed-arrivals.json",
+    "active_limit": 4,
+    "queue_limit": 4,
+    "continuation_grant_bytes": 524288000,
+    "prefill_chunk_tokens": 8,
+    "off_tokens_per_s": [14.893905807632567, 14.897584112514364, 14.88144143704152],
+    "on_tokens_per_s": [14.944963522935778, 14.940529391387821, 14.927661363625834],
+    "median_paired_throughput_ratio": 1.0031058769931565,
+    "off_ttft_p95_ms": [8238.723119, 8236.772481999998, 8246.032514999999],
+    "on_ttft_p95_ms": [8205.068403000001, 8207.401136999999, 8215.13781],
+    "off_itl_p95_ms": [291.636455, 291.62977, 291.873059],
+    "on_itl_p95_ms": [291.537973, 291.433362, 291.71995],
+    "off_host_submit_ms": [6877.066048, 6875.66414, 6883.193358],
+    "on_host_submit_ms": [6703.392496, 6705.640491, 6712.325522],
+    "every_run_outcome": {"offered": 8, "completed": 8, "rejected": 0, "failed": 0, "emitted_tokens": 136},
+    "every_run_decode_calls_by_width": [0, 67, 8, 15, 0, 0, 0, 0, 0],
+    "diagnostic_objectives_ms": {"ttft": 5000, "itl": 200, "e2e": 10000},
+    "every_run_joint_objective_completions": 0
+  },
+  "profiles": {
+    "scope": "One separate off/on profile per width, scalar prefill separated from 31 decode steps by ordered embedding kernels. Counts also reconcile to total kernel events. Profile durations are not native throughput clocks; no occupancy/stall inference.",
+    "c1": {"off_decode_launches_per_step": 1204, "on_decode_launches_per_step": 1204, "off_total_kernel_events": 43332, "on_total_kernel_events": 43332, "off_decode_median_summed_kernel_ms": 26.945656, "on_decode_median_summed_kernel_ms": 26.923891},
+    "c4": {"off_decode_launches_per_step": 1444, "on_decode_launches_per_step": 1252, "off_total_kernel_events": 68796, "on_total_kernel_events": 62844, "off_decode_median_summed_kernel_ms": 39.109959, "on_decode_median_summed_kernel_ms": 37.281429},
+    "c8": {"off_decode_launches_per_step": 1764, "on_decode_launches_per_step": 1252, "off_total_kernel_events": 102748, "on_total_kernel_events": 86876, "off_decode_median_summed_kernel_ms": 51.403421, "on_decode_median_summed_kernel_ms": 47.054778}
+  },
+  "source_derived_payloads": {
+    "scope": "Requested burst payloads only, not measured live allocations, backing, allocator overhead or physical peaks. 64 language layers, 24 query heads, 37-token reach rounded to 48. Scalar score scratch is 4608 bytes unchanged. All prepared decode lanes have packets; only selected burst lane has batched scores.",
+    "c4": {"selected_packet_host_bytes": 4248, "selected_packet_device_bytes": 4248, "all_prepared_packets_host_bytes": 9576, "all_prepared_packets_device_bytes": 9576, "selected_score_off_bytes": 4608, "selected_score_on_bytes": 18432},
+    "c8": {"selected_packet_host_bytes": 8472, "selected_packet_device_bytes": 8472, "all_prepared_packets_host_bytes": 37128, "all_prepared_packets_device_bytes": 37128, "selected_score_off_bytes": 4608, "selected_score_on_bytes": 36864}
+  },
+  "verification": {
+    "fresh_release_locked_build_exit": 0,
+    "unprofiled_model_processes": 24,
+    "profiled_model_processes": 6,
+    "all_model_process_exits": 0,
+    "all_six_profile_export_exits": 0,
+    "aggregate_analyzer_exit": 0,
+    "profile_analyzer_exit": 0,
+    "unprofiled_burst_output_tokens": 2496,
+    "unprofiled_mixed_output_tokens": 816,
+    "all_common_input_output_streams_exact": true,
+    "scope_limit": "New output comparison is token agreement, not new full-logit/state qualification. Existing separate parity/memcheck gates remain scoped evidence. No missing-device skips."
+  },
+  "predeclared_decision": {
+    "requires": "At least 5% median paired throughput gain at BOTH c4/c8; c1 throughput regression <=3%; mixed throughput and TTFT/ITL p95 regressions <=3%; exact outputs and successful outcomes.",
+    "c4_gain_gate_passed": false,
+    "all_other_decision_checks_passed": true,
+    "advance_lifetime_qualification": false,
+    "promoted": false,
+    "remaining_gates_if_revisited": "Serving-owner reuse/disable, partial enqueue, failed drain; broader performance and endpoint qualification. No unchanged rerun without new evidence."
+  },
+  "capture_corrections": "First c1 control retained. A cached 6% utilization sample with zero clients blocked the next candidate BEFORE launch. Frozen amendment added <=5s idle-settle checks; only29unexecuted cases resumed in original schedule, same source/binary, thresholds, sample count and whole-job deadline. Blocked directory and original launcher retained; nothing overwritten or excluded based on performance.",
+  "postrun_access_limit": "All30processes, exports and both analyzers were read back successfully before desktop SSH became unreachable. A later local artifact-copy/additional cross-check attempt could not connect. Raw artifacts remain on desktop; this is a derived summary of the verified aggregate output, not a reconstructed raw capture."
+}
