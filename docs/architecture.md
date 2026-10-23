@@ -216,8 +216,11 @@ CPU reference, exact over every finite BF16 encoding and still rejecting non-fin
 inputs; the CPU decoder remains the independent arithmetic oracle. PLE normalization
 can group token/layer rows in one bounded RMS call; larger chunks or packed payloads
 retain per-layer normalization. See the [matched qualification](../benchmarks/gemma4-metal-baseline.md#bounded-packed-ple-rms-rescreen-2026-10-23).
-Normalized projections share one serial command buffer and private
-BF16 intermediates. Query/key projections also rotate in that command, sharing immutable
+Attention input RMS and Q/K/V preparation can also share one bounded serial command,
+with the normalized input kept private and no K/V work for shared-tail consumers;
+larger chunks/geometries retain separate calls. See the
+[attention-chain qualification](../benchmarks/gemma4-metal-baseline.md#attention-input-projection-chain-2026-10-23).
+Normalized projections share one serial command buffer and private BF16 intermediates. Query/key projections also rotate in that command, sharing immutable
 per-position factors without changing kernels or rounding boundaries. FFN input normalization and its gate/up projections
 also share one command and a private normalized input, returning both completed outputs.
 Output publication requires successful completion;

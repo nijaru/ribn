@@ -642,8 +642,16 @@ now uses randomized old/new trials within each warmed process: 126 runtime pairs
 tokens. Metal groups the existing RMS kernel only for chunks up to 64 tokens and packed
 payloads up to 2 MiB each; larger chunks/geometries keep the per-layer path. Actual
 64/65-token decoder-boundary, executor and text-facade tests pass. This is M3 Max/E4B
-execution evidence, not HTTP/SLO, physical-pressure or CUDA qualification. Sampling
-and eviction remain open. Shader/pipeline failures now fail both primitive
+execution evidence, not HTTP/SLO, physical-pressure or CUDA qualification.
+The [attention-input projection chain](../benchmarks/gemma4-metal-baseline.md#attention-input-projection-chain-2026-10-23)
+now keeps normalized inputs private through Q/K/V preparation in one serial command,
+removing another 90 synchronous waits per selected E4B step. Across 126 matched runtime
+pairs, median c1 decode interval fell 13.29% (process gains 7.44–13.48%) with exact full
+rows and unchanged runtime tokens. A separate 96-pair whole-chunk screen passed at
+7/8/32/64 tokens. Selection is bounded to 64 tokens and 4 MiB of total native chain
+buffers, with the old calls retained above either bound. CPU/CUDA and scheduling are
+unchanged; this is not a new incumbent, SLO or physical-pressure qualification.
+Sampling and eviction remain open. Shader/pipeline failures now fail both primitive
 and materialization tests rather than being mistaken for missing hardware.
 Then mixed-width local/global KV with donor spans pinned through shared-tail device reads. Use strongly typed model/backend state
 behind `GenerationExecutor`, not the current first-`kv()`/homogeneous-cache convenience

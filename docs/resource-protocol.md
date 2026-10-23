@@ -1,6 +1,6 @@
 # Resource, submission and snapshot protocol
 
-Status: accepted execution contract, revised 2026-10-22. Implemented behavior and
+Status: accepted execution contract, revised 2026-10-23. Implemented behavior and
 qualification limits are identified below; targets do not retroactively qualify source.
 AR preparation control is host-qualified. Dynamic Qwen growth, bounded overlap,
 non-AR application lifecycle and snapshot replacement remain unimplemented. Accepted text
@@ -943,6 +943,14 @@ input contains `rows × inner` BF16 elements; each of its two outputs contains
 `rows × columns`. Neither output is published unless all three dispatches succeed.
 Model-side copies drop each native output owner before copying the next, rather than
 deliberately retaining both owners alongside both CPU copies.
+
+Attention preparation may normalize the input once and fan out to query and optional
+key/value normalized/rotary projections in the same serial command. Validate every
+branch before allocating any intermediate, including equal key/value column counts;
+attention also validates the actual value extent against keys before encoding. No query
+or partial key/value output is published before the whole command succeeds. Model selection bounds the sum of all
+simultaneously live native intermediates and outputs and retains separate calls outside
+that envelope; this is not a shared device-memory grant.
 
 All dispatches use one default serial compute encoder. Each consumer observes its
 producer's writes without a host readback/upload; no published immutable buffer is modified.

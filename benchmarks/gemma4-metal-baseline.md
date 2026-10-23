@@ -139,8 +139,8 @@ Use the same lengths, partitions and histories; do not substitute the existing c
 ## Engineering consequence
 
 The comparison supports measuring **native command consolidation and resident
-activations** before another larger row block. Ribn still performs 429 synchronous
-submissions per step and many activation readback/uploads; existing profiling separated
+activations** before another larger row block. During this calibration Ribn performed
+429 synchronous submissions per step and many activation readback/uploads; profiling separated
 substantial commit/wait time from GPU intervals. Both measurements bypass the HTTP/text
 frontend, so this gap cannot be blamed on endpoint overhead. It is not an attribution
 of the entire gap to synchronization: kernel arithmetic, graph fusion, cache placement,
@@ -333,3 +333,112 @@ absolute clocks, paired ratios and bootstrap output in `analysis.json`.
 The shipped source retains only the bounded grouping and its qualified fallback.
 This is an internal M3 Max/E4B execution improvement, not a new MLX comparison,
 competitive serving acceptance, pressure/recovery qualification or CUDA evidence.
+
+## Attention-input projection chain (2026-10-23)
+
+**Promoted:** one input RMS and the query/key/value preparation chains now share a
+serial Metal command. The normalized input stays private on device rather than being
+copied to a host vector and uploaded separately for each projection. Shared-KV tail
+layers prepare only the query. Every existing kernel, BF16 boundary, accumulation
+order, per-head scale and rotary factor is unchanged; CPU and CUDA are unchanged.
+
+E4B has 24 KV owners and 18 shared-tail layers. Owner preparation falls from four
+commands to one, and shared-tail preparation from two to one: **90 fewer synchronous
+commands per selected step**, from 388 after packed PLE to **298**. GPU dispatch count
+is unchanged. Source inspection also counts 90 removed native input uploads and 42
+removed host input-norm copies, about 10.3 MiB of copying per 16-token step. These are
+source counts, not a profile attributing latency to waits, copies or GPU occupancy.
+
+### Ownership and selection envelope
+
+The complete input-RMS and all Q/K/V geometry, scales and rotary extents validate
+before any intermediate allocation or encoding. One serial encoder orders producers
+before consumers. All private buffers and borrowed inputs/factors survive the terminal
+wait; no query or partial K/V pair publishes unless the whole command succeeds.
+Input width comes explicitly from model configuration, not division of a possibly
+wrong input length.
+
+Gemma selects the chain only for **1–64 input tokens** and at most **4 MiB total
+encoded native chain buffers**. Checked sizing sums the normalized input, three
+Q buffers, three K buffers and two V buffers; shared-tail consumers omit K/V.
+E4B uses 352/624 KiB for sliding/full layers at 16 tokens, and 2,496 KiB for a
+full layer at 64 tokens. Larger chunks or geometries keep the separate qualified
+calls. Input uploads, immutable weights/scales/factors, host result copies and
+driver overhead are separate; this is not a physical peak or concurrent memory grant.
+
+A shared geometry-only preflight and owned-buffer helper also serve the standalone
+normalized projection, avoiding two implementations of the same validation/encoding.
+There is no operator list, graph runtime, new shader or production ablation flag.
+
+### Matched runtime result
+
+The control and candidate use the same model, weights, pipelines and queue within
+each process, with only the attention-chain choice changed between completed trials.
+Both retain the promoted packed PLE path. The control shares the new host preparation
+structure and lifetime cleanup; it is not a separately pooled old executable.
+
+The [preceding paired method](#randomized-within-process-ablation) is reused:
+three fresh processes, eight warmup trials per process, 12 balanced randomized pairs
+per c1 length 18/64/129 and six c4 burst pairs at lengths 18/32/64/129; four output
+tokens and default 16-token chunks. This gives **126 measured runtime pairs**.
+The same predeclared 3% primary decode, hierarchical-bootstrap upper-bound and
+2% cohort non-regression gates all pass. No build, test or other model process from
+this session overlapped timing; other host activity was uncontrolled.
+
+Process median pooled c1 paired ratios were **0.925633/0.867114/0.865238**:
+reductions of **7.44/13.29/13.48%**. The primary median reduction is **13.29%**,
+with a 10,000-draw hierarchical-bootstrap 95% reduction interval of **7.24–13.58%**.
+This interval describes the captures, not universal hardware/workload confidence.
+
+| Workload | Paired TTFT change | Paired decode-interval change | Paired last-terminal change |
+| --- | ---: | ---: | ---: |
+| c1, 18 input tokens | −11.06% | −13.54% | −12.32% |
+| c1, 64 input tokens | −9.70% | −13.18% | −10.78% |
+| c1, 129 input tokens | −9.99% | −13.06% | −10.51% |
+| c4 mixed burst | −9.47% | −11.77% | −9.63% |
+
+These are medians of process median within-pair ratios, not ratios of pooled clocks.
+Large absolute swings remain: c1/18 process median decode clocks were
+223.068 → 207.134, 144.126 → 124.249 and 143.389 → 123.962 ms. These absolute
+medians are descriptive, not the paired estimator. No thermal, occupancy or scheduler
+cause is inferred, and the result does not establish a new MLX or HTTP comparison.
+
+### Remaining shapes and numerical gates
+
+After the primary captures, a separate shape screen was declared before observing its
+data. It strengthens selection-scope qualification without changing the primary gate.
+Three fresh processes each ran eight balanced randomized pairs per whole-prompt length
+7/8/32/64. The clock covers a complete direct prefill returning an owned full BF16 row;
+decoder construction, validation and hashing are outside it. All **96 additional pairs**
+pass the per-shape 2% non-regression gate. Paired prefill reductions were
+**10.29/12.30/9.00/6.24%**, respectively. These direct clocks are not pooled with
+runtime TTFT/decode clocks. They cover odd/scalar, two-row and four-row kernel classes
+and the largest selected chunk; the primary runtime already exercises 1/2/16-row calls.
+
+All **72** primary full-vocabulary rows were finite and bit-identical across both modes,
+all three processes and the archived promoted `b6717a9` captures. All 72 winners match
+stock CPU; full-distribution diagnostics are unchanged. Every runtime pair generated
+identical tokens. All 192 supplemental paired rows also compare exactly and are finite;
+24 representative raw rows are retained. No oracle or tolerance changed.
+
+Primitive tests compare every Q/K/V result with independently invoked existing kernels,
+including scaled/unscaled input RMS, unequal Q/K head counts, no-K/V consumers, column
+tails and 64/65 rows. Invalid late branches reject and subsequent calls recover.
+The existing real Metal decoder's 64/65-token partition/fallback and continuation gates,
+plus executor and text-facade release tests, pass on the final source.
+
+Read-only review found the new valid-model chain sound, but exposed a pre-existing
+backend boundary bug: attention did not check value length against keys. The consumer
+now checks both extents, and the new producer rejects unequal K/V columns before
+allocation. Regression assertions failed before these fixes using oversized, safely
+readable value buffers; final primitive/model gates pass. The timing captures precede
+these final host-only extent guards; valid inputs, buffers, kernels and dispatches
+are unchanged.
+
+Evidence: `~/ribn-qualification/gemma4-metal-attention-chain/20261023T023356Z/`.
+`paired/` owns the primary plan, isolated ablation/source diffs, probe, raw rows,
+work traces, exits, analyzer and `analysis.json`; `shapes/` owns the independently
+declared supplemental plan, captures and analyzer. All six model processes exited zero.
+CPU/CUDA, scheduling and cache retention are unchanged. This remains an M3 Max/E4B
+execution improvement, not serving/SLO, physical-pressure/recovery, independent
+task-quality or other-device performance acceptance.

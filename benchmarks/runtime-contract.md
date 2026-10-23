@@ -1007,10 +1007,19 @@ Metal clippy. Independent source review found no introduced issue. Hardware fail
 null-handle/OOM injection and recovery remain unqualified. CPU oracle/CUDA code are
 unchanged, and the shut-down desktop was not contacted.
 
+### Metal attention-input projection chain (2026-10-23)
+
+The [matched chain qualification](gemma4-metal-baseline.md#attention-input-projection-chain-2026-10-23)
+keeps input RMS and Q/K/V preparation in one serial command using unchanged kernels.
+The selected E4B path removes 90 more waits after packed PLE: 388 → 298 commands per
+step. It passes exact full-row, bounded-workspace, application and matched runtime/shape
+gates; the linked owner records timing variability and the lack of serving/pressure
+acceptance. Attention now also rejects mismatched K/V extents before allocation.
+
 ### Metal exact GELU table qualification (2026-10-20)
 
-A refreshed temporary profile on `ba1906a` observed the current **429** synchronous
-commands per step and timed host GELU separately. GPU timestamps were read after
+A refreshed temporary profile on `ba1906a` observed **429** synchronous commands
+per step at that revision and timed host GELU separately. GPU timestamps were read after
 successful completion; commit/wait clocks excluded allocation/encoding, unlike the
 earlier whole-method clocks. Timestamp reads and trace output perturb model wall time,
 so only untraced executables determined promotion:

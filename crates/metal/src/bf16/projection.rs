@@ -2,7 +2,10 @@
 
 use super::rotary::RotaryGeometry;
 use super::{MetalBf16Buffer, MetalBf16Error, MetalBf16Executor, MetalRotaryFactors, THREADS};
-use metal::{BufferRef, ComputeCommandEncoderRef, MTLSize};
+use metal::{Buffer, BufferRef, ComputeCommandEncoderRef, MTLSize};
+
+mod attention;
+pub use attention::{MetalAttentionProjections, MetalNormalizedProjection};
 
 /// Row-major `input[rows, inner] × weight[columns, inner]ᵀ` geometry.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -136,6 +139,115 @@ impl RmsGeometry {
     }
 }
 
+/// Geometry-only preflight, shared by standalone and attention-input chains.
+struct ProjectionGeometry<'a> {
+    linear: LinearGeometry,
+    rms: RmsGeometry,
+    scale: Option<&'a MetalBf16Buffer>,
+    rotation: Option<(MetalRotaryFactors<'a>, RotaryGeometry)>,
+}
+
+impl<'a> ProjectionGeometry<'a> {
+    fn new(
+        shape: MetalLinearShape,
+        input: usize,
+        weight: usize,
+        norm: MetalProjectionNorm<'a>,
+        block_rows: bool,
+    ) -> Result<Self, MetalBf16Error> {
+        let linear = LinearGeometry::new(shape, input, weight, block_rows)?;
+        let rows = linear
+            .elements()
+            .checked_div(norm.width)
+            .ok_or_else(|| MetalBf16Error::Shape("RMS width must be positive".into()))?;
+        let rms = RmsGeometry::new(
+            linear.elements(),
+            rows,
+            norm.width,
+            norm.epsilon,
+            norm.scale,
+        )?;
+        let rotation = norm
+            .rotary
+            .map(|factors| {
+                RotaryGeometry::new(linear.elements(), shape.rows, norm.width, factors)
+                    .map(|geometry| (factors, geometry))
+            })
+            .transpose()?;
+        Ok(Self {
+            linear,
+            rms,
+            scale: norm.scale,
+            rotation,
+        })
+    }
+
+    fn allocate(
+        self,
+        executor: &MetalBf16Executor,
+    ) -> Result<ProjectionBuffers<'a>, MetalBf16Error> {
+        let projected = executor.allocate_shared(self.linear.elements() * 2)?;
+        let normalized = executor.allocate_shared(self.linear.elements() * 2)?;
+        let rotation = self
+            .rotation
+            .map(|(factors, geometry)| {
+                executor
+                    .allocate_shared(self.linear.elements() * 2)
+                    .map(|output| (factors, geometry, output))
+            })
+            .transpose()?;
+        Ok(ProjectionBuffers {
+            linear: self.linear,
+            rms: self.rms,
+            scale: self.scale,
+            projected,
+            normalized,
+            rotation,
+        })
+    }
+}
+
+/// Every intermediate remains owned until the enclosing command's terminal wait.
+struct ProjectionBuffers<'a> {
+    linear: LinearGeometry,
+    rms: RmsGeometry,
+    scale: Option<&'a MetalBf16Buffer>,
+    projected: Buffer,
+    normalized: Buffer,
+    rotation: Option<(MetalRotaryFactors<'a>, RotaryGeometry, Buffer)>,
+}
+
+impl ProjectionBuffers<'_> {
+    fn encode(
+        &self,
+        executor: &MetalBf16Executor,
+        encoder: &ComputeCommandEncoderRef,
+        input: &BufferRef,
+        weight: &BufferRef,
+    ) {
+        executor.encode_linear(encoder, input, weight, &self.projected, &self.linear);
+        executor.encode_rms(
+            encoder,
+            &self.projected,
+            &self.normalized,
+            self.scale,
+            &self.rms,
+        );
+        if let Some((factors, geometry, output)) = &self.rotation {
+            executor.encode_rotary(encoder, &self.normalized, output, *factors, geometry);
+        }
+    }
+
+    fn into_output(self) -> MetalBf16Buffer {
+        MetalBf16Buffer {
+            buffer: self
+                .rotation
+                .map_or(self.normalized, |(_, _, output)| output),
+            elements: self.linear.elements(),
+        }
+    }
+}
+
 impl MetalBf16Executor {
     /// Row-major BF16 projection, with source-order FP32 accumulation per output.
     /// # Errors
@@ -202,52 +314,20 @@ impl MetalBf16Executor {
         shape: MetalLinearShape,
         norm: MetalProjectionNorm<'_>,
     ) -> Result<MetalBf16Buffer, MetalBf16Error> {
-        let linear = LinearGeometry::new(
+        let buffers = ProjectionGeometry::new(
             shape,
             input.elements,
             weight.elements,
+            norm,
             self.block_linear_rows,
-        )?;
-        let rows = linear
-            .elements()
-            .checked_div(norm.width)
-            .ok_or_else(|| MetalBf16Error::Shape("RMS width must be positive".into()))?;
-        let rms = RmsGeometry::new(
-            linear.elements(),
-            rows,
-            norm.width,
-            norm.epsilon,
-            norm.scale,
-        )?;
-        let rotation = norm
-            .rotary
-            .map(|factors| {
-                RotaryGeometry::new(linear.elements(), shape.rows, norm.width, factors)
-                    .map(|geometry| (factors, geometry))
-            })
-            .transpose()?;
-        let projected = self.allocate_shared(linear.elements() * 2)?;
-        let normalized = self.allocate_shared(linear.elements() * 2)?;
-        let rotation = rotation
-            .map(|(factors, geometry)| {
-                self.allocate_shared(linear.elements() * 2)
-                    .map(|output| (factors, geometry, output))
-            })
-            .transpose()?;
+        )?
+        .allocate(self)?;
         let command = self.command()?;
         let encoder = Self::compute_encoder(&command)?;
-        self.encode_linear(&encoder, &input.buffer, &weight.buffer, &projected, &linear);
-        self.encode_rms(&encoder, &projected, &normalized, norm.scale, &rms);
-        if let Some((factors, geometry, output)) = &rotation {
-            self.encode_rotary(&encoder, &normalized, output, *factors, geometry);
-        }
+        buffers.encode(self, &encoder, &input.buffer, &weight.buffer);
         encoder.end_encoding();
         Self::submit(&command, "normalized projection")?;
-        let output = rotation.map_or(normalized, |(_, _, output)| output);
-        Ok(MetalBf16Buffer {
-            buffer: output,
-            elements: linear.elements(),
-        })
+        Ok(buffers.into_output())
     }
 
     /// Normalize each input row, then project through two same-shaped weights.

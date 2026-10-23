@@ -12,7 +12,9 @@ mod projection;
 mod rotary;
 mod submission;
 
-pub use projection::{MetalLinearShape, MetalProjectionNorm};
+pub use projection::{
+    MetalAttentionProjections, MetalLinearShape, MetalNormalizedProjection, MetalProjectionNorm,
+};
 pub use rotary::MetalRotaryFactors;
 
 /// Metal preparation or execution failure.
@@ -125,6 +127,7 @@ impl AttentionGeometry {
         window: Option<usize>,
         query_elements: usize,
         key_elements: usize,
+        value_elements: usize,
         query_start: usize,
         key_start: usize,
     ) -> Result<Self, MetalBf16Error> {
@@ -147,10 +150,11 @@ impl AttentionGeometry {
         if query_elements == 0
             || !query_elements.is_multiple_of(query_step)
             || key_elements == 0
+            || value_elements != key_elements
             || !key_elements.is_multiple_of(key_step)
         {
             return Err(MetalBf16Error::Shape(
-                "attention buffers are not whole positions".into(),
+                "attention buffers must have matching whole key/value positions".into(),
             ));
         }
         let sequence = query_elements / query_step;
@@ -340,6 +344,7 @@ impl MetalBf16Executor {
             window,
             query.elements,
             keys.elements,
+            values.elements,
             query_start,
             key_start,
         )?;

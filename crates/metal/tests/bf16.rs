@@ -5,21 +5,11 @@
 #![cfg(target_os = "macos")]
 
 use engine_metal::{
-    MetalAttentionConfig, MetalBf16Error, MetalBf16Executor, MetalLinearShape, MetalProjectionNorm,
-    MetalRotaryFactors,
+    MetalAttentionConfig, MetalBf16Error, MetalLinearShape, MetalProjectionNorm, MetalRotaryFactors,
 };
 
-/// Missing hardware skips; any compilation or pipeline failure must fail the test.
-fn executor() -> Option<MetalBf16Executor> {
-    match MetalBf16Executor::new() {
-        Ok(executor) => Some(executor),
-        Err(MetalBf16Error::Device) => {
-            eprintln!("no Metal device; skipping");
-            None
-        }
-        Err(error) => panic!("Metal preparation failed: {error}"),
-    }
-}
+mod common;
+use common::executor;
 
 fn bf16(value: f32) -> u16 {
     let bits = value.to_bits();
@@ -887,6 +877,21 @@ fn attention_rejects_malformed_spans_and_geometry() {
         executor
             .attention(&query, &keys, &values, plain, 0, 1)
             .is_err()
+    );
+    // Short values would overrun; extra rows also disagree with the key span.
+    for elements in [2, 6] {
+        let wrong_values = executor.upload(&operands(elements, 4)).unwrap();
+        assert!(matches!(
+            executor.attention(&query, &keys, &wrong_values, plain, 0, 0),
+            Err(MetalBf16Error::Shape(_))
+        ));
+    }
+    assert_eq!(
+        executor
+            .attention(&query, &keys, &values, plain, 0, 0)
+            .unwrap()
+            .elements(),
+        4
     );
     let uneven = MetalAttentionConfig {
         heads: 3,

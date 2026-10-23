@@ -102,14 +102,13 @@ impl std::fmt::Debug for Gemma4MetalWeights {
     }
 }
 
-use crate::AttentionKind;
 use crate::cpu::{add, argmax, factors, multiply, ple_combine, scale, softcap};
 
 mod activation;
+mod attention;
 use activation::GeluTable;
-use engine_metal::{
-    MetalAttentionConfig, MetalBf16Error, MetalLinearShape, MetalProjectionNorm, MetalRotaryFactors,
-};
+use attention::attention_forward;
+use engine_metal::{MetalAttentionConfig, MetalBf16Error, MetalLinearShape, MetalProjectionNorm};
 
 // Bound the encoded packed RMS upload, native result and host result to 2 MiB each.
 // Larger prompt chunks or PLE geometries retain layer-at-a-time normalization.
@@ -603,117 +602,6 @@ fn layer_forward(
         config, metal, caches, ops, geometry, layer, position, sequence, epsilon, positions, hidden,
     )?;
     feedforward_forward(metal, ops, layer, sequence, epsilon, &hidden, per_layer)
-}
-
-#[expect(
-    clippy::too_many_arguments,
-    reason = "one attention block's semantic inputs, kept explicit"
-)]
-fn attention_forward(
-    config: &Gemma4Config,
-    metal: &Gemma4MetalWeights,
-    caches: &mut [Option<OwnerCache>],
-    ops: &MetalOps<'_>,
-    geometry: &crate::LayerGeometry,
-    layer: usize,
-    position: usize,
-    sequence: usize,
-    epsilon: f32,
-    positions: &[u32],
-    hidden: &[u16],
-) -> Result<Vec<u16>, Gemma4Error> {
-    let hidden_size = config.hidden_size();
-    let heads = config.num_attention_heads();
-    let kv_heads = config.num_key_value_heads();
-    let width = geometry.head_dim;
-    let normed = ops.rms(
-        hidden,
-        sequence,
-        hidden_size,
-        epsilon,
-        Some(metal.layer(layer, LayerParameter::InputNorm)?),
-    )?;
-    let (cosine, sine) = ops.rotary_factors(config, layer, positions)?;
-    let queries = ops.project_normalized(
-        &normed,
-        sequence,
-        metal.layer(layer, LayerParameter::Query)?,
-        MetalProjectionNorm {
-            width,
-            epsilon,
-            scale: Some(metal.layer(layer, LayerParameter::QueryNorm)?),
-            rotary: Some(MetalRotaryFactors {
-                heads,
-                cosine: &cosine,
-                sine: &sine,
-            }),
-        },
-    )?;
-    if geometry.kv_owner == layer {
-        let keys = ops.project_normalized(
-            &normed,
-            sequence,
-            metal.layer(layer, LayerParameter::Key)?,
-            MetalProjectionNorm {
-                width,
-                epsilon,
-                scale: Some(metal.layer(layer, LayerParameter::KeyNorm)?),
-                rotary: Some(MetalRotaryFactors {
-                    heads: kv_heads,
-                    cosine: &cosine,
-                    sine: &sine,
-                }),
-            },
-        )?;
-        let values = ops.project_normalized(
-            &normed,
-            sequence,
-            metal.layer(layer, LayerParameter::Value)?,
-            MetalProjectionNorm {
-                width,
-                epsilon,
-                scale: None,
-                rotary: None,
-            },
-        )?;
-        let cache = caches[layer]
-            .as_mut()
-            .ok_or_else(|| Gemma4Error::new("Metal decoder", "owner cache missing"))?;
-        cache.keys.extend_from_slice(&keys);
-        cache.values.extend_from_slice(&values);
-    }
-    let cache = caches[geometry.kv_owner]
-        .as_ref()
-        .ok_or_else(|| Gemma4Error::new("Metal decoder", "owner cache missing"))?;
-    let window = match geometry.kind {
-        AttentionKind::Sliding => Some(config.sliding_window()),
-        AttentionKind::Full => None,
-    };
-    let attended = ops.attention(
-        &queries,
-        &cache.keys,
-        &cache.values,
-        MetalAttentionConfig {
-            heads,
-            kv_heads,
-            width,
-            window,
-        },
-        position,
-        0,
-    )?;
-    let normed = ops.project_normalized(
-        &attended,
-        sequence,
-        metal.layer(layer, LayerParameter::AttentionOutput)?,
-        MetalProjectionNorm {
-            width: hidden_size,
-            epsilon,
-            scale: Some(metal.layer(layer, LayerParameter::PostAttentionNorm)?),
-            rotary: None,
-        },
-    )?;
-    add(hidden, &normed)
 }
 
 fn feedforward_forward(
