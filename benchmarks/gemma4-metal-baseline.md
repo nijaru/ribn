@@ -1529,32 +1529,40 @@ RMS correctness, or either decoder's accuracy. Earlier decoder operations and in
 task-quality acceptance remain unresolved. Histories, production arithmetic and the failed
 serving-quality gate are unchanged; no conditional exact-dot replay is needed.
 
-A **last-layer unit replay** next recomputes the real full-attention KV provider 23
-and decoder layer 41, followed by final RMS and the vocabulary head. Its joint upstream
-boundary is the captured `layer22.output`, `layer40.output` and
-`layer41.per_layer_input`; swapping only the target hidden state would omit shared KV
-and PLE differences. Only 22 Native or 23 CPU weight tensors are loaded, not the full
-decoder. Native preserves the actual fused provider Q/K/V chain, discarding its query;
-CPU uses the actual pinned attention and decoder modules. Its supported mask API sizes
-against owner 23 explicitly, without fabricated cache contents.
+A **shared-KV replay** first checks provider 23 and layer 41, then expands to the
+entire natural KV-sharing suffix, **layers 24–41**, with real providers 22 and 23 and
+the RMS/head tail. The expanded joint boundary is the captured `layer21.output`,
+`layer22.output`, `layer23.output` and all 18 suffix-layer PLE inputs. Swapping only the
+suffix hidden state would omit shared KV and PLE differences. Only 266 Native or 268
+CPU weight tensors are loaded, not the full decoder. Native preserves actual fused
+provider Q/K/V chains, discarding their queries; CPU uses the pinned attention and
+decoder modules. Supported CPU mask APIs size against owners 22 and 23 before updates,
+without fabricated cache contents. Histories reach 21 tokens, below the 512-token sliding
+window; this does not qualify eviction boundaries or longer contexts.
 
-Each backend first reproduces all five of its own **complete layer-41 outputs**, last
-normalized vectors and full raw/post-softcap rows bit-for-bit. It then resets its real
-provider cache before processing the other source's joint inputs. Comparison waits until
-both backends pass. Both units agree on raw and post-softcap winners for all ten shared
-joint-input cases: at the disputed prediction, both choose 3872 on Native's upstream
-stream and 3823 on CPU's. The units are not bit-identical: 1,387–34,957 post-softcap
-coordinates differ per row, with maximum absolute difference 0.125. Across these cases,
-post-softcap `KL(CPU unit || Native unit)` is at most 4.040e-5 and total variation at
-most 0.002815; both maxima occur on CPU-derived inputs at the prefix diagnostic. These
-are descriptive maxima, not a quality budget.
+Each backend first reproduces all five of its own **complete outputs from every suffix
+layer**, last normalized vectors and full raw/post-softcap rows bit-for-bit. It resets
+its real provider caches before processing the other source's joint stream. Comparison
+waits until both backends pass. All ten shared joint-input cases preserve raw and
+post-softcap winner agreement: at the disputed prediction, both units choose 3872 on
+Native's upstream stream and 3823 on CPU's. The narrower layer-41-only replay has the
+same winner result. The predeclared conditional provider-KV/suffix follow-up is not run
+because no shared-input winner differs.
 
-The winner still follows the upstream state stream, rather than which replay unit runs
-it. This conditional experiment includes provider projections, layer 41, final RMS and
-the head; it does not isolate an attention, FFN or PLE operation, prove that remaining
-rounding is harmless, or identify a defective decoder. Earlier decoder causality and
-independent task-quality acceptance remain open. Histories are still forced Native
-histories, not greedy rollouts; production and the failed serving-quality gate are unchanged.
+Winner agreement does **not** clear the distribution differences. In the full-suffix
+replay, 48,428–208,363 post-softcap coordinates differ per row, with maximum absolute
+difference 0.390625. Post-softcap unit-temperature `KL(CPU unit || Native unit)` is at
+most 0.027954 and total variation at most 0.117059; both maxima occur on Native-derived
+inputs at the disputed prediction. These are descriptive maxima, not a quality budget
+or sampling-quality equivalence.
+
+The disputed winner still follows the joint upstream stream, not the replay unit. This
+cut includes provider inputs, the suffix input and precomputed PLE inputs; its execution
+includes provider projections, all 18 suffix layers and RMS/head. It neither isolates an
+attention, FFN or PLE operation nor proves remaining rounding harmless. Earlier state
+causality and independent task-quality acceptance remain open. Histories are still forced
+Native histories, not greedy rollouts; production and the failed serving-quality gate are
+unchanged.
 
 ### Metrology, compatibility and evidence
 
@@ -1697,3 +1705,19 @@ without downloads or dependency changes. Earlier formatting, offline-cache, type
 and preflight-inspector failures remain preserved; the accepted build, preflight, analysis,
 independent distribution check and post-run verification exit zero. No component is rerun
 or production hook merged.
+
+Shared-suffix evidence: `~/ribn-qualification/gemma4-metal-shared-suffix/20261024T210356Z/`
+retains the frozen `642277b` base and private replay changes, exact subset-weight inventory,
+420 copied input/expected tensors, `analysis-v1.json`, `decimal-check-v1.json` and
+`verification-v1.json`. The Cargo-artifact-discovered executable SHA256 is
+`eb3eea5a741fff3e12e5613b924cd6cd62fc563fe639f338bd33a7e96d972065`.
+Both serialized processes exit zero, non-forced, within fresh 15-minute process and
+30-minute aggregate bounds, with positive group retirement. Verification checks 1,280
+finite tensor files, 210 exact self-control tensor comparisons, 1,728 frozen/live study
+files, 3,918 registry source files, 20,530 installed environment files and unchanged
+asset/toolchain/dependency pins. All 30 full-vocabulary distribution comparisons agree
+to nine significant digits with the independent 80-digit calculation. An independent
+read-only collector review finds no material defect within this fixed-history scope.
+The offline build, preflight, analysis, independent check and post-run verification all
+exit zero; no component rerun or production change is needed. This study runs locally
+on the M3 Max, without desktop/CUDA access.

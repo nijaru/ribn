@@ -700,12 +700,15 @@ winner follow the normalized hidden input, not the head backend: both heads choo
 on Native's vector and 3823 on CPU's. All ten shared hidden inputs preserve raw and
 post-softcap winner agreement. Replaying the pre-RMS decoder states then gives identical
 BF16 normalized vectors from both RMS implementations on all ten shared inputs. All four
-RMS/head combinations keep the disputed winner with the pre-RMS state. A partial replay
-of real KV provider 23, layer 41 and the RMS/head tail then reproduces every archived
-own-source layer output and tail row exactly. On both coherent joint upstream streams,
-its two backends agree on every raw/post-softcap winner: the disputed choice still follows
-the source stream, not the replay unit. This is not isolated attention/FFN causality or
-proof that remaining rounding is harmless. Earlier decoder causality and independent
+RMS/head combinations keep the disputed winner with the pre-RMS state. Shared-KV replay
+first checks layer 41, then the full 18-layer sharing suffix with real providers 22/23
+and the RMS/head tail. Every archived own-source suffix-layer output and tail row is
+reproduced exactly. On both coherent joint upstream streams, the backends agree on all
+ten raw/post-softcap winners: the disputed choice still follows the input stream, not
+the replay unit. This does not clear the distributions: full-suffix same-input post-softcap
+KL reaches about 0.028 and total variation 0.117. No error budget or isolated attention/FFN
+cause is established. The boundary also includes precomputed PLE inputs, and the 21-token
+history does not qualify sliding-window eviction. Earlier state causality and independent
 task-quality acceptance across the batching scope remain open. Resolve those rather than
 loosen a tolerance or omit those prompts. No defective decoder is yet established.
 Opaque Graph submissions are not a single-command chain. Broader residency/synchronization
