@@ -47,6 +47,8 @@ class EndpointFixture(BaseHTTPRequestHandler):
             },
             {"object": "text_completion", "choices": [], "usage": usage},
         ]
+        if self.server.mode == "mlx-usage":
+            messages[-1]["object"] = "chat.completion"
         if self.server.mode == "timing":
             usage.update(completion_tokens=5, total_tokens=prompt_tokens + 5)
             messages = [
@@ -162,7 +164,9 @@ class RealClientTests(unittest.TestCase):
                     )
                     self.assertEqual(
                         result.returncode,
-                        0 if mode in ("valid", "overload", "timing") else 1,
+                        0
+                        if mode in ("valid", "mlx-usage", "overload", "timing")
+                        else 1,
                         result.stdout + result.stderr + log[-3000:],
                     )
                     report = json.loads((output / "validation.json").read_text())
@@ -191,10 +195,10 @@ class RealClientTests(unittest.TestCase):
                     thread.join()
 
     def test_real_exports_accept_early_eos_and_reject_false_client_successes(self):
-        for mode in ("valid", "truncated", "late-error", "no-usage"):
+        for mode in ("valid", "mlx-usage", "truncated", "late-error", "no-usage"):
             with self.subTest(mode=mode):
                 report = self.exercise(mode)["audit"]
-                if mode == "valid":
+                if mode in ("valid", "mlx-usage"):
                     self.assertTrue(report["protocol_valid"])
                     self.assertEqual(report["completion_tokens"], 4)
                 else:

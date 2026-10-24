@@ -1272,3 +1272,140 @@ Earlier preliminary build artifacts remain preserved and are not used as timing 
 requests miss the latency objectives and serving qualification remains open. Keep Native
 default; resolve opaque-pool accounting before widening Graph selection and measure the actual
 serving entry point against a quality-equivalent incumbent before competitive claims.
+
+## Native HTTP versus stock MLX diagnostic (2026-10-24)
+
+**Actual HTTP protocol and accounting pass; the predeclared matched-result gate
+fails. No quality-equivalent serving speed ratio is accepted.** Identical synthetic
+prompts produce different greedy continuations on three distinct inputs. This does
+not establish which decoder, if either, is wrong.
+
+### Serving contract and offered work
+
+The same 40-core M3 Max, 128 GiB host runs macOS 26.6.2, Xcode 27.1 with SDK 27.0,
+and Rust 1.98.0. The archived Ribn release CLI is built from `8ebe5a8` (production
+implementation unchanged from `8bbf0a2`); its SHA256 is
+`10925f0f91adf665ca7942c0e8c7ab71f95e74c06912e20411fc9944dec2ac84`.
+The stock MLX-LM/MLX wheels and unconverted BF16 snapshot remain those in
+[Pinned inputs and implementations](#pinned-inputs-and-implementations).
+AIPerf **0.13.0**, Python 3.13.11, Transformers 5.20.1 and tokenizers 0.23.3 drive
+both endpoints through the unchanged `benchmarks/endpoint.py` runner. Installed
+sources, native libraries, executable and all nine package assets are byte-pinned
+and verified after the run; no environment, dependency or model pin changes.
+
+Run these servers separately, never concurrently, using the pinned MLX environment
+and archived native Metal executable:
+
+```sh
+"$RIBN_NATIVE_BINARY" serve-gemma "$RIBN_GEMMA_PACKAGE" \
+  --bind 127.0.0.1:9000 --model-name default_model \
+  --max-connections 16 --max-requests 8 --max-output-tokens 8 \
+  --connection-deadline-secs 120
+
+"$MLX_PYTHON" -m mlx_lm.server --model "$RIBN_GEMMA_PACKAGE" \
+  --host 127.0.0.1 --port 9001 --prompt-cache-size 0 --temp 0
+```
+
+Both use raw streaming `/v1/completions`, model alias `default_model`, temperature
+zero and EOS enabled. No request seed is sent: a seed would disable stock MLX
+batching even for greedy generation. AIPerf's dataset seed is 42. There is no adapter,
+speculative decoder or weight/KV quantization. Each server owns one model inventory;
+Native remains Ribn's CLI/HTTP policy. Ribn keeps its four-active-sequence/16-token
+prefill defaults; MLX keeps its 32-decode/8-prompt batch and 2,048-token prefill defaults.
+These are different execution policies, not equal physical work. Native has no retained
+prefix reuse; MLX's cache entry limit is zero and every reported cached-token count is
+zero. This disables retained prompt reuse, not active-KV memory allocation.
+
+Before load testing, each server passes **13 HTTP checks**: twelve separate one-token
+continuations at the archived common histories, including the 511/513 sliding-window
+cases, plus the four-token greedy chat response. Raw prompt strings round-trip to the
+exact submitted IDs in both tokenizers. Window continuations preserve teacher-forced
+histories; they are not incorrectly treated as a four-token greedy rollout. Expected
+visible text, usage and terminal behavior agree with the CPU archive. HTTP does not
+expose generated token IDs or full logits, so these checks add neither full-row
+numerical acceptance nor a distribution/task-quality equivalence budget.
+
+The plan calls for three fresh paired server processes, with reversed engine order
+in the second pair. Each server runs three repetitions of each workload below, with
+balanced workload ordering, **eight profiling requests plus one retained warmup** per
+trial. All requests have a four-token cap, not an assumed output count.
+
+| Workload | Nominal input mean / stddev | Concurrency | Nominal requests/s |
+| --- | ---: | ---: | ---: |
+| Short c1 | 18 / 0 | 1 | unlimited |
+| Short c4 | 18 / 0 | 4 | unlimited |
+| Variable input | 64 / 32 | 4 | 1, constant |
+
+### Observed gate failure
+
+The first pair completes **18 valid trials: 144 profiling requests and 18 warmups**.
+All nine paired trial groups have identical issued prompt multisets, caps, temperatures
+and input-token counts, including warmups. Profiling usage totals **5,268 input and
+576 output tokens** across both engines. All 144 profiling requests actually generate
+four tokens and finish with Length. There are no failed or invalid benchmark streams.
+
+Nevertheless, **12 of 72 paired profiling outcomes differ in visible text**, across
+three distinct prompts; warmup outcomes match. One 18-token prompt yields
+` horum MIST` from Native, versus ` horum harum hor` from MLX at c1 and
+` quickly quickly` at c4, each reporting four tokens. Count agreement is not output
+agreement, and this observation does not distinguish numerical sensitivity, batching
+behavior or a decoder defect. MLX is not substituted for an independent oracle.
+
+The runner stops before the remaining two server pairs, as declared before clocks.
+Both servers exit zero after SIGINT, with their owned process groups retired; all
+18 client groups also retire successfully. The cohort wrapper exits **1** at the
+matching assertion, not because of a client/protocol failure. No paired latency,
+throughput or target-meeting goodput ratios are published from this incomplete cohort.
+Exact visible-output agreement was a conservative eligibility screen, not a claim
+that independently reordered BF16 implementations must be bit-identical. Resolve
+independent common-history numerical/margin and task-quality acceptance on the divergent
+inputs, including batching scope, before accepting an incumbent serving comparison.
+Do not choose a new tolerance or remove these prompts merely to pass this screen.
+
+### Metrology, compatibility and evidence
+
+A separate analyzer cross-checks selected AIPerf per-request clocks against raw SSE
+receipts for all 18 trials, including warmup: actual start to first/last nonempty
+content, finish, usage and `[DONE]`, plus content-chunk gaps. These checks pass. The
+first-to-last content interval divided by `completion_tokens - 1` is a TPOT proxy,
+not individual-token ITL; bundled or suppressed text matters. `[DONE]` receipt is not
+HTTP EOF. Aggregate rate denominators include draining, not just the client's
+content-only benchmark duration. The general runner still marks performance metrics
+unaudited; these study-specific checks do not change that contract. AIPerf's positive
+rate is concurrency-gated and can skip nominal ticks, so it supplies no independent
+planned-arrival ledger or exogenous open-loop SLO proof. The predeclared 2 s TTFT,
+8 s last-content/DONE and 1 s proxy/chunk-gap objectives are diagnostic, not product SLOs.
+
+Stock MLX labels its empty-choice terminal usage frame `chat.completion`, even on
+this completion endpoint. The benchmark auditor now accepts only that narrow variant,
+not chat content, while retaining finish/usage/DONE ordering and coherent integer
+counts. A regression fails the original auditor; focused unit and actual pinned-client
+CPU fixture tests pass the correction. Neither server nor AIPerf is patched.
+
+An earlier attempt passes Native's 13 reference checks but fails AIPerf tokenizer
+setup before benchmark requests. In offline mode this pinned client's loader expects
+a cached repository ID and revision, not an absolute snapshot path. Using
+`google/gemma-4-E4B-it` at the same exact revision resolves the identical byte-pinned
+assets. A transient denied process-group probe during that attempt is not treated as
+retirement proof; later ESRCH and process inspection establish absence. The corrected
+runner retains uncertainty until an absence probe succeeds. The failed attempt remains
+preserved separately.
+
+Owned model processes are serialized, with no overlapping builds or tests. Other host
+GPU clients, clocks and thermals are uncontrolled. Five-second CPU/RSS/GPU/VM samples
+are neither physical peaks nor memory grants. No cancellation, overload, pressure,
+recovery, sustained capacity, competitive SLO or Graph promotion is qualified here.
+
+Boundary checks, formatting, locked workspace tests, default/CUDA/Metal-feature clippy,
+40 Python unit tests and the five-test real-AIPerf CPU integration suite pass. Every
+Cargo invocation uses `CARGO_BUILD_JOBS=2`; dependencies and toolchain remain pinned.
+There are no model/execution Rust changes. Existing full-model numerical, Graph and
+retirement qualification is reused; ignored Metal decoder/executor suites and CUDA
+device tests are not rerun for this benchmark-only change.
+
+Evidence: `~/ribn-qualification/gemma4-metal-http/20261024T015229Z/` retains the plans,
+`frozen/` and `frozen-v1/` source/environment snapshots, manifests, immutable executable,
+all raw client/server captures, `matching-diagnostic.json`, `outcome-summary.json`,
+`analysis-v1.json` and `verification.json`. The analyzer and post-run verification exit
+zero while explicitly recording the stopped, unqualified comparative cohort. Earlier
+failed captures and verifier revisions remain intact; no accepted capture is replaced.

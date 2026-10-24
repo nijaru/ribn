@@ -340,6 +340,11 @@ uv pip freeze --python /tmp/ribn-aiperf/bin/python \
 python3 benchmarks/endpoint.py validate benchmarks/results/my-baseline
 ```
 
+With `HF_HUB_OFFLINE=1` or `TRANSFORMERS_OFFLINE=1`, AIPerf 0.13.0's tokenizer
+loader resolves `model.tokenizer` as a cached Hub repository ID, not a local directory.
+Use the repository ID and exact `model.tokenizer_revision`; verify that they resolve
+to the intended byte-pinned snapshot before issuing load.
+
 The output directory must be new; existing evidence is never replaced by `run`.
 It retains the manifest/hash, exact client command, process exit code, log, raw
 exports and, when auditing completes, `validation.json`. Early failures may leave
@@ -358,6 +363,10 @@ Cleanly truncated streams can pass AIPerf itself, so ordinary summaries and HTTP
 trace metadata alone are insufficient. Failed requests remain in offered-work
 accounting; warmup errors are separate and invalidate the audit. Missing exports,
 nonzero client exit, incomplete runs and zero validated successes cannot pass.
+The audit also accepts MLX-LM 0.32.2's `chat.completion` label on an empty-choice,
+usage-only frame after the completion finish. This is a vendor wire-format
+exception, not support for chat content on this endpoint; usage and terminal-order
+checks still apply.
 AIPerf treats replies without visible content, including immediate EOS, as errors;
 the audit preserves that classification rather than silently changing it.
 

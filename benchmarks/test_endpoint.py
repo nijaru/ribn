@@ -268,6 +268,40 @@ class EndpointTests(unittest.TestCase):
                 self.assertEqual(report["successful_requests"], 1)
                 self.assertEqual(len(report["invalid_requests"]), 1)
 
+    def test_chat_label_is_accepted_only_for_terminal_usage_only_frames(self):
+        # Stock MLX-LM 0.32.2 labels the usage-only frame this way even on
+        # /v1/completions. It must not admit chat content or bypass accounting.
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            ordinary, raw, summary = fixture(directory)
+            usage = json.loads(raw[0]["responses"][1]["packets"][0]["value"])
+            usage["object"] = "chat.completion"
+            raw[0]["responses"][1] = message(usage)
+            export(directory, ordinary, raw, summary)
+            self.assertTrue(validate(directory)["protocol_valid"])
+
+            for variant in ("content", "missing usage", "bad totals", "early usage"):
+                with self.subTest(variant=variant):
+                    changed = copy.deepcopy(raw)
+                    if variant == "content":
+                        frame = json.loads(
+                            changed[0]["responses"][0]["packets"][0]["value"]
+                        )
+                        frame["object"] = "chat.completion"
+                        changed[0]["responses"][0] = message(frame)
+                    elif variant == "missing usage":
+                        changed[0]["responses"][1] = message(
+                            {"object": "chat.completion", "choices": []}
+                        )
+                    elif variant == "bad totals":
+                        frame = copy.deepcopy(usage)
+                        frame["usage"]["total_tokens"] += 1
+                        changed[0]["responses"][1] = message(frame)
+                    else:
+                        changed[0]["responses"][0:2] = changed[0]["responses"][1::-1]
+                    export(directory, ordinary, changed, summary)
+                    self.assertFalse(validate(directory)["protocol_valid"])
+
     def test_failures_remain_in_attempted_work_and_do_not_inflate_tokens(self):
         with tempfile.TemporaryDirectory() as tmp:
             directory = Path(tmp)

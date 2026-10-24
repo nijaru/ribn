@@ -680,8 +680,15 @@ paired total burst/staggered trace times fall 14.43/18.92%. Default 16-token chu
 Gate/Up pair16, not Down64. Most mixed requests miss the predeclared latency targets,
 and burst target-meeting requests fall from 4/48 to 1/48 despite faster total draining.
 Short pooled median E2E also rises 5.25%, though its p95 regression screen passes.
-This is not HTTP, sustained-load, physical-pressure or competitive SLO acceptance;
-qualify the serving entry point and quality-equivalent incumbent separately.
+This is not HTTP, sustained-load, physical-pressure or competitive SLO acceptance.
+A separate [Native HTTP versus stock MLX diagnostic](../benchmarks/gemma4-metal-baseline.md#native-http-versus-stock-mlx-diagnostic-2026-10-24)
+now passes reference-text, protocol and accounting checks on both real servers.
+All nine paired traffic groups have identical inputs/counts, but 12 of 72 paired
+profiling outcomes differ in visible text across three synthetic prompts. The
+predeclared matched-result gate stops the remaining process pairs; no quality-equivalent
+serving speed ratio is accepted. Resolve independent common-history numerical/margin
+and task-quality acceptance, including batching scope, rather than loosen a tolerance
+or omit those prompts. Greedy divergence alone does not identify a decoder defect.
 Opaque Graph submissions are not a single-command chain. Broader residency/synchronization
 gains remain possible; no universal Graph ABI is selected.
 This does not change CUDA sequencing or qualify capacity, recovery or SLO goodput.

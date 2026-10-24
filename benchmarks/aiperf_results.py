@@ -115,14 +115,22 @@ def stream_usage(raw, manifest):
             continue
         event = json.loads(data)
         require(isinstance(event, dict) and "error" not in event, "JSON error response")
-        require(
-            event.get("object") in ("text_completion", "completion"),
-            "unexpected completion object",
-        )
         choices = event.get("choices")
         require(
             isinstance(choices, list) and len(choices) <= 1,
             "invalid completion choices",
+        )
+        # MLX-LM labels its terminal usage-only frame as chat.completion,
+        # even for text completions. Content must still use completion objects.
+        require(
+            event.get("object") in ("text_completion", "completion")
+            or (
+                event.get("object") == "chat.completion"
+                and choices == []
+                and finish is not None
+                and isinstance(event.get("usage"), dict)
+            ),
+            "unexpected completion object",
         )
         if choices:
             require(
