@@ -1348,8 +1348,8 @@ Nevertheless, **12 of 72 paired profiling outcomes differ in visible text**, acr
 three distinct prompts; warmup outcomes match. One 18-token prompt yields
 ` horum MIST` from Native, versus ` horum harum hor` from MLX at c1 and
 ` quickly quickly` at c4, each reporting four tokens. Count agreement is not output
-agreement, and this observation does not distinguish numerical sensitivity, batching
-behavior or a decoder defect. MLX is not substituted for an independent oracle.
+agreement. These HTTP observations alone do not distinguish numerical sensitivity,
+batching behavior or a decoder defect. MLX is not substituted for an independent oracle.
 
 The runner stops before the remaining two server pairs, as declared before clocks.
 Both servers exit zero after SIGINT, with their owned process groups retired; all
@@ -1361,6 +1361,62 @@ that independently reordered BF16 implementations must be bit-identical. Resolve
 independent common-history numerical/margin and task-quality acceptance on the divergent
 inputs, including batching scope, before accepting an incumbent serving comparison.
 Do not choose a new tolerance or remove these prompts merely to pass this screen.
+
+### Common-history numerical follow-up
+
+A separate diagnostic retains all three divergent prompts and adds two nondiffering
+controls from the same HTTP cohort. Native's public decoder API, with default 16-token
+prefill chunks, reproduces all five archived four-token HTTP responses exactly. Its
+actual greedy IDs then define **20 shared prediction histories**, rather than comparing
+free-running outputs after divergence. No prompt, BOS policy or output cap is changed.
+
+The independent CPU reference uses its existing pinned Torch 2.14.0 / Transformers
+5.20.0 environment, eager attention and two threads, in separate BF16 and FP32 model
+processes. Both consume the exact Native histories. FP32 changes arithmetic, including
+embedding-scale rounding; it is a higher-precision diagnostic, not ground truth.
+Stock MLX-LM uses its unchanged pinned environment and `BatchGenerator`, with scalar
+or four identical prompt/history rows. Native chunks its initial prompt, CPU forwards
+the whole prompt, and MLX separates the last prompt token from prefill. These are
+common logical histories, not identical physical reductions or cache construction.
+
+A private observer records MLX's post-softcap raw logits, original BF16 normalized
+logprobs and stock sampled IDs. Ten fixed-batch observer-off/on pairs match delivered
+IDs and normalized-row hashes exactly. A separate teacher-forced mode records the stock
+prediction **before** replacing the next input with Native's predetermined ID; its
+forced delivery is not reported as stock greedy output. All **60 Native/CPU logit rows**
+and **500 MLX raw/normalized rows** have 262,144 finite elements. The MLX count includes
+identical four-row replicas and the stock generator's one-token lookahead, not 500
+independent prediction points.
+
+MLX's raw and normalized argmax agree at **all 250 captured sampling rows**. Thus the
+normalization/sampling stage does not explain these captured winner differences.
+Batch width does change raw model logits: scalar/four-identical-row greedy runs
+reproduce the 18-token prompt's ` horum harum hor` / ` quickly quickly` split without
+HTTP. This does not reconstruct the original server's heterogeneous batch membership.
+Across the five implementations/policies, winners differ at four shared prediction
+points; the two controls' eight points agree. The independent CPU BF16 and FP32 winners
+also differ at three points, so neither stock MLX nor precision voting identifies a
+defective decoder.
+
+The following are **descriptive maxima over the 20 shared histories**, computed after
+shape/finiteness checks with FP64 reductions and unit-temperature softmax of post-softcap
+logits, not the greedy requests' degenerate sampling distributions. KL is
+`KL(CPU FP32 || candidate)` in nats; each column's maximum is taken independently.
+
+| Candidate | Maximum KL | Maximum total variation |
+| --- | ---: | ---: |
+| Native Metal BF16 | 0.3844 | 0.3526 |
+| Stock CPU BF16 | 0.8505 | 0.5319 |
+| Stock MLX BF16, scalar | 0.1669 | 0.2325 |
+| Stock MLX BF16, four identical rows | 0.2599 | 0.3506 |
+
+These are not merely harmless argmax ties: CPU FP32 top-two gaps at the four differing
+points range from 0.0874 to 0.7113 logits, and distribution differences can be substantial.
+This selected diagnostic set establishes neither model accuracy nor an acceptable
+numerical/task-quality budget. The matched-result gate remains failed. Further
+localization and independent task-quality acceptance are still needed before accepting
+a quality-equivalent serving comparison; no tolerance is fitted to these errors,
+production arithmetic is unchanged, and no additional performance cohort is run.
 
 ### Metrology, compatibility and evidence
 
@@ -1396,12 +1452,13 @@ GPU clients, clocks and thermals are uncontrolled. Five-second CPU/RSS/GPU/VM sa
 are neither physical peaks nor memory grants. No cancellation, overload, pressure,
 recovery, sustained capacity, competitive SLO or Graph promotion is qualified here.
 
-Boundary checks, formatting, locked workspace tests, default/CUDA/Metal-feature clippy,
-40 Python unit tests and the five-test real-AIPerf CPU integration suite pass. Every
-Cargo invocation uses `CARGO_BUILD_JOBS=2`; dependencies and toolchain remain pinned.
-There are no model/execution Rust changes. Existing full-model numerical, Graph and
-retirement qualification is reused; ignored Metal decoder/executor suites and CUDA
-device tests are not rerun for this benchmark-only change.
+The preceding benchmark-code verification passes boundary checks, formatting, locked
+workspace tests, default/CUDA/Metal-feature clippy, 40 Python unit tests and the five-test
+real-AIPerf CPU integration suite. This numerical follow-up changes only private probes
+and the evidence documentation; those code gates remain applicable. Every Cargo
+invocation uses `CARGO_BUILD_JOBS=2`; dependencies and toolchain remain pinned. Existing
+Graph and retirement qualification is reused; ignored Metal decoder/executor suites and
+CUDA device tests are not rerun for this follow-up.
 
 Evidence: `~/ribn-qualification/gemma4-metal-http/20261024T015229Z/` retains the plans,
 `frozen/` and `frozen-v1/` source/environment snapshots, manifests, immutable executable,
@@ -1409,3 +1466,19 @@ all raw client/server captures, `matching-diagnostic.json`, `outcome-summary.jso
 `analysis-v1.json` and `verification.json`. The analyzer and post-run verification exit
 zero while explicitly recording the stopped, unqualified comparative cohort. Earlier
 failed captures and verifier revisions remain intact; no accepted capture is replaced.
+
+Common-history evidence: `~/ribn-qualification/gemma4-metal-http-quality/20261024T031051Z/`
+retains the predeclared plan, exact inputs, frozen `80e0aa1` source and installed-file
+manifests, original-dtype tensors, observers, `analysis-v1.json` and
+`verification-v1.json`. The Cargo-artifact-discovered Native probe SHA256 is
+`3a6d0cf08b8a7b251bd601483b65f7a92f67bc9cae649963be07eed3deb7bf41`;
+its registry versions and checksums are an exact subset of the workspace lockfile.
+All nine package assets and the byte-pinned installed files in both reference
+environments remain unchanged after the runs. Four successful model-policy processes
+exit zero with their groups retired. One earlier CPU collector stops after four rows because loader diagnostics
+contain non-JSON sets; its failed process retires, and its partial rows/source/logs
+remain excluded and preserved. The corrected collector uses the reference generator's
+existing sorted-list metadata serialization without changing model arithmetic.
+Unused preliminary build artifacts and failed build captures are also retained, not
+substituted for the qualified executable. Analysis and post-run provenance verification
+exit zero; these checks do not turn the failed serving-quality gate into acceptance.

@@ -686,9 +686,12 @@ now passes reference-text, protocol and accounting checks on both real servers.
 All nine paired traffic groups have identical inputs/counts, but 12 of 72 paired
 profiling outcomes differ in visible text across three synthetic prompts. The
 predeclared matched-result gate stops the remaining process pairs; no quality-equivalent
-serving speed ratio is accepted. Resolve independent common-history numerical/margin
-and task-quality acceptance, including batching scope, rather than loosen a tolerance
-or omit those prompts. Greedy divergence alone does not identify a decoder defect.
+serving speed ratio is accepted. A follow-up at 20 common prediction histories reproduces
+raw-logit batch-width effects without HTTP; independent CPU BF16/FP32 references also
+disagree, and distribution errors are not merely argmax ties. All 250 captured MLX raw
+and normalized argmax pairs agree. Localize the numerical differences and establish
+independent task-quality acceptance, including batching scope, rather than loosen a
+tolerance or omit those prompts. These results do not yet identify a defective decoder.
 Opaque Graph submissions are not a single-command chain. Broader residency/synchronization
 gains remain possible; no universal Graph ABI is selected.
 This does not change CUDA sequencing or qualify capacity, recovery or SLO goodput.
