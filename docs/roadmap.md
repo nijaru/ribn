@@ -700,17 +700,20 @@ winner follow the normalized hidden input, not the head backend: both heads choo
 on Native's vector and 3823 on CPU's. All ten shared hidden inputs preserve raw and
 post-softcap winner agreement. Replaying the pre-RMS decoder states then gives identical
 BF16 normalized vectors from both RMS implementations on all ten shared inputs. All four
-RMS/head combinations keep the disputed winner with the pre-RMS state. Shared-KV replay
-first checks layer 41, then the full 18-layer sharing suffix with real providers 22/23
-and the RMS/head tail. Every archived own-source suffix-layer output and tail row is
-reproduced exactly. On both coherent joint upstream streams, the backends agree on all
-ten raw/post-softcap winners: the disputed choice still follows the input stream, not
-the replay unit. This does not clear the distributions: full-suffix same-input post-softcap
-KL reaches about 0.028 and total variation 0.117. No error budget or isolated attention/FFN
-cause is established. The boundary also includes precomputed PLE inputs, and the 21-token
-history does not qualify sliding-window eviction. Earlier state causality and independent
-task-quality acceptance across the batching scope remain open. Resolve those rather than
-loosen a tolerance or omit those prompts. No defective decoder is yet established.
+RMS/head combinations keep the disputed winner with the pre-RMS state. Captured-upstream
+shared-KV replays first check layer 41, then the full sharing suffix; their winners follow
+the joint input stream, but distribution gaps remain. A fuller eight-cell decoder-body
+factorial then crosses the actual prefix backend, suffix backend and all 42 captured PLE
+inputs, carrying the prefix's real KV with it. All original layer outputs and tail rows
+are reproduced exactly before interpretation. The mixed Native-prefix/CPU-PLE stream
+selects 3872 through the Native suffix but 3823 through the CPU suffix. A conditional
+RMS/head replay makes that choice follow the suffix decoder output state, not its tail
+implementation. Thus the observed effect is not a universal prefix-only cause: prefix,
+suffix and PLE inputs interact. Across factorial contrasts, post-softcap total variation
+reaches about 0.475 for the prefix axis, 0.095 for the suffix and 0.115 for PLE. No error
+budget, faulty operation or accuracy winner is established. The 21-token history does not
+qualify sliding-window eviction. Resolve independent task-quality acceptance and the
+remaining numerical cause rather than loosen a tolerance or omit these prompts.
 Opaque Graph submissions are not a single-command chain. Broader residency/synchronization
 gains remain possible; no universal Graph ABI is selected.
 This does not change CUDA sequencing or qualify capacity, recovery or SLO goodput.

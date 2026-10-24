@@ -1529,40 +1529,62 @@ RMS correctness, or either decoder's accuracy. Earlier decoder operations and in
 task-quality acceptance remain unresolved. Histories, production arithmetic and the failed
 serving-quality gate are unchanged; no conditional exact-dot replay is needed.
 
-A **shared-KV replay** first checks provider 23 and layer 41, then expands to the
-entire natural KV-sharing suffix, **layers 24–41**, with real providers 22 and 23 and
-the RMS/head tail. The expanded joint boundary is the captured `layer21.output`,
-`layer22.output`, `layer23.output` and all 18 suffix-layer PLE inputs. Swapping only the
-suffix hidden state would omit shared KV and PLE differences. Only 266 Native or 268
-CPU weight tensors are loaded, not the full decoder. Native preserves actual fused
-provider Q/K/V chains, discarding their queries; CPU uses the pinned attention and
-decoder modules. Supported CPU mask APIs size against owners 22 and 23 before updates,
-without fabricated cache contents. Histories reach 21 tokens, below the 512-token sliding
-window; this does not qualify eviction boundaries or longer contexts.
+Earlier **shared-KV replays** check provider 23/layer 41, then providers 22/23 and the
+entire sharing suffix, **layers 24–41**, through RMS/head. The latter takes captured
+`layer21.output`, `layer22.output`, `layer23.output` and all 18 suffix PLE inputs as a
+joint boundary; provider projections run on the suffix backend. Every own-source layer
+output and tail row is reproduced exactly before crosses. All ten shared joint-input
+winners agree, following the captured source stream. But post-softcap unit-temperature
+`KL(CPU unit || Native unit)` reaches 0.027954 and total variation 0.117059. This result
+is conditional on those joint inputs, not proof that the prefix alone determines choice.
 
-Each backend first reproduces all five of its own **complete outputs from every suffix
-layer**, last normalized vectors and full raw/post-softcap rows bit-for-bit. It resets
-its real provider caches before processing the other source's joint stream. Comparison
-waits until both backends pass. All ten shared joint-input cases preserve raw and
-post-softcap winner agreement: at the disputed prediction, both units choose 3872 on
-Native's upstream stream and 3823 on CPU's. The narrower layer-41-only replay has the
-same winner result. The predeclared conditional provider-KV/suffix follow-up is not run
-because no shared-input winner differs.
+A **decoder-body factorial** then recomputes layers 0–23 from identical captured
+embeddings and crosses three independent axes: prefix backend, suffix backend and the
+source of all 42 captured PLE inputs. The prefix's actual complete owner-22/23 KV states
+travel with it into either suffix backend; they are not recomputed by the consumer.
+Only 408 prefix or 254 suffix-plus-tail weight tensors are loaded per process. Actual
+operators and original chunk ranks are retained. CPU masks size against real prior
+owner-22/23 state before importing each new prefix increment; both backends require the
+entire imported span to match the producer's bits. No dummy cache owners are populated.
 
-Winner agreement does **not** clear the distribution differences. In the full-suffix
-replay, 48,428–208,363 post-softcap coordinates differ per row, with maximum absolute
-difference 0.390625. Post-softcap unit-temperature `KL(CPU unit || Native unit)` is at
-most 0.027954 and total variation at most 0.117059; both maxima occur on Native-derived
-inputs at the disputed prediction. These are descriptive maxima, not a quality budget
-or sampling-quality equivalence.
+Each backend first passes its original-input controls before its own crosses: all 24
+prefix outputs and four KV tensors, then all 18 suffix outputs and normalized/raw/post
+rows, across all five calls. There are **490 exact archive controls and 160 exact KV
+import comparisons**. All 40 body predictions complete. At the disputed position, raw
+and post-softcap choices are:
 
-The disputed winner still follows the joint upstream stream, not the replay unit. This
-cut includes provider inputs, the suffix input and precomputed PLE inputs; its execution
-includes provider projections, all 18 suffix layers and RMS/head. It neither isolates an
-attention, FFN or PLE operation nor proves remaining rounding harmless. Earlier state
-causality and independent task-quality acceptance remain open. Histories are still forced
-Native histories, not greedy rollouts; production and the failed serving-quality gate are
-unchanged.
+| Prefix backend | Suffix backend, including RMS/head | Native PLE inputs | CPU PLE inputs |
+| --- | --- | ---: | ---: |
+| Native | Native | 3872 | 3872 |
+| Native | CPU | 3872 | **3823** |
+| CPU | Native | 3823 | 3823 |
+| CPU | CPU | 3823 | 3823 |
+
+The other four sampled positions agree across all eight cells; position zero remains a
+prefix diagnostic. Winner effects depend on the other axes. In particular, the same
+Native-prefix hidden/KV stream with CPU PLE selects differently between suffix units.
+A conditional RMS/head replay checks both resulting complete pre-RMS streams. All ten
+shared inputs produce bit-identical BF16 normalized vectors across RMS implementations,
+and both heads agree on their winners. Each tail also reproduces its parent mixed
+normalized/raw/post rows exactly. The new disputed choice therefore follows the suffix
+**decoder output state**, not RMS/head selection. This does not identify a faulty layer,
+attention/FFN operation or PLE calculation, or make either backend ground truth.
+
+Holding the other two axes fixed gives 20 contrasts per axis. Independent descriptive
+post-softcap maxima at unit temperature are below; KL runs from the CPU-valued axis to
+the Native-valued axis. The maxima need not occur on the same contrast.
+
+| Changed axis | Winner disagreements / 20 | Maximum KL | Maximum total variation |
+| --- | ---: | ---: | ---: |
+| Prefix backend, including its KV | 3 | 0.517570 | 0.475084 |
+| Suffix backend, including RMS/head | 1 | 0.0184105 | 0.0950499 |
+| Captured PLE input source | 1 | 0.0331448 | 0.114966 |
+
+These are not error budgets, task accuracy or sampling-equivalence evidence. Histories
+remain forced Native histories, not greedy rollouts. All contexts reach only 21 tokens,
+below the 512-token sliding window: eviction and longer contexts remain unqualified.
+Production arithmetic, independent task-quality acceptance and the failed serving-quality
+gate are unchanged.
 
 ### Metrology, compatibility and evidence
 
@@ -1721,3 +1743,33 @@ read-only collector review finds no material defect within this fixed-history sc
 The offline build, preflight, analysis, independent check and post-run verification all
 exit zero; no component rerun or production change is needed. This study runs locally
 on the M3 Max, without desktop/CUDA access.
+
+Body-factorial evidence: `~/ribn-qualification/gemma4-metal-body-factorial/20261024T214059Z/`
+retains the frozen `999f62c` base, private actual-layer replay, 920 copied input/expected
+files, `analysis-v1.json`, `decimal-check-v1.json` and `verification-v1.json`. The actual
+Cargo-discovered executable SHA256 is
+`275bd6078e48bb744386548050551aa4c3a808c01ef1640acd617ceb0341477b`.
+The prefix outputs are frozen before the suffix phase. Verification covers 2,320 finite
+tensor files, 490 archive controls, 160 KV imports, 2,233 frozen/live source files, 569
+second-phase files, 3,918 registry files and 20,530 installed environment files. All 120
+full-vocabulary contrasts agree to nine significant digits with independent 80-digit
+calculations. Read-only review finds no material prefix/import/suffix collector defect.
+
+Its `tail-check/` supplement reuses the archived `994dc887…650f0` RMS/head executable,
+with unchanged production source, rather than rebuilding it or rerunning a full decoder.
+Two fresh Metal processes each check five original Native triplets before one mixed
+stream; one CPU process checks five original CPU triplets before both mixed streams and
+Metal-RMS inputs. `analysis-v2.json`, `decimal-check-v2.json` and `verification-v2.json`
+check 175 additional finite files, 45 original-reference and 30 mixed-parent tensor
+controls, ten equal RMS vectors and 20 independently checked distributions. The Native
+head is not separately rerun on CPU-RMS outputs: those inputs are bit-identical to its
+measured Metal-RMS inputs. The combined closure covers **2,495 finite tensor files**.
+All seven actual components exit zero, non-forced, with positive process-group retirement
+within fresh bounded phases. No desktop/CUDA access or production change is involved.
+
+The first launch guard exits one **before any component or budget starts**, after
+matching unrelated Cargo tests. That failure and both actual launcher versions remain
+frozen. The corrected guard records unrelated project build directories while retaining
+model-process checks; accepted build, preflights, components, analyses and verification
+exit zero. Exploratory tail-analysis V1 is retained; accepted V2 freezes the same analysis
+method before its calculations, without model reruns or tolerance changes.
