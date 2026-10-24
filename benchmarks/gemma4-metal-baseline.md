@@ -1529,6 +1529,33 @@ RMS correctness, or either decoder's accuracy. Earlier decoder operations and in
 task-quality acceptance remain unresolved. Histories, production arithmetic and the failed
 serving-quality gate are unchanged; no conditional exact-dot replay is needed.
 
+A **last-layer unit replay** next recomputes the real full-attention KV provider 23
+and decoder layer 41, followed by final RMS and the vocabulary head. Its joint upstream
+boundary is the captured `layer22.output`, `layer40.output` and
+`layer41.per_layer_input`; swapping only the target hidden state would omit shared KV
+and PLE differences. Only 22 Native or 23 CPU weight tensors are loaded, not the full
+decoder. Native preserves the actual fused provider Q/K/V chain, discarding its query;
+CPU uses the actual pinned attention and decoder modules. Its supported mask API sizes
+against owner 23 explicitly, without fabricated cache contents.
+
+Each backend first reproduces all five of its own **complete layer-41 outputs**, last
+normalized vectors and full raw/post-softcap rows bit-for-bit. It then resets its real
+provider cache before processing the other source's joint inputs. Comparison waits until
+both backends pass. Both units agree on raw and post-softcap winners for all ten shared
+joint-input cases: at the disputed prediction, both choose 3872 on Native's upstream
+stream and 3823 on CPU's. The units are not bit-identical: 1,387–34,957 post-softcap
+coordinates differ per row, with maximum absolute difference 0.125. Across these cases,
+post-softcap `KL(CPU unit || Native unit)` is at most 4.040e-5 and total variation at
+most 0.002815; both maxima occur on CPU-derived inputs at the prefix diagnostic. These
+are descriptive maxima, not a quality budget.
+
+The winner still follows the upstream state stream, rather than which replay unit runs
+it. This conditional experiment includes provider projections, layer 41, final RMS and
+the head; it does not isolate an attention, FFN or PLE operation, prove that remaining
+rounding is harmless, or identify a defective decoder. Earlier decoder causality and
+independent task-quality acceptance remain open. Histories are still forced Native
+histories, not greedy rollouts; production and the failed serving-quality gate are unchanged.
+
 ### Metrology, compatibility and evidence
 
 A separate analyzer cross-checks selected AIPerf per-request clocks against raw SSE
@@ -1646,3 +1673,27 @@ are preserved, without rerunning components or changing arithmetic. An initial t
 guard also stops before Cargo; the actual build explicitly pins installed Rust 1.98.0.
 Build, analysis, independent distribution checks and corrected post-run verification exit
 zero. This is neither a serving-performance nor a general decoder-quality qualification.
+
+Last-layer evidence: `~/ribn-qualification/gemma4-metal-last-layer/20261024T201341Z/`
+retains the frozen `32891ef` base and private replay changes, subset-weight inventory,
+70 copied input/expected tensors, `analysis-v1.json`, `decimal-check-v1.json` and
+`verification-v1.json`. The Cargo-artifact-discovered executable SHA256 is
+`b677c98341e5e9c4ac4fbba8b84ee19407d0e1b0efec28b605586eb09d7859b6`.
+Both serialized processes exit zero, non-forced, within fresh 15-minute process and
+30-minute aggregate bounds, with positive group retirement. Verification checks 210
+finite tensor files, 40 exact self-control tensor comparisons, 1,390 frozen/live study
+files, 3,918 registry source files and 20,530 installed environment files, plus assets,
+interpreter, executable and Rust pins. All 30 full-vocabulary distribution comparisons
+agree to nine significant digits with the independent 80-digit calculation.
+
+The deleted CPU cache environment is restored separately at
+`~/ribn-qualification/gemma4-reference-environment/20261024T195933Z/`, not recreated as
+historical provenance. Python, the five pinned package versions and all seven reference
+source hashes match; 5,666 of 5,669 archived package-file hashes match exactly. Only three
+new installation `RECORD` files differ, and all 20,496 hash-bearing entries across the
+34 installed distributions validate. Their actual new hashes are pinned for this replay.
+The offline Rust build uses 102 checksum-verified archives copied from preserved caches,
+without downloads or dependency changes. Earlier formatting, offline-cache, type-inference
+and preflight-inspector failures remain preserved; the accepted build, preflight, analysis,
+independent distribution check and post-run verification exit zero. No component is rerun
+or production hook merged.
