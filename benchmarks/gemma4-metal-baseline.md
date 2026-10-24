@@ -1418,6 +1418,39 @@ localization and independent task-quality acceptance are still needed before acc
 a quality-equivalent serving comparison; no tolerance is fitted to these errors,
 production arithmetic is unchanged, and no additional performance cohort is run.
 
+A further **layer-boundary trace of the unchanged 18-token prompt** matches Native and
+independent CPU prefill chunks at 16 tokens, followed by the same forced continuation.
+Private host-buffer snapshots add no GPU operations. Native trace-off/on reproduces
+all five call-level logit rows exactly, including the first 16-token prefix, and both
+modes reproduce the four archived Native prediction rows. CPU BF16 and FP32 each pass
+the same five-row observer-neutrality check. All **1,395 stage tensors** across Native,
+CPU BF16 and CPU FP32 are finite and shape-checked; off/call/prediction copies add 28
+verified tensors. These include every token row at all 42 layer outputs, not just scalars.
+
+Native and CPU BF16 embedding and PLE lookup tensors are bit-identical at all five
+calls. The first unequal boundary is the raw PLE projection: **41 of 172,032 values**
+in the first 16-token block differ, and 59 coordinates differ across all five calls.
+An independent replay uses the actual identical BF16 inputs and pinned weight rows.
+Exact integer dyadic summation, rounded directly to BF16 ties-even, agrees with Native
+at 8 of those already-disagreeing coordinates, CPU at 48, and neither at 3; 70
+predeclared matching controls agree with both. These selected counts are not an
+accuracy rate over the matrix or model.
+
+A separate explicit ascending-`k` FP32 sum, with each selected BF16 product checked
+exactly representable in FP32, reproduces **all 129 selected Native outputs**. The
+first differences are therefore consistent with the documented Native accumulation
+order, rather than establishing an operand/layout or rounding defect. Correctly rounded
+real dot products are not a promise of sequential FP32 accumulation. At the final
+prompt chunk, last-token layer-output relative L2 against CPU BF16 grows from about
+0.000481 at layer 0 to 0.02739 at layer 41; this does **not** prove the first PLE
+perturbations alone cause the final divergence or rule out a later defect.
+
+Matching CPU chunk sizes does not remove this counterexample: all four CPU BF16
+prediction rows are bit-identical to its prior whole-18-token prefill results. CPU FP32
+rows change by at most 0.00006104 logits without changing winners. The first differing
+operation is now characterized, but full-model quality acceptance remains unresolved;
+no production arithmetic, input policy or error budget changes.
+
 ### Metrology, compatibility and evidence
 
 A separate analyzer cross-checks selected AIPerf per-request clocks against raw SSE
@@ -1482,3 +1515,14 @@ existing sorted-list metadata serialization without changing model arithmetic.
 Unused preliminary build artifacts and failed build captures are also retained, not
 substituted for the qualified executable. Analysis and post-run provenance verification
 exit zero; these checks do not turn the failed serving-quality gate into acceptance.
+
+Layer-localization evidence: `~/ribn-qualification/gemma4-metal-layer-trace/20261024T041113Z/`
+retains the frozen `b578d0d` source plus private trace-only patch, source/installed-file
+manifests, `layer-analysis-v1.json`, exact/ascending replay sources and reports, and
+`verification-v1.json`. All four model processes exit zero, serially within the original
+30-minute model-phase deadline, with owned groups retired. The qualified Native probe
+SHA256 is `aef3237fa72888ac99cd1a1059ea8097c58ae7bdee3ef0c03773b110d643dbc4`.
+Post-run source, artifact, environment, finite-tensor and neutrality verification exits
+zero. An independent mathematical review finds no material replay defect in this scope;
+the exact rounder rejects overflow and is not an unrestricted BF16 implementation.
+The earlier unused build and all prior captures remain preserved.
