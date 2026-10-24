@@ -674,7 +674,14 @@ across three model reloads per process; all 195 full-row pairs remain exact. The
 reviewed SDK exposes no Graph allocator hook or worst-case workspace query. Sampling
 and process high-water counters do not resolve internal allocation authority or hard
 physical bounds. Resolve that external-pool accounting/envelope policy before widening
-selection, and qualify mixed-arrival serving separately from direct-prefill clocks.
+selection. A [public text-driver diagnostic](../benchmarks/gemma4-metal-baseline.md#public-text-driver-graph-diagnostic-2026-10-24)
+now exercises real default scheduling and mixed arrivals: 390 requests match exactly;
+paired total burst/staggered trace times fall 14.43/18.92%. Default 16-token chunks select
+Gate/Up pair16, not Down64. Most mixed requests miss the predeclared latency targets,
+and burst target-meeting requests fall from 4/48 to 1/48 despite faster total draining.
+Short pooled median E2E also rises 5.25%, though its p95 regression screen passes.
+This is not HTTP, sustained-load, physical-pressure or competitive SLO acceptance;
+qualify the serving entry point and quality-equivalent incumbent separately.
 Opaque Graph submissions are not a single-command chain. Broader residency/synchronization
 gains remain possible; no universal Graph ABI is selected.
 This does not change CUDA sequencing or qualify capacity, recovery or SLO goodput.

@@ -1150,3 +1150,125 @@ opaque SDK storage, reservation authority or worst-case full-model bounds. Resol
 external-pool accounting/envelope policy before widening selection. Memory-pressure,
 failed-retirement memory envelopes, full-context capacity and mixed-arrival serving/SLO
 qualification remain open; this screen supplies no new latency or competitive claim.
+
+## Public text-driver Graph diagnostic (2026-10-24)
+
+**Graph reduces paired mixed-trace time, but this is not service acceptance.** Most
+mixed requests miss the predeclared latency targets, and the burst has fewer
+target-meeting requests under Graph. Native remains the default, including CLI/HTTP;
+Graph remains an explicit Rust opt-in. Production behavior and environment pins do not
+change. A text-test comment is corrected: default scheduling chunks the archived
+18-token prompt, rather than executing one 18-row native fallback.
+
+### Entry point and offered work
+
+Three fresh M3 Max processes use one frozen release executable against `819d1c6`
+(production implementation unchanged from `8bbf0a2`). Each process loads two independent
+`TextOwner::load_gemma` owners, Native and ExperimentalGraph, with separate weight
+inventories and queues. Only one owner receives requests at a time. The combined
+active BF16 parameter payload is **29,852,053,672 bytes**, not a physical-memory bound.
+This differs from the preceding one-inventory memory screen. The package, Rust 1.98.0,
+macOS 26.6.2 and SDK 27.0 remain pinned.
+
+The actual public streaming facade and default scheduler are used—not a manually
+assembled engine. Default prefill chunks are **16 tokens**, with at most four active
+Gemma sequences. Members execute separately; four requests are not a physical 64-row
+matmul. Consequently this diagnostic exercises **Gate/Up pair16 only**, not pair64 or
+Down64. Decode and short tails remain native.
+
+Prompts cycle the archived 18-token chat IDs to these synthetic lengths. Inputs are
+pre-encoded token IDs, so request tokenization/chat formatting is not measured.
+Generation is greedy, with no text stops and EOS ignored to fix equal output work.
+
+| Trace | Prompt lengths | Outputs per request | Planned arrivals (ms) |
+| --- | --- | --- | --- |
+| Short c1 | 16 | 4 | 0 |
+| Mixed burst | 16, 65, 129, 513 | 4 each | all 0 |
+| Staggered, four active slots | 513, 16, 65, 129, 16, 513, 65, 129 | 4, 8, 4, 8, 4, 8, 8, 4 | 0, 25, 100, 175, 400, 650, 900, 1200 |
+
+One consumer thread per request offers work against absolute deadlines and drains
+public stream events continuously. Storage and threads are prepared before the clock.
+TTFT measures first token-ID receipt, E2E measures terminal receipt, and both start at
+**planned** arrival; actual-offer timestamps and public stream-open latency are also
+retained. Stream opening is not executor admission. First nonempty text is recorded
+separately; it coincides with first-token receipt in this cohort. Observed ITL includes
+client scheduling and channel buffering, not just GPU execution. Maximum offer lateness
+is **10.047 ms**.
+
+Each process warms every trace once per policy, then runs four paired rounds per
+trace, balanced two Native-first and two Graph-first. All **90 trials / 390 offered
+requests**, including warmup, complete successfully with exact token IDs, decoded text,
+usage and Length outcomes across policies/processes: **2,040 output tokens**. This is
+cross-policy agreement, not a new independent quality oracle; the existing full-logit
+and complete-KV qualification remains the numerical anchor. The external SDK observer
+counts **85,680 actual Graph runs** including warmup. Per Graph trial the counts are
+42 / 1,890 / 3,780 respectively; Native counts zero. Both owners explicitly shut down.
+
+### Timing and latency objectives
+
+The predeclared timing screen requires at least 5% lower paired total trace time for
+both mixed traces and no more than 5% regression in pooled short-c1 p95 E2E. Ratios
+below take the median of four within-process paired Graph/Native ratios, then the
+median across three processes. Absolute medians instead pool the 12 measured trials
+per policy; these are different statistics. Warmups are excluded, not discarded.
+Trace time ends at the last client terminal, not at thread joining/JSON construction.
+
+| Trace | Native / Graph pooled median trace (s) | Three process median ratios | Median ratio / reduction |
+| --- | ---: | --- | ---: |
+| Short c1 | 0.702 / 0.738 | 0.9095, 1.0525, 0.9678 | 0.9678 / 3.22% |
+| Mixed burst | 19.425 / 16.711 | 0.8557, 0.8987, 0.8272 | 0.8557 / 14.43% |
+| Staggered | 39.931 / 28.223 | 0.8925, 0.8108, 0.6149 | 0.8108 / 18.92% |
+
+The timing screen passes: short pooled p95 E2E is **1.259 / 1.123 s**, a ratio of
+0.8918. That does not establish universal short-request improvement: its pooled median
+is **5.25% higher** under Graph, and one process's paired median ratio is 1.0525.
+
+Diagnostic request targets, chosen before clocks, are TTFT ≤2 s, E2E ≤8 s and
+per-request empirical p95 observed ITL ≤1 s. A request must meet all three to count.
+These are experiment objectives, not product SLOs. The ITL target is evaluated per
+request, not against a token-pooled percentile that overweights longer outputs.
+
+| Trace | Native / Graph target-meeting requests | Native / Graph target-meeting requests/s |
+| --- | ---: | ---: |
+| Short c1 | 12/12 / 12/12 | 1.2277 / 1.2919 |
+| Mixed burst | 4/48 / 1/48 | 0.01842 / 0.00560 |
+| Staggered | 2/96 / 4/96 | 0.00415 / 0.01115 |
+
+Rates divide qualifying requests by the sum of complete measured trace durations,
+including all offered work. There are no failed/rejected requests to omit; any such
+failure would invalidate the cohort rather than produce survivor-only acceptance.
+Mixed-burst request p95 TTFT/E2E is **23.174/24.085 s Native** versus
+**18.241/18.886 s Graph**; staggered values are **48.903/51.596 s** versus
+**35.552/37.258 s**. Faster draining therefore does not imply acceptable request latency.
+The burst's lower target-meeting count is retained, not hidden by the trace-time win;
+these small counts do not establish a causal fairness regression.
+
+### Limits and retained evidence
+
+Owned model/GPU processes are serialized, with no overlapping builds/tests. Other host
+clients, clocks and thermal state are not controlled. Measured Native mixed traces span
+**9.879–27.017 s** and staggered traces **22.224–65.390 s**; Graph spans
+**8.856–22.039 s** and **19.236–46.434 s**. Preserve the process variation rather than
+claiming an isolated kernel cause. These short finite traces are neither sustained-load
+capacity estimates nor precise tail guarantees. No HTTP, incumbent, cancellation,
+recovery, memory-pressure or physical-grant acceptance is added.
+
+Private locked/offline release build and clippy pass with `CARGO_BUILD_JOBS=2`; registry
+pins are an audited subset of the unchanged workspace lock. This docs/test-comment-only
+delivery reuses the existing production gates; the full workspace/CUDA/device suites
+are not rerun. Independent review found no probe blocker and prompted explicit
+stream-open terminology, run/package/shim identity checks, unique balanced-pair
+validation and separate token-pooled/per-request ITL
+reporting. No clocks, workloads or decision thresholds were changed after the cohort.
+
+Evidence: `~/ribn-qualification/gemma4-metal-text-arrivals/20261024T003442Z/` retains
+`plan.json`, `frozen/`, `manifest.json`, immutable executable
+`ff20746485ee48412fa5aec952e7bf9024c9cf34ddcb5785d3d660976b197bb3`,
+`runs/`, `analysis.json`, `analysis-reviewed.json` and `verification.json`. All three
+processes, both-owner shutdowns, the frozen analyzer and reviewed verification exit zero.
+Earlier preliminary build artifacts remain preserved and are not used as timing evidence.
+
+**Decision:** pair16 gains survive this public-driver diagnostic, but most mixed
+requests miss the latency objectives and serving qualification remains open. Keep Native
+default; resolve opaque-pool accounting before widening Graph selection and measure the actual
+serving entry point against a quality-equivalent incumbent before competitive claims.

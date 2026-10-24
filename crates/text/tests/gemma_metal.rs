@@ -60,8 +60,9 @@ fn gemma_text_facade_reproduces_the_archived_greedy_tokens() {
                 "{ffn:?}: text facade greedy tokens"
             );
         }
-        // The archived 18-row prompt takes the native fallback even under the
-        // Graph policy. Exercise an actually selected 16-row prefix as well.
+        // Under Graph, default scheduling splits the archived prompt into a
+        // selected 16-row prefill and a native tail. Also compare a 16-token
+        // request, without a tail, against the native policy.
         let selected = owner
             .model()
             .generate_blocking(
