@@ -695,9 +695,13 @@ CPU BF16 prediction rows remain unchanged from whole-prompt prefill. Controlled 
 substitutions now leave all four forced-history predictions unchanged in each engine,
 even with identical first-projection matrices. That operation is not the sole explanation;
 a precision rewrite based only on its first bit difference is not an established quality
-fix. Later-layer correctness and independent task-quality acceptance, including batching
-scope, remain open. Resolve those rather than loosen a tolerance or omit those prompts.
-No defective decoder is yet established.
+fix. A head-only replay with exact raw/post-softcap self-controls then makes the disputed
+winner follow the normalized hidden input, not the head backend: both heads choose 3872
+on Native's vector and 3823 on CPU's. All ten shared hidden inputs preserve raw and
+post-softcap winner agreement. Correctness before that boundary, including final RMS,
+and independent task-quality acceptance across the batching scope remain open. Resolve
+those rather than loosen a tolerance or omit those prompts. No defective decoder is yet
+established.
 Opaque Graph submissions are not a single-command chain. Broader residency/synchronization
 gains remain possible; no universal Graph ABI is selected.
 This does not change CUDA sequencing or qualify capacity, recovery or SLO goodput.

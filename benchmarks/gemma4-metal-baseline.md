@@ -1475,6 +1475,37 @@ correctness. A precision rewrite of that first operation is not justified as a q
 fix by this counterexample. Independent task-quality acceptance remains unresolved;
 no production arithmetic, input policy or error budget changes.
 
+A **head-only replay** next feeds each engine the same captured final-normalized BF16
+hidden vectors, without loading either full decoder. Only the tied vocabulary weight
+is loaded. Metal uses the existing native projection and model softcap; CPU uses its
+original-rank BF16 linear and divide/tanh/multiply sequence. Each backend first
+reproduces all five of its own archived raw and post-softcap rows bit-for-bit before
+running the other engine's hidden vectors. No normalization is repeated.
+
+Both head implementations agree on the raw and post-softcap winner for **all ten
+shared hidden inputs**. At the disputed 18-token prediction, the winner follows the
+hidden input, not the head backend:
+
+| Captured normalized hidden | Native Metal head | Stock CPU BF16 head |
+| --- | ---: | ---: |
+| Native | 3872 | 3872 |
+| CPU BF16 | 3823 | 3823 |
+
+The heads are not bit-identical: 9–29 raw coordinates and 8–25 post-softcap coordinates
+per row differ, out of 262,144, with maximum absolute difference 0.125. Across these ten
+shared inputs, post-softcap unit-temperature `KL(CPU head || Metal head)` is at most
+7.436e-10 and total variation at most 1.593e-8; these maxima occur at different inputs.
+The FP64 KL/TV calculations use stable relative normalization and agree to nine significant
+digits with an independent 80-digit full-vocabulary calculation, including the original
+different-hidden baselines. These are descriptive comparisons, not an accepted error budget.
+
+Thus the normalized hidden state carries this counterexample; vocabulary-head arithmetic
+alone does not explain it. This does not distinguish final RMS from earlier decoder
+operations, establish either engine's accuracy, or qualify any other head geometry.
+The inputs retain the same forced Native histories, not counterfactual greedy rollouts.
+No same-input winner differs, so the conditional selected-dot replay is unnecessary.
+Production behavior and the failed serving-quality gate remain unchanged.
+
 ### Metrology, compatibility and evidence
 
 A separate analyzer cross-checks selected AIPerf per-request clocks against raw SSE
@@ -1561,3 +1592,17 @@ verification checks 42 finite full-head files, 20 finite replay matrices, all 30
 intervention guards, unchanged pins and both five-row identity controls. An independent
 collector review finds no material defect within this fixed-history scope. Build,
 analysis and post-run verification exit zero; no production hook or kernel is added.
+
+Head-replay evidence: `~/ribn-qualification/gemma4-metal-head-causality/20261024T080854Z/`
+retains the plan, pristine frozen `9c0e125` source, private component probes, exact input
+provenance, installed-file manifests, `analysis-v3.json`, `decimal-check-v3.json` and
+`verification-v3.json`. The Cargo-artifact-discovered executable SHA256 is
+`69b7b4196934fd40f4fbc7faa741ca7532c8215b98f8f263b26b7f49397ec33b`.
+Both serialized head-only processes exit zero within their fresh component-phase budget,
+with their groups positively retired. Verification checks all 70 finite tensor files,
+20 exact self-control rows, 1,224 frozen/live study files, 5,669 installed files and
+unchanged asset/toolchain/dependency pins. Earlier cancellation-prone analyzers and the
+failed high-precision check remain preserved; no component capture is replaced or rerun.
+The corrected analyzer passes all 30 independent full-vocabulary distribution checks.
+Build, accepted analysis and post-run verification exit zero. This is neither serving
+performance nor physical-memory qualification.
