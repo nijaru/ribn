@@ -691,11 +691,13 @@ raw-logit batch-width effects without HTTP; independent CPU BF16/FP32 references
 disagree, and distribution errors are not merely argmax ties. All 250 captured MLX raw
 and normalized argmax pairs agree. Matched-chunk layer traces locate the first difference
 at PLE projection and independently reproduce Native's documented FP32 addition order;
-CPU BF16 prediction rows remain unchanged from whole-prompt prefill. This accounts for
-the first differing operation, not the full-model quality gap or later-layer correctness.
-Resolve numerical accuracy and independent task-quality acceptance, including batching
-scope, rather than loosen a tolerance or omit those prompts. No defective decoder is
-yet established.
+CPU BF16 prediction rows remain unchanged from whole-prompt prefill. Controlled raw-PLE
+substitutions now leave all four forced-history predictions unchanged in each engine,
+even with identical first-projection matrices. That operation is not the sole explanation;
+a precision rewrite based only on its first bit difference is not an established quality
+fix. Later-layer correctness and independent task-quality acceptance, including batching
+scope, remain open. Resolve those rather than loosen a tolerance or omit those prompts.
+No defective decoder is yet established.
 Opaque Graph submissions are not a single-command chain. Broader residency/synchronization
 gains remain possible; no universal Graph ABI is selected.
 This does not change CUDA sequencing or qualify capacity, recovery or SLO goodput.

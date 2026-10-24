@@ -1447,8 +1447,32 @@ perturbations alone cause the final divergence or rule out a later defect.
 
 Matching CPU chunk sizes does not remove this counterexample: all four CPU BF16
 prediction rows are bit-identical to its prior whole-18-token prefill results. CPU FP32
-rows change by at most 0.00006104 logits without changing winners. The first differing
-operation is now characterized, but full-model quality acceptance remains unresolved;
+rows change by at most 0.00006104 logits without changing winners.
+
+A **causal boundary substitution** then replaces only the raw PLE projection, before
+scaling/RMS, in Native and stock CPU BF16. Each engine's identity substitution reproduces
+all five archived full logit rows exactly. Every call also checks the actual embedding
+and computed projection against its original bits before replacement. Continuation IDs
+remain fixed to Native's original history regardless of the counterfactual prediction;
+these are joint interventions across all five calls, with prior changes propagated through
+KV, not isolated-coordinate effects or free-running greedy responses.
+
+Swapping the engines' projection matrices changes 59 values but leaves all four
+predictions unchanged in each engine: Native still starts with ID 3872 and CPU with
+3823. Correcting only those previously disagreeing coordinates to the exact-real-dot
+BF16 reference changes 51 Native values and 11 CPU values, producing identical raw
+projection matrices for both engines. This is **not** an exact reference for the entire
+projection or model. All five Native logit rows then match its CPU-matrix substitution
+bit-for-bit; all five CPU rows match its original identity control bit-for-bit.
+
+The first projection is therefore not the sole explanation for the cross-engine gap.
+At the 18-token prompt's prediction, equalizing Native's projection to CPU's still leaves
+`KL(CPU BF16 || Native)` at 0.2584 and total variation at 0.3386, versus 0.2056 / 0.2921
+without substitution. These are descriptive unit-temperature distributions on that one
+history, not a quality threshold. The differences can affect logits without changing
+these winners; neither this result nor shared first-projection bits establishes later
+correctness. A precision rewrite of that first operation is not justified as a quality
+fix by this counterexample. Independent task-quality acceptance remains unresolved;
 no production arithmetic, input policy or error budget changes.
 
 ### Metrology, compatibility and evidence
@@ -1526,3 +1550,14 @@ Post-run source, artifact, environment, finite-tensor and neutrality verificatio
 zero. An independent mathematical review finds no material replay defect in this scope;
 the exact rounder rejects overflow and is not an unrestricted BF16 implementation.
 The earlier unused build and all prior captures remain preserved.
+
+Causal-substitution evidence: `~/ribn-qualification/gemma4-metal-ple-causality/20261024T045515Z/`
+retains the plan, frozen `defc167` source plus private boundary-only patch, replay/input
+and installed-file manifests, `analysis-v1.json` and `verification-v1.json`. The qualified
+Native probe SHA256 is `42bbeca49a1240c355b42f9d7c33625049ba8d6365822d4331a2fcdbd18f6875`.
+Three Native processes and one CPU process with three fresh-cache policies exit zero,
+serially within the original model-phase deadline, with their groups retired. Post-run
+verification checks 42 finite full-head files, 20 finite replay matrices, all 30 call-level
+intervention guards, unchanged pins and both five-row identity controls. An independent
+collector review finds no material defect within this fixed-history scope. Build,
+analysis and post-run verification exit zero; no production hook or kernel is added.
