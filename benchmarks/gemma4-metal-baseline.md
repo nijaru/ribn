@@ -1500,11 +1500,34 @@ digits with an independent 80-digit full-vocabulary calculation, including the o
 different-hidden baselines. These are descriptive comparisons, not an accepted error budget.
 
 Thus the normalized hidden state carries this counterexample; vocabulary-head arithmetic
-alone does not explain it. This does not distinguish final RMS from earlier decoder
-operations, establish either engine's accuracy, or qualify any other head geometry.
+alone does not explain it. That replay alone does not distinguish final RMS from earlier
+decoder operations, establish either engine's accuracy, or qualify any other head geometry.
 The inputs retain the same forced Native histories, not counterfactual greedy rollouts.
 No same-input winner differs, so the conditional selected-dot replay is unnecessary.
 Production behavior and the failed serving-quality gate remain unchanged.
+
+A **final-RMS replay** then starts from the captured last decoder-layer outputs. Their
+last rows match the independently captured pre-RMS inputs exactly. Native retains its
+last-row-only RMS call; CPU retains its original full chunk and rank before selecting
+the last normalized row. Only the learned final-norm scale and tied vocabulary weight
+are loaded. Each backend first reproduces all five of its own archived normalized
+vectors and raw/post-softcap head rows bit-for-bit before crossing inputs. A third
+Metal process checks five original head controls before completing the crossed heads.
+
+Both RMS implementations return **bit-identical BF16 normalized vectors on all ten
+shared pre-RMS inputs**. Crossing both RMS and both head implementations gives 40 head
+cells across the five call positions, including the prefix diagnostic. Every cell retains
+its input source's original raw and post-softcap winners. At the disputed prediction,
+all four paths choose 3872 from Native's pre-RMS state and 3823 from CPU's. Changing only
+the RMS implementation leaves every full raw/post row bit-identical for a fixed input
+and head. The head-backend differences remain those of the preceding shared-hidden replay.
+
+This counterexample is therefore already carried by the different decoder states before
+final RMS, rather than explained by choosing between these RMS or head implementations.
+Equal BF16 normalized outputs do not establish identical internal FP32 statistics, general
+RMS correctness, or either decoder's accuracy. Earlier decoder operations and independent
+task-quality acceptance remain unresolved. Histories, production arithmetic and the failed
+serving-quality gate are unchanged; no conditional exact-dot replay is needed.
 
 ### Metrology, compatibility and evidence
 
@@ -1606,3 +1629,20 @@ failed high-precision check remain preserved; no component capture is replaced o
 The corrected analyzer passes all 30 independent full-vocabulary distribution checks.
 Build, accepted analysis and post-run verification exit zero. This is neither serving
 performance nor physical-memory qualification.
+
+Final-RMS evidence: `~/ribn-qualification/gemma4-metal-final-rms/20261024T181052Z/`
+retains the plan, pristine frozen `05d819d` source, private probes, exact full-chunk/tail
+provenance, installed-file manifests, `analysis-v1.json`, `decimal-check-v1.json` and
+`verification-v2.json`. The Cargo-artifact-discovered executable SHA256 is
+`994dc8876d758123db2855c93dbad7ea03f054abef7f051db28f3c2dbdd650f0`.
+All three component processes exit zero, serially within their fresh 30-minute budget,
+with positive group retirement. Verification checks 150 finite tensor files, 40 exact
+self-control tensor comparisons, 1,241 frozen/live study files, 5,669 installed files and
+unchanged asset/toolchain/dependency pins. All 90 full-vocabulary distribution comparisons
+agree to nine significant digits with the independent 80-digit check; identical distributions
+are handled as exact zero. The first verifier incorrectly compares JSON epsilon decimals
+rather than their identical effective FP32 bits; that failed inspector and its correction
+are preserved, without rerunning components or changing arithmetic. An initial toolchain
+guard also stops before Cargo; the actual build explicitly pins installed Rust 1.98.0.
+Build, analysis, independent distribution checks and corrected post-run verification exit
+zero. This is neither a serving-performance nor a general decoder-quality qualification.
