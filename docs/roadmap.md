@@ -61,6 +61,17 @@ cohort is not a planned-arrival ledger. Physical pressure/recovery, independent 
 representative SLO acceptance and incumbent-native client cross-checks remain open.
 Target the measured concurrency/prefill deficit without selecting a universal compiler/importer
 or widening rows by default.
+
+The [fresh CUDA execution-cost trace](../benchmarks/gemma4-cuda-baseline.md#native-cuda-execution-cost-trace-2026-10-25)
+records 86.6 ms of collected matrix/reduction work in a 161.7 ms instrumented 64-token
+prefill. Collection warnings prevent a complete GPU/host partition; synchronization
+spans overlap device execution and are not pure host overhead. This positive device-cost
+evidence selects one bounded, model-local **16-row prefill candidate versus the qualified
+eight-row lane**, not a row-count sweep or another synchronous PLE-only patch. Before
+implementation, freeze independent numerical acceptance and workspace, donor-lifetime
+and failure-retirement gates. Keep eight-row/scalar fallbacks and unchanged decode;
+no wider-row selection or quality-equivalent acceptance follows from the trace.
+
 vLLM remains source-reviewed only, and unmodified Flare excludes SM89. Use their mechanisms
 and the [Flare findings](inference-engine-design.md#nvidia-flare-reviewed-2026-10-21) without
 narrowing hardware breadth or replacing ownership gates.

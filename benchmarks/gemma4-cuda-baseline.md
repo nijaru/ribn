@@ -677,3 +677,97 @@ retained and excluded; the accepted harness waits for an idle sample before proc
 The failing performance screen ended the experiment: no serving run, full-KV comparison
 or sanitizer run followed, and no new execution variant is enabled. The qualified host
 PLE route remains unchanged.
+
+## Native CUDA execution-cost trace (2026-10-25)
+
+**Collected activity points to repeated matrix work, not a demonstrated host-only gap.**
+The trace carries a collection-completeness warning, so it does not establish a complete
+GPU/host time partition or an idle-time budget. No execution variant was implemented
+or promoted in this study.
+
+The RTX 4090 and driver 615.71.10 were unchanged. Native source was `252b140`, with no
+Gemma CUDA or NVIDIA BF16-compute source changes since `58f2fbe`. An isolated Rust 1.98.0
+build reused the [owned-FP32 control plan](#owned-fp32-host-output-engine-comparison-2026-10-22):
+all 12 common quality rows, seven prefix lengths, four trials per prefix and three forced
+continuations per trial. Trial zero remained warmup. The prepared lane was eight rows,
+with a 4096-position cache and sufficient scratch. These are direct decoder calls ending
+in a completed owned FP32 host row, not HTTP, greedy-continuation or traffic measurements.
+
+Three fresh processes ran untraced, traced, untraced, serialized with idle GPU checks.
+All three exited zero without forced cleanup; launcher/model process groups were
+positively absent within their original deadlines. The frozen limits were 90 minutes
+overall, 600 seconds per process including 60 seconds reserved for cleanup, and 3 GiB
+of artifacts. Each worker verified the nine checkpoint assets and reference identity
+before loading; all 12 full quality rows were bit-identical to the earlier qualified
+native capture and across these three processes. Those rows ran **outside** collection.
+The traced timing calls retained finiteness and winners, not full rows, so this does not
+prove full-row parity under tracing or new agreement with the CPU oracle.
+
+Nsight Systems 2026.3.2 collected 24 separate ranges: prefix 18 and 64, trials 1–3,
+prefill and each of three continuation calls. Loading, quality controls and warmup were
+excluded. The retained probe calls cudarc's checked `profiler_start()` before the
+forward timer and `profiler_stop()` after owned-row completion and the timer read.
+Token ID vectors were prepared before the timer. With paths supplied by the frozen
+run manifest, its capture command was:
+
+```sh
+PROBE_PROFILE=1 PROBE_ROWS=8 PROBE_PLAN="$PLAN" PROBE_OUTPUT="$OUTPUT" \
+RIBN_GEMMA_PACKAGE="$PACKAGE" RIBN_GEMMA_REFERENCE="$REFERENCE" \
+nsys profile --trace=cuda --sample=none --cpuctxsw=none \
+  --cuda-memory-usage=false --capture-range=cudaProfilerApi \
+  --capture-range-end=repeat:24:defer --output="$TRACE_PREFIX" \
+  "$OWNED_ROW_PROBE"
+```
+
+`OWNED_ROW_PROBE` names the frozen qualification harness, not a repository CLI command;
+`PLAN` is the existing validated input-only plan and both output paths must be fresh.
+`defer` delays report generation; it is not evidence that CUDA-buffer flushing was disabled.
+The probe source SHA256 is
+`73ddfdfa02e03582c415c5c1e2eb2ab00b84a894725af1f848f4d474550bf036`.
+
+The two untraced process medians were **68.166/68.232 ms** at 18 tokens and
+**146.342/146.488 ms** at 64 tokens. Their pooled decode medians, each over 63 nonwarmup
+calls, were 19.259/19.342 ms. Tracing perturbed latency; the following traced clocks
+are not replacement production timings or new cross-engine ratios.
+
+| Traced call | Samples | Call ms | Collected GPU union ms | Collected matrix/reduction ms | Kernel records | Stream-sync calls |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Prefill 18 | 3 | 77.663 | 50.873 | 40.842 | 5,026 | 5,063 |
+| Prefill 64 | 3 | 161.678 | 113.411 | 86.572 | 10,378 | 10,124 |
+| Decode after 18 | 9 | 21.617 | 12.944 | 10.507 | 1,217 | 1,268 |
+| Decode after 64 | 9 | 22.308 | 13.945 | 10.496 | 1,217 | 1,268 |
+
+Each column is a median, not an additive decomposition. GPU intervals union the collected
+kernels and copies, rather than adding overlapping durations. API intervals are clipped
+between the end of `cuProfilerStart` and the start of `cuProfilerStop`; profiler-triggered
+`cuCtxSynchronize` after stop is excluded. The collected stream-synchronization intervals
+alone span medians of 59.971/132.254 ms for prefill 18/64, **overlapping device execution**:
+they are not an additional host cost. Collected matrix/reduction kernels account for
+median shares of 80.9%/76.9% of collected prefill kernel time. Their names include cuBLAS
+WMMA GEMMs, GEMV kernels and split-K reductions; kernel names do not establish occupancy,
+bandwidth saturation or stall causes.
+
+**Collection limit:** all 24 exports warn, “Not all CUDA events might have been collected.”
+Every collected kernel has a matching launch correlation; independent read-only checks
+also reconcile memcpy correlations, one device/context/stream and valid timestamps.
+Those checks cannot exclude an omitted API/activity pair. Produced-versus-collected event
+counters cover different recorded categories and are not a demonstrated dropped-kernel
+count. The tool reports software-instrumented tracing; hardware tracing is unavailable.
+Collected duration unions therefore supply lower bounds within these instrumented calls,
+not complete utilization. Their complements are not established idle or host overhead.
+The warning's cause remains unresolved; metadata alone does not justify a flush-setting
+repair or an unchanged rerun.
+
+**Next experiment:** screen one model-local 16-row prefill preparation against the
+qualified eight-row lane, targeting repeated matrix traversals rather than another PLE-only
+patch. This device evidence, not a row-count default, motivates that candidate. Freeze
+independent numerical acceptance and workspace, donor-lifetime and failure-retirement
+gates before implementation; changing cuBLAS row count is already known not to preserve
+BF16 bits. Keep the qualified eight-row/scalar fallbacks and unchanged decode. This trace
+neither supplies those gates nor authorizes automatic wider-row selection, a compiler ABI
+or a quality-equivalent serving claim.
+
+Frozen probe sources/locks/binary, protocol, all three reports and quality rows, 24 raw
+traces and SQLite exports, `analysis-v2.json` and post-run identity audits remain under
+`gemma4-cuda-profile/20261025T082600Z` in the qualification store. Earlier analysis is
+retained, with its coverage label corrected in v2 rather than treated as GPU utilization.
