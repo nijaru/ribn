@@ -68,18 +68,19 @@ prefill. Collection warnings prevent a complete GPU/host partition; synchronizat
 spans overlap device execution and are not pure host overhead. This positive device-cost
 evidence selects one bounded, model-local **16-row prefill candidate versus the qualified
 eight-row lane**, not a row-count sweep or another synchronous PLE-only patch. The
-[private 16-row screen](../benchmarks/gemma4-cuda-baseline.md#private-16-row-prefill-screen-2026-10-25)
-passes the existing independent component bounds, archived greedy/window continuations
-and constrained-pool cache-retirement checks while preparing both 16- and eight-row
-working sets. Two complete pairs reduce 64-token prefill by about 47.4% and 18-token
-prefill by 24.1–24.6%, with identical full rows on the frozen cohort and 7.0 MiB more
-charged memory. The final candidate process was stopped by an unexpected GPU PID;
-its identity remains unresolved. **The three-pair performance screen is incomplete,
-not accepted.** Preserve all captures; do not impute the missing run or lower the gate.
-Resolve GPU isolation and retain unexpected-process metadata before a new frozen
-cohort. Keep automatic eight-row/scalar selection and decode unchanged. Long-context,
-sanitizer, executor and serving qualification remain open; neither the partial speedup
-nor component bounds establish quality-equivalent acceptance.
+[fresh private 16-row cohort](../benchmarks/gemma4-cuda-baseline.md#private-16-row-repeatability-rescreen-2026-10-25)
+now passes the original three-pair advancement screen after an exclusive GPU handoff
+and isolation-monitor repair. Median 64-token prefill falls 147.038→76.743 ms (47.8%)
+and 18-token prefill 68.523→51.570 ms (24.7%); every pair improves both shapes, other
+prefix/decode aggregates stay within their gates, and charged memory rises 7.0 MiB.
+All 372 matched full-row comparisons are bit-exact on this cohort. The same frozen
+candidate retains eight-row/scalar fallback and the existing independent component,
+archived greedy/window and constrained-pool cache-retirement evidence. The earlier
+interrupted cohort and zero-row monitor failure remain preserved, not pooled into
+these results. This passes a **private repeatability screen**, not product promotion
+or quality-equivalent acceptance. Next qualify full-reach context, sanitizer and
+executor/text integration before serving or automatic selection. Production stays
+eight-row/scalar, with unchanged decode.
 
 vLLM remains source-reviewed only, and unmodified Flare excludes SM89. Use their mechanisms
 and the [Flare findings](inference-engine-design.md#nvidia-flare-reviewed-2026-10-21) without

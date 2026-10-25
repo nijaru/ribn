@@ -772,7 +772,10 @@ retained, with its coverage label corrected in v2 rather than treated as GPU uti
 
 ## Private 16-row prefill screen (2026-10-25)
 
-**Numerical checks passed; the performance screen is incomplete.** Two complete pairs
+**Initial cohort: numerical checks passed; the performance screen is incomplete.**
+The [fresh repeatability cohort](#private-16-row-repeatability-rescreen-2026-10-25) below
+records the later advancement result without reclassifying this interrupted run.
+Two complete pairs
 show substantially lower prefill latency, but an unexpected GPU PID interrupted the
 last candidate process. The original three-pair gate was not met. No candidate code or
 automatic-selection change was merged; the qualified eight-row/scalar path remains.
@@ -873,3 +876,75 @@ PROBE_ROWS="$ROWS" PROBE_PLAN="$PLAN" PROBE_OUTPUT="$OUTPUT" \
 RIBN_GEMMA_PACKAGE="$PACKAGE" RIBN_GEMMA_REFERENCE="$REFERENCE" \
 "$OWNED_ROW_PROBE"
 ```
+
+## Private 16-row repeatability rescreen (2026-10-25)
+
+**The complete three-pair advancement screen passes.** This is repeatable benefit for
+one private candidate, not product promotion, a quality-equivalent comparison or a
+serving/SLO result. Production continues to select qualified eight-row/scalar execution.
+
+An explicit exclusive-GPU handoff preceded a new frozen campaign on the same RTX 4090
+and driver 615.71.10. It reused the exact baseline/candidate binaries and source patch
+above, the owned-FP32 probe, all inputs and the existing independent numerical/ownership
+prescreen evidence. All 2,392 frozen source/binary hashes and 12 input hashes were
+reverified before and after collection. No kernel, arithmetic, precision, tuning or
+candidate-selection change was made; no earlier measurements were pooled into this cohort.
+
+The six fresh processes run 8/16, 16/8, 8/16, with the original seven prefix lengths,
+four trials and forced continuation inputs. The gate remains at least 3% lower
+18/64-token aggregates with improvement in every pair, at most 2% higher other-prefix
+and pooled-decode aggregates, and at most 16 MiB additional charge. All gates pass.
+The new campaign has a 30-minute overall deadline, 600 seconds per process including
+60 seconds reserved for cleanup, and a 1 GiB output cap.
+
+| Call | Eight-row ms | Sixteen-row ms | Latency reduction |
+| --- | ---: | ---: | ---: |
+| Prefill 1 | 17.975 | 17.915 | 0.3% |
+| Prefill 8 | 20.321 | 20.165 | 0.8% |
+| Prefill 18 | 68.523 | 51.570 | 24.7% |
+| Prefill 32 | 73.597 | 39.218 | 46.7% |
+| Prefill 64 | 147.038 | 76.743 | 47.8% |
+| Prefill 65 | 163.842 | 93.448 | 43.0% |
+| Prefill 128 | 297.268 | 154.525 | 48.0% |
+| Decode, pooled | 19.400 | 19.220 | 0.9% |
+
+Each figure is the median of three **process medians**, not a pooled nine-sample
+prefill median. Each process contributes three nonwarmup prefill clocks per shape
+and 63 pooled decode clocks. Individual pairs reduce prefill by 24.74%/24.91%/24.01%
+at 18 tokens and 47.81%/47.97%/47.29% at 64. Decode arithmetic is unchanged; the small
+observed decode difference is not evidence of a new decode optimization.
+
+All six measured workers exit zero without forced cleanup. Their groups and both
+supervisors are positively absent within the original campaign deadline; the successful
+supervisor's actual exit zero is separately captured. All 744 full host rows pass an
+independent post-run byte-hash, finiteness and argmax audit. All 372 matched comparisons
+across three pairs are bit-exact between variants, as are repeated rows within each
+variant. These are repeated frozen inputs, not 744 independent quality cases. All
+72 quality captures also match the earlier eight-row captures exactly. CPU BF16
+full-distribution differences remain unchanged: maximum KL/TV 0.004639/0.042821,
+diagnostic only. Extra charge is still 7,327,040 bytes (7.0 MiB), not physical peak.
+All completed workers return their allocation charge to zero. The GPU is empty before
+the pre-existing model endpoint is restored after qualification; restoration is outside
+all measured clocks.
+
+**Monitor repair:** the first initialization attempt was stopped before any quality
+or timing row. The new diagnostic log showed that `/proc` initially returned an empty
+command line for the **owned** process, then a populated one; PID, start ticks, executable,
+process group and session were identical. Gating lifetime identity on the mutable argv
+hash caused a false alarm. One permitted collection-harness repair retains argv/hash
+as diagnostics while enforcing those stable ownership checks; foreign or unobservable
+identities still fail closed. CPU tests and replay of the actual saved event reproduce
+the old rejection and the corrected classification. No foreign process was signalled.
+
+Original source, the failed initialization and its actual `-2` exit remain intact;
+`cohort-v2` holds all six new workers. The repair does not reset the original campaign
+deadline, change thresholds or replace a measured failing case. Independent read-only
+review found no consequential issue in this ownership correction or repair scope.
+Raw NVML rows, process metadata and actual supervisor exit status are now retained.
+The older campaign's unidentified PID is **not** retrospectively explained by this event.
+
+Protocol, repair record, control sources, regression checks, full logs/rows, `analysis.json`
+and post-run identity/retirement audits remain under
+`gemma4-cuda-16row/20261025T195000Z` in the qualification store. Full-reach model,
+Compute Sanitizer, executor/text integration and serving qualification remain open;
+this screen does not enable wider-row automatic selection.
