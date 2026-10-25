@@ -67,10 +67,19 @@ records 86.6 ms of collected matrix/reduction work in a 161.7 ms instrumented 64
 prefill. Collection warnings prevent a complete GPU/host partition; synchronization
 spans overlap device execution and are not pure host overhead. This positive device-cost
 evidence selects one bounded, model-local **16-row prefill candidate versus the qualified
-eight-row lane**, not a row-count sweep or another synchronous PLE-only patch. Before
-implementation, freeze independent numerical acceptance and workspace, donor-lifetime
-and failure-retirement gates. Keep eight-row/scalar fallbacks and unchanged decode;
-no wider-row selection or quality-equivalent acceptance follows from the trace.
+eight-row lane**, not a row-count sweep or another synchronous PLE-only patch. The
+[private 16-row screen](../benchmarks/gemma4-cuda-baseline.md#private-16-row-prefill-screen-2026-10-25)
+passes the existing independent component bounds, archived greedy/window continuations
+and constrained-pool cache-retirement checks while preparing both 16- and eight-row
+working sets. Two complete pairs reduce 64-token prefill by about 47.4% and 18-token
+prefill by 24.1–24.6%, with identical full rows on the frozen cohort and 7.0 MiB more
+charged memory. The final candidate process was stopped by an unexpected GPU PID;
+its identity remains unresolved. **The three-pair performance screen is incomplete,
+not accepted.** Preserve all captures; do not impute the missing run or lower the gate.
+Resolve GPU isolation and retain unexpected-process metadata before a new frozen
+cohort. Keep automatic eight-row/scalar selection and decode unchanged. Long-context,
+sanitizer, executor and serving qualification remain open; neither the partial speedup
+nor component bounds establish quality-equivalent acceptance.
 
 vLLM remains source-reviewed only, and unmodified Flare excludes SM89. Use their mechanisms
 and the [Flare findings](inference-engine-design.md#nvidia-flare-reviewed-2026-10-21) without

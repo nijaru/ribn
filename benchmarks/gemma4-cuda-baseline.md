@@ -758,16 +758,118 @@ not complete utilization. Their complements are not established idle or host ove
 The warning's cause remains unresolved; metadata alone does not justify a flush-setting
 repair or an unchanged rerun.
 
-**Next experiment:** screen one model-local 16-row prefill preparation against the
-qualified eight-row lane, targeting repeated matrix traversals rather than another PLE-only
-patch. This device evidence, not a row-count default, motivates that candidate. Freeze
-independent numerical acceptance and workspace, donor-lifetime and failure-retirement
-gates before implementation; changing cuBLAS row count is already known not to preserve
-BF16 bits. Keep the qualified eight-row/scalar fallbacks and unchanged decode. This trace
-neither supplies those gates nor authorizes automatic wider-row selection, a compiler ABI
-or a quality-equivalent serving claim.
+**Selected experiment:** the [private 16-row screen](#private-16-row-prefill-screen-2026-10-25)
+targets repeated matrix traversals rather than another PLE-only patch. This device evidence,
+not a row-count default, motivates the candidate. Its independent numerical and ownership
+gates were frozen before implementation; changing cuBLAS row count is already known not
+to guarantee BF16-bit preservation. The trace alone neither supplies those gates nor
+justifies automatic wider-row selection, a compiler ABI or quality-equivalent acceptance.
 
 Frozen probe sources/locks/binary, protocol, all three reports and quality rows, 24 raw
 traces and SQLite exports, `analysis-v2.json` and post-run identity audits remain under
 `gemma4-cuda-profile/20261025T082600Z` in the qualification store. Earlier analysis is
 retained, with its coverage label corrected in v2 rather than treated as GPU utilization.
+
+## Private 16-row prefill screen (2026-10-25)
+
+**Numerical checks passed; the performance screen is incomplete.** Two complete pairs
+show substantially lower prefill latency, but an unexpected GPU PID interrupted the
+last candidate process. The original three-pair gate was not met. No candidate code or
+automatic-selection change was merged; the qualified eight-row/scalar path remains.
+
+Both detached source trees start at `a6c47ee`, on the same RTX 4090, driver 615.71.10
+and pinned E4B package. The private candidate prepares 16- **and eight-row** activation/PLE
+working sets before publication, one maximum-reach attention workspace and per-layer
+rotary factors with capacity 16. It consumes 16-row groups, then eight-row groups, then
+scalar tails through the existing layer implementation. A ceiling sufficient only for
+eight rows retains that lane. Weights, completion-owned K/V, whole-chunk validation,
+synchronous execution and failure-retirement owners are unchanged. No kernel, precision,
+cuBLAS mode, decoder head or frontend changed.
+
+The frozen numerical/ownership gates retain the existing
+[eight-row qualification policy](gemma4-reference/README.md#bounded-eight-row-cuda-prefill-2026-10-21-utc):
+
+- The independently derived exact-integer GEMM forward-error bound passes all 12 selected
+  E4B projection geometries at rows 1/8/16, without a fitted tolerance. Existing exact-dot
+  and stream-identity checks also pass.
+- Eight- and sixteen-row attention bit-matches scalar queries at key spans equal to the
+  row count, 513 and 4096, for width-256/sliding-512 and width-512/full attention. The
+  independent host-accuracy and invalid-geometry gates remain intact and pass.
+- All 19 window/chunk evaluations agree with the 12 distinct archived CPU greedy predictions,
+  including coalesced 512-token and shifted `[1,512]` inputs. Full rows are finite;
+  positions, reset and whole invalid-tail/capacity rejection pass. The existing scalar
+  partition test also passes. These are common histories, not new free-running quality data.
+- Budget refusal after a key allocation and after a complete layer retains the existing
+  retirement/refund behavior with an actual 16-row-prepared model. This is not driver OOM
+  or injected device-enqueue failure qualification.
+
+All four gate processes exit zero, nonforced, with positive process-group absence inside
+600-second deadlines including cleanup. Independent read-only source review found no
+material arithmetic, bounds or ownership issue. It was static review, not device evidence.
+
+The latency protocol keeps the owned-FP32 clock and existing input-only plan: seven
+prefix lengths, four trials per prefix, trial zero warmup, and three **forced** continuations
+per trial. ID preparation and row writes are outside the clock. Three fresh processes
+per variant were required in order 8/16, 16/8, 8/16. The frozen screen requires at least
+3% lower 18/64-token process-median aggregates, improvements in all three pairs, no more
+than 2% higher other-prefix or pooled-decode aggregates, and at most 16 MiB additional
+charged memory. Limits are 90 minutes overall, 600 seconds per process with 60 seconds
+reserved for cleanup, and 6 GiB of artifacts; no row-count sweep or precision changes.
+
+The first five model processes finish zero, nonforced and retired within their original
+bounds. Their per-process medians are below; each prefill median has three nonwarmup
+samples and each pooled decode median has 63. These **two complete pairs** are descriptive,
+not a reduced replacement for the predeclared three-pair screen.
+
+| Call, ms | Pair 1: eight | Pair 1: sixteen | Pair 2: eight | Pair 2: sixteen |
+| --- | ---: | ---: | ---: | ---: |
+| Prefill 1 | 17.854 | 17.894 | 17.943 | 18.261 |
+| Prefill 8 | 20.134 | 20.177 | 20.300 | 20.355 |
+| Prefill 18 | 68.319 | 51.493 | 68.425 | 51.965 |
+| Prefill 32 | 73.274 | 39.390 | 73.784 | 39.723 |
+| Prefill 64 | 146.373 | 76.980 | 146.956 | 77.348 |
+| Prefill 65 | 162.925 | 93.225 | 163.552 | 94.311 |
+| Prefill 128 | 296.166 | 154.137 | 297.487 | 155.228 |
+| Decode, pooled | 19.198 | 19.359 | 19.460 | 19.515 |
+
+The observed reductions are 24.63%/24.06% at 18 tokens and 47.41%/47.37% at 64 tokens.
+The unpaired third eight-row control is retained: 68.461/147.024 ms at 18/64 tokens and
+19.294 ms pooled decode. Its missing candidate is not imputed. Charged model-plus-cache
+memory is 15,174,441,952 bytes for eight rows and 15,181,768,992 for the candidate:
+**7,327,040 bytes (7.0 MiB) more**, not a physical-peak, RSS or pressure/recovery result.
+Each of the five completed workers returns its allocation charge to zero after teardown.
+
+All **620 full host rows** are retained (124 per completed process, including repeated
+warmup/trial inputs). They repeat bitwise across the available workers, and all 248
+matched row comparisons across the two pairs are bit-exact between variants, including
+scalar/eight-row fallbacks. This is observed equality on the frozen cohort, not a proof
+for every selected input. The 12 quality rows still differ from CPU BF16; their maximum
+CPU-to-native KL/TV remain 0.004639/0.042821. Those full-distribution diagnostics do not
+define an acceptance tolerance or qualify sampling, task quality or serving equivalence.
+
+**Interruption:** the final candidate worker was stopped with SIGINT (actual exit `-2`)
+before any quality/timing row, when the guard observed GPU PID 162154 that did not match
+the worker's identity. Only the owned worker group was signalled and positively retired.
+The unexpected PID had disappeared by investigation; no matching journal metadata was
+found. The guard preserved its PID but not the raw NVML row, command identity or process
+group, so the cause cannot be established or dismissed as harmless. No replacement run
+was started. The screen remains **inconclusive**, not numerically rejected or accepted.
+Before a new frozen cohort, establish GPU isolation and retain that unexpected-process
+metadata. Full long-context, sanitizer, executor and serving qualification were not run.
+
+The frozen protocol, baseline/candidate source trees and patch, separate build targets,
+identical probe sources, input/binary hashes, all six process records, interrupted report,
+620 rows and `analysis-partial-v2.json` remain under
+`gemma4-cuda-16row/20261025T174000Z` in the qualification store. Earlier analysis is retained.
+The probe source SHA256 is
+`88f0e7f6292cf8e7e7176bc50bbbfa1254f33fc5a11372f27d7e26d0e2d868f4`;
+`candidate.patch` SHA256 is
+`acd2be4ddcb803134389dba36dc34f0f3b6afd022fb8bfe9285e78ccfdcfcc33`.
+The probe is a retained qualification harness, not a repository CLI; each variant runs
+with its own frozen binary, a fresh output path and the same plan/reference:
+
+```sh
+PROBE_ROWS="$ROWS" PROBE_PLAN="$PLAN" PROBE_OUTPUT="$OUTPUT" \
+RIBN_GEMMA_PACKAGE="$PACKAGE" RIBN_GEMMA_REFERENCE="$REFERENCE" \
+"$OWNED_ROW_PROBE"
+```
