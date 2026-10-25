@@ -1633,6 +1633,61 @@ vote. The unresolved fixed-history divergence and failed matched-result serving 
 remain intact. Broader generation/task-quality acceptance needs its own justified
 scope; neither these scores nor the causal replays supply an equivalence budget.
 
+### Generated extractive-QA diagnostic
+
+A separate **32-question SQuAD v1.1 development diagnostic** measures free-form
+answers through both real HTTP servers, not restricted-choice logits. The
+[publisher dataset](https://rajpurkar.github.io/SQuAD-explorer/dataset/dev-v1.1.json)
+is byte-identical to its copy at publisher commit
+`e0c66cfec263165fb3c15cb76a22175e371b71d7`; its SHA256 is
+`95aa6a52d5d6a735563366753ca50492a658031da74f301ac5238b03966972c9`.
+Before model execution, select the 32 smallest SHA256 values of
+`seed + NUL + question_id` across all 10,570 questions, breaking ties by ID, with
+seed `ribn-gemma4-generated-qa-v1`. Selection ignores labels, content, lengths and
+model results; all 32 questions and every original answer alias remain included.
+
+Each user message asks for only the exact answer span from its supplied context,
+without explanation. The publisher chat template renders that single message with
+`add_generation_prompt=true` and `enable_thinking=false`. Both installed tokenizers
+produce identical strings and IDs: 7,001 prompt tokens in total, at most 479 per
+question. The frozen strings go through nonstreaming `/v1/completions`, with no
+second template. Each question owns a fresh continuation; greedy temperature zero,
+EOS enabled, 64 new tokens maximum, and disabled prefix reuse apply to both servers.
+This distinct chat-formatted task does not replace or repair the raw counterexample.
+
+Score the **complete returned text**, maximizing over all human aliases, using
+standard SQuAD v1.1 lowercase/ASCII-punctuation/article/whitespace normalization,
+exact match and token F1. There is no answer extraction or explanation stripping.
+The unchanged [Python evaluator mirror](https://github.com/allenai/bi-att-flow/blob/49004549e9a88b78c359b31481afa7792dbb3f4a/squad/evaluate-v1.1.py)
+is pinned before selection and models. The author-hosted Python URL is unavailable;
+this is an AllenAI mirror, not a successful author-hosted download. The retained
+publisher JavaScript has different empty-answer/whitespace behavior and is not
+claimed equivalent. A separate normalizer and exact rational token-overlap calculation
+cross-check every alias score and aggregate against the pinned Python evaluator.
+
+| Real server | Whole-answer EM / 32 | EM | Mean token F1, 0–100 |
+| --- | ---: | ---: | ---: |
+| Default Native Metal BF16 | 17 | 53.125% | 79.1127429 |
+| Stock MLX BF16 | 17 | 53.125% | 79.1127429 |
+
+Literal answers agree on 30/32 questions; normalized answers and per-question EM/F1
+agree on all 32. The two differences are `12–4 record` versus `a 12–4 record`, and
+`Surveyor 3 unmanned lunar probe` versus `the Surveyor 3 unmanned lunar probe`
+(Native first). Both pairs fail exact match; their token F1 scores are respectively
+0 and 4/7. The same 15 questions fail EM in each engine. Longer-than-labeled answers
+and explanations remain scored whole, not cleaned into correct answers. All 64
+responses report `stop`; none is empty or reaches the 64-token cap.
+
+Each fresh server first passes the same 12 archived one-token reference checks and
+one four-token greedy chat check. Both processes then complete all questions and
+exit zero, non-forced, with positive process-group absence. This adds **small-sample
+lexical generation evidence**, not a full SQuAD result, general instruction-following
+or broad quality acceptance. Labels can be imperfect and contamination is unknown.
+It does not newly qualify full-row finiteness, distributional equivalence, sliding-window
+eviction, SSE, pressure, performance or SLOs. The earlier 12/72 serving text mismatches
+and original fidelity counterexample remain open; equal sample scores do not supply
+an equivalence budget or authorize a precision change.
+
 ### Metrology, compatibility and evidence
 
 A separate analyzer cross-checks selected AIPerf per-request clocks against raw SSE
@@ -1839,3 +1894,28 @@ global and 1,800-second per-process bounds. Build, preflight, analysis and verif
 exit zero. No production source, precision policy, environment or dependency is changed,
 and no desktop/CUDA access is used. The unchanged-code gates above are reused; the
 ignored device suites are not rerun.
+
+Generated-QA evidence:
+`~/ribn-qualification/gemma4-metal-generated-qa/20261025T000551Z/` retains the
+predeclared protocol, actual dataset/evaluator bytes and source-resolution record,
+deterministic sample, both rendered input sets, pristine `d0f7290` source and raw
+requests/responses. It reuses the actual Cargo-discovered `10925f0f…2ac84` CLI above,
+without a new Rust build: all 343 tracked files outside `docs/` and `benchmarks/`
+are byte-identical to the original build's frozen source. `analysis.json`,
+`verification.json` and an independent primary-label/raw-body cross-check pass:
+1,311 frozen/live source files, 20,530 CPU preparation/scoring files, 5,824 MLX
+installed files, nine assets, 26 exact controls and all 64 answers. Both real servers
+retire serially within fresh 3,600-second global and 1,800-second per-server bounds,
+including shutdown. Requests have absolute 120-second deadlines and bounded bodies;
+real-socket fixtures reject an oversized response and a trickling peer.
+
+Read-only review identifies shutdown-bound, failure-reporting and score-qualification
+gaps in the new private harness; all three are corrected before models. Shutdown
+gets a reserved budget with the watchdog active, failures retain retirement status,
+and scoring rejects an unqualified cohort. Source-lookup failures and the first
+renderer’s incorrect list-versus-`BatchEncoding` assertion remain preserved; the
+corrected renderer checks exact IDs and attention masks, without changing prompts,
+selection or metrics. Accepted preparation, preflight, supervisor, analysis and
+post-run verification exit zero. No production arithmetic, dependency, environment
+or default changes; no desktop access, new CPU model run or performance cohort.
+The unchanged-code gates above are reused; ignored device suites are not rerun.

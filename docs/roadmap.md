@@ -719,10 +719,18 @@ before model runs, retaining every selected item. Native and diagnostic CPU FP32
 identically on all 57 and score 30/57; CPU BF16 scores 28/57, differing on three choices.
 All five original full prediction rows per backend reproduce exactly before evaluation.
 This small sample shows no Native task-score deficit against these references, not broad
-accuracy or generated-answer acceptance; FP32 is not ground truth. Keep the original
-fidelity counterexample and failed serving gate open. The next quality evidence should
-qualify a broader generation/task scope, not turn this sample into an equivalence budget
-or continue causal bisection without a concrete decision it would resolve. Production
+accuracy acceptance; FP32 is not ground truth. A subsequent
+[32-question generated-QA diagnostic](../benchmarks/gemma4-metal-baseline.md#generated-extractive-qa-diagnostic)
+uses independent SQuAD v1.1 labels through the real default Native and stock MLX HTTP
+servers. Each passes 13 archived controls before its questions. Both score 17/32
+whole-answer exact match and 79.1127429 token F1 on a 0–100 scale; 30 literal answers
+and all 32 normalized answers agree. The same 15 EM failures remain included, without
+answer extraction or explanation stripping. This is small-sample lexical generation
+evidence, not broad task-quality, distributional or quality-equivalent serving acceptance.
+Keep the original fidelity counterexample and failed serving gate open. Broader generated
+task acceptance still needs a justified scope, and serving comparisons still need their
+matched-result gate. Neither diagnostic supplies an equivalence budget or justifies
+further causal bisection without a concrete decision it would resolve. Production
 arithmetic stays unchanged; do not loosen tolerances or omit disagreeing prompts.
 Opaque Graph submissions are not a single-command chain. Broader residency/synchronization
 gains remain possible; no universal Graph ABI is selected.
