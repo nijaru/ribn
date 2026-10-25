@@ -360,7 +360,7 @@ profiling/warmup counts and usage totals. `attempted_requests` counts issued pro
 records, including failures; it is not a ledger of every planned arrival. A successful stream must have a finish
 reason, coherent integer usage and `[DONE]`, without late errors or extra data.
 Cleanly truncated streams can pass AIPerf itself, so ordinary summaries and HTTP
-trace metadata alone are insufficient. Failed requests remain in offered-work
+trace metadata alone are insufficient. Failed requests remain in issued-work
 accounting; warmup errors are separate and invalidate the audit. Missing exports,
 nonzero client exit, incomplete runs and zero validated successes cannot pass.
 The audit also accepts MLX-LM 0.32.2's `chat.completion` label on an empty-choice,
@@ -370,9 +370,10 @@ checks still apply.
 AIPerf treats replies without visible content, including immediate EOS, as errors;
 the audit preserves that classification rather than silently changing it.
 
-`protocol_valid` validates protocol/accounting only. Performance metrics are
-explicitly marked unaudited: it is not numerical acceptance, a matched comparison,
-a SOTA result or proof of physical-memory bounds. Server usage remains a server
+`protocol_valid` validates protocol/accounting and the per-request clocks below.
+`audited_request_timing_metrics` lists the reconciled native metrics; general
+`performance_metrics_audited` remains false. This is not numerical acceptance, a
+matched comparison, a SOTA result or proof of physical-memory bounds. Server usage remains a server
 assertion; normalized raw SSE exports are not byte-exact wire captures. Readiness
 probes are explicitly disabled to avoid unrecorded inference; start with a ready
 endpoint. Zero warmup requests does not establish cold execution.
@@ -396,11 +397,24 @@ nominal rate separately from actual starts and achieved throughput. `planned_arr
 remains false: neither a complete planned-arrival ledger nor planned-arrival SLO goodput
 can be recovered from these exports.
 
-Raw `start_perf_ns` and response `perf_ns` allow independent first/last-content and
-`[DONE]`-receipt clocks. DONE receipt is not HTTP EOF. For finite-phase throughput, divide
-actual successful request/token totals by the aggregate `end_time - start_time`, including
-drain—not `benchmark_duration`, which ends at content. General performance metrics remain
-unaudited; a study must cross-check the specific clocks and rates it reports.
+The audit checks integer, nonnegative raw `start_perf_ns` and response `perf_ns`
+clocks: responses cannot precede the request or regress, but frames received together
+may share a timestamp. It reconciles each successful request's native TTFT and
+`request_latency` against first/last nonempty content, using the pinned client's
+nanosecond-to-millisecond conversion without a fitted tolerance. `request_timing_ns`
+retains first-content, last-content and `[DONE]`-receipt durations from actual request
+start for validated profiling successes. DONE receipt is not HTTP EOF.
+
+`issued_load` reports the configured rate/concurrency separately from actual profiling
+start span and minimum/median/maximum start intervals, in nanoseconds. It includes
+failed issued requests and excludes warmup; a single start has zero span and null
+interval statistics. These clocks belong to the single-host client, not a distributed
+clock synchronization protocol. They do not reveal suppressed arrivals.
+
+For finite-phase throughput, divide actual successful request/token totals by the
+aggregate `end_time - start_time`, including drain—not `benchmark_duration`, which
+ends at content. Aggregate rates, percentiles, ITL and SLO goodput remain unaudited;
+a study must cross-check those metrics separately.
 
 Zero warmup omits AIPerf's positive-only warmup option; it does not establish cold execution.
 The [client timing/Metal gate](runtime-contract.md#gemma-endpoint-client-qualification-2026-10-21)
@@ -423,8 +437,10 @@ The integration gate exercises early EOS, silent truncation, late JSON errors,
 missing usage and rate-controlled partial overload through the actual client and
 CLI. A seeded variable-input case verifies that different tokenized prompt lengths
 reach the endpoint and that actual usage excludes warmup rather than substituting
-nominal lengths or output caps. It does not establish device qualification,
-performance-metric accuracy or load-generator capacity.
+nominal lengths or output caps. Delayed empty/terminal frames check content versus
+DONE clocks, and a concurrency-capped rate case checks the reported actual start
+intervals against raw timestamps. These checks do not establish device qualification,
+aggregate metric accuracy or load-generator capacity.
 
 ## Ribn endpoint client configuration
 

@@ -61,7 +61,10 @@ ignore_eos = false
 
 
 def message(data):
-    return {"packets": [{"name": "data", "value": json.dumps(data)}]}
+    return {
+        "perf_ns": 1_100_000_000,
+        "packets": [{"name": "data", "value": json.dumps(data)}],
+    }
 
 
 def fixture(directory):
@@ -83,6 +86,8 @@ def fixture(directory):
         for key, value in usage.items()
     }
     metrics["output_sequence_length"] = {"value": 2, "unit": "tokens"}
+    for name in ("time_to_first_token", "request_latency"):
+        metrics[name] = {"value": 100.0, "unit": "ms"}
     raw = []
     ordinary = []
     for index in range(2):
@@ -98,6 +103,7 @@ def fixture(directory):
             {
                 "metadata": metadata,
                 "status": 200,
+                "start_perf_ns": 1_000_000_000 + index * 2_000_000_000,
                 "payload": {
                     "model": "fixture",
                     "stream": True,
@@ -129,6 +135,9 @@ def fixture(directory):
                 ],
             }
         )
+    for request in raw:
+        for response in request["responses"]:
+            response["perf_ns"] = request["start_perf_ns"] + 100_000_000
     summary = {
         "input_config": {
             "models": {"items": [{"name": "fixture"}]},
@@ -206,9 +215,74 @@ class EndpointTests(unittest.TestCase):
             self.assertTrue(report["protocol_valid"])
             self.assertEqual(report["attempted_requests"], 2)
             self.assertFalse(report["planned_arrivals_audited"])
+            self.assertEqual(report["issued_load"]["start_span_ns"], 2_000_000_000)
+            self.assertEqual(
+                report["request_timing_ns"]["0"],
+                {
+                    "first_content": 100_000_000,
+                    "last_content": 100_000_000,
+                    "done_receipt": 100_000_000,
+                },
+            )  # Multiple SSE frames in one receive may share a clock.
             self.assertEqual(
                 report["completion_tokens"], 4
             )  # Not 2 requests * cap 8, nor chunk count.
+
+    def test_native_millisecond_rounding_is_not_an_empirical_tolerance(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            ordinary, raw, summary = fixture(directory)
+            for response in raw[0]["responses"]:
+                response["perf_ns"] = raw[0]["start_perf_ns"] + 24_925_571
+            # Pinned ns * (1000 / 1e9), not ns / 1e6 (one ULP different).
+            for name in ("time_to_first_token", "request_latency"):
+                ordinary[0]["metrics"][name]["value"] = 24.925570999999998
+            export(directory, ordinary, raw, summary)
+            self.assertTrue(validate(directory)["protocol_valid"])
+
+    def test_rejects_corrupt_content_clocks_and_native_timings(self):
+        for name, change in (
+            ("missing clock", lambda o, r: r["responses"][0].pop("perf_ns")),
+            ("boolean clock", lambda o, r: r["responses"][0].update(perf_ns=True)),
+            ("fractional clock", lambda o, r: r["responses"][0].update(perf_ns=1.1e9)),
+            ("pre-start clock", lambda o, r: r["responses"][0].update(perf_ns=0)),
+            (
+                "regressing clock",
+                lambda o, r: r["responses"][1].update(perf_ns=1_050_000_000),
+            ),
+            (
+                "TTFT mismatch",
+                lambda o, r: o["metrics"]["time_to_first_token"].update(value=0),
+            ),
+            (
+                "last-content mismatch",
+                lambda o, r: o["metrics"]["request_latency"].update(value=200),
+            ),
+            (
+                "timing unit",
+                lambda o, r: o["metrics"]["request_latency"].update(unit="sec"),
+            ),
+        ):
+            with self.subTest(name=name), tempfile.TemporaryDirectory() as tmp:
+                directory = Path(tmp)
+                ordinary, raw, summary = fixture(directory)
+                change(ordinary[0], raw[0])
+                export(directory, ordinary, raw, summary)
+                report = validate(directory)
+                self.assertFalse(report["protocol_valid"])
+                self.assertEqual(report["successful_requests"], 1)
+                self.assertEqual(len(report["invalid_requests"]), 1)
+                self.assertNotIn("0", report["request_timing_ns"])
+
+    def test_missing_or_invalid_issued_start_cannot_produce_an_arrival_summary(self):
+        for value in (None, True, -1, 1e9):
+            with self.subTest(value=value), tempfile.TemporaryDirectory() as tmp:
+                directory = Path(tmp)
+                ordinary, raw, summary = fixture(directory)
+                raw[0]["start_perf_ns"] = value
+                export(directory, ordinary, raw, summary)
+                with self.assertRaisesRegex(ValueError, "nanosecond timestamp"):
+                    validate(directory)
 
     def test_rejects_broken_streams_and_usage_even_if_aiperf_claimed_success(self):
         variants = {}
@@ -219,7 +293,7 @@ class EndpointTests(unittest.TestCase):
             1, message({"error": {"message": "device fault"}})
         )
         variants["bad JSON"] = lambda r: r["responses"].insert(
-            1, {"packets": [{"name": "data", "value": "{"}]}
+            1, {"perf_ns": 1_100_000_000, "packets": [{"name": "data", "value": "{"}]}
         )
         variants["data after done"] = lambda r: r["responses"].append(message(base))
         variants["null choice"] = lambda r: r["responses"].insert(
@@ -325,6 +399,25 @@ class EndpointTests(unittest.TestCase):
                 (2, 1, 1),
             )
             self.assertEqual(report["completion_tokens"], 2)
+            self.assertEqual(report["issued_load"]["issued_requests"], 2)
+            self.assertEqual(report["issued_load"]["start_span_ns"], 2_000_000_000)
+            self.assertEqual(set(report["request_timing_ns"]), {"1"})
+            for clocks in (
+                (None,),
+                (True,),
+                (-1,),
+                (0,),
+                (1.1e9,),
+                (1_100_000_000, 1_050_000_000),
+            ):
+                with self.subTest(failed_response_clocks=clocks):
+                    raw[0]["responses"] = [{"perf_ns": value} for value in clocks]
+                    export(directory, ordinary, raw, summary)
+                    changed = validate(directory)
+                    self.assertFalse(changed["protocol_valid"])
+                    self.assertEqual(changed["failed_requests"], 1)
+                    self.assertEqual(changed["successful_requests"], 1)
+                    self.assertEqual(changed["invalid_requests"][0]["request_id"], "0")
 
     def test_rejects_missing_duplicate_and_inconsistent_exports(self):
         for mutation in (

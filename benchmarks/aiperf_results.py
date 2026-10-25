@@ -1,12 +1,13 @@
-"""Offline protocol/accounting audit of AIPerf v0.13 native exports."""
+"""Offline protocol, usage and selected clock audit of AIPerf v0.13 exports."""
 
 import hashlib
 import json
+from statistics import median
 
+from aiperf_stream import completion_stream, timestamp, validate_clocks
 from endpoint_config import (
     AIPERF_VERSION,
     check_config,
-    count,
     number,
     parse_manifest,
     require,
@@ -52,121 +53,21 @@ def metric(record, key, field="value", unit="tokens"):
     return value[field]
 
 
-def stream_usage(raw, manifest):
-    """Validate one-choice OpenAI completion terminal order, not SSE wire framing."""
-    payload = raw["payload"]
-    require(isinstance(payload, dict), "missing request payload")
-    require(
-        payload.get("model") == manifest["model"]["id"]
-        and payload.get("stream") is True,
-        "request model/stream differs from manifest",
-    )
-    require(
-        number(payload.get("temperature"))
-        and payload["temperature"] == 0
-        and type(payload.get("n", 1)) is int
-        and payload.get("n", 1) == 1,
-        "request is not one-choice greedy generation",
-    )
-    cap = manifest["workload"]["output_tokens_mean"]
-    require(
-        type(payload.get("max_tokens")) is int and payload["max_tokens"] == cap,
-        "request output cap differs from manifest",
-    )
-    require(
-        payload.get("ignore_eos", False) is False
-        and payload.get("min_tokens", 0) == 0
-        and payload.get("min_new_tokens", 0) == 0,
-        "request bypasses EOS",
-    )
-    options = payload.get("stream_options")
-    require(
-        isinstance(options, dict) and options.get("include_usage") is True,
-        "usage was not requested",
-    )
-    finish = None
-    usage = None
-    done = False
-    for response in raw["responses"]:
-        packets = response["packets"]
-        require(
-            isinstance(packets, list) and all(isinstance(p, dict) for p in packets),
-            "invalid SSE packets",
-        )
-        require(
-            not any(
-                p.get("name") == "event" and p.get("value") == "error" for p in packets
-            ),
-            "SSE error event",
-        )
-        values = [p["value"] for p in packets if p["name"] == "data"]
-        if not values:
-            continue
-        require(
-            len(values) == 1 and not done,
-            "unexpected data after [DONE] or multiple data packets",
-        )
-        data = values[0]
-        if data == "[DONE]":
-            require(
-                finish is not None and usage is not None, "[DONE] before finish/usage"
-            )
-            done = True
-            continue
-        event = json.loads(data)
-        require(isinstance(event, dict) and "error" not in event, "JSON error response")
-        choices = event.get("choices")
-        require(
-            isinstance(choices, list) and len(choices) <= 1,
-            "invalid completion choices",
-        )
-        # MLX-LM labels its terminal usage-only frame as chat.completion,
-        # even for text completions. Content must still use completion objects.
-        require(
-            event.get("object") in ("text_completion", "completion")
-            or (
-                event.get("object") == "chat.completion"
-                and choices == []
-                and finish is not None
-                and isinstance(event.get("usage"), dict)
-            ),
-            "unexpected completion object",
-        )
-        if choices:
-            require(
-                finish is None and usage is None, "choice after terminal finish/usage"
-            )
-            choice = choices[0]
-            require(isinstance(choice, dict), "invalid completion choice")
-            require(
-                choice.get("index") == 0 and isinstance(choice.get("text"), str),
-                "invalid completion choice",
-            )
-            finish = choice.get("finish_reason")
-            require(finish in (None, "stop", "length"), "unsupported finish reason")
-        if event.get("usage") is not None:
-            require(
-                finish is not None and usage is None,
-                "usage before finish or duplicate usage",
-            )
-            usage = event["usage"]
-            require(isinstance(usage, dict), "invalid usage object")
-            for field in ("prompt_tokens", "completion_tokens", "total_tokens"):
-                require(count(usage.get(field)), f"invalid usage.{field}")
-            require(
-                usage["total_tokens"]
-                == usage["prompt_tokens"] + usage["completion_tokens"],
-                "incoherent token totals",
-            )
-            require(
-                usage["completion_tokens"] <= cap, "completion exceeded requested cap"
-            )
-            require(
-                finish != "length" or usage["completion_tokens"] == cap,
-                "length finish below token cap",
-            )
-    require(done, "missing [DONE] (truncated stream)")
-    return usage
+def issued_load(raw, profiling, workload):
+    """Actual single-host starts, never the rate limiter's unrecorded arrival plan."""
+    starts = sorted(timestamp(raw[key].get("start_perf_ns")) for key in profiling)
+    gaps = [right - left for left, right in zip(starts, starts[1:])]
+    return {
+        "configured_request_rate": workload["request_rate"],
+        "max_concurrency": workload["max_concurrency"],
+        "issued_requests": len(starts),
+        "start_span_ns": starts[-1] - starts[0],
+        "start_interval_ns": {
+            "min": min(gaps) if gaps else None,
+            "median": median(gaps) if gaps else None,
+            "max": max(gaps) if gaps else None,
+        },
+    }
 
 
 def validate(directory):
@@ -210,6 +111,8 @@ def validate(directory):
         len(ordinary) - len(profiling) == manifest["workload"]["warmup_requests"],
         "warmup count differs",
     )
+    load = issued_load(raw, profiling, manifest["workload"])
+    timings = {}
     failures = []
     invalid = []
     warmup_errors = []
@@ -220,10 +123,18 @@ def validate(directory):
         require(record["metadata"] == request["metadata"], f"metadata mismatch: {key}")
         phase = record["metadata"]["benchmark_phase"]
         if record.get("error") is not None:
+            failure = {"request_id": key, "error": record["error"]}
             if phase == "profiling":
-                failures.append({"request_id": key, "error": record["error"]})
+                failures.append(failure)
             else:
-                warmup_errors.append({"request_id": key, "error": record["error"]})
+                warmup_errors.append(failure)
+            try:
+                validate_clocks(request)
+            except (ValueError, KeyError, TypeError) as error:
+                if phase == "profiling":
+                    invalid.append({"request_id": key, "error": str(error)})
+                else:
+                    failure["clock_error"] = str(error)
             continue
         try:
             require(
@@ -232,7 +143,17 @@ def validate(directory):
                 "request was cancelled/failed",
             )
             require(request.get("status") == 200, "request did not return HTTP 200")
-            usage = stream_usage(request, manifest)
+            usage, timing = completion_stream(request, manifest)
+            # AIPerf 0.13 MetricTimeUnit converts integer ns by multiplication,
+            # including that binary64 unit-factor rounding; no fitted tolerance.
+            for name, clock in (
+                ("time_to_first_token", "first_content"),
+                ("request_latency", "last_content"),
+            ):
+                require(
+                    metric(record["metrics"], name, unit="ms") == timing[clock] * 1e-6,
+                    f"raw clock/metric mismatch: {name}",
+                )
             for field, value in usage.items():
                 if field in totals:
                     require(
@@ -245,6 +166,7 @@ def validate(directory):
                 "OSL/usage mismatch",
             )
             if phase == "profiling":
+                timings[key] = timing
                 successful += 1
                 for field in totals:
                     totals[field] += usage[field]
@@ -274,6 +196,10 @@ def validate(directory):
         "quality_scope": manifest["run"]["quality_scope"],
         "attempted_requests": expected,
         "planned_arrivals_audited": False,
+        "issued_load": load,
+        "audited_request_timing_metrics": ["time_to_first_token", "request_latency"],
+        "request_timing_ns": timings,
+        "timing_source": "client/profile_export_raw.jsonl",
         "successful_requests": successful,
         "failed_requests": len(failures),
         "invalid_requests": invalid,
@@ -284,5 +210,5 @@ def validate(directory):
         "metrics_source": "client/profile_export_aiperf.json",
         "performance_metrics_audited": False,
         "readiness": "Automatic probes disabled; endpoint must already be ready. Zero warmup does not prove cold state.",
-        "limitations": "Protocol/usage audit only; not numerical, GPU or physical-memory qualification.",
+        "limitations": "Protocol/usage and specified raw-clock audit only; not aggregate performance, planned arrivals, HTTP EOF, numerical, GPU or physical-memory qualification.",
     }

@@ -212,6 +212,13 @@ class RealClientTests(unittest.TestCase):
         self.assertTrue(report["protocol_valid"])
         self.assertEqual(report["attempted_requests"], 16)
         self.assertEqual(report["successful_requests"], 16)
+        self.assertEqual(report["issued_load"]["issued_requests"], 16)
+        profiling_ids = {
+            r["metadata"]["x_request_id"]
+            for r in captured["raw"]
+            if r["metadata"]["benchmark_phase"] == "profiling"
+        }
+        self.assertEqual(set(report["request_timing_ns"]), profiling_ids)
         self.assertGreater(len(set(prompt_lengths)), 1, prompt_lengths)
         self.assertEqual(report["prompt_tokens"], sum(prompt_lengths))
         self.assertEqual(report["completion_tokens"], 32)
@@ -233,6 +240,14 @@ class RealClientTests(unittest.TestCase):
                 self.assertGreaterEqual(response["perf_ns"], sent)
             first, last = responses[1]["perf_ns"], responses[2]["perf_ns"]
             start = raw["start_perf_ns"]
+            self.assertEqual(
+                captured["audit"]["request_timing_ns"][key],
+                {
+                    "first_content": first - start,
+                    "last_content": last - start,
+                    "done_receipt": responses[-1]["perf_ns"] - start,
+                },
+            )
             for name, expected in {
                 "time_to_first_token": (first - start) / 1e6,
                 "request_latency": (last - start) / 1e6,
@@ -255,12 +270,24 @@ class RealClientTests(unittest.TestCase):
         starts = sorted(r["start_perf_ns"] for r in captured["raw"])
         # One slot stays occupied through six delayed frames. The requested
         # 50 ms arrival interval is not an independently offered-work ledger.
-        self.assertGreater(starts[1] - starts[0], 500_000_000)
+        gap = starts[1] - starts[0]
+        self.assertGreater(gap, 500_000_000)
+        self.assertEqual(
+            report["issued_load"],
+            {
+                "configured_request_rate": 20,
+                "max_concurrency": 1,
+                "issued_requests": 2,
+                "start_span_ns": gap,
+                "start_interval_ns": {"min": gap, "median": gap, "max": gap},
+            },
+        )
 
     def test_rate_control_preserves_partial_overload(self):
         for arrival in ("constant", "poisson"):
             with self.subTest(arrival=arrival):
-                report = self.exercise("overload", rate=2, arrival=arrival)["audit"]
+                captured = self.exercise("overload", rate=2, arrival=arrival)
+                report = captured["audit"]
                 self.assertTrue(report["protocol_valid"])
                 self.assertEqual(
                     (
@@ -271,6 +298,15 @@ class RealClientTests(unittest.TestCase):
                     (2, 1, 1),
                 )
                 self.assertEqual(report["completion_tokens"], 2)
+                starts = sorted(
+                    r["start_perf_ns"]
+                    for r in captured["raw"]
+                    if r["metadata"]["benchmark_phase"] == "profiling"
+                )
+                self.assertEqual(report["issued_load"]["issued_requests"], 2)
+                self.assertEqual(
+                    report["issued_load"]["start_span_ns"], starts[-1] - starts[0]
+                )
 
 
 if __name__ == "__main__":
