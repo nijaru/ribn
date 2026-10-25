@@ -507,10 +507,15 @@ full-model fidelity. Shared-operand layer-0 comparisons now reproduce all four
 stock layer outputs exactly before checking 140 Native operations: axial RoPE,
 GELU, gated products and residual adds match exactly, while RMS norms, projections
 and attention differ on identical inputs. The first local difference is input RMS
-normalization, not evidence of a unique faulty operator. Establish independently
-justified numerical acceptance or repair a demonstrated defect before binding
-processor features to AR execution; sparse local differences do not waive the
-failed full-model gate. Bounded feature
+normalization. The [RMS working-precision audit](../benchmarks/gemma4-reference/README.md#vision-rms-working-precision-audit)
+now covers all seven norms/five images: 1,669 of 67,737,600 BF16 words differ, while
+using the stock inverse makes every unrounded FP32 product output exact. Statistics
+and inverse evaluation differ; this does not identify a unique faulty operator.
+A separate real-equation enclosure diagnoses final rounding, not FP32-policy
+correctness or a precision winner. Production arithmetic and acceptance remain
+unchanged. Establish independently justified numerical acceptance or repair a
+demonstrated defect before binding processor features to AR execution; these
+local diagnostics do not waive the failed full-model gate. Bounded feature
 ownership, snapshot compatibility and admission through the existing executor/text
 path remain open. Ribn still rejects media; this component does not establish a general
 staged/coupled execution contract or waive the separate text-serving fidelity gate.

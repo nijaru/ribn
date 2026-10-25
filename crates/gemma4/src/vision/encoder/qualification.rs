@@ -12,6 +12,25 @@ use std::{
     path::PathBuf,
 };
 
+#[path = "qualification/rms.rs"]
+mod rms;
+
+fn read_tensor(
+    source: &SafeTensorArtifact,
+    image: usize,
+    name: &str,
+    kind: &ScalarType,
+) -> Vec<u8> {
+    let tensor = source.tensor(name).unwrap();
+    assert_eq!(tensor.scalar_type(), kind);
+    let batch = tensor.shape()[0];
+    assert!(image < batch);
+    let mut bytes = Vec::new();
+    tensor.reader().read_to_end(&mut bytes).unwrap();
+    let size = bytes.len() / batch;
+    bytes[image * size..(image + 1) * size].to_vec()
+}
+
 struct Probe<'a> {
     source: &'a SafeTensorArtifact,
     case: &'a str,
@@ -19,18 +38,8 @@ struct Probe<'a> {
     records: &'a mut Vec<Value>,
 }
 impl Probe<'_> {
-    fn bytes(&self, name: &str, kind: &ScalarType) -> Vec<u8> {
-        let tensor = self.source.tensor(name).unwrap();
-        assert_eq!(tensor.scalar_type(), kind);
-        let batch = tensor.shape()[0];
-        assert!(self.image < batch);
-        let mut bytes = Vec::new();
-        tensor.reader().read_to_end(&mut bytes).unwrap();
-        let size = bytes.len() / batch;
-        bytes[self.image * size..(self.image + 1) * size].to_vec()
-    }
     fn words(&self, name: &str) -> Vec<u16> {
-        self.bytes(name, &ScalarType::Bf16)
+        read_tensor(self.source, self.image, name, &ScalarType::Bf16)
             .as_chunks::<2>()
             .0
             .iter()
@@ -38,7 +47,7 @@ impl Probe<'_> {
             .collect()
     }
     fn positions(&self) -> Vec<[i64; 2]> {
-        self.bytes("positions", &ScalarType::I64)
+        read_tensor(self.source, self.image, "positions", &ScalarType::I64)
             .as_chunks::<16>()
             .0
             .iter()

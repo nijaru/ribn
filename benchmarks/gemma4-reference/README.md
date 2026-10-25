@@ -257,6 +257,69 @@ the original bounds. Frozen source, binary, operands and reports remain at
 `/Users/nick/ribn-qualification/gemma4-vision-layer0/20261025T052646Z/`.
 The strict full-checkpoint gate above remains failed.
 
+### Vision RMS working-precision audit
+
+`benchmarks/gemma4_vision_rms.py` audits all seven layer-0 RMS operations on the
+shared operands above: **35 operator/image comparisons, 67,737,600 output words
+and 504,000 row statistics**. It preserves the original two-image batch and all
+2,520 physical rows; Q/K/V reductions remain head-wide (64), not hidden-wide (768).
+No full vision or decoder forward runs.
+
+```sh
+"$PY" benchmarks/gemma4_vision_rms.py \
+  --snapshot "$SNAPSHOT" --components /tmp/gemma4-vision-components \
+  --output /tmp/gemma4-vision-rms
+CARGO_BUILD_JOBS=2 RUSTUP_TOOLCHAIN=1.98.0 \
+RIBN_GEMMA_PACKAGE="$SNAPSHOT" \
+RIBN_GEMMA_VISION_COMPONENTS=/tmp/gemma4-vision-components \
+RIBN_GEMMA_VISION_RMS=/tmp/gemma4-vision-rms \
+RIBN_GEMMA_VISION_RMS_REPORT=/tmp/native-vision-rms.json \
+  cargo test -p engine-gemma4 --locked --release --lib \
+    vision::encoder::qualification::rms::real_rms_stage_audit \
+    -- --ignored --exact --nocapture --test-threads=1
+```
+
+Use fresh outputs and the same supervision/retirement rules as above. Package and
+archive hashes are checked before use. Every actual stock BF16 norm must reproduce
+its archived output. Its FP32-input forward, rounded to BF16, must also reproduce
+that output; a staged FP32 source replica must match every unrounded forward word.
+Native's source replica must reproduce every actual production BF16 output.
+These controls validate output replay, **not uniquely observed hidden
+intermediates**; the archived statistics and inverses are source-replica diagnostics.
+
+The recorded audit localized differences to statistics and inverse evaluation,
+rather than products on a common inverse:
+
+| Operands/evaluation | BF16 words differing from stock |
+| --- | ---: |
+| Native statistics, inverse and products | 1,669 |
+| Stock statistic, Native inverse and products | 279 |
+| Stock inverse, Native products | 0 |
+
+On the stock inverse, all **67,737,600 unrounded FP32 scaled words** also matched.
+Native `powf` and the stock inverse replica differed on **146,603 of 504,000
+identical statistic inputs**. The counterfactual counts are not a decomposition of
+the original mismatches: their introduced/removed overlap was not measured.
+
+A separate outward-rounded FP64 enclosure checks the real equation
+`scale*x / sqrt(mean(x*x) + epsilon_f32)`, followed by one direct BF16 rounding.
+It uses exact BF16 products, correctly rounded square root and outward bounds after
+every operation; zero factors preserve the IEEE product sign by explicit convention.
+Only agreeing rounded endpoints yield a classification; ambiguous intervals are
+retained. None were ambiguous in this cohort. On all 1,669 disagreeing words,
+exactly one implementation matched that final-round equation; on **329 other words,
+both implementations agreed yet differed from it**. This is a different arithmetic
+policy, not ground truth for FP32 working precision or a vote for either implementation.
+BF16 encoding distances were not measured; no adjacency or near-boundary claim follows.
+
+Both workers exited **0**, non-forced, with positive process-group absence inside
+the original 5,400-second overall/1,800-second process bounds, including cleanup;
+output stayed below 1.5 GiB. Sources, binary, operands and reports remain at
+`/Users/nick/ribn-qualification/gemma4-vision-rms/20261025T071719Z/`.
+Production math and precision policy are unchanged. The strict full-checkpoint
+vision gate remains **failed**; this audit establishes neither harmless error nor
+media execution, GPU correctness, task quality or performance.
+
 ### Chunked prompt collection
 
 Pass `--prefill-chunk-size N` to bound prompt input rows per forward, for example:
