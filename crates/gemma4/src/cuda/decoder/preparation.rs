@@ -2,7 +2,7 @@
 use crate::{AttentionKind, Gemma4Config, Gemma4Error};
 use engine_nvidia::CudaBf16RotaryFactors;
 
-pub(super) const PREFILL_ROWS: usize = 8;
+pub(super) const PREFILL_LANES: [usize; 2] = [8, 16];
 
 pub(super) struct Preparation {
     pub rows: usize,
@@ -63,17 +63,18 @@ fn plan(
             "attention scratch cannot cover the declared cache reach",
         ));
     }
-    let batch = scalar
-        .checked_mul(PREFILL_ROWS)
-        .filter(|&n| i32::try_from(n).is_ok());
-    let rows = if qualified
-        && (PREFILL_ROWS..=4096).contains(&max_positions)
-        && batch.is_some_and(|n| n <= scratch_ceiling)
-    {
-        PREFILL_ROWS
-    } else {
-        1
-    };
+    let rows = PREFILL_LANES
+        .into_iter()
+        .rev()
+        .find(|&rows| {
+            qualified
+                && (rows..=4096).contains(&max_positions)
+                && scalar
+                    .checked_mul(rows)
+                    .filter(|&n| i32::try_from(n).is_ok())
+                    .is_some_and(|n| n <= scratch_ceiling)
+        })
+        .unwrap_or(1);
     Ok(Preparation {
         rows,
         scratch_entries: scalar * rows,
@@ -95,9 +96,15 @@ mod tests {
             (32, 2047, true, 1),
             (32, 2048, true, 8),
             (32, 2048, false, 1),
+            (32, 4095, true, 8),
+            (32, 4096, true, 16),
+            (32, 4096, false, 1),
+            (15, 1920, true, 8),
+            (16, 2048, true, 16),
             (7, 448, true, 1),
             (8, 512, true, 8),
             (4096, 262_144, true, 8),
+            (4096, 524_288, true, 16),
             (4097, 262_208, true, 1),
         ] {
             let p = plan(8, positions, ceiling, qualified).unwrap();

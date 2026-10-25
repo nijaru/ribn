@@ -1070,26 +1070,29 @@ component does not add overlapping model submissions or authorize cache trimming
 
 ### Bounded CUDA Gemma prefill
 
-The qualified eight-row lane prepares a second model-owned activation/PLE working set before
-publication; it never reallocates workspace after an accepted chunk starts. The same
-shared pool charges weights, both working sets, factors and attention scratch. The
+Qualified preparation selects a maximum width of sixteen or eight rows and prepares
+all usable model-owned activation/PLE working sets, including scalar, before publication.
+It never reallocates workspace after an accepted chunk starts. The same shared pool
+charges weights, every prepared working set, factors and attention scratch. The
 caller supplies an attention-scratch ceiling. Executor admission advertises the prepared
 cache reach, not a larger architecture context, and validates vocabulary/media semantics
 before creating continuation state. Invalid input or excess prompt/output reach must be
 request-local, not discovered as a decoder failure that faults peers. Reject a ceiling
-unable to cover one query against the declared cache reach before uploading weights. Select eight rows only
-when the qualified device/geometry, cache reach and ceiling permit it; otherwise retain
-the scalar lane. Reserve scratch for the selected row count against the maximum key span.
+unable to cover one query against the declared cache reach before uploading weights.
+Choose sixteen, then eight, then scalar according to the qualified device/geometry,
+cache reach and ceiling. Reserve one attention workspace for the largest selected width
+against the maximum key span; smaller groups reuse it.
 
 Validate the entire accepted token/media/capacity range before changing any cache. Split
-it into fixed eight-row groups and scalar tails. Each KV owner appends the complete group
+it into sixteen-row groups, then eight-row groups, then scalar tails, using only the
+prepared widths. Each KV owner appends the complete group
 before attention; later shared layers borrow that owner's full `[0, group_end)` donor
 span. Per-query absolute causal/window masks still determine the visible keys. Keep full
 histories: batching neither requires nor authorizes trimming or eviction. All operations
 stay synchronous, all private outputs are allocated before launch, and a failed operation
 faults the model with its existing retirement owner rather than publishing partial progress.
 Only the final input row reaches the vocabulary head, using the checked device row copy
-when the final group has eight rows.
+when the final group has a prepared batched width.
 
 Reordered GEMMs retain BF16 operands/results and FP32 accumulation without reduced-precision
 reductions. Their component gate uses an independent encoded-operand dot product and a

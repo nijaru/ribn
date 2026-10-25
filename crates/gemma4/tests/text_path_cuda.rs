@@ -1,14 +1,15 @@
 //! Gemma text facade over the token runtime on the native CUDA decoder.
 #![cfg(feature = "cuda")]
 
+use cudarc::driver::CudaContext;
 use engine_gemma4::{
     Gemma4Config, Gemma4CpuWeights, Gemma4CudaModel, Gemma4Executor, Gemma4Source,
 };
 use ribn::driver::{Driver, DriverConfig};
-use ribn::{Engine, EngineConfig, GenerationOptions, SchedulePolicy};
+use ribn::{Engine, EngineConfig, FinishReason, GenerationOptions, SchedulePolicy};
 use ribn_foundation::BytePool;
 use ribn_hf::LocalModelPackage;
-use ribn_text::{GemmaProcessor, ProcessorLimits, TextConfig, TextInput, TextOwner};
+use ribn_text::{GemmaProcessor, ProcessorLimits, TextConfig, TextEvent, TextInput, TextOwner};
 use serde_json::Value;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -54,12 +55,11 @@ fn cuda_text_facade_reproduces_the_archived_greedy_tokens() {
 
     let host = Gemma4CpuWeights::load(&source).unwrap();
     assert_eq!(host.config(), &config);
-    let context = cudarc::driver::CudaContext::new(0).unwrap();
-    let stream = context.new_stream().unwrap();
+    let stream = CudaContext::new(0).unwrap().new_stream().unwrap();
     let pool = BytePool::new(20_u64 << 30).shared();
-    let scratch = 32 * config.num_attention_heads() * 8;
+    let scratch = 32 * config.num_attention_heads() * 16;
     let model = Gemma4CudaModel::load(&source, host, stream, &pool, 32, scratch).unwrap();
-    assert_eq!(model.prefill_rows(), 8, "qualified RTX 4090/E4B prefill");
+    assert_eq!(model.prefill_rows(), 16, "qualified RTX 4090/E4B prefill");
     let model = Arc::new(Mutex::new(model));
     let executor = Gemma4Executor::cuda(&model).expect("CUDA executor");
     let engine = Engine::new(
@@ -77,7 +77,7 @@ fn cuda_text_facade_reproduces_the_archived_greedy_tokens() {
     let driver = DriverConfig::for_engine(&engine);
     let (shutdown, handle) = Driver::spawn(engine, driver).expect("driver");
     let processor = Arc::new(GemmaProcessor::open(&package, ProcessorLimits::default()).unwrap());
-    let owner = TextOwner::new(
+    let mut owner = TextOwner::new(
         processor,
         shutdown,
         handle,
@@ -87,6 +87,21 @@ fn cuda_text_facade_reproduces_the_archived_greedy_tokens() {
         },
     )
     .expect("text owner");
+    let mut abandoned = owner
+        .model()
+        .stream_blocking(
+            TextInput::Tokens(prompt.clone()),
+            GenerationOptions {
+                max_output_tokens: 4,
+                ..GenerationOptions::default()
+            },
+        )
+        .expect("first stream");
+    assert!(matches!(
+        abandoned.next_blocking().expect("first delta").unwrap(),
+        TextEvent::Delta { token: Some(token), .. } if token == expected[0]
+    ));
+    drop(abandoned);
     let response = owner
         .model()
         .clone()
@@ -98,5 +113,16 @@ fn cuda_text_facade_reproduces_the_archived_greedy_tokens() {
             },
         )
         .expect("text generation");
-    assert_eq!(response.tokens, expected, "text facade greedy tokens");
+    assert_eq!(
+        response.tokens, expected,
+        "text facade greedy tokens after abandonment"
+    );
+    assert_eq!(response.text, "A mutex (short");
+    assert_eq!(response.reason, FinishReason::Length);
+    assert_eq!(response.usage.prompt_tokens, 18);
+    assert_eq!(response.usage.completion_tokens, 4);
+    owner.shutdown().expect("shutdown");
+    drop(owner);
+    drop(model);
+    assert_eq!(pool.granted(), 0);
 }

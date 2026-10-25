@@ -778,7 +778,7 @@ records the later advancement result without reclassifying this interrupted run.
 Two complete pairs
 show substantially lower prefill latency, but an unexpected GPU PID interrupted the
 last candidate process. The original three-pair gate was not met. No candidate code or
-automatic-selection change was merged; the qualified eight-row/scalar path remains.
+automatic-selection change was merged in that cohort; eight-row/scalar selection remained.
 
 Both detached source trees start at `a6c47ee`, on the same RTX 4090, driver 615.71.10
 and pinned E4B package. The private candidate prepares 16- **and eight-row** activation/PLE
@@ -881,7 +881,8 @@ RIBN_GEMMA_PACKAGE="$PACKAGE" RIBN_GEMMA_REFERENCE="$REFERENCE" \
 
 **The complete three-pair advancement screen passes.** This is repeatable benefit for
 one private candidate, not product promotion, a quality-equivalent comparison or a
-serving/SLO result. Production continues to select qualified eight-row/scalar execution.
+serving/SLO result. At this stage, selection remained eight-row/scalar pending the
+[full-reach and integration qualification](#sixteen-row-full-reach-and-integration-qualification-2026-10-25).
 
 An explicit exclusive-GPU handoff preceded a new frozen campaign on the same RTX 4090
 and driver 615.71.10. It reused the exact baseline/candidate binaries and source patch
@@ -946,5 +947,87 @@ The older campaign's unidentified PID is **not** retrospectively explained by th
 Protocol, repair record, control sources, regression checks, full logs/rows, `analysis.json`
 and post-run identity/retirement audits remain under
 `gemma4-cuda-16row/20261025T195000Z` in the qualification store. Full-reach model,
-Compute Sanitizer, executor/text integration and serving qualification remain open;
-this screen does not enable wider-row automatic selection.
+Compute Sanitizer and executor/text integration were not part of this screen; the
+follow-up below owns their advancement result. Competitive serving remains open.
+
+## Sixteen-row full-reach and integration qualification (2026-10-25)
+
+**Sixteen-row selection is enabled for the qualified RTX 4090/E4B lane.** Preparation
+chooses sixteen only when the declared reach (16–4096 positions) and scratch ceiling
+permit it, retaining eight-row and scalar fallbacks. Both batched working sets are
+prepared before publication; one maximum-reach attention workspace is reused. The
+ordinary CUDA loader's existing ceiling is sufficient. No kernel, model equation,
+precision policy, decode arithmetic or serving policy changes.
+
+The unchanged private binaries first run three archived CPU-control cases and three
+long common histories: 4093 tokens plus three fixed continuations, 4095 plus one, and
+a no-tail 4096-token prefill. Each long case has four repetitions. All **40 full-row
+comparisons** between eight and sixteen are bit-exact, including signed zero; both
+variants retain the 12 archived CPU greedy winners. These are 19 distinct history
+states, not 40 independent cases. All 80 actual FP32 row files pass SHA, finiteness and
+argmax audits. Each worker exits zero, nonforced, with zero final allocation charge,
+positive group absence and idle GPU within its 600-second bound.
+
+Memory checking separates expensive whole-model coverage from maximum-span primitive
+coverage, without changing the numerical comparison:
+
+- The sixteen-row full model prefills 4093 tokens and performs three fixed single-token
+  continuations to reach 4096. This exercises sixteen/eight/scalar dispatch. All four
+  instrumented full rows are bit-exact against the corresponding normal capture.
+- The unchanged batched-attention fixture checks eight and sixteen queries, eight query
+  heads/two KV heads, width 256 with a 512-token window and width 512 without a window,
+  at key spans equal to the row count, 513 and 4096. It compares all 144 scalar-query
+  outputs bitwise with the batched outputs and checks finiteness. This reference is the
+  scalar CUDA path, not a newly collected CPU oracle; the independent host/operator
+  qualification above still applies.
+
+Both run under installed CUDA 13.3 Compute Sanitizer 2026.2.1.0 with `memcheck`, child
+tracking, full leak checking and error exit 86. Each tool **and separately recorded
+native process** exits zero, nonforced; both report **0 errors and 0 leaked bytes in
+0 allocations**. Known native GPU identities are observed. Owned groups are positively
+absent and the GPU idle before restoring the default endpoint. The full-model and
+primitive bounds are 900 and 240 seconds, including 60 seconds reserved for cleanup.
+This is focused coverage, not sanitizer execution of every numerical repetition,
+driver-OOM recovery, arbitrary device failure or competitive serving qualification.
+
+**Retained incomplete attempts:** an initially planned stock BF16 CPU corpus reproduced
+all 12 archived controls exactly, then completed the 4093-plus-three case. The 30-minute
+CPU cap forced exit `-9` during the next long prefill; the corpus remains incomplete and
+is not accepted. Repeating three nearly identical full CPU prefills was unnecessarily
+costly. A later instrumented four-repeat GPU driver took about eight minutes per 4K
+prefill and was stopped rather than repeat identical coverage. Neither interrupted
+scope is marked passed. The focused driver changes only its timing-loop repetition
+count from four to one; model/kernel source is unchanged. The original 90-minute
+campaign deadline is not reset. No new long-context CPU parity, distribution tolerance
+or precision winner is inferred from GPU baseline preservation.
+
+A separate, frozen 30-minute integration phase then exercises **actual sixteen-row
+preparation**, not an unchanged eight-row fixture:
+
+- Engine execution reproduces all four archived chat tokens, `Length` and 18/4 usage,
+  while oversized input remains request-local rejection.
+- A sixteen-token captured submission induces the existing synchronous-drain failure.
+  Owners/charges remain retained until capture ends; shutdown retry retires them,
+  execution stays closed and final charge is zero. This is not running-kernel failure
+  injection or permission to enable Graph execution.
+- The text facade drops a stream after its first archived token, then generates through
+  a cloned handle using the same model. Tokens, decoded text, `Length`, usage and explicit
+  shutdown/zero charge pass. The test does not assert an in-kernel cancellation race.
+- A scratch-limited model still selects eight and passes the archived window continuations.
+  The ordinary Linux CUDA `ribn run-gemma` loader also emits the exact independently
+  decoded four-token text, `A mutex (short`, without a BOS workaround.
+
+All four integration processes exit zero, nonforced, and retire inside their original
+240-second bounds. An independent post-run audit rechecks 1,209 source/control/binary
+pins and endpoint restoration. Charged model/cache memory remains **7.0 MiB above eight
+rows**, not a physical-peak result. The previously measured 24.7%/47.8% reductions at
+18/64 tokens support this selection; integration and sanitizer clocks are not new
+performance samples. Sampling, task-quality equivalence, mixed-arrival capacity/pressure
+and SLO goodput remain open.
+
+Protocols, all failed/stopped attempts, identity snapshots, actual exits, raw rows,
+loop-count equivalence and post-run audits are retained under
+`gemma4-cuda-16row/20261025T204609Z`; the separate executor/text/CLI integration source,
+binaries, logs and audit are under `gemma4-cuda-16row/20261025T221200Z`. The same package
+and archived CPU identities apply. Required host gates remain separate from this device
+evidence.

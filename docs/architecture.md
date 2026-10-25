@@ -169,14 +169,16 @@ device-resident and reproduces the archived greedy chat tokens through the engin
 text facade and `ribn run-gemma` (CUDA or Metal). Completion-owned device copies append
 K/V without a host round trip; initialized-row prefixes bound cache reads and attention.
 Decode remains synchronous and one token at a time. Qualified RTX 4090/E4B preparation
-can select fixed eight-row prefill groups with scalar tails, a second bounded working
-set and scratch covering the declared cache reach. Other devices/geometries, reaches
-outside 8–4096 and smaller feasible scratch ceilings retain scalar execution. Each
+selects the largest feasible sixteen/eight-row prefill width through 4096 positions,
+with eight/scalar fallbacks, preallocated working sets and maximum-reach scratch.
+Insufficient scratch for sixteen retains eight or scalar; unqualified devices/geometries
+and reaches outside 8–4096 retain scalar execution. Each
 owner appends the whole group before attention; per-query masks and full-history shared
 donors preserve causal/window semantics. Only the final token reaches the output head,
 with device-side last-row extraction for a full group. Executor admission binds to the
 prepared cache capacity and rejects invalid token/media/sampling requests locally.
-See [eight-row qualification](../benchmarks/gemma4-reference/README.md#bounded-eight-row-cuda-prefill-2026-10-21-utc).
+See the [eight-row numerical policy](../benchmarks/gemma4-reference/README.md#bounded-eight-row-cuda-prefill-2026-10-21-utc)
+and [sixteen-row qualification](../benchmarks/gemma4-cuda-baseline.md#sixteen-row-full-reach-and-integration-qualification-2026-10-25).
 `ribn serve-gemma` loads the same text owner behind the existing bounded HTTP adapter;
 its [Metal](../benchmarks/runtime-contract.md#gemma-http-cli-qualification-2026-10-21) and
 [CUDA CLI qualification](../benchmarks/runtime-contract.md#cuda-device-requalification-2026-10-22)

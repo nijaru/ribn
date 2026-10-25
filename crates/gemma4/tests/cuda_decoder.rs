@@ -136,7 +136,7 @@ fn cuda_decoder_reproduces_archived_window_boundary_continuations() {
     assert_eq!(
         model.prefill_rows(),
         8,
-        "requires the qualified RTX 4090/E4B lane"
+        "scratch ceiling preserves the qualified eight-row fallback"
     );
     let model = Arc::new(Mutex::new(model));
     let mut decoder = Gemma4CudaDecoder::shared(&model).unwrap();
@@ -162,7 +162,7 @@ fn cuda_decoder_reproduces_archived_window_boundary_continuations() {
         assert_eq!(steps.len(), 4);
         decoder.reset();
         let valid = u32::try_from(case["prompt_ids"][0].as_u64().unwrap()).unwrap();
-        let mut invalid_tail = vec![valid; 8];
+        let mut invalid_tail = vec![valid; 16];
         invalid_tail.push(u32::try_from(config.vocab_size()).unwrap());
         for invalid in [invalid_tail, vec![valid; capacity + 1]] {
             assert!(decoder.prefill(&invalid).is_err());
@@ -213,8 +213,9 @@ fn cuda_partial_cache_construction_retires_allocations_before_refund() {
     let stream = CudaContext::new(0).unwrap().new_stream().unwrap();
     let pool = BytePool::new(20_u64 << 30).shared();
     let model = Arc::new(Mutex::new(
-        Gemma4CudaModel::load(&source, host, Arc::clone(&stream), &pool, 32, 512).unwrap(),
+        Gemma4CudaModel::load(&source, host, Arc::clone(&stream), &pool, 32, 4096).unwrap(),
     ));
+    assert_eq!(model.lock().unwrap().prefill_rows(), 16);
     let baseline = pool.available();
     let mut charges = Vec::new();
     for (layer, geometry) in config.layers().iter().enumerate() {

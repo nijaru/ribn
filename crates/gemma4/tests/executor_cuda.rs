@@ -5,7 +5,9 @@ use cudarc::driver::{CudaContext, sys};
 use engine_gemma4::{
     Gemma4Config, Gemma4CpuWeights, Gemma4CudaModel, Gemma4Executor, Gemma4Source,
 };
-use ribn::{Engine, EngineError, Event, GenerationExecutor, GenerationOptions, TokenRequest};
+use ribn::{
+    Engine, EngineError, Event, FinishReason, GenerationExecutor, GenerationOptions, TokenRequest,
+};
 use ribn_foundation::BytePool;
 use ribn_hf::LocalModelPackage;
 use serde_json::Value;
@@ -57,9 +59,9 @@ fn cuda_executor_reproduces_the_archived_tokens_through_the_engine() {
     let context = cudarc::driver::CudaContext::new(0).unwrap();
     let stream = context.new_stream().unwrap();
     let pool = BytePool::new(20_u64 << 30).shared();
-    let scratch = 32 * config.num_attention_heads() * 8;
+    let scratch = 32 * config.num_attention_heads() * 16;
     let model = Gemma4CudaModel::load(&source, host, stream, &pool, 32, scratch).unwrap();
-    assert_eq!(model.prefill_rows(), 8, "qualified RTX 4090/E4B prefill");
+    assert_eq!(model.prefill_rows(), 16, "qualified RTX 4090/E4B prefill");
     let model = Arc::new(Mutex::new(model));
     let executor = Gemma4Executor::cuda(&model).expect("CUDA executor");
     assert_eq!(executor.info().limits.max_decode_tokens, 1);
@@ -87,20 +89,23 @@ fn cuda_executor_reproduces_the_archived_tokens_through_the_engine() {
     ));
 
     let mut tokens = Vec::new();
-    let mut finished = false;
+    let mut finished = None;
     for _ in 0..16 {
         engine.step().expect("engine step");
         while let Some(event) = engine.pop_event_for(request) {
             match event {
                 Event::Token { token, .. } => tokens.push(token),
-                Event::Finished { .. } => finished = true,
+                Event::Finished { reason, usage, .. } => finished = Some((reason, usage)),
             }
         }
-        if finished {
+        if finished.is_some() {
             break;
         }
     }
-    assert!(finished, "request never finished");
+    let (reason, usage) = finished.expect("request never finished");
+    assert_eq!(reason, FinishReason::Length);
+    assert_eq!(usage.prompt_tokens, 18);
+    assert_eq!(usage.completion_tokens, 4);
     assert_eq!(tokens, expected, "engine greedy tokens");
     assert_eq!(engine.status().requests, 0);
     engine.shutdown().expect("shutdown");
@@ -115,13 +120,14 @@ fn cuda_failed_drain_keeps_owners_until_capture_ends() {
     let stream = CudaContext::new(0).unwrap().new_stream().unwrap();
     let pool = BytePool::new(20_u64 << 30).shared();
     let model = Arc::new(Mutex::new(
-        Gemma4CudaModel::load(&source, host, Arc::clone(&stream), &pool, 32, 512).unwrap(),
+        Gemma4CudaModel::load(&source, host, Arc::clone(&stream), &pool, 32, 4096).unwrap(),
     ));
+    assert_eq!(model.lock().unwrap().prefill_rows(), 16);
     let model_charge = pool.granted();
     let mut engine = Engine::with_defaults(Gemma4Executor::cuda(&model).unwrap()).unwrap();
     engine
         .enqueue(TokenRequest::new(
-            vec![2],
+            vec![2; 16],
             GenerationOptions {
                 max_output_tokens: 4,
                 ..GenerationOptions::default()

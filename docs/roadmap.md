@@ -10,9 +10,9 @@ open implementation choices and acceptance gates. All v0 interfaces may change.
 **Next: measured Gemma/Qwen execution improvements and remaining quality/capacity gates.**
 The real second decoder runs on CPU, Metal and CUDA through the synchronous greedy
 executor, token runtime, text facade and CLI. The CPU full-history decoder remains the
-independent arithmetic oracle. CUDA now has a [qualified eight-row prefill lane](../benchmarks/gemma4-reference/README.md#bounded-eight-row-cuda-prefill-2026-10-21-utc)
-for RTX 4090/E4B geometry, 8–4096 cache reach and sufficient prepared scratch. Scalar
-tails/fallbacks, complete owner histories and completion-owned device K/V copies remain.
+independent arithmetic oracle. CUDA now selects [qualified sixteen/eight-row prefill](../benchmarks/gemma4-cuda-baseline.md#sixteen-row-full-reach-and-integration-qualification-2026-10-25)
+for RTX 4090/E4B geometry, up to 4096 positions and sufficient prepared scratch. Eight-row
+and scalar fallbacks, complete owner histories and completion-owned device K/V copies remain.
 
 The [matched diagnostic](../benchmarks/runtime-contract.md#bounded-eight-row-cuda-prefill-2026-10-21-utc)
 reduces 18/64-token prefill from 271.93/1004.29 to 68.44/146.96 ms, with +1.35% pooled
@@ -31,9 +31,9 @@ work. The [host multi-row oracle](../benchmarks/gemma4-reference/README.md#host-
 and [CUDA row-count preflight](../benchmarks/gemma4-reference/README.md#cuda-projection-row-count-preflight-2026-10-21-utc)
 retain the evidence that CPU bitwise batching cannot be assumed for cuBLAS.
 
-**Preparation-boundary comparison — direct-call evidence:** the [matched CUDA diagnostic](../benchmarks/gemma4-cuda-baseline.md)
-uses the same active BF16 parameters and common histories. Native 18/64-token prefill
-remains 2.81x/5.81x slower than stock Transformers eager; pooled native/eager decode is
+**Preparation-boundary comparison — direct-call evidence:** the earlier [matched CUDA diagnostic](../benchmarks/gemma4-cuda-baseline.md)
+uses the same active BF16 parameters and common histories. Eight-row native 18/64-token
+prefill was 2.81x/5.81x slower than stock Transformers eager; pooled native/eager decode was
 19.33/21.18 ms. Stock whole-forward compilation works, but `dynamic=False` produced eight
 specializations for nine advancing decodes; `dynamic=True` reduced that to two, with
 63/53 s first-forward costs and changed logits. Fixed-position warm calls near 14 ms
@@ -46,7 +46,7 @@ recovery and backend portability remain unqualified. Preserve the independent CP
 The [SGLang engine-level direct-call comparison](../benchmarks/gemma4-cuda-baseline.md#owned-fp32-host-output-engine-comparison-2026-10-22)
 now runs on the RTX 4090 with the full pinned Linux stack and fresh native/stock controls.
 All clocks include a completed owned FP32 host row. Across three fresh processes per
-configuration, native 64-token prefill is 146.844 ms versus 18.280 ms for graph-configured
+configuration, eight-row native 64-token prefill measured 146.844 ms versus 18.280 ms for graph-configured
 SGLang; pooled decode is 19.271 versus 12.037 ms—about 8.0x/1.60x slower. SGLang's full
 one-request graph runs every decode, not prefill. All 12 common-history winners agree,
 but native/SGLang KL and TV maxima exceed stock; this is not quality-equivalent acceptance.
@@ -77,10 +77,14 @@ All 372 matched full-row comparisons are bit-exact on this cohort. The same froz
 candidate retains eight-row/scalar fallback and the existing independent component,
 archived greedy/window and constrained-pool cache-retirement evidence. The earlier
 interrupted cohort and zero-row monitor failure remain preserved, not pooled into
-these results. This passes a **private repeatability screen**, not product promotion
-or quality-equivalent acceptance. Next qualify full-reach context, sanitizer and
-executor/text integration before serving or automatic selection. Production stays
-eight-row/scalar, with unchanged decode.
+these results. The [full-reach and integration follow-up](../benchmarks/gemma4-cuda-baseline.md#sixteen-row-full-reach-and-integration-qualification-2026-10-25)
+now adds 40 bit-exact full-reach comparisons, focused whole-model and maximum-span
+attention memchecks, actual-sixteen-row executor/text checks and an ordinary CUDA CLI
+smoke. Automatic selection is enabled only for the qualified device/geometry/reach and
+prepared ceiling, retaining eight/scalar fallbacks and unchanged decode. This preserves
+the existing GPU numerical policy; it does not establish new long-context CPU parity
+or quality-equivalent acceptance. Next measure the promoted lane through matched mixed-arrival
+serving and capacity/pressure workloads; do not extrapolate direct-call gains into SLO goodput.
 
 vLLM remains source-reviewed only, and unmodified Flare excludes SM89. Use their mechanisms
 and the [Flare findings](inference-engine-design.md#nvidia-flare-reviewed-2026-10-21) without
@@ -625,8 +629,10 @@ Device-side K/V append now passes byte-preservation, initialized-prefix and memc
 gates, with exact short-history logits against host append. The subsequent
 [eight-row lane](../benchmarks/gemma4-reference/README.md#bounded-eight-row-cuda-prefill-2026-10-21-utc)
 binds whole-group attention/donor spans and prepared workspace while retaining full
-histories and scalar fallback. Its greedy contract permits independently bounded
-reordered GEMMs, not presumed scalar bit equality. The shared `ribn serve-gemma` HTTP entry
+histories and scalar fallback. Its [sixteen-row extension](../benchmarks/gemma4-cuda-baseline.md#sixteen-row-full-reach-and-integration-qualification-2026-10-25)
+retains the same numerical policy and eight/scalar fallbacks. The greedy contract permits
+independently bounded reordered GEMMs, not presumed scalar bit equality.
+The shared `ribn serve-gemma` HTTP entry
 point now passes its [Metal](../benchmarks/runtime-contract.md#gemma-http-cli-qualification-2026-10-21)
 and [CUDA functional gates](../benchmarks/runtime-contract.md#cuda-device-requalification-2026-10-22),
 including JSON/SSE output, decoded stops, disconnect peer progress and shutdown during loading.

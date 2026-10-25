@@ -1,6 +1,6 @@
 //! Host-orchestrated Gemma 4 BF16 decoder over the qualified native components.
 //!
-//! Prepared eight-row groups and scalar tails share one layer implementation.
+//! Prepared sixteen/eight-row groups and scalar tails share one layer implementation.
 //! Embedding lookup, PLE lookup and logit
 //! soft-capping stay on the host; projections, norms, rotary, attention and the
 //! elementwise layer algebra run on the device. KV owners keep device-resident
@@ -31,7 +31,7 @@ const GEMM_WORKSPACE: usize = 8 * 1024 * 1024;
 mod buffers;
 mod preparation;
 use buffers::{Buffers, CacheConstruction, DeviceCache, GeometryBuffers};
-use preparation::PREFILL_ROWS;
+use preparation::PREFILL_LANES;
 
 struct Executors {
     gemm: CudaBf16Gemm,
@@ -47,7 +47,7 @@ pub struct Gemma4CudaModel {
     cuda: Gemma4CudaWeights,
     executors: Executors,
     buffers: Buffers,
-    prefill: Option<Buffers>,
+    prefill: Vec<Buffers>,
     factors: Vec<CudaBf16RotaryFactors>,
     stream: Arc<CudaStream>,
     pool: Arc<BytePool>,
@@ -101,9 +101,12 @@ impl Gemma4CudaModel {
                 .map_err(|e| backend(&e))?,
         };
         let buffers = Buffers::new(&config, 1, &stream, pool)?;
-        let prefill = (prepared.rows > 1)
-            .then(|| Buffers::new(&config, prepared.rows, &stream, pool))
-            .transpose()?;
+        let mut prefill = Vec::with_capacity(PREFILL_LANES.len());
+        for rows in PREFILL_LANES {
+            if rows <= prepared.rows {
+                prefill.push(Buffers::new(&config, rows, &stream, pool)?);
+            }
+        }
         let mut factors = Vec::with_capacity(config.layers().len());
         for layer in 0..config.layers().len() {
             let width = config.layers()[layer].head_dim;
@@ -140,12 +143,13 @@ impl Gemma4CudaModel {
         self.max_positions
     }
 
-    /// Prepared physical prefill width; insufficient scratch or unqualified
-    /// geometry/devices retain the scalar lane.
+    /// Largest prepared physical prefill width. Qualified preparation chooses
+    /// sixteen, eight or scalar according to reach and scratch; other
+    /// geometry/devices retain scalar execution.
     #[must_use]
     pub fn prefill_rows(&self) -> usize {
         self.prefill
-            .as_ref()
+            .last()
             .map_or(1, |buffers| buffers.hidden.shape().0)
     }
 
@@ -200,10 +204,11 @@ impl Gemma4CudaModel {
                 ..
             } = self;
             // The caller validates the whole accepted range before cache mutation.
-            // Both physical working sets and maximum-reach scratch already exist.
+            // All selected working sets and maximum-reach scratch already exist.
             let mut offset = 0;
-            if let Some(batch) = prefill.as_mut() {
-                while tokens.len() - offset >= PREFILL_ROWS {
+            for batch in prefill.iter_mut().rev() {
+                let rows = batch.hidden.shape().0;
+                while tokens.len() - offset >= rows {
                     run_rows(
                         host.config(),
                         host,
@@ -213,9 +218,9 @@ impl Gemma4CudaModel {
                         factors,
                         caches,
                         position + offset,
-                        &tokens[offset..offset + PREFILL_ROWS],
+                        &tokens[offset..offset + rows],
                     )?;
-                    offset += PREFILL_ROWS;
+                    offset += rows;
                 }
                 if offset == tokens.len() {
                     return project_logits(host.config(), cuda, executors, batch);

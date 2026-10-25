@@ -106,7 +106,7 @@ fn model_projection_shapes_satisfy_an_independent_accumulation_bound() {
         let encoded: Vec<u8> = weight_bits.iter().flat_map(|b| b.to_le_bytes()).collect();
         weights.upload(0, &mut Cursor::new(encoded)).unwrap();
         let mut gemm = CudaBf16Gemm::new(Arc::clone(&stream), &pool, 8 << 20).unwrap();
-        for m in [1, 8] {
+        for m in [1, 8, 16] {
             let input_bits: Vec<u16> = (0..m)
                 .flat_map(|row| {
                     (0..k).map(move |inner| {
