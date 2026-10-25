@@ -712,8 +712,18 @@ implementation. Thus the observed effect is not a universal prefix-only cause: p
 suffix and PLE inputs interact. Across factorial contrasts, post-softcap total variation
 reaches about 0.475 for the prefix axis, 0.095 for the suffix and 0.115 for PLE. No error
 budget, faulty operation or accuracy winner is established. The 21-token history does not
-qualify sliding-window eviction. Resolve independent task-quality acceptance and the
-remaining numerical cause rather than loosen a tolerance or omit these prompts.
+qualify sliding-window eviction. A separate
+[57-question labeled diagnostic](../benchmarks/gemma4-metal-baseline.md#independent-labeled-multiple-choice-diagnostic)
+then freezes one MMLU test item per subject, raw zero-shot prompts and four-choice scoring
+before model runs, retaining every selected item. Native and diagnostic CPU FP32 choose
+identically on all 57 and score 30/57; CPU BF16 scores 28/57, differing on three choices.
+All five original full prediction rows per backend reproduce exactly before evaluation.
+This small sample shows no Native task-score deficit against these references, not broad
+accuracy or generated-answer acceptance; FP32 is not ground truth. Keep the original
+fidelity counterexample and failed serving gate open. The next quality evidence should
+qualify a broader generation/task scope, not turn this sample into an equivalence budget
+or continue causal bisection without a concrete decision it would resolve. Production
+arithmetic stays unchanged; do not loosen tolerances or omit disagreeing prompts.
 Opaque Graph submissions are not a single-command chain. Broader residency/synchronization
 gains remain possible; no universal Graph ABI is selected.
 This does not change CUDA sequencing or qualify capacity, recovery or SLO goodput.

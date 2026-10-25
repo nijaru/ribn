@@ -1586,6 +1586,53 @@ below the 512-token sliding window: eviction and longer contexts remain unqualif
 Production arithmetic, independent task-quality acceptance and the failed serving-quality
 gate are unchanged.
 
+### Independent labeled multiple-choice diagnostic
+
+A separate **57-question, subject-balanced diagnostic** adds task labels rather than
+another causal substitution. It uses the original [MMLU test archive](https://people.eecs.berkeley.edu/~hendrycks/data.tar)
+linked by the [pinned upstream repository](https://github.com/hendrycks/test/tree/4450500f923c49f1fb1dd3d99108a0bd9717b660).
+The archive SHA256 is
+`bec563ba4bac1d6aaf04141cd7d1605d7a5ca833e38f994051e818489592989b`.
+Before any model runs, one row per subject is selected by the minimum SHA256 of
+`seed + NUL + subject + NUL + decimal zero-based row index`, with seed
+`ribn-gemma4-labeled-diagnostic-v1`. Selection does not inspect labels, prompt lengths
+or model results; all 57 selected questions are retained.
+
+The raw zero-shot prompt contains the subject header, question, four labeled options
+and `Answer:`, with no examples, chat template, BOS or special-token insertion.
+For every question, appending each of ` A`, ` B`, ` C` and ` D` preserves the entire
+prompt encoding and adds exactly one token: IDs 562, 603, 565 and 622 respectively.
+The frozen prompts total 6,336 tokens; the longest has 471. Each backend uses identical
+16-token chunks and fresh continuation state per question. Each process first
+reproduces all five archived full post-softcap rows of the original 18-token
+counterexample exactly, in its own precision, before evaluating any labeled question.
+
+Scores restrict the actual final post-softcap prediction row to those four candidate
+tokens. Ties choose the first letter in A/B/C/D order and are recorded separately.
+Four-choice NLL normalizes only those candidates at unit temperature; it is not
+full-vocabulary perplexity. These are **restricted-choice predictions, not generated
+answers or instruction-following measurements**.
+
+| Backend | Correct / 57 | Accuracy | Tied option maxima | Mean four-choice correct-label NLL |
+| --- | ---: | ---: | ---: | ---: |
+| Native Metal BF16 | 30 | 52.6% | 1 | 1.63259249 |
+| Eager CPU BF16 | 28 | 49.1% | 3 | 1.65945911 |
+| Eager CPU FP32, diagnostic | 30 | 52.6% | 0 | 1.67363764 |
+
+Native and CPU FP32 choose the same option on all 57 questions. CPU BF16 differs on
+three: `human_aging` and `logical_fallacies` are correct only for Native/FP32, while
+`public_relations` is wrong for all three. The CPU BF16 `human_aging` choice ties B/C;
+its `public_relations` choice ties A/B. All backends are wrong on the selected
+`global_facts` item; both BF16 paths tie B/C there.
+
+This sample shows no Native task-score deficit relative to either CPU reference,
+but it is **not a full MMLU result, an accuracy ranking, or quality acceptance**.
+The original labels are independent of the engines, not infallible; training
+contamination is unknown. FP32 remains diagnostic, not ground truth or a precision
+vote. The unresolved fixed-history divergence and failed matched-result serving gate
+remain intact. Broader generation/task-quality acceptance needs its own justified
+scope; neither these scores nor the causal replays supply an equivalence budget.
+
 ### Metrology, compatibility and evidence
 
 A separate analyzer cross-checks selected AIPerf per-request clocks against raw SSE
@@ -1773,3 +1820,22 @@ frozen. The corrected guard records unrelated project build directories while re
 model-process checks; accepted build, preflights, components, analyses and verification
 exit zero. Exploratory tail-analysis V1 is retained; accepted V2 freezes the same analysis
 method before its calculations, without model reruns or tolerance changes.
+
+Labeled-quality evidence:
+`~/ribn-qualification/gemma4-metal-labeled-quality/20261024T231839Z/` retains the
+predeclared protocol, original archive and 57 CSVs, deterministic sample, pristine
+`018e9ec` source, public Native-decoder probe and actual pinned CPU collectors.
+The Cargo-discovered executable SHA256 is
+`19a9c0301189c86810cf54e693d008ff1407462e74992b6bab185f5dfad32a5d`.
+`analysis-v1.json`, `decimal-check-v1.json` and `verification-v1.json` pass:
+201 finite tensor files, 15 exact original-reference controls, all 171 task predictions,
+1,389 frozen/live source files, 3,918 registry files, 20,530 installed CPU files and
+nine pinned assets. All 171 four-choice probability/log-probability/NLL rows agree
+to nine significant digits with independent 80-digit Decimal calculations.
+Read-only review finds no material sampling, token-boundary or collector defect;
+numerical/provenance checks remain separately verified. All three serialized model
+processes exit zero, non-forced, with positive group retirement under fresh 5,400-second
+global and 1,800-second per-process bounds. Build, preflight, analysis and verification
+exit zero. No production source, precision policy, environment or dependency is changed,
+and no desktop/CUDA access is used. The unchanged-code gates above are reused; the
+ignored device suites are not rerun.
