@@ -1,4 +1,8 @@
 //! Synchronous CPU vision component; application media admission remains separate.
+#[cfg(test)]
+#[path = "encoder/qualification.rs"]
+mod qualification;
+
 use super::ops::{Grid, axial, load, pool};
 use super::{
     Gemma4VisionConfig, Gemma4VisionCpuWeights, VisionLinear, VisionLinearPart, VisionNorm,

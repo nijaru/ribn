@@ -211,6 +211,52 @@ original bounds. Its frozen binary, source and complete failed report remain at
 fidelity remains **unqualified**. No media route, device variant or serving claim is
 promoted by this component.
 
+### Shared-operand vision layer-0 diagnostic
+
+`benchmarks/gemma4_vision_components.py` isolates local arithmetic differences from
+propagated error. It copies the real patch and first-layer weights into a one-layer
+stock package and uses the primary BF16 loader, leaving derived rotary frequencies
+FP32. Each of the four full layer outputs must reproduce the archived output
+bit-for-bit before the captured component operands are usable. Padding, two-image
+batch geometry and key masks remain unchanged; no decoder runs.
+
+Use the existing pinned vision interpreter (`$PY`) and a fresh output directory:
+
+```sh
+"$PY" benchmarks/gemma4_vision_components.py \
+  --snapshot "$SNAPSHOT" --corpus /path/to/canonical-corpus \
+  --output /tmp/gemma4-vision-components
+CARGO_BUILD_JOBS=2 RUSTUP_TOOLCHAIN=1.98.0 \
+RIBN_GEMMA_PACKAGE="$SNAPSHOT" \
+RIBN_GEMMA_VISION_COMPONENTS=/tmp/gemma4-vision-components \
+RIBN_GEMMA_VISION_COMPONENT_REPORT=/tmp/native-vision-components.json \
+  cargo test -p engine-gemma4 --locked --release --lib \
+    vision::encoder::qualification::real_common_operand_layer0 \
+    -- --ignored --exact --nocapture --test-threads=1
+```
+
+The Native test checks checkpoint and component-archive content hashes before
+loading. It calls the production private operations on each operation's own frozen
+HF inputs, rather than feeding one Native result into the next comparison. The
+report retains finite BF16 word differences for all 28 operations per image,
+including raw linear outputs before activation clipping. Residual adds and gated
+products must match exactly. Other differences are diagnostic: **exit 0 does not
+mean full-model fidelity or numerical acceptance**. Supervise both processes with
+wall/output bounds and positive process-group retirement, as for the full gate.
+
+The recorded collection reproduced all four archived layer outputs exactly and
+completed all **140 common-operand comparisons**. Across five images, Q/K axial
+RoPE, GELU, gated products and both residual adds matched exactly. The first local
+difference was input RMS normalization: **314 of 9,676,800 words** differed.
+Other norms, raw/clipped linear projections and attention also differed on shared
+inputs; for example, attention differed at 4,999 of 9,676,800 words. These results
+narrow the investigation but do not establish a unique faulty operator or show that
+the full-model errors are harmless. No tolerance or production arithmetic changed.
+Both workers exited **0**, non-forced, with positive process-group absence inside
+the original bounds. Frozen source, binary, operands and reports remain at
+`/Users/nick/ribn-qualification/gemma4-vision-layer0/20261025T052646Z/`.
+The strict full-checkpoint gate above remains failed.
+
 ### Chunked prompt collection
 
 Pass `--prefill-chunk-size N` to bound prompt input rows per forward, for example:

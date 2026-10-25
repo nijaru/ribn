@@ -503,8 +503,14 @@ all encoder/projection stages exactly, including grouped heads and padding. The
 [strict full-checkpoint vision gate](../benchmarks/gemma4-reference/README.md#native-cpu-vision-component)
 failed across all four cases/five images: patch embeddings match exactly, but
 layer 0 and projected features disagree. Do not use the small fixture to claim
-full-model fidelity. Resolve that numerical gate with common-operand component
-comparisons before binding processor features to AR execution. Bounded feature
+full-model fidelity. Shared-operand layer-0 comparisons now reproduce all four
+stock layer outputs exactly before checking 140 Native operations: axial RoPE,
+GELU, gated products and residual adds match exactly, while RMS norms, projections
+and attention differ on identical inputs. The first local difference is input RMS
+normalization, not evidence of a unique faulty operator. Establish independently
+justified numerical acceptance or repair a demonstrated defect before binding
+processor features to AR execution; sparse local differences do not waive the
+failed full-model gate. Bounded feature
 ownership, snapshot compatibility and admission through the existing executor/text
 path remain open. Ribn still rejects media; this component does not establish a general
 staged/coupled execution contract or waive the separate text-serving fidelity gate.
