@@ -13,6 +13,7 @@ mod norm;
 mod rotary;
 mod weights;
 
+pub(crate) use attention::vision_attention;
 pub use attention::{AttentionConfig, attention, attention_with_weights};
 pub use decoder::{Gemma4CpuDecoder, argmax};
 pub use elementwise::{add, gelu_tanh, multiply, ple_combine, scale, softcap};

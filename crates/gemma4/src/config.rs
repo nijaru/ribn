@@ -461,7 +461,7 @@ fn parse_rope(root: &Value, kind: &str, proportional: bool) -> Result<Rope, Gemm
     }
 }
 
-fn equal(root: &Value, key: &str, expected: &Value) -> Result<(), Gemma4Error> {
+pub(crate) fn equal(root: &Value, key: &str, expected: &Value) -> Result<(), Gemma4Error> {
     if root.get(key) == Some(expected) {
         Ok(())
     } else {
@@ -484,7 +484,7 @@ pub(crate) fn token_id(root: &Value, key: &str) -> Result<u32, Gemma4Error> {
         .ok_or_else(|| Gemma4Error::new(key, "expected a nonnegative u32 token ID"))
 }
 
-fn positive(root: &Value, key: &str) -> Result<usize, Gemma4Error> {
+pub(crate) fn positive(root: &Value, key: &str) -> Result<usize, Gemma4Error> {
     let n = unsigned(root, key)?;
     if n == 0 {
         Err(Gemma4Error::new(key, "must be positive"))
@@ -492,7 +492,7 @@ fn positive(root: &Value, key: &str) -> Result<usize, Gemma4Error> {
         Ok(n)
     }
 }
-fn positive_float(root: &Value, key: &str) -> Result<f32, Gemma4Error> {
+pub(crate) fn positive_float(root: &Value, key: &str) -> Result<f32, Gemma4Error> {
     let n = root
         .get(key)
         .and_then(Value::as_f64)

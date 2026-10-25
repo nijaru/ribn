@@ -1,8 +1,9 @@
-//! Gemma 4 dense, causal, BF16 text semantics and source preparation.
+//! Gemma 4 BF16 text decoding and model-local CPU vision semantics.
 //!
 //! Configuration, parameter interpretation and continuation semantics belong here,
 //! not in HF/SafeTensors adapters or token scheduling. Includes native BF16 CUDA
-//! weight preparation and a greedy CUDA decoder; no multimodal execution.
+//! weight preparation and a greedy CUDA decoder. The synchronous CPU vision
+//! component does not implement multimodal request execution.
 
 #[cfg(feature = "cuda")]
 mod cuda;
@@ -24,6 +25,7 @@ mod parameters;
 mod processor;
 mod source;
 mod text_decode;
+pub mod vision;
 
 pub use config::{AttentionKind, Gemma4Config, LayerGeometry, Rope};
 pub use continuation::{AttentionSpan, KvOwnerStep, KvStep, RetainedSpan};

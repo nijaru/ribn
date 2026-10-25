@@ -35,6 +35,10 @@ fn causal_and_sliding_masks_expose_only_visible_keys() {
     let (output, weights) = attention_with_weights(&query, &keys, &values, config(None), 0, 0)
         .expect("causal attention");
     assert_eq!(output, [bf16(1.0), bf16(1.5), bf16(2.0), bf16(2.5)]);
+    assert_eq!(
+        attention(&query, &keys, &values, config(None), 0, 0).unwrap(),
+        output
+    );
     for position in 0..4 {
         for key in 0..4 {
             #[expect(clippy::cast_precision_loss, reason = "test positions are small")]
@@ -50,6 +54,10 @@ fn causal_and_sliding_masks_expose_only_visible_keys() {
     let (output, weights) = attention_with_weights(&query, &keys, &values, config(Some(2)), 0, 0)
         .expect("sliding attention");
     assert_eq!(output, [bf16(1.0), bf16(1.5), bf16(2.5), bf16(3.5)]);
+    assert_eq!(
+        attention(&query, &keys, &values, config(Some(2)), 0, 0).unwrap(),
+        output
+    );
     assert_eq!(weights[2 * 4], 0, "sliding window excludes key zero");
     assert_eq!(weights[2 * 4 + 1], bf16(0.5));
     assert_eq!(weights[2 * 4 + 2], bf16(0.5));

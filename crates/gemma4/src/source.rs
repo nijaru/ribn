@@ -44,11 +44,13 @@ pub struct Gemma4Source {
     parameters: BTreeMap<ParameterId, StoredParameter>,
     excluded: Vec<ExcludedParameter>,
     encoded_bytes: usize,
+    media: Inventory,
+    vision_config: Option<serde_json::Value>,
 }
 
-struct Inventory {
-    files: Vec<SafeTensorArtifact>,
-    inventory: BTreeMap<String, usize>,
+pub(crate) struct Inventory {
+    pub(crate) files: Vec<SafeTensorArtifact>,
+    pub(crate) inventory: BTreeMap<String, usize>,
 }
 impl Inventory {
     fn open(package: &LocalModelPackage) -> Result<Self, Gemma4Error> {
@@ -163,7 +165,7 @@ impl Gemma4Source {
                 );
             }
         }
-        for name in inventory.into_keys() {
+        for name in inventory.keys() {
             if !["model.audio_tower.", "model.vision_tower."]
                 .iter()
                 .any(|p| name.starts_with(p))
@@ -176,7 +178,7 @@ impl Gemma4Source {
                 ));
             }
             excluded.push(ExcludedParameter {
-                name,
+                name: name.clone(),
                 reason: Exclusion::NonText,
             });
         }
@@ -185,7 +187,22 @@ impl Gemma4Source {
             parameters,
             excluded,
             encoded_bytes,
+            media: Inventory { files, inventory },
+            vision_config: package.config().get("vision_config").cloned(),
         })
+    }
+
+    /// Select vision parameters from the same retained files as the text source.
+    /// Unused vision semantics do not affect text-only loading.
+    /// # Errors
+    /// Rejects missing/unsupported vision configuration or an incomplete inventory.
+    pub fn vision_source(&self) -> Result<crate::vision::Gemma4VisionSource, Gemma4Error> {
+        let raw = self
+            .vision_config
+            .as_ref()
+            .ok_or_else(|| Gemma4Error::new("vision_config", "missing configuration"))?;
+        let config = crate::vision::Gemma4VisionConfig::parse(raw, self.config.hidden_size())?;
+        crate::vision::Gemma4VisionSource::select(config, &self.media)
     }
 
     #[must_use]

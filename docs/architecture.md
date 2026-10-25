@@ -278,6 +278,15 @@ probe establishes BF16 fit for one 4096-token prompt and 32 predictions, not Rib
 Unknown text semantics or parameters reject;
 see the [real-package gate](../benchmarks/gemma4-reference/README.md#ribn-text-source-preflight).
 
+`engine_gemma4::vision` separately selects encoder/projector parameters from the
+same retained artifact inventory and runs a synchronous CPU component over canonical
+processed patches. Vision configuration is interpreted only on demand; text-only
+loading keeps its own parameter set and rejection behavior. This component does not
+admit media or hand features to AR execution: snapshot binding, byte admission and
+retirement belong to that later integration. Full-checkpoint vision fidelity is not
+established; see the
+[CPU vision gate](../benchmarks/gemma4-reference/README.md#native-cpu-vision-component).
+
 `engine-bert` owns configuration, parameter mapping, masked bidirectional attention,
 embedding/LayerNorm/GELU/pooler semantics and a CUDA executor through `ribn-batch`.
 The executor chooses a feasible FIFO prefix and concrete byte envelope. Results own
@@ -308,7 +317,7 @@ Shared CUDA physical retirement and downstream-workspace progress remain unprove
 | `crates/qwen` / `engine-qwen` | Qwen config, GGUF mapping, CUDA assembly and AR adapter; serving benchmark |
 | `crates/nvidia` / `engine-nvidia` | NVIDIA storage, completion, dispatch and kernels |
 | `crates/bert` / `engine-bert` | BERT semantics, preparation, executor binding and device retirement |
-| `crates/gemma4` / `engine-gemma4` | Gemma 4 text processing, config, source/KV preflight, host CPU BF16 decoder and native BF16 CUDA weight/compute bindings |
+| `crates/gemma4` / `engine-gemma4` | Gemma 4 text processing, config, source/KV preflight, CPU text decoder and separate vision component, native BF16 CUDA weight/compute bindings |
 | `crates/metal` / `engine-metal` | Apple Metal BF16 linear/RMS/rotary/attention/elementwise primitives; macOS-gated, no decoder |
 | `crates/core` / `engine-core` | Prepared batch, backend submission, continuation state and weight contracts; no scheduler, plan or model description |
 | `crates/gguf` / `engine-gguf` | GGUF artifact access and current tokenizer/chat-template implementation |

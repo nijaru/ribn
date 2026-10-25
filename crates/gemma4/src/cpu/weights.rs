@@ -1,12 +1,12 @@
 //! Host materialization of the validated Gemma 4 BF16 parameter inventory.
 
-use crate::{Gemma4Error, Gemma4Source, LayerParameter, ParameterId, ParameterSpec};
+use crate::{Gemma4Error, Gemma4Source, LayerParameter, ParameterId};
 use std::collections::BTreeMap;
 use std::io::Read;
 
 /// One prepared host parameter, preserving its native BF16 encoding and shape.
 pub struct CpuParameter {
-    spec: ParameterSpec,
+    shape: Box<[usize]>,
     values: Box<[u16]>,
 }
 
@@ -25,23 +25,52 @@ impl CpuParameter {
             ));
         }
         Ok(Self {
-            spec: ParameterSpec {
-                id: ParameterId::TokenEmbedding,
-                name: "cpu-parameter".to_owned(),
-                shape: shape.to_vec(),
-            },
+            shape: shape.into(),
             values: values.into(),
         })
     }
 
-    #[must_use]
-    pub const fn spec(&self) -> &ParameterSpec {
-        &self.spec
+    /// Materialize an exact BF16 source with bounded scratch space.
+    pub(crate) fn read(shape: &[usize], mut reader: impl Read) -> Result<Self, Gemma4Error> {
+        let count = shape
+            .iter()
+            .try_fold(1_usize, |n, &d| n.checked_mul(d))
+            .ok_or_else(|| Gemma4Error::new("CPU weight", "shape overflows"))?;
+        let length = count
+            .checked_mul(2)
+            .ok_or_else(|| Gemma4Error::new("CPU weight", "encoded length overflows"))?;
+        let mut values = crate::cpu::try_vector(count, 0_u16)?;
+        let mut scratch = crate::cpu::try_vector(64 * 1024, 0_u8)?;
+        let mut written = 0;
+        while written < length {
+            let want = (length - written).min(scratch.len());
+            reader
+                .read_exact(&mut scratch[..want])
+                .map_err(|e| Gemma4Error::new("CPU weight", e.to_string()))?;
+            for (index, pair) in scratch[..want].as_chunks::<2>().0.iter().enumerate() {
+                values[written / 2 + index] = u16::from_le_bytes(*pair);
+            }
+            written += want;
+        }
+        if reader
+            .read(&mut [0_u8; 1])
+            .map_err(|e| Gemma4Error::new("CPU weight", e.to_string()))?
+            != 0
+        {
+            return Err(Gemma4Error::new(
+                "CPU weight",
+                "source has trailing bytes beyond its declared shape",
+            ));
+        }
+        Ok(Self {
+            shape: shape.into(),
+            values: values.into_boxed_slice(),
+        })
     }
 
     #[must_use]
     pub fn shape(&self) -> &[usize] {
-        &self.spec.shape
+        &self.shape
     }
 
     #[must_use]
@@ -71,47 +100,7 @@ impl Gemma4CpuWeights {
         for (id, stored) in source.parameters() {
             let spec = stored.spec();
             let length = spec.byte_len()?;
-            if !length.is_multiple_of(2) {
-                return Err(Gemma4Error::new(
-                    "CPU weight",
-                    "BF16 payload length is not a whole number of elements",
-                ));
-            }
-            // Bounded scratch avoids a second model-sized encoded allocation for
-            // the largest tensors while the final host buffer stays fallible.
-            let mut values = crate::cpu::try_vector(length / 2, 0_u16)?;
-            let mut reader = stored.reader();
-            let mut scratch = vec![0_u8; 64 * 1024];
-            let mut written = 0_usize;
-            while written < length {
-                let want = (length - written).min(scratch.len());
-                reader
-                    .read_exact(&mut scratch[..want])
-                    .map_err(|error| Gemma4Error::new("CPU weight", error.to_string()))?;
-                for (index, pair) in scratch[..want].as_chunks::<2>().0.iter().enumerate() {
-                    values[written / 2 + index] = u16::from_le_bytes(*pair);
-                }
-                written += want;
-            }
-            let mut trailing = [0_u8; 1];
-            if reader
-                .read(&mut trailing)
-                .map_err(|error| Gemma4Error::new("CPU weight", error.to_string()))?
-                != 0
-            {
-                return Err(Gemma4Error::new(
-                    "CPU weight",
-                    "source has trailing bytes beyond its declared shape",
-                ));
-            }
-            let values: Box<[u16]> = values.into_boxed_slice();
-            parameters.insert(
-                *id,
-                CpuParameter {
-                    spec: spec.clone(),
-                    values,
-                },
-            );
+            parameters.insert(*id, CpuParameter::read(&spec.shape, stored.reader())?);
             bytes =
                 bytes
                     .checked_add(u64::try_from(length).map_err(|_| {
@@ -182,5 +171,25 @@ impl Gemma4CpuWeights {
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.parameters.is_empty()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::CpuParameter;
+
+    #[test]
+    fn bf16_reader_preserves_scalar_rank_and_crosses_scratch_boundaries() {
+        let scalar = CpuParameter::read(&[], &[0x80, 0xbe][..]).unwrap();
+        assert!(scalar.shape().is_empty());
+        assert_eq!(scalar.values(), &[0xbe80]);
+        for bytes in [&[0x80][..], &[0x80, 0xbe, 0x00][..]] {
+            assert!(CpuParameter::read(&[], bytes).is_err());
+        }
+        assert!(CpuParameter::read(&[usize::MAX, 2], &[][..]).is_err());
+        let words: Vec<u16> = (0..32769).collect();
+        let bytes: Vec<_> = words.iter().flat_map(|v| v.to_le_bytes()).collect();
+        let parameter = CpuParameter::read(&[words.len()], bytes.as_slice()).unwrap();
+        assert_eq!(parameter.values(), words);
     }
 }

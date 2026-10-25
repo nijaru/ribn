@@ -496,11 +496,18 @@ now adds the real checkpoint's image encoder/projector and full image+text CPU f
 four frozen RGB cases in each precision, ten exact archived text controls and 230 finite
 captured tensors. The two-image answer remains capped at eight tokens; this is not
 vision-quality acceptance. E4B uses causal text masks, not the larger-Gemma
-vision-bidirectional branch. Next implement model-local CPU vision parameter selection
-and encoder/projection against these operands, then resolve bounded processor-to-AR
-feature ownership through the existing executor/text path. Ribn still rejects media;
-this reference does not establish a general staged/coupled execution contract or waive
-the separate text-serving fidelity gate.
+vision-bidirectional branch. A model-local CPU vision component now selects its 659
+BF16 encoder/projector tensors from the text source's retained artifact inventory,
+without changing text-only selection. An independent small stock-HF fixture checks
+all encoder/projection stages exactly, including grouped heads and padding. The
+[strict full-checkpoint vision gate](../benchmarks/gemma4-reference/README.md#native-cpu-vision-component)
+failed across all four cases/five images: patch embeddings match exactly, but
+layer 0 and projected features disagree. Do not use the small fixture to claim
+full-model fidelity. Resolve that numerical gate with common-operand component
+comparisons before binding processor features to AR execution. Bounded feature
+ownership, snapshot compatibility and admission through the existing executor/text
+path remain open. Ribn still rejects media; this component does not establish a general
+staged/coupled execution contract or waive the separate text-serving fidelity gate.
 
 The file-backed SafeTensors path now reads its approximately 16-GB artifact without
 whole-file payload allocations. The [host loading gate](../benchmarks/loader-memory/README.md)
@@ -511,8 +518,8 @@ I/O evidence, not Gemma execution, whole-loader byte accounting or device prepar
 The model-local `engine-gemma4` host preflight now validates this real package's
 665 active BF16 parameters, preserves their encoded bytes and represents the output
 head as the same logical embedding parameter. The 54 inactive shared-tail tensors
-and 1,411 non-text tensors are explicitly excluded. Host fixtures also exercise a
-second, reduced geometry and sharded loading without new family branches. This is
+and 1,411 non-text tensors are explicitly excluded from text selection. Host fixtures
+also exercise a second, reduced geometry and sharded loading without new family branches. This is
 source selection alone, not the second-decoder exit gate. The optional CUDA loader now
 prepares those native BF16 weights in one charged allocation with a tied head and owned
 partial-load retirement. Two real-package runs matched all 665 source/device hashes and

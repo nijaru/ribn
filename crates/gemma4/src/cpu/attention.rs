@@ -38,7 +38,8 @@ pub fn attention(
     query_start: usize,
     key_start: usize,
 ) -> Result<Vec<u16>, Gemma4Error> {
-    attention_with_weights(query, keys, values, config, query_start, key_start)
+    View::new(query, keys, values, config, query_start, key_start)?
+        .compute(false)
         .map(|(output, _)| output)
 }
 
@@ -55,27 +56,58 @@ pub fn attention_with_weights(
     query_start: usize,
     key_start: usize,
 ) -> Result<(Vec<u16>, Vec<u16>), Gemma4Error> {
-    let view = View::new(query, keys, values, config, query_start, key_start)?;
-    let mut weights = try_vector(
-        view.heads
-            .checked_mul(view.sequence)
-            .and_then(|n| n.checked_mul(view.key_sequence))
-            .ok_or_else(|| Gemma4Error::new("CPU attention", "weight count overflow"))?,
-        0_u16,
-    )?;
-    let mut output = try_vector(query.len(), 0_u16)?;
-    let mut scores = try_vector(view.key_sequence, 0.0_f32)?;
-    let mut accumulator = try_vector(view.width, 0.0_f32)?;
-    for position in 0..view.sequence {
-        view.position(
-            position,
-            &mut weights,
-            &mut output,
-            &mut scores,
-            &mut accumulator,
-        );
+    View::new(query, keys, values, config, query_start, key_start)?.compute(true)
+}
+
+/// Bidirectional vision attention over a nonempty valid-key prefix. Padded
+/// queries are still evaluated; only keys are masked. Canonical image positions
+/// have trailing padding, never holes. No causal/window or score scaling applies.
+pub(crate) fn vision_attention(
+    query: &[u16],
+    keys: &[u16],
+    values: &[u16],
+    config: AttentionConfig,
+    valid_keys: usize,
+) -> Result<Vec<u16>, Gemma4Error> {
+    let mut view = View::new(query, keys, values, config, 0, 0)?;
+    if valid_keys == 0 || valid_keys > view.key_sequence || config.window.is_some() {
+        return Err(Gemma4Error::new(
+            "vision attention",
+            "invalid valid-key prefix or window",
+        ));
     }
-    Ok((output, weights))
+    view.bidirectional_keys = Some(valid_keys);
+    view.compute(false).map(|(output, _)| output)
+}
+
+impl View<'_> {
+    fn compute(&self, audit: bool) -> Result<(Vec<u16>, Vec<u16>), Gemma4Error> {
+        let view = self;
+        let mut weights = if audit {
+            try_vector(
+                view.heads
+                    .checked_mul(view.sequence)
+                    .and_then(|n| n.checked_mul(view.key_sequence))
+                    .ok_or_else(|| Gemma4Error::new("CPU attention", "weight count overflow"))?,
+                0_u16,
+            )?
+        } else {
+            Vec::new()
+        };
+        let mut output = try_vector(view.query.len(), 0_u16)?;
+        let mut scores = try_vector(view.key_sequence, 0.0_f32)?;
+        let mut accumulator = try_vector(view.width, 0.0_f32)?;
+        for position in 0..view.sequence {
+            view.position(
+                position,
+                &mut weights,
+                &mut output,
+                &mut scores,
+                &mut accumulator,
+            );
+        }
+        Ok((output, weights))
+    }
 }
 
 struct View<'a> {
@@ -86,6 +118,7 @@ struct View<'a> {
     kv_heads: usize,
     width: usize,
     window: Option<usize>,
+    bidirectional_keys: Option<usize>,
     query_start: usize,
     key_start: usize,
     sequence: usize,
@@ -160,6 +193,7 @@ impl<'a> View<'a> {
             kv_heads,
             width,
             window,
+            bidirectional_keys: None,
             query_start,
             key_start,
             sequence,
@@ -170,6 +204,9 @@ impl<'a> View<'a> {
     }
 
     fn visible(&self, position: usize) -> (usize, usize) {
+        if let Some(keys) = self.bidirectional_keys {
+            return (0, keys - 1);
+        }
         let absolute = self.query_start + position;
         let last = (absolute - self.key_start).min(self.key_sequence - 1);
         let first = match self.window {
@@ -212,12 +249,14 @@ impl<'a> View<'a> {
                 *score = (*score - maximum).exp();
                 total += *score;
             }
-            let weight_base =
-                head * self.sequence * self.key_sequence + position * self.key_sequence;
             accumulator.fill(0.0);
             for (offset, &score) in scores[first..=last].iter().enumerate() {
                 let weight = bf16(score / total);
-                weights[weight_base + first + offset] = weight;
+                if !weights.is_empty() {
+                    let weight_base =
+                        head * self.sequence * self.key_sequence + position * self.key_sequence;
+                    weights[weight_base + first + offset] = weight;
+                }
                 let value_base = (first + offset) * self.kv_step + kv_head * self.width;
                 for (slot, &value) in accumulator
                     .iter_mut()

@@ -152,6 +152,65 @@ attempt used byte-identical inputs, unchanged arithmetic and the original deadli
 This does not qualify Ribn media execution, device kernels, upload security, serving
 performance or the unresolved text-serving fidelity gate.
 
+### Native CPU vision component
+
+`engine_gemma4::vision` provides a synchronous BF16 encoder/projector, not a media
+request API. Select it with `Gemma4Source::vision_source()`, materialize with
+`Gemma4VisionCpuWeights::load`, then call `Gemma4CpuVisionEncoder::encode` with a
+`VisionImage`. Selection uses the same retained file handles and configuration as
+text loading; unused vision configuration does not change text-only preparation.
+The E4B subset is **659 BF16 tensors / 338,662,272 bytes**, including 448 rank-zero
+activation-clipping bounds. Text selection remains 665 active tensors.
+
+Input is already-processed FP32 RGB patch data in `[physical_patches, 3*patch_size²]`
+HWC-within-patch order, with finite values in `[0,1]`. Positions are row-major xy for
+a complete pooling-aligned rectangle, followed only by zero pixels and `(-1,-1)`
+position padding. Physical patch count must be divisible by pooling area; kernels
+greater than one are supported. The encoder retains padded queries and masks only padded
+keys. Output contains valid projected BF16 rows; `encode_observed` exposes borrowed
+patch/layer, pooled, normalization and projection stages without retaining a trace.
+No feature-cache identity, executor handoff or application byte admission is implied.
+
+The committed independent small stock-HF fixture checks every stage bit-for-bit,
+including grouped heads, two frequencies per spatial axis and trailing padding. It
+uses a saved stock model loaded with `from_pretrained(dtype=bfloat16)`, as the real
+reference does. This leaves derived rotary frequencies FP32. An initial producer's
+whole-module `.to(bfloat16)` also rounded nonpersistent frequency buffers; that was
+a fixture-policy error, not a Native math fix. Corrected reference outputs use
+identical persistent weights and inputs; the failed producer artifacts remain.
+
+The full-checkpoint gate is deliberately stricter than a reduction-error diagnostic:
+it requires exact BF16 words at patch embedding, all 16 layers, valid pooling,
+projection normalization and projection for all four frozen cases. Serial Rust FP32
+reductions are not assumed identical to stock BLAS. Any disagreement fails that gate;
+maximum errors in its report do not define an acceptance tolerance. FP32 is not ground
+truth. Reproduce against a previously collected canonical corpus with:
+
+```sh
+CARGO_BUILD_JOBS=2 RUSTUP_TOOLCHAIN=1.98.0 \
+RIBN_GEMMA_PACKAGE="$SNAPSHOT" \
+RIBN_GEMMA_VISION_REFERENCE=/path/to/canonical-corpus \
+RIBN_GEMMA_VISION_REPORT=/tmp/native-vision-report.json \
+  cargo test -p engine-gemma4 --locked --release --test cpu_vision_reference \
+    real_vision_corpus_exact_gate -- --ignored --nocapture --test-threads=1
+```
+
+The corpus directory must contain `prepared-v1/inputs.safetensors` and
+`bf16/capture/{red,blue,landscape,two_images}.safetensors`. Supervise execution with
+a fresh report path, explicit wall/output limits and process-group retirement; a
+complete JSON report alone is not acceptance.
+
+The recorded Native run processed **all four cases / five images / 100 stage
+comparisons**, preserving full physical padding. All five patch embeddings were
+bit-exact. Every image first differed in layer 0, and all projected feature tensors
+differed; their maximum absolute errors ranged from 0.09375 to 0.1796875. These are
+diagnostics, not an accepted tolerance or a unique-operator diagnosis. The strict
+gate exited **101**, non-forced, with positive process-group absence inside the
+original bounds. Its frozen binary, source and complete failed report remain at
+`/Users/nick/ribn-qualification/gemma4-cpu-vision/20261025T025733Z/`. Full-checkpoint
+fidelity remains **unqualified**. No media route, device variant or serving claim is
+promoted by this component.
+
 ### Chunked prompt collection
 
 Pass `--prefill-chunk-size N` to bound prompt input rows per forward, for example:
