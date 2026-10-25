@@ -43,6 +43,115 @@ embedding-constant rounding and operation precision differ. BF16 is the stock CP
 reference policy, not evidence of identical NVIDIA arithmetic. No numerical tolerance
 or task-quality acceptance follows from the difference between these references.
 
+### Canonical image reference
+
+`benchmarks/gemma4_vision_reference.py` prepares synthetic RGB inputs with the pinned
+publisher processor, then captures the stock CPU vision tower, projector and full
+image+text decoder. It is a prerequisite for a Ribn VLM port, not executable Ribn
+media support. Additional dependency/source pins live in [`vision.toml`](vision.toml);
+the checkpoint and text implementation remain owned by `model.toml`.
+
+Use a separate local environment, leaving qualified text-only environments unchanged:
+
+```sh
+uv venv --python 3.13.11 /tmp/gemma4-vision-env
+PY=/tmp/gemma4-vision-env/bin/python
+uv pip install --python "$PY" --only-binary :all: \
+  -r benchmarks/gemma4_vision_reference.py
+
+"$PY" benchmarks/gemma4_vision_reference.py prepare \
+  --snapshot "$SNAPSHOT" --output /tmp/gemma4-vision-inputs
+"$PY" benchmarks/gemma4-reference/test_vision_capture.py
+"$PY" benchmarks/gemma4_vision_reference.py collect \
+  --snapshot "$SNAPSHOT" --inputs /tmp/gemma4-vision-inputs \
+  --output /tmp/gemma4-vision-bf16 --precision bf16
+"$PY" benchmarks/gemma4_vision_reference.py collect \
+  --snapshot "$SNAPSHOT" --inputs /tmp/gemma4-vision-inputs \
+  --output /tmp/gemma4-vision-fp32 --precision fp32
+```
+
+Preparation does not load model weights. It constructs solid red/blue 48×48 RGB
+arrays, a 96×48 left-red/right-blue image, and a two-image prompt with text between
+the images. It uses `AutoProcessor.apply_chat_template`, non-thinking generation
+prefixes and the default `max_soft_tokens=280`, without a second template or added
+BOS. The resulting prompt/soft-token counts are **279/256**, **279/256**, **274/253**
+and **549/512**. Red and blue have identical token IDs; only pixels differ. All images
+are padded to 2,520 patches, with zero pixel padding and `(-1,-1)` position padding.
+`inputs.safetensors` retains the original RGB arrays and canonical processor tensors;
+`inputs.json` records the template, token IDs, patch counts and half-open media spans.
+
+These are trusted, locally generated arrays, not encoded image files or an image
+upload security gate. Pillow 13.0.0 fixes the recent decoder advisories, but
+[GHSA-654x-cwwv-5j9c](https://github.com/python-pillow/Pillow/security/advisories/GHSA-654x-cwwv-5j9c)
+still affects Arrow export with `PILLOW_ALIGNMENT>1` as of 2026-10-25. The collector
+uses neither Arrow nor externally supplied encoded files; this pin is not a claim
+that Pillow is vulnerability-free.
+
+Collection keeps canonical FP32 pixels unchanged until the stock patch embedder's
+normalization and working-dtype cast. Each per-case archive contains patch embeddings,
+all 16 vision-layer outputs, padded pooler output/mask, valid features, projection
+normalization/output, and the actual text decoder's input embeddings and per-layer
+token inputs. The projector output must equal the image-placeholder rows inserted
+into the text input. The **E4B text config uses ordinary causal masking**
+(`use_bidirectional_attention=None`), not the larger-Gemma vision-bidirectional
+branch; the vision encoder itself is bidirectional. Media token inputs use the
+publisher's PAD handling before feature insertion. These facts do not establish a
+universal staged/coupled scheduling contract.
+
+Every case starts with a fresh cache and whole-prompt prefill, followed by at most
+eight greedy predictions with stops **1, 106, 50**. Full post-softcap vocabulary rows,
+actual histories, generated IDs, text and stop/length status are retained. A length
+finish remains a capped sample, not a completed answer or quality failure. All taps
+must be finite CPU tensors; retained tensor payload is capped below 1 GiB per policy.
+External supervision still owns wall deadlines and process-group retirement.
+
+An optional `--text-controls controls.json` gates image collection on five exact
+historic post-softcap rows. The JSON contains `prompt`, `prompt_ids`, five token-list
+`calls`, and `bf16`/`fp32` lists of `{file, sha256}` entries. Files are contiguous
+little-endian full-vocabulary rows in the selected dtype; paths are relative to the
+JSON file or absolute. Preserve the original chunk/forced-token history: this is
+identity evidence, not a greedy rollout. The stock-model tests exercise capture
+neutrality through continuation, feature insertion/pooling, malformed processor
+boundaries, hook cleanup after failure, and real loader/report serialization.
+
+#### Recorded image collection, 2026-10-25
+
+Both policies completed on the Apple M3 Max with 128 GiB RAM, two CPU threads and
+stock eager attention. Each reproduced five archived text rows exactly before the
+four image cases, then retained 14 image+text prediction rows. An independent audit
+checked all **230 tensors** across both policies: shapes/dtypes/finiteness, row-major
+patch positions/padding, pooler stripping/casting, exact feature insertion and greedy
+histories. Red/blue projected features differ while their per-layer token inputs and
+non-image text embeddings agree exactly.
+
+| CPU policy | Retained tensor payload bytes | `reference.json` SHA256 |
+| --- | ---: | --- |
+| BF16 | 390503800 | `5b0815b758852429fbffd0bb0c3dedbc3188daaeaf0e3c7a26674ba8cb5ddad2` |
+| FP32 diagnostic | 776705400 | `acbd4714a8eb70bc38841e6e10c1c63c0e73ff6f29480ef9fb52425b01cd7738` |
+
+Both generated `Red`, `Blue` and `Red` for the three single-image controls, each
+followed by stop token 106. The two-image case reached the predeclared eight-token
+cap with `The main color in the first image is`; it did **not** complete the answer.
+No case was excluded or rerun to extend its answer. This is a synthetic conditioning
+sanity check and numerical-reference corpus, not vision task-quality acceptance.
+
+Evidence is retained under
+`/Users/nick/ribn-qualification/gemma4-vision-reference/20261025T013142Z/attempt-2/`.
+The canonical input tensor archive has SHA256
+`0912fa4be76996f77a6250e74f218937e2b6210df83ee7bb423ac7a7d36de92b`.
+Both model processes exited 0, non-forced, with positive process-group absence inside
+the original 5,400-second overall budget, 2,700-second per-policy bounds and 1-GiB
+per-policy output limits. Actual package/source/environment pins were checked before
+and after, including unchanged qualified CPU/MLX environments.
+
+The first BF16 attempt reproduced its five controls but failed while serializing
+HF loader diagnostic sets, before any image case. Its exit 1 and artifacts remain
+preserved. Sorting those diagnostics into JSON lists fixed the collector; a real
+small-stock-model regression fails before the fix and passes after it. The accepted
+attempt used byte-identical inputs, unchanged arithmetic and the original deadlines.
+This does not qualify Ribn media execution, device kernels, upload security, serving
+performance or the unresolved text-serving fidelity gate.
+
 ### Chunked prompt collection
 
 Pass `--prefill-chunk-size N` to bound prompt input rows per forward, for example:

@@ -491,6 +491,17 @@ FP32/BF16 operands and the 511/512/513-position local-window transition. These a
 integration prerequisites, not executable Ribn support, multimodal qualification or
 GPU-fit evidence.
 
+The [canonical image reference](../benchmarks/gemma4-reference/README.md#canonical-image-reference)
+now adds the real checkpoint's image encoder/projector and full image+text CPU forwards:
+four frozen RGB cases in each precision, ten exact archived text controls and 230 finite
+captured tensors. The two-image answer remains capped at eight tokens; this is not
+vision-quality acceptance. E4B uses causal text masks, not the larger-Gemma
+vision-bidirectional branch. Next implement model-local CPU vision parameter selection
+and encoder/projection against these operands, then resolve bounded processor-to-AR
+feature ownership through the existing executor/text path. Ribn still rejects media;
+this reference does not establish a general staged/coupled execution contract or waive
+the separate text-serving fidelity gate.
+
 The file-backed SafeTensors path now reads its approximately 16-GB artifact without
 whole-file payload allocations. The [host loading gate](../benchmarks/loader-memory/README.md)
 checks the complete artifact and every encoded tensor against the independent source,

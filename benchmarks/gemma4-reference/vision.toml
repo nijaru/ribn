@@ -1,0 +1,13 @@
+[packages]
+pillow = "13.0.0"
+torchvision = "0.29.1"
+numpy = "2.5.4"
+
+[source_sha256]
+"models/gemma4/image_processing_gemma4.py" = "5d280d5448b1c219183a27e95b6aa7178b350275772d07881c91c65f13fa815e"
+"models/gemma4/processing_gemma4.py" = "862cd450282634ec18f3b66add025870a0c98508e59419529e1e3229c835a927"
+"processing_utils.py" = "a6cb4add203af80d955efb66386ae5feed06fb92262d6debd451b6576fd7f718"
+"image_processing_backends.py" = "539d3001944fa7d51e43336a86e800f2e3c5dd6512709f26e2d39884a052f18a"
+"image_processing_base.py" = "cef213845f00f02d98ecf8d273111e2e20404a2883a11a6afbac0414feeb9b20"
+"image_processing_utils.py" = "259d04a85176b87f61348a7717db2190046db23ed43d341aef772ea6034d466f"
+"image_utils.py" = "b2e7cbce53482f3c889d060e185b004cfff3ae6987edcc90139bad43db028b37"
