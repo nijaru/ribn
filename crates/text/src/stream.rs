@@ -251,8 +251,8 @@ impl TextStream {
         self.request
     }
 
-    /// Record cancellation intent. Buffered output is preserved and an ordinary
-    /// `Cancelled` terminal still arrives; this does not wait for the device.
+    /// Record cancellation intent without discarding buffered output. This does
+    /// not wait for the device and may race with an already-settled terminal.
     pub fn cancel(&self) {
         if let Some(stream) = &self.stream {
             stream.cancel();

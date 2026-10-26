@@ -60,7 +60,7 @@ struct Control {
     released: AtomicUsize,
     synced: AtomicUsize,
     dropped: AtomicBool,
-    panic_gate: Mutex<Option<(Sender<()>, Receiver<()>)>>,
+    poll_gate: Mutex<Option<(Sender<()>, Receiver<()>)>>,
 }
 impl Default for Control {
     fn default() -> Self {
@@ -80,7 +80,7 @@ impl Default for Control {
             released: AtomicUsize::new(0),
             synced: AtomicUsize::new(0),
             dropped: AtomicBool::new(false),
-            panic_gate: Mutex::new(None),
+            poll_gate: Mutex::new(None),
         }
     }
 }
@@ -138,7 +138,7 @@ impl GenerationExecutor for Model {
     }
     fn poll(&mut self, _: SubmissionId) -> Result<Option<Vec<StepCompletion>>, ExecutionError> {
         self.control.polls.fetch_add(1, Ordering::SeqCst);
-        if let Some((entered, resume)) = self.control.panic_gate.lock().unwrap().take() {
+        if let Some((entered, resume)) = self.control.poll_gate.lock().unwrap().take() {
             entered.send(()).unwrap();
             resume.recv().unwrap();
         }
@@ -348,6 +348,35 @@ fn cancellation_is_delivered_under_saturated_admission_without_early_release() {
         })
     ));
     drop(other_permit);
+    owner.shutdown().unwrap();
+}
+
+#[test]
+fn cancellation_does_not_replace_a_terminal_settled_before_intent_is_observed() {
+    let control = Arc::new(Control::default());
+    let (entered_tx, entered) = flume::bounded(1);
+    let (resume, resume_rx) = flume::bounded(1);
+    *control.poll_gate.lock().unwrap() = Some((entered_tx, resume_rx));
+    let (mut owner, handle) = setup(&control, Duration::from_millis(1));
+    let mut request = input(7, 8);
+    request.options.stop_tokens.push(7);
+    let mut stream = run(handle.stream(request)).unwrap();
+    entered.recv_timeout(Duration::from_secs(3)).unwrap();
+
+    // The worker has checked intent and entered a non-preemptible engine step.
+    // Publishing intent before that poll returns is not an acknowledgement:
+    // this step may settle EOS before the worker can observe cancellation.
+    stream.cancel();
+    assert_eq!(control.released.load(Ordering::SeqCst), 0);
+    resume.send(()).unwrap();
+    assert!(matches!(
+        collect(&mut stream).last(),
+        Some(Event::Finished {
+            reason: FinishReason::Stop,
+            ..
+        })
+    ));
+    assert_eq!(control.released.load(Ordering::SeqCst), 1);
     owner.shutdown().unwrap();
 }
 
@@ -574,7 +603,7 @@ fn queued_submission_and_shutdown_acknowledgements_are_dropped_on_worker_panic()
     let (control, mut owner, handle) = fixture();
     let (entered_tx, entered) = flume::bounded(1);
     let (resume, resume_rx) = flume::bounded(1);
-    *control.panic_gate.lock().unwrap() = Some((entered_tx, resume_rx));
+    *control.poll_gate.lock().unwrap() = Some((entered_tx, resume_rx));
     control.panic_poll.store(true, Ordering::SeqCst);
     let first = run(handle.stream(input(7, 8))).unwrap();
     entered.recv_timeout(Duration::from_secs(3)).unwrap();

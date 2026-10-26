@@ -413,7 +413,14 @@ fn every_terminal_releases_decoder_and_owner_failure_never_flushes() {
         );
         assert_eq!(live.load(Ordering::SeqCst), 1);
         if mode == "cancel" {
+            // The first poll completed prefill; hold an in-flight decode before
+            // cancelling so it cannot retire before intent is observed.
+            wait_until(|| harness.plan.polls() >= 2);
             stream.cancel();
+            let polls = harness.plan.polls();
+            // Each engine step polls once. Two later pending polls cross an
+            // owner intent check, unlike immediately releasing a terminal EOS.
+            wait_until(|| harness.plan.polls() >= polls + 2);
         }
         if mode == "owner" {
             // Leave decode held until polling observes the fault, rather than
