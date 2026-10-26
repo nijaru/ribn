@@ -1,6 +1,6 @@
 # Inference engine design
 
-Status: accepted target, revised 2026-10-21; not implemented support or a SOTA claim.
+Status: accepted target, revised 2026-10-26; not implemented support or a SOTA claim.
 [Resource protocol](resource-protocol.md) owns execution/resource transitions;
 [roadmap](roadmap.md) owns delivery order, open implementation choices and gates;
 [architecture](architecture.md) maps current source. Public v0 interfaces are unstable.
@@ -277,10 +277,13 @@ numerical comparison, but Python is not a mandatory production runtime.
 graph. Concrete pipelines must prove device dependencies and shared-pool downstream
 workspace progress before claiming composition support.
 
-Physical layouts and kernels remain backend-specific across NVIDIA, AMD, Apple/Metal and
-CPU. A second real backend must prove any portability claim; the design selects no new
-hardware priority. External systems allocate fleet resources; Ribn executes within its
-grant. Collectives, sharding, expert/pipeline/context parallelism and disaggregated transfer
+Hardware targets include NVIDIA, AMD, Apple, TPUs, CPUs and other accelerators;
+current qualification workloads do not define the product boundary. Physical layouts,
+kernels and execution strategies remain backend-specific rather than requiring every
+backend to fit a CUDA execution model. These are support goals, not claims of implemented
+or qualified support. A second real backend must prove any portability claim; the design
+selects no new hardware priority. External systems allocate fleet resources; Ribn executes
+within its grant. Collectives, sharding, expert/pipeline/context parallelism and disaggregated transfer
 require implementations and qualification, not topology metadata. Local use needs no
 synthetic distributed layers. Host cache tiers and remote transfer follow measured demand,
 not the assumption that every cache should be hierarchical.
