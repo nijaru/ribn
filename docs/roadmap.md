@@ -50,10 +50,10 @@ configuration, eight-row native 64-token prefill measured 146.844 ms versus 18.2
 SGLang; pooled decode is 19.271 versus 12.037 ms—about 8.0x/1.60x slower. SGLang's full
 one-request graph runs every decode, not prefill. All 12 common-history winners agree,
 but native/SGLang KL and TV maxima exceed stock; this is not quality-equivalent acceptance.
-Old BF16-host timings are not reused. A [bounded loopback serving study](../benchmarks/gemma4-cuda-baseline.md#matched-loopback-serving-diagnostic-2026-10-22)
-now adds 48 common variable-length prompts, c1/c4/c8 and rate-controlled admission overload,
-with three fresh server processes per engine. Native stays near 38 output tokens/s while
-SGLang reaches 281–291 at c4/c8; c8 TTFT p95 is 4.68 s versus 0.49 s. Raw client clocks,
+Old BF16-host timings are not reused. The [eight-row loopback serving study](../benchmarks/gemma4-cuda-baseline.md#matched-loopback-serving-diagnostic-2026-10-22)
+measured 48 common variable-length prompts, c1/c4/c8 and rate-controlled admission overload,
+with three fresh server processes per engine. Native stayed near 38 output tokens/s while
+SGLang reached 281–291 at c4/c8; c8 TTFT p95 was 4.68 s versus 0.49 s. Raw client clocks,
 actual usage, phase-window rates and joint diagnostic deadlines reconcile across all 24
 phases; six servers exit cleanly. At c1 only 34/48 continuations match, so these are not
 quality-equivalent ratios. AIPerf can suppress concurrency-gated arrival ticks; its issued
@@ -83,8 +83,17 @@ attention memchecks, actual-sixteen-row executor/text checks and an ordinary CUD
 smoke. Automatic selection is enabled only for the qualified device/geometry/reach and
 prepared ceiling, retaining eight/scalar fallbacks and unchanged decode. This preserves
 the existing GPU numerical policy; it does not establish new long-context CPU parity
-or quality-equivalent acceptance. Next measure the promoted lane through matched mixed-arrival
-serving and capacity/pressure workloads; do not extrapolate direct-call gains into SLO goodput.
+or quality-equivalent acceptance. The [promoted-lane serving comparison](../benchmarks/gemma4-cuda-baseline.md#promoted-sixteen-row-serving-comparison-2026-10-26)
+now measures three fresh eight/sixteen-row process pairs on that mixed-length loopback
+cohort. Median paired c4/c8 throughput improves 9.9%/9.8%, and all 501 shared successful
+native prompt comparisons preserve text, usage and finish. The internal advancement
+screen passes, but native throughput still flattens near 41 tokens/s versus fresh SGLang
+281–291, without quality equivalence. Native c8 TTFT p95 remains 4.10 s and only 4/48
+requests pass the diagnostic deadlines. Retain sixteen rows; select subsequent model-local
+cross-sequence physical execution from this remaining deficit, not wider prefill by default.
+Tight-grant pressure/recovery and independent common-history quality remain measurement
+priorities; this bounded constant-rate cohort does not close representative arrivals or
+product SLO acceptance.
 
 vLLM remains source-reviewed only, and unmodified Flare excludes SM89. Use their mechanisms
 and the [Flare findings](inference-engine-design.md#nvidia-flare-reviewed-2026-10-21) without

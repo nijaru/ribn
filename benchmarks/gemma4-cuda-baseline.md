@@ -1031,3 +1031,103 @@ loop-count equivalence and post-run audits are retained under
 binaries, logs and audit are under `gemma4-cuda-16row/20261025T221200Z`. The same package
 and archived CPU identities apply. Required host gates remain separate from this device
 evidence.
+
+## Promoted sixteen-row serving comparison (2026-10-26)
+
+**The promoted lane improves paired c4/c8 output throughput by 9.9%/9.8%, but native
+throughput still flattens near 41 tokens/s.** This is an end-to-end improvement over
+an eight-row control, not quality-equivalent competitive acceptance against SGLang.
+
+### Controls and acceptance
+
+The [loopback method above](#matched-loopback-serving-diagnostic-2026-10-22) is repeated
+with three fresh processes for each of eight-row Ribn, sixteen-row Ribn and SGLang:
+36 phases, each with 48 profiling requests and four excluded warmups. Process orders
+are eight/sixteen/SGLang, SGLang/sixteen/eight, then sixteen/eight/SGLang. All phases
+retain the same 48 raw prompts, including rejected requests: 1–179 input tokens,
+3,382 total, seed 42, nominal 64±48 input, output cap 32, temperature zero and EOS
+enabled. Successful prompt usage matches independent tokenization. The canonical
+18-input/four-output-token preflight precedes each server's measured phases.
+
+Both native binaries use source `74e4112`, Rust 1.98.0 and the same release CUDA build.
+The private eight-row control changes only `PREFILL_LANES` in CUDA decoder preparation
+from `[8, 16]` to `[8]`; the ordinary sixteen-row CLI is unmodified. Binary SHA256s are
+`d7a17e9f1cb98359ef4f888bbbf3072fda04da2fd4c717391543916bbf61a4f4` and
+`ac70983cdb6fa58427e5a8f8a43737879ffcd3ce310de98c28d879102b801bb0`, respectively.
+No kernel implementation, precision, logical policy or Graph selection changes. The
+RTX 4090, driver 615.71.10, CUDA 13.3.73 and pinned client/SGLang environments are retained.
+All nine package-file identities and selected installed-source/metadata hashes are checked
+before/after; neither dependency environment is modified. Native still uses its default
+20 GiB pool and full per-sequence 4096-position storage; SGLang retains its 4096-total-token
+arena, four active requests and existing decode graphs. These are not equal physical
+memory grants. Reproduce with the preceding server/client commands and these two native
+builds; do not substitute the older eight-row serving binary.
+
+Before measurement, the internal advancement screen required at least 5% median paired
+throughput gain at both c4 and c8; no paired shape could lose more than 5%. Per-shape
+median paired TTFT/last-content p95 could not regress more than 5%, and no paired phase
+could add failed requests or lose joint diagnostic-deadline passes. Shared successful
+native outputs had to match exactly. **All these gates pass.** No unchanged model cohort
+is retried, and all nine servers and 36 clients exit zero within the original one-hour
+campaign bound. Model identities/groups and GPU contexts settle before each subsequent
+launch; a final executable-identity scan also finds no native or shared client/reference
+Python processes. The GPU returns to its initial empty/idle state, not a restarted service.
+
+### Results and remaining deficit
+
+Each cell is the median of three process results. Latency p95 covers successful requests;
+diagnostic goodput uses joint TTFT ≤1,000 ms and last content ≤5,000 ms, with failures
+never passing. Raw content clocks, actual usage, finite phase-window rates including
+drain and joint counts are independently reconciled. Rate checks account only for the
+exporter's epoch-float/microsecond timestamp serialization error, not a fitted tolerance.
+Generic `performance_metrics_audited` and `planned_arrivals_audited` remain false.
+
+| Configuration / client load | Successes / 48 | Output tokens/s | TTFT p95 ms | Last-content p95 ms | Diagnostic passes / 48 | Diagnostic goodput requests/s |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Eight c1 | 48 | 37.57 | 398.8 | 1029.5 | 48 | 1.223 |
+| Sixteen c1 | 48 | 41.16 | 254.5 | 882.2 | 48 | 1.339 |
+| SGLang c1 | 48 | 85.04 | 30.6 | 381.8 | 48 | 2.716 |
+| Eight c4 | 48 | 37.61 | 1059.1 | 3826.9 | 43 | 1.096 |
+| Sixteen c4 | 48 | 41.27 | 860.9 | 3435.1 | 46 | 1.287 |
+| SGLang c4 | 48 | 280.83 | 52.9 | 465.8 | 48 | 8.998 |
+| Eight c8 | 48 | 37.65 | 4705.9 | 7700.8 | 4 | 0.102 |
+| Sixteen c8 | 48 | 41.28 | 4098.2 | 6754.6 | 4 | 0.112 |
+| SGLang c8 | 48 | 290.64 | 487.9 | 907.6 | 48 | 9.288 |
+| Eight nominal 4/s, c32 | 29 | 38.16 | 9340.6 | 12109.6 | 4 | 0.176 |
+| Sixteen nominal 4/s, c32 | 31 | 41.38 | 8735.7 | 11078.2 | 4 | 0.177 |
+| SGLang nominal 4/s, c32 | 48 | 121.18 | 44.0 | 441.7 | 48 | 3.870 |
+
+Every c4 pair improves throughput by 9.23–10.13%; every c8 pair improves 9.20–10.06%.
+Eight-row c4 throughput spans 37.47–37.75 tokens/s versus sixteen-row 41.24–41.32;
+c8 spans 37.50–37.78 versus 41.26–41.32. Sixteen-row c1 TTFT p95 falls 36.3% by the
+median paired comparison. Native closed-loop phases all produce exactly 1,475 tokens.
+Rate-controlled phases produce 869 versus 935: admission outcomes change, not just timing.
+Each rate-controlled eight-row phase has 19 HTTP 503 failures versus sixteen-row 17;
+all attempts remain accounted for. The successful rate-load prompt sets are not nested. Across all loads and
+repetitions, all **501 shared successful native prompt comparisons** have identical text,
+usage and finish. This does not assert an output for a rejected request.
+
+SGLang c1 produces 1,503 tokens and agrees with sixteen-row native on text, core usage
+counts and finish for **34/48** prompts in each repetition. Batched SGLang outputs still
+vary with scheduling; its c4 phases produce 1,477–1,502 tokens. No independent oracle here
+classifies those disagreements. The SGLang/native rates therefore remain diagnostics,
+not quality-equivalent speed ratios. Largest one-second device-used memory samples are
+15,590 MiB for eight and 15,598 MiB for sixteen, versus 17,899 MiB for SGLang; these are
+neither allocation charges nor physical peaks. Largest summed owned-process RSS samples
+are 14.89 GiB for either native configuration and 6.74 GiB for SGLang; summing RSS can
+double-count shared pages and is not unique/private resident memory. The separately
+qualified charged-memory increment remains 7.0 MiB.
+
+Retain the qualified sixteen-row selection. Its direct-call gains now have bounded
+serving evidence, but higher logical concurrency still adds queue-visible latency without
+material native throughput scaling. Native c8 still passes only 4/48 diagnostic deadlines.
+Choose subsequent model-local cross-sequence physical-execution work from this deficit,
+with numerical and retirement gates, rather than widening prefill rows by default.
+Tight-grant pressure/recovery, representative arrivals/product SLOs, long-context CPU
+parity, independent quality and an incumbent-native client cross-check remain open.
+
+The protocol, both builds/patches, all 36 raw exports, installed-source/package identities,
+one-second RSS/GPU samples, deadline observer and final absence proof are retained under
+`gemma4-serving/20261026T045225Z`. A zero-context patch application and a misspelled
+installed-distribution lookup failed during setup; their logs and corrected setup are
+retained. Neither repeated a model cohort, changed dependencies or reset the deadline.
