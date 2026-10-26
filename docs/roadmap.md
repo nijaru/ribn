@@ -91,9 +91,13 @@ screen passes, but native throughput still flattens near 41 tokens/s versus fres
 281–291, without quality equivalence. Native c8 TTFT p95 remains 4.10 s and only 4/48
 requests pass the diagnostic deadlines. Retain sixteen rows; select subsequent model-local
 cross-sequence physical execution from this remaining deficit, not wider prefill by default.
-Tight-grant pressure/recovery and independent common-history quality remain measurement
-priorities; this bounded constant-rate cohort does not close representative arrivals or
-product SLO acceptance.
+The [shared-grant recovery gate](../benchmarks/gemma4-cuda-baseline.md#shared-grant-allocation-and-recovery-gate-2026-10-26)
+now qualifies real partial cache-allocation failure, healthy-peer preservation, charge
+retention for cancelled accepted submissions and subsequent reuse through the native Engine.
+It changes no production behavior and proves logical-grant recovery, not driver OOM,
+physical peaks or already-enqueued asynchronous cancellation. Endpoint pressure/recovery
+and independent common-history quality remain measurement priorities; representative
+arrivals and product SLO acceptance are still open.
 
 vLLM remains source-reviewed only, and unmodified Flare excludes SM89. Use their mechanisms
 and the [Flare findings](inference-engine-design.md#nvidia-flare-reviewed-2026-10-21) without

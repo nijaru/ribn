@@ -1123,11 +1123,69 @@ serving evidence, but higher logical concurrency still adds queue-visible latenc
 material native throughput scaling. Native c8 still passes only 4/48 diagnostic deadlines.
 Choose subsequent model-local cross-sequence physical-execution work from this deficit,
 with numerical and retirement gates, rather than widening prefill rows by default.
-Tight-grant pressure/recovery, representative arrivals/product SLOs, long-context CPU
-parity, independent quality and an incumbent-native client cross-check remain open.
+End-to-end tight-grant serving recovery, representative arrivals/product SLOs, long-context
+CPU parity, independent quality and an incumbent-native client cross-check remain open.
 
 The protocol, both builds/patches, all 36 raw exports, installed-source/package identities,
 one-second RSS/GPU samples, deadline observer and final absence proof are retained under
 `gemma4-serving/20261026T045225Z`. A zero-context patch application and a misspelled
 installed-distribution lookup failed during setup; their logs and corrected setup are
 retained. Neither repeated a model cohort, changed dependencies or reset the deadline.
+
+## Shared-grant allocation and recovery gate (2026-10-26)
+
+The native CUDA executor and token Engine now pass a real allocation-pressure test on
+RTX 4090/E4B, with the qualified sixteen-row preparation and full 4096-position caches.
+This adds coverage without changing production behavior. The existing direct-decoder
+partial-construction test did not protect healthy Engine peers or subsequent admission.
+
+The model retains **14,946,887,968 charged bytes** from a 20 GiB `BytePool`. Cache size is
+derived from BF16 K/V geometry for every KV-owning layer, excluding donor aliases:
+**234,881,024 bytes (224 MiB) per sequence**. A competing owning lease leaves room for
+two complete caches and one first-layer key, **4,194,304 bytes (4 MiB)**. That competing
+lease consumes logical grant capacity; it does not allocate dummy physical VRAM.
+
+Two-credit mailboxes hold each original request after its first generated token, without
+sleeps or consuming those tokens. Under that stable pressure:
+
+- A third request emits no token and terminates with request-local `Failed`, retaining
+  prompt usage and zero completion usage. Its diagnostic identifies the exact refused
+  4 MiB value reservation with zero bytes available. Partial-key retirement publishes
+  capacity readiness and restores the exact pre-attempt charge; both peers remain active
+  and the Engine is not faulted.
+- Consuming one victim token permits a decode submission. Cancellation before executor
+  polling retains both complete cache charges. Completing that accepted submission then
+  retires the victim, suppresses its new output and delivers `Cancelled` with completion
+  usage one. Only then does one full cache charge become reusable.
+- A replacement finishes while the other original consumer remains stalled. That peer
+  subsequently finishes, as does another request after dropping the competing lease.
+  All three full continuations reproduce the four archived greedy token IDs, `Length`
+  and exact 18-prompt/4-completion usage. Shutdown and model drop return the pool charge
+  to zero.
+
+The new pressure test and the existing text-facade abandonment/reuse test each pass in
+one serialized release invocation, with native exit zero. The latter uses its existing
+32-position cache; it is a separate facade check, not text-layer pressure qualification.
+The build and all six required host gates also exit zero. Package sizes/hashes and the
+archived reference are unchanged before/after. Both process groups are absent after
+exit; GPU samples identify only the owned test process, and the final device is empty,
+0% utilized and 33 MiB used. Source, binaries, protocol, raw logs and samples remain under
+`gemma4-pressure/20261026T063624Z`.
+
+Reproduce the pressure transition with the pinned package/reference and CUDA toolchain:
+
+```sh
+CARGO_BUILD_JOBS=2 RUSTUP_TOOLCHAIN=1.98.0 \
+  RIBN_GEMMA_PACKAGE=/path/to/package RIBN_GEMMA_REFERENCE=/path/to/cpu-bf16-reference.json \
+  cargo test -p engine-gemma4 --features cuda --release --locked --test cuda_pressure \
+  -- --ignored --test-threads=1 --nocapture
+```
+
+This qualifies logical-grant exhaustion with real CUDA allocations, not driver OOM,
+a physical-memory peak bound, endpoint pressure/SLO recovery or other hardware.
+Cancellation precedes the synchronous executor's device work in `poll`; it does not
+qualify cancellation of already-enqueued asynchronous CUDA work. Capacity refusal is
+terminal request-local failure, not deferred admission or a capacity-wait/reactivation
+gate. Dynamic growth, retraction and broad fairness remain separate gates. Static review
+strengthened the failure assertion before the first device build/run; neither a model attempt nor the
+original campaign deadline was reset.
