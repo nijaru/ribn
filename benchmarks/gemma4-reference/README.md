@@ -442,6 +442,44 @@ This qualifies collection/instrumentation only. Native BF16 linear device accept
 still precedes dependent device math; mixed-KV lifetimes and full-model acceptance
 remain separate gates.
 
+## First PLE-projection reference
+
+`benchmarks/gemma4_linear_reference.py` prepares the first dense projection
+without a full-model forward. Use the existing pinned CPU reference environment;
+it does not install packages or download weights:
+
+```sh
+"$REFERENCE_PYTHON" benchmarks/gemma4_linear_reference.py \
+  --snapshot "$SNAPSHOT" --output /tmp/gemma4-first-projection \
+  --token-ids 236776 236776 236776 236776 --threads 1
+```
+
+The collector accepts one to four token IDs. It verifies all package bytes before
+and after collection and the pinned runtime/source hashes. A compact lookup table
+feeds the selected real BF16 embedding rows through the pinned scaled-embedding
+module, retaining their original token identities. `projection.safetensors` holds
+those rows, expected BF16 `input`, the real BF16 `weight` in output-by-input order,
+and F64 `reference` and `sum_abs_products`. The reference is `input @ weight.T`
+**before** PLE projection scaling and normalization. Every BF16 product is exact in
+binary64; `math.fsum` accumulates the products without BLAS. The absolute-product
+sums describe conditioning, not an acceptance budget. Existing output directories
+are refused; failures retain an incomplete report.
+
+On 2026-10-26 the four IDs above matched the first teacher-forced decode inputs of
+the rejected four-sequence experiment. Collection exited 0 in 22.2 seconds with a
+55,779,728-byte artifact (`5105960de4b2a446bdc5b176b7c9ef41c7827946af03f204eab3133d6f9b14d6`).
+Its projection is **10,752 × 2,560**, with 43,008 reference outputs. An independent
+reader checked shapes/finiteness, source parameter bytes, scaled-input rounding
+and bit-identical duplicate rows. At three coordinates, exact-rational dots and
+absolute-product sums rounded to binary64 matched the retained values.
+
+These are **expected semantic operands, not captured device operands**. First
+match actual input/weight bits before using the pack for device diagnosis. This
+extends the [selected-coordinate row-count diagnostic](#cuda-projection-row-count-preflight-2026-10-21-utc)
+to complete first-projection outputs; it does not locate the full-model divergence.
+The F64 results are neither a BF16 rounding oracle nor a full-model quality budget.
+No device parity, numerical tolerance, performance gain or variant promotion follows.
+
 ## Layer-math stage taps
 
 `benchmarks/gemma4_reference.py --stages` records the remaining decoder-layer

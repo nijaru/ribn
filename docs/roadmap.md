@@ -95,7 +95,10 @@ The first [four-sequence decode prototype](../benchmarks/gemma4-cuda-baseline.md
 fails full-logit bit equality on its first common-history decode, despite finite outputs
 and four unchanged argmaxes. It remains private and unpromoted; isolate the numerical
 source before performance advancement. Later candidate cohorts and lifecycle/serving
-gates are unexecuted, not passed.
+gates are unexecuted, not passed. A host-only [first-projection reference](../benchmarks/gemma4-reference/README.md#first-ple-projection-reference)
+now supplies expected BF16 operands and complete binary64 diagnostic sums for the
+first rejected decode inputs. Actual device operand capture and numerical isolation
+remain pending; no tolerance or promotion follows from the reference export.
 The [shared-grant recovery gate](../benchmarks/gemma4-cuda-baseline.md#shared-grant-allocation-and-recovery-gate-2026-10-26)
 now qualifies real partial cache-allocation failure, healthy-peer preservation, charge
 retention for cancelled accepted submissions and subsequent reuse through the native Engine.
