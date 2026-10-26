@@ -91,6 +91,11 @@ screen passes, but native throughput still flattens near 41 tokens/s versus fres
 281–291, without quality equivalence. Native c8 TTFT p95 remains 4.10 s and only 4/48
 requests pass the diagnostic deadlines. Retain sixteen rows; select subsequent model-local
 cross-sequence physical execution from this remaining deficit, not wider prefill by default.
+The first [four-sequence decode prototype](../benchmarks/gemma4-cuda-baseline.md#four-sequence-decode-numerical-gate-2026-10-26)
+fails full-logit bit equality on its first common-history decode, despite finite outputs
+and four unchanged argmaxes. It remains private and unpromoted; isolate the numerical
+source before performance advancement. Later candidate cohorts and lifecycle/serving
+gates are unexecuted, not passed.
 The [shared-grant recovery gate](../benchmarks/gemma4-cuda-baseline.md#shared-grant-allocation-and-recovery-gate-2026-10-26)
 now qualifies real partial cache-allocation failure, healthy-peer preservation, charge
 retention for cancelled accepted submissions and subsequent reuse through the native Engine.

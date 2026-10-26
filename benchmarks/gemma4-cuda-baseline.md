@@ -1189,3 +1189,56 @@ terminal request-local failure, not deferred admission or a capacity-wait/reacti
 gate. Dynamic growth, retraction and broad fairness remain separate gates. Static review
 strengthened the failure assertion before the first device build/run; neither a model attempt nor the
 original campaign deadline was reset.
+
+## Four-sequence decode numerical gate (2026-10-26)
+
+A private RTX 4090/E4B prototype batches the dense operations of four independent
+continuations through existing BF16 primitives, while gathering queries and running
+attention against each row's own cache and position. This is cross-sequence decode,
+not a return to four-row prefill. It adds 3,689,472 charged bytes (3.52 MiB), with no
+kernel, precision, logical-policy or graph change. **It fails the numerical gate and
+is not promoted.** The public sixteen-row-prefill/serial-decode path remains unchanged.
+
+The control executable uses public source `6d5035f`; the candidate uses a separate
+patched build. They do not compare two paths through the same refactored implementation.
+Both receive the same archived-token-derived histories, full 4096-position caches and
+fixed teacher-forced continuation IDs. These synthetic arithmetic probes are not
+EOS-enabled greedy-serving or task-quality evidence. A separate archived chat-greedy
+check is planned in the same input deck.
+
+All four initial prefill logits match bit-for-bit. On the first decode at processed
+prefixes 1, 17, 64 and 513, every row has the expected 262,144 finite BF16 logits, but
+all four fail full-logit bit equality:
+
+| Processed prefix | Differing logits | Maximum absolute difference | Argmax unchanged |
+| ---: | ---: | ---: | :---: |
+| 1 | 188,187 | 0.375 | yes |
+| 17 | 240,860 | 0.59375 | yes |
+| 64 | 247,764 | 0.5625 | yes |
+| 513 | 231,525 | 0.4375 | yes |
+
+The differences are descriptive, not fitted tolerances. Four unchanged argmaxes do not
+establish distributional equivalence or make the discrepancy harmless. The numerical
+source is not isolated; changed vendor-GEMM reduction order is a hypothesis, not a
+finding. A later variant needs common-history component comparisons and an independently
+justified numerical contract before performance advancement. Existing reference error
+supplies no extra error budget.
+
+The candidate captures every row of that failed step, then stops. Its remaining steps
+and later window, maximum-reach, permutation, chat-greedy and serial-fallback cohorts
+are **unexecuted**.
+The control alone completes all eight cohorts, including the archived four-token chat
+check; that does not qualify the candidate. No serving comparison or four-row lifecycle
+promotion gate runs. Invalid-token prevalidation does reject the last row without
+changing any cursor or charge. Both probes close their caches and return the pool charge
+to zero, but this is not failed-drain, cancellation or physical-OOM qualification.
+
+The control exits zero; the candidate exits one for the explicit numerical rejection.
+Both native process groups disappear normally, with no forced cleanup. Package/reference
+hashes remain unchanged, sampled compute processes belong only to the active probe, and
+the final GPU is empty, 0% utilized and 33 MiB used. The source patches, both binaries,
+all 76 control and eight candidate raw logit vectors, input deck, protocol and failed
+setup attempts remain under `gemma4-batch4/20261026T202039Z`. Two lock-resolution setup
+failures preceded all model execution; native-only offline builds then preserved every
+workspace dependency pin. No dependency installation, model retry, tolerance change or
+campaign-clock reset occurred.
