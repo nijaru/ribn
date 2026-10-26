@@ -3,6 +3,7 @@
 Run with the AIPerf environment's Python; not part of the dependency-free unit suite.
 """
 
+import hashlib
 import json
 import os
 import subprocess
@@ -173,6 +174,34 @@ class RealClientTests(unittest.TestCase):
                     # Readiness probes are disabled: only declared issued attempts.
                     self.assertEqual(server.requests, requests + warmup)
                     client = output / "client"
+                    raw = [
+                        json.loads(line)
+                        for line in (client / "profile_export_raw.jsonl")
+                        .read_text()
+                        .splitlines()
+                    ]
+                    # Independent reference: count actual profiling prompt digests,
+                    # including overload failures, without calling the auditor.
+                    digests = [
+                        hashlib.sha256(
+                            r["payload"]["prompt"].encode("utf-8")
+                        ).hexdigest()
+                        for r in raw
+                        if r["metadata"]["benchmark_phase"] == "profiling"
+                    ]
+                    pairs = [[d, digests.count(d)] for d in sorted(set(digests))]
+                    encoded = json.dumps(pairs, separators=(",", ":")).encode("ascii")
+                    self.assertEqual(
+                        report["prompt_cohort"],
+                        {
+                            "algorithm": "sha256-utf8-prompt-multiset-v1",
+                            "sha256": hashlib.sha256(
+                                b"ribn:profiling-prompt-multiset:v1\0" + encoded
+                            ).hexdigest(),
+                            "requests": requests,
+                            "unavailable_request_ids": [],
+                        },
+                    )
                     return {
                         "audit": report,
                         "prompt_lengths": server.prompt_lengths[warmup:],
@@ -182,12 +211,7 @@ class RealClientTests(unittest.TestCase):
                             .read_text()
                             .splitlines()
                         ],
-                        "raw": [
-                            json.loads(line)
-                            for line in (client / "profile_export_raw.jsonl")
-                            .read_text()
-                            .splitlines()
-                        ],
+                        "raw": raw,
                         "wire_events": server.wire_events,
                     }
                 finally:

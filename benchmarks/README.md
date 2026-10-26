@@ -378,6 +378,23 @@ assertion; normalized raw SSE exports are not byte-exact wire captures. Readines
 probes are explicitly disabled to avoid unrecorded inference; start with a ready
 endpoint. Zero warmup requests does not establish cold execution.
 
+`prompt_cohort` fingerprints the actual profiling prompt multiset, including failed
+requests and excluding warmup. Identical seeds and nominal lengths alone do not
+establish identical inputs. Compare non-null fingerprints to check prompt identity;
+request IDs and record order do not affect the digest, but repeated prompts retain
+their multiplicity. A missing, non-string or non-UTF-8-encodable prompt makes `sha256`
+null and lists its request ID in `unavailable_request_ids`, never silently dropping it.
+An otherwise properly recorded failure can still pass protocol accounting with an
+unavailable cohort; `protocol_valid` is not a matched-workload certificate.
+
+The versioned `sha256-utf8-prompt-multiset-v1` algorithm hashes each decoded prompt's
+UTF-8 bytes without Unicode normalization, counts the resulting lowercase hex
+digests, and sorts `(digest, count)` pairs. It hashes their compact ASCII JSON
+(`separators=(",", ":")`), prefixed by `ribn:profiling-prompt-multiset:v1` and a NUL byte.
+The report contains no prompt text, but hashes do not anonymize private prompts.
+Matching prompts does not establish matching artifacts, tokenizers, tokenized lengths,
+generation policies, arrival order/schedules or output quality; check those separately.
+
 Optional `[slo]` values must be positive; omit unset objectives. Their boundaries are:
 
 - `ttft_ms`: request start to first nonempty content chunk, not first headers or an empty event.
@@ -437,8 +454,10 @@ The integration gate exercises early EOS, silent truncation, late JSON errors,
 missing usage and rate-controlled partial overload through the actual client and
 CLI. A seeded variable-input case verifies that different tokenized prompt lengths
 reach the endpoint and that actual usage excludes warmup rather than substituting
-nominal lengths or output caps. Delayed empty/terminal frames check content versus
-DONE clocks, and a concurrency-capped rate case checks the reported actual start
+nominal lengths or output caps. Prompt fingerprints are independently reconciled
+against actual profiling payloads, retaining failed requests and excluding warmup.
+Delayed empty/terminal frames check content versus DONE clocks, and a
+concurrency-capped rate case checks the reported actual start
 intervals against raw timestamps. These checks do not establish device qualification,
 aggregate metric accuracy or load-generator capacity.
 

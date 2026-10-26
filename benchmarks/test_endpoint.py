@@ -9,7 +9,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from aiperf_results import validate
+from aiperf_results import prompt_cohort, validate
 from endpoint_config import check_config, parse_manifest
 
 ROOT = Path(__file__).resolve().parent
@@ -106,6 +106,7 @@ def fixture(directory):
                 "start_perf_ns": 1_000_000_000 + index * 2_000_000_000,
                 "payload": {
                     "model": "fixture",
+                    "prompt": f"fixture prompt {index}",
                     "stream": True,
                     "temperature": 0,
                     "max_tokens": 8,
@@ -215,6 +216,20 @@ class EndpointTests(unittest.TestCase):
             self.assertTrue(report["protocol_valid"])
             self.assertEqual(report["attempted_requests"], 2)
             self.assertFalse(report["planned_arrivals_audited"])
+            self.assertEqual(
+                report["prompt_cohort"],
+                {
+                    "algorithm": "sha256-utf8-prompt-multiset-v1",
+                    # Independent preimplementation reference for fixture prompts 0,1.
+                    "sha256": "4bf65da6c33ed0a476c0bc833e5f226df2a7fc4cd105533aabb82e40d632f518",
+                    "requests": 2,
+                    "unavailable_request_ids": [],
+                },
+            )
+            export(directory, ordinary[::-1], raw, summary)
+            self.assertEqual(
+                validate(directory)["prompt_cohort"], report["prompt_cohort"]
+            )
             self.assertEqual(report["issued_load"]["start_span_ns"], 2_000_000_000)
             self.assertEqual(
                 report["request_timing_ns"]["0"],
@@ -227,6 +242,22 @@ class EndpointTests(unittest.TestCase):
             self.assertEqual(
                 report["completion_tokens"], 4
             )  # Not 2 requests * cap 8, nor chunk count.
+
+    def test_prompt_cohort_tracks_multiplicity_and_utf8(self):
+        raw = {
+            str(index): {"payload": {"prompt": prompt}}
+            for index, prompt in enumerate(("a", "a", "é"))
+        }
+        original = prompt_cohort(raw, list(raw))
+        # Same distinct prompts and count, but AAB differs from ABB.
+        raw["1"]["payload"]["prompt"] = "é"
+        self.assertNotEqual(prompt_cohort(raw, list(raw))["sha256"], original["sha256"])
+        raw["1"]["payload"]["prompt"] = "a"
+        # The digest ignores record IDs/order, not decoded prompt bytes.
+        renamed = {f"id-{key}": value for key, value in reversed(list(raw.items()))}
+        self.assertEqual(prompt_cohort(renamed, list(renamed)), original)
+        raw["2"]["payload"]["prompt"] = "e\u0301"
+        self.assertNotEqual(prompt_cohort(raw, list(raw))["sha256"], original["sha256"])
 
     def test_native_millisecond_rounding_is_not_an_empirical_tolerance(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -380,6 +411,8 @@ class EndpointTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             directory = Path(tmp)
             ordinary, raw, summary = fixture(directory)
+            export(directory, ordinary, raw, summary)
+            complete_cohort = validate(directory)["prompt_cohort"]
             error = {"message": "overloaded", "code": 429}
             ordinary[0]["error"] = error
             raw[0].update(status=429, responses=[], error=error)
@@ -402,6 +435,7 @@ class EndpointTests(unittest.TestCase):
             self.assertEqual(report["issued_load"]["issued_requests"], 2)
             self.assertEqual(report["issued_load"]["start_span_ns"], 2_000_000_000)
             self.assertEqual(set(report["request_timing_ns"]), {"1"})
+            self.assertEqual(report["prompt_cohort"], complete_cohort)
             for clocks in (
                 (None,),
                 (True,),
@@ -418,6 +452,29 @@ class EndpointTests(unittest.TestCase):
                     self.assertEqual(changed["failed_requests"], 1)
                     self.assertEqual(changed["successful_requests"], 1)
                     self.assertEqual(changed["invalid_requests"][0]["request_id"], "0")
+            raw[0]["responses"] = []
+            for payload in (
+                None,
+                {},
+                {"prompt": None},
+                {"prompt": ["a"]},
+                {"prompt": "\ud800"},
+            ):
+                with self.subTest(unavailable_failed_payload=payload):
+                    raw[0]["payload"] = payload
+                    export(directory, ordinary, raw, summary)
+                    changed = validate(directory)
+                    self.assertTrue(changed["protocol_valid"])
+                    self.assertEqual(changed["failed_requests"], 1)
+                    self.assertEqual(changed["successful_requests"], 1)
+                    self.assertEqual(
+                        changed["prompt_cohort"],
+                        {
+                            **complete_cohort,
+                            "sha256": None,
+                            "unavailable_request_ids": ["0"],
+                        },
+                    )
 
     def test_rejects_missing_duplicate_and_inconsistent_exports(self):
         for mutation in (

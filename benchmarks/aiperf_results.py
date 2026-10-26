@@ -1,7 +1,8 @@
-"""Offline protocol, usage and selected clock audit of AIPerf v0.13 exports."""
+"""Offline protocol, usage, prompt-cohort and selected clock audit of AIPerf v0.13."""
 
 import hashlib
 import json
+from collections import Counter
 from statistics import median
 
 from aiperf_stream import completion_stream, timestamp, validate_clocks
@@ -67,6 +68,34 @@ def issued_load(raw, profiling, workload):
             "median": median(gaps) if gaps else None,
             "max": max(gaps) if gaps else None,
         },
+    }
+
+
+def prompt_cohort(raw, profiling):
+    """Identify the decoded UTF-8 prompt multiset, not an arrival schedule."""
+    counts = Counter()
+    unavailable = []
+    for key in profiling:
+        payload = raw[key].get("payload")
+        prompt = payload.get("prompt") if isinstance(payload, dict) else None
+        if not isinstance(prompt, str):
+            unavailable.append(key)
+            continue
+        try:
+            counts[hashlib.sha256(prompt.encode("utf-8")).hexdigest()] += 1
+        except UnicodeEncodeError:
+            unavailable.append(key)
+    encoded = json.dumps(sorted(counts.items()), separators=(",", ":")).encode("ascii")
+    return {
+        "algorithm": "sha256-utf8-prompt-multiset-v1",
+        # Never present a partial digest as the identity of all attempted work.
+        "sha256": None
+        if unavailable
+        else hashlib.sha256(
+            b"ribn:profiling-prompt-multiset:v1\0" + encoded
+        ).hexdigest(),
+        "requests": len(profiling),
+        "unavailable_request_ids": sorted(unavailable),
     }
 
 
@@ -197,6 +226,7 @@ def validate(directory):
         "attempted_requests": expected,
         "planned_arrivals_audited": False,
         "issued_load": load,
+        "prompt_cohort": prompt_cohort(raw, profiling),
         "audited_request_timing_metrics": ["time_to_first_token", "request_latency"],
         "request_timing_ns": timings,
         "timing_source": "client/profile_export_raw.jsonl",
@@ -210,5 +240,5 @@ def validate(directory):
         "metrics_source": "client/profile_export_aiperf.json",
         "performance_metrics_audited": False,
         "readiness": "Automatic probes disabled; endpoint must already be ready. Zero warmup does not prove cold state.",
-        "limitations": "Protocol/usage and specified raw-clock audit only; not aggregate performance, planned arrivals, HTTP EOF, numerical, GPU or physical-memory qualification.",
+        "limitations": "Protocol/usage, prompt multiset and specified raw-clock audit only; not aggregate performance, planned arrivals, HTTP EOF, numerical, GPU or physical-memory qualification.",
     }
