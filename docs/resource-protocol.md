@@ -919,7 +919,9 @@ The prepared Metal model separately owns a 128 KiB host GELU table, computed fro
 unchanged CPU reference before weight loading. Temporary table input is another 128 KiB;
 these are mathematical preparation state, not source read/copy staging. Lookup preserves
 finite BF16 results and non-finite-input rejection, and sequences borrow the immutable
-table from the shared model rather than constructing per-sequence copies.
+table from the shared model rather than constructing per-sequence copies. Qualified
+native main FFNs additionally borrow one model-owned 128 KiB Shared copy of that table;
+other geometries, devices and the opt-in Graph policy do not prepare that copy.
 This synchronous path does not establish a global loading grant, bound source metadata,
 OS page cache or driver storage, or qualify asynchronous/failed-command retirement.
 
@@ -943,6 +945,19 @@ input contains `rows × inner` BF16 elements; each of its two outputs contains
 `rows × columns`. Neither output is published unless all three dispatches succeed.
 Model-side copies drop each native output owner before copying the next, rather than
 deliberately retaining both owners alongside both CPU copies.
+
+A fixed main-FFN chain can retain RMS → Gate/Up → table lookup/product → Down/RMS
+in one serial command, preserving every BF16 boundary. Validate both input projections,
+both norms, Down, the complete table and all offsets before even uploading the host
+input. The lookup/product uses integer BF16 significands and RNE to preserve the CPU's
+FP32-product/BF16-round policy, including subnormals and signed zero; the existing Metal
+FP32 multiply path is not an exact substitute over that domain. A private four-byte
+status flags non-finite gate inputs. Inspect it only after successful terminal completion
+and reject before publishing output. For selected E4B chunks of at most 64 rows, input,
+normalized input, Gate/Up/product, Down and normalized output plus status total at most
+5 MiB + 4 bytes of native payload, excluding immutable model bindings and driver or
+allocator overhead. This is a per-call envelope, not a shared physical-memory grant;
+retain separate calls outside the qualified selection scope.
 
 Attention preparation may normalize the input once and fan out to query and optional
 key/value normalized/rotary projections in the same serial command. Validate every

@@ -110,7 +110,9 @@ mod attention;
 mod graph_tests;
 use activation::GeluTable;
 use attention::attention_forward;
-use engine_metal::{MetalAttentionConfig, MetalBf16Error, MetalLinearShape, MetalProjectionNorm};
+use engine_metal::{
+    MetalAttentionConfig, MetalBf16Error, MetalFfnWeights, MetalLinearShape, MetalProjectionNorm,
+};
 
 // Bound the encoded packed RMS upload, native result and host result to 2 MiB each.
 // Larger prompt chunks or PLE geometries retain layer-at-a-time normalization.
@@ -121,6 +123,7 @@ const MAX_PACKED_PLE_ELEMENTS: usize = 1 << 20;
 struct MetalOps<'a> {
     executor: &'a MetalBf16Executor,
     gelu: &'a GeluTable,
+    gelu_device: Option<&'a MetalBf16Buffer>,
 }
 
 fn metal_error(error: &MetalBf16Error) -> Gemma4Error {
@@ -286,7 +289,8 @@ pub enum Gemma4MetalFfn {
 
 /// Prepared Gemma weights and execution resources on one Metal device.
 ///
-/// Matmuls, normalization, rotary and attention run on the GPU; embedding lookups,
+/// Matmuls, normalization, rotary and attention run on the GPU. Qualified native
+/// main FFNs also retain exact activation/products on device; embeddings, other
 /// elementwise algebra and the soft cap run on the CPU. Every sequence shares one
 /// immutable weight inventory in CPU-accessible Metal storage. Loading uses bounded
 /// scratch, without constructing a CPU weight inventory.
@@ -294,6 +298,7 @@ pub struct Gemma4MetalModel {
     metal: Gemma4MetalWeights,
     executor: MetalBf16Executor,
     gelu: GeluTable,
+    gelu_device: Option<MetalBf16Buffer>,
 }
 
 impl Gemma4MetalModel {
@@ -316,11 +321,17 @@ impl Gemma4MetalModel {
         }
         .map_err(|error| metal_error(&error))?;
         let gelu = GeluTable::new()?;
+        let gelu_device = executor
+            .native_ffn_supported(1, config.hidden_size(), config.intermediate_size())
+            .then(|| executor.upload(gelu.values()))
+            .transpose()
+            .map_err(|error| metal_error(&error))?;
         let metal = Gemma4MetalWeights::load(source, &executor)?;
         Ok(Self {
             metal,
             executor,
             gelu,
+            gelu_device,
         })
     }
 
@@ -453,6 +464,7 @@ impl Gemma4MetalDecoder {
             &MetalOps {
                 executor: &self.model.executor,
                 gelu: &self.model.gelu,
+                gelu_device: self.model.gelu_device.as_ref(),
             },
             &mut self.caches,
             position,
@@ -669,28 +681,55 @@ fn feedforward_forward(
         .layer(layer, LayerParameter::PreFeedforwardNorm)?
         .elements();
     let residual = hidden.to_vec();
-    let (gate, up) = ops.rms_linear_pair(
-        hidden,
-        sequence,
-        (
-            metal.layer(layer, LayerParameter::Gate)?,
-            metal.layer(layer, LayerParameter::Up)?,
-        ),
-        epsilon,
-        Some(metal.layer(layer, LayerParameter::PreFeedforwardNorm)?),
-    )?;
-    let product = multiply(&ops.gelu.apply(&gate)?, &up)?;
-    let normed = ops.project_normalized(
-        &product,
-        sequence,
-        metal.layer(layer, LayerParameter::Down)?,
-        MetalProjectionNorm {
-            width: hidden_size,
+    // Qualified M3 Max/E4B chunks retain the complete main FFN on device.
+    // <=64 rows owns <=5 MiB +4 bytes of native per-call buffers including
+    // the input upload (plus the prepared 128 KiB table); no shared pool grant.
+    let normed = if let Some(table) = ops.gelu_device.filter(|_| sequence <= 64) {
+        let output = ops
+            .executor
+            .native_ffn(
+                hidden,
+                MetalFfnWeights {
+                    gate: metal.layer(layer, LayerParameter::Gate)?,
+                    up: metal.layer(layer, LayerParameter::Up)?,
+                    down: metal.layer(layer, LayerParameter::Down)?,
+                    table,
+                    input_scale: metal.layer(layer, LayerParameter::PreFeedforwardNorm)?,
+                    output_scale: metal.layer(layer, LayerParameter::PostFeedforwardNorm)?,
+                },
+                MetalLinearShape {
+                    rows: sequence,
+                    columns: metal.config().intermediate_size(),
+                    inner: hidden_size,
+                },
+                epsilon,
+            )
+            .map_err(|e| metal_error(&e))?;
+        output.bits()
+    } else {
+        let (gate, up) = ops.rms_linear_pair(
+            hidden,
+            sequence,
+            (
+                metal.layer(layer, LayerParameter::Gate)?,
+                metal.layer(layer, LayerParameter::Up)?,
+            ),
             epsilon,
-            scale: Some(metal.layer(layer, LayerParameter::PostFeedforwardNorm)?),
-            rotary: None,
-        },
-    )?;
+            Some(metal.layer(layer, LayerParameter::PreFeedforwardNorm)?),
+        )?;
+        let product = multiply(&ops.gelu.apply(&gate)?, &up)?;
+        ops.project_normalized(
+            &product,
+            sequence,
+            metal.layer(layer, LayerParameter::Down)?,
+            MetalProjectionNorm {
+                width: hidden_size,
+                epsilon,
+                scale: Some(metal.layer(layer, LayerParameter::PostFeedforwardNorm)?),
+                rotary: None,
+            },
+        )?
+    };
     let hidden = add(&residual, &normed)?;
     let residual = hidden.clone();
     let gate = ops.linear(

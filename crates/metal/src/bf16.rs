@@ -15,7 +15,8 @@ mod submission;
 
 pub use attention::MetalAttentionConfig;
 pub use projection::{
-    MetalAttentionProjections, MetalLinearShape, MetalNormalizedProjection, MetalProjectionNorm,
+    MetalAttentionProjections, MetalFfnWeights, MetalLinearShape, MetalNormalizedProjection,
+    MetalProjectionNorm,
 };
 pub use rotary::MetalRotaryFactors;
 
@@ -110,6 +111,7 @@ pub struct MetalBf16Executor {
     attention_values: ComputePipelineState,
     rotary: ComputePipelineState,
     elementwise: ComputePipelineState,
+    lookup_product: ComputePipelineState,
 }
 
 impl Drop for MetalBf16Executor {
@@ -156,9 +158,13 @@ impl MetalBf16Executor {
         if ffn_shape.is_some() {
             graph::FfnGraphs::check_available(&device)?;
         }
-        let source = include_str!("bf16.metal");
+        let source = format!(
+            "{}\n{}",
+            include_str!("bf16.metal"),
+            include_str!("bf16/ffn.metal")
+        );
         let library = device
-            .new_library_with_source(source, &CompileOptions::new())
+            .new_library_with_source(&source, &CompileOptions::new())
             .map_err(MetalBf16Error::Library)?;
         let linear = library
             .get_function("bf16_linear", None)
@@ -208,6 +214,12 @@ impl MetalBf16Executor {
         let elementwise = device
             .new_compute_pipeline_state_with_function(&elementwise)
             .map_err(MetalBf16Error::Pipeline)?;
+        let lookup_product = library
+            .get_function("bf16_lookup_product", None)
+            .map_err(MetalBf16Error::Function)?;
+        let lookup_product = device
+            .new_compute_pipeline_state_with_function(&lookup_product)
+            .map_err(MetalBf16Error::Pipeline)?;
         let queue = Self::command_queue(&device)?;
         // Do not extend an optimization measured on M3 Max to other Apple GPUs.
         let block_linear_rows = device.name() == "Apple M3 Max";
@@ -231,6 +243,7 @@ impl MetalBf16Executor {
             attention_values,
             rotary,
             elementwise,
+            lookup_product,
         })
     }
 

@@ -716,6 +716,12 @@ winners but differ from stock CPU full logits; this is not a quality-equivalent 
 baseline. Large Ribn timing swings remain unexplained. After the bounded command/transfer chains below, a
 [fresh execution-cost profile](../benchmarks/gemma4-metal-baseline.md#execution-cost-refresh-2026-10-23)
 puts 71–76% of prefill GPU-command intervals in the compound FFN gate/up and down chains.
+The [native main-FFN chain](../benchmarks/gemma4-metal-baseline.md#native-main-ffn-chain-2026-10-27)
+now keeps exact activation/products on device for M3 Max/E4B chunks through 64 rows,
+with separate-call fallback elsewhere. Three fresh processes pass the declared paired
+screen: median process reductions are 6.93% for direct decode after 18 tokens and
+9.37/10.98% for 16/64-row prefill. Full logits/KV remain bit-exact; this is not a new
+MLX comparison, serving-quality acceptance or a promotion of MPSGraph.
 A [real-input FFN component pre-screen](../benchmarks/gemma4-metal-baseline.md#ffn-projection-component-pre-screen-2026-10-23)
 now separates RMS from projections and compares a native FP32 MPS candidate including
 conversion and per-call resource release. Prefill component calls improve, but decode

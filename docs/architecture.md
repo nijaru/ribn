@@ -213,8 +213,8 @@ its preflighted BF16 source directly into owned Shared Metal buffers using at mo
 also provide borrowed CPU embedding rows; preparation constructs neither a full CPU
 inventory nor a parameter-sized encoded upload copy. A host-orchestrated
 decoder runs the full step: matmuls, normalization, rotary and attention execute on
-the GPU while embeddings, elementwise algebra and the soft cap reuse the validated
-host primitives. GELU uses a model-owned 128 KiB table prepared from the unchanged
+the GPU while embeddings, remaining elementwise algebra and the soft cap reuse the
+validated host primitives. GELU uses a model-owned 128 KiB table prepared from the unchanged
 CPU reference, exact over every finite BF16 encoding and still rejecting non-finite
 inputs; the CPU decoder remains the independent arithmetic oracle. PLE normalization
 can group token/layer rows in one bounded RMS call; larger chunks or packed payloads
@@ -229,7 +229,13 @@ command; larger chunks, histories and scratch payloads retain separate calls. Se
 Native normalized projections share one serial command buffer and private BF16
 intermediates. Query/key projections also rotate in that command, sharing immutable
 per-position factors without changing kernels or rounding boundaries. Native FFN input
-normalization and gate/up projections likewise share one command. An explicit Rust
+normalization and gate/up projections likewise share one command. Qualified native
+M3 Max/E4B chunks of at most 64 rows now retain the entire main FFN through exact
+GELU lookup/product and Down/RMS in that command, borrowing an additional model-owned
+128 KiB device table. Integer product encoding preserves CPU subnormal behavior;
+other shapes/devices and PLE retain the existing host path. See the
+[main-FFN qualification](../benchmarks/gemma4-metal-baseline.md#native-main-ffn-chain-2026-10-27).
+An explicit Rust
 `Gemma4MetalFfn::ExperimentalGraph` policy instead prepares BF16 Gate/Up pairs at
 16/64 rows and Down at 64 rows for the qualified M3 Max/E4B scope, keeping native RMS
 and native fallback elsewhere. It reuses immutable BF16 weights; CLI/HTTP and ordinary

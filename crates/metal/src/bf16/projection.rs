@@ -5,7 +5,9 @@ use super::{MetalBf16Buffer, MetalBf16Error, MetalBf16Executor, MetalRotaryFacto
 use metal::{Buffer, BufferRef, ComputeCommandEncoderRef, MTLSize};
 
 mod attention;
+mod ffn;
 pub use attention::{MetalAttentionProjections, MetalNormalizedProjection};
+pub use ffn::MetalFfnWeights;
 
 /// Row-major `input[rows, inner] × weight[columns, inner]ᵀ` geometry.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

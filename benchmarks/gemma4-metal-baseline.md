@@ -1273,6 +1273,70 @@ requests miss the latency objectives and serving qualification remains open. Kee
 default; resolve opaque-pool accounting before widening Graph selection and measure the actual
 serving entry point against a quality-equivalent incumbent before competitive claims.
 
+## Native main-FFN chain (2026-10-27)
+
+On the M3 Max (128 GiB, macOS 26.6.2), native E4B main FFNs now keep
+RMS → Gate/Up → exact GELU lookup/product → Down/RMS in one serial command.
+All existing projection/RMS kernels and BF16 boundaries remain unchanged; PLE,
+residuals and the soft cap retain their prior paths. Automatic selection is limited
+to native M3 Max, 2560/10240 geometry and 1–64 rows. Larger chunks, other devices or
+geometries and the explicit Graph policy retain their existing paths. This is an
+Apple GPU optimization, not Neural Engine or additional-hardware qualification.
+
+A preflight rejected naive reuse of the existing GPU multiply: over all 65,280 finite
+GELU inputs and 16 Up factors, some subnormal operands/results became zero. For example,
+`0x0001 × 0x7f7f` produces CPU BF16 `0x3cff` but GPU zero. The new pointwise kernel
+instead multiplies integer BF16 significands and rounds the encoded result, preserving
+the unchanged CPU FP32-product/BF16-RNE policy. It also preserves signed zero, overflow
+and canonical NaN handling. Non-finite gate inputs flag a private status and reject after
+terminal completion, before publication. No compiler precision flag, matrix arithmetic,
+weight encoding, model equation or tolerance changed.
+
+The committed component gate compares 1,566,720 products against scalar CPU arithmetic,
+covering every finite input encoding and 24 factors including subnormals, non-power-of-two
+mantissas, infinities and NaN. Separate gates check row-kernel boundaries, non-finite gate
+rejection, invalid geometry and healthy reuse. Full-model qualification uses baseline
+`3aa8171`, the unchanged cached E4B package/reference, Rust 1.98.0 offline with two build
+jobs, and one model process at a time. Forty-six complete 262,144-word logit rows and
+all KV words/lengths/positions match the baseline, including 1/2/7/8/16/31/32/33/63/64-row
+chunks, 65-row fallback and 512/513/576/577-token continuation boundaries. The private
+candidate's off path independently matches those same 46 states. All 54 timing pairs
+also match complete logits and KV state. Actual production-default decoder, Engine and
+ordinary text-owner release gates pass; the text gate also checks unchanged Graph opt-in.
+
+Three fresh candidate processes share prepared weights between paired old/new paths.
+Each uses one warmup per case/path and six measured pairs per case; AB/BA order alternates
+and case order rotates. The predeclared screen requires each process's median paired
+latency reduction to reach 5% for decode after 18 tokens, with no greater than 3% regression
+for either prefill. All pass:
+
+| Direct call | Per-process median paired latency reductions |
+| --- | --- |
+| Decode after 18 tokens | 6.18%, 7.36%, 6.93% |
+| 16-row prefill | 9.24%, 10.10%, 9.37% |
+| 64-row prefill | 11.19%, 10.84%, 10.98% |
+
+Selected short-history steps issue 214 native commands instead of 256, saving one wait
+per layer. The chain owns at most 5 MiB + 4 bytes of native per-call payload including
+input upload at 64 rows, plus one prepared 128 KiB device table. These exclude driver
+and allocator overhead and do not constitute a global physical-memory grant. Whole
+geometry validation precedes even input upload; normal synchronous terminal status and
+retained-resource ownership remain authoritative.
+
+The first control harness incorrectly required 256 commands even for 65-row fallback,
+where existing other chains produce 429. It stopped with exit 1 after capturing that
+state. Those valid control rows were reused; only the unfinished cases were continued,
+with the restaged 65-row prefix required to match the original bytes and metadata.
+Candidate selection is checked against the control's actual count: exactly 42 fewer
+commands within scope and no change outside it. The failed control, original failed
+multiply preflight, captured source/binaries, raw quality/timing rows, KV data and receipts
+remain in `gemma4-metal-ffn-chain/20261027T215000Z`. The device experiment finished within
+the original one-hour budget; no candidate numerical or timing cohort was retried.
+
+These are paired direct-decoder results, not server throughput/SLO or physical-pressure
+acceptance. No new matched MLX/vLLM/SGLang/llama.cpp/MAX run was performed. Existing
+cross-engine quality disagreements remain open; exact preservation does not resolve them.
+
 ## Native HTTP versus stock MLX diagnostic (2026-10-24)
 
 **Actual HTTP protocol and accounting pass; the predeclared matched-result gate

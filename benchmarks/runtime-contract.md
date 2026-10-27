@@ -1031,6 +1031,16 @@ aggregate gates pass, with substantial timing variability and some per-process c
 regressions retained by the linked evidence owner. No serving, physical-pressure or
 other-device acceptance follows.
 
+### Metal native main-FFN chain (2026-10-27)
+
+The [matched main-FFN screen](gemma4-metal-baseline.md#native-main-ffn-chain-2026-10-27)
+retains RMS, Gate/Up, exact table/product and Down/RMS in one serial command for native
+M3 Max/E4B chunks through 64 rows. Selected short-history steps remove 42 waits,
+256 → 214; larger chunks retain the prior path. Integer BF16 product encoding is required
+for CPU subnormal parity. Complete logits/KV, actual decoder/executor/text gates and
+three-process paired timings pass. The linked owner records the failed naive multiply
+preflight, corrected control-counter harness, native byte envelope and limits.
+
 ### Metal exact GELU table qualification (2026-10-20)
 
 A refreshed temporary profile on `ba1906a` observed **429** synchronous commands

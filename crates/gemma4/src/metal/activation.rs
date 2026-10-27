@@ -24,6 +24,10 @@ impl GeluTable {
         Ok(Self { values })
     }
 
+    pub(super) fn values(&self) -> &[u16] {
+        &self.values
+    }
+
     pub(super) fn apply(&self, input: &[u16]) -> Result<Vec<u16>, Gemma4Error> {
         let mut output = try_vector(input.len(), 0_u16)?;
         for (slot, &bits) in output.iter_mut().zip(input) {
