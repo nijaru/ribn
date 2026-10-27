@@ -9,7 +9,12 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from aiperf_results import audit_timing_metrics, prompt_cohort, validate
+from aiperf_results import (
+    audit_slo_request,
+    audit_timing_metrics,
+    prompt_cohort,
+    validate,
+)
 from endpoint_config import check_config, parse_manifest
 
 ROOT = Path(__file__).resolve().parent
@@ -67,14 +72,17 @@ def message(data):
     }
 
 
-def fixture(directory):
+def fixture(directory, slos=False):
     directory.mkdir(parents=True, exist_ok=True)
-    (directory / "manifest.toml").write_text(MANIFEST)
+    manifest = MANIFEST
+    if slos:
+        manifest += "\n[slo]\nttft_ms = 100\nitl_ms = 1\nlast_content_ms = 100\n"
+    (directory / "manifest.toml").write_text(manifest)
     (directory / "client-exit-code").write_text("0\n")
     (directory / "invocation.json").write_text(
         json.dumps(
             {
-                "manifest_sha256": hashlib.sha256(MANIFEST.encode()).hexdigest(),
+                "manifest_sha256": hashlib.sha256(manifest.encode()).hexdigest(),
             }
         )
     )
@@ -190,6 +198,16 @@ def fixture(directory):
             for key, value in usage.items()
         },
     }
+    if slos:
+        summary["input_config"]["slos"] = {
+            "time_to_first_token": 100,
+            "inter_token_latency": 1,
+            "request_latency": 100,
+        }
+        for row in ordinary:
+            row["metrics"]["good_request_count"] = {"value": 1, "unit": "requests"}
+        summary["good_request_count"] = {"avg": 2, "unit": "requests"}
+        summary["good_request_fraction"] = {"avg": 1.0, "unit": "ratio"}
     return ordinary, raw, summary
 
 
@@ -350,6 +368,179 @@ class EndpointTests(unittest.TestCase):
                 self.assertEqual(report["successful_requests"], 1)
                 self.assertEqual(len(report["invalid_requests"]), 1)
                 self.assertNotIn("0", report["request_timing_ns"])
+
+    def test_slo_thresholds_use_internal_ns_and_all_configured_metrics(self):
+        cases = [
+            ({"time_to_first_token": 1_000_000}, {"ttft_ms": 1}, "met"),
+            ({"time_to_first_token": 1_000_001}, {"ttft_ms": 1}, "violated"),
+            # Equal displayed ms need not pass the internal-ns threshold.
+            ({"time_to_first_token": 1_000_001}, {"ttft_ms": 1.000001}, "violated"),
+            (
+                {"inter_token_latency": 24_925_571 / 3},
+                {"itl_ms": 8.308523666666666},
+                "violated",
+            ),
+            (
+                {"time_to_first_token": 1_000_000, "request_latency": 5_000_000},
+                {"ttft_ms": 2, "last_content_ms": 4},
+                "violated",
+            ),
+            ({"time_to_first_token": 1_000_000}, {"itl_ms": 1}, None),
+        ]
+        for latencies, slos, outcome in cases:
+            with self.subTest(latencies=latencies, slos=slos):
+                metrics = (
+                    {}
+                    if outcome is None
+                    else {
+                        "good_request_count": {
+                            "value": int(outcome == "met"),
+                            "unit": "requests",
+                        }
+                    }
+                )
+                self.assertEqual(audit_slo_request(metrics, latencies, slos), outcome)
+
+    def test_rejects_corrupt_slo_classification_counts_and_fractions(self):
+        for mutation in (
+            "record",
+            "record boolean",
+            "aggregate",
+            "fraction",
+            "fraction unit",
+            "fraction nonfinite",
+            "missing record",
+            "missing aggregate",
+        ):
+            with self.subTest(mutation=mutation), tempfile.TemporaryDirectory() as tmp:
+                directory = Path(tmp)
+                ordinary, raw, summary = fixture(directory, slos=True)
+                if mutation == "record":
+                    ordinary[0]["metrics"]["good_request_count"]["value"] = 0
+                elif mutation == "record boolean":
+                    ordinary[0]["metrics"]["good_request_count"]["value"] = True
+                elif mutation == "missing record":
+                    del ordinary[0]["metrics"]["good_request_count"]
+                elif mutation == "missing aggregate":
+                    del summary["good_request_count"]
+                elif mutation == "aggregate":
+                    summary["good_request_count"]["avg"] = 3  # warmup leakage
+                elif mutation == "fraction":
+                    summary["good_request_fraction"]["avg"] = 0.5
+                elif mutation == "fraction unit":
+                    summary["good_request_fraction"]["unit"] = "percent"
+                else:
+                    summary["good_request_fraction"]["avg"] = float("nan")
+                export(directory, ordinary, raw, summary)
+                if mutation in ("record", "record boolean", "missing record"):
+                    self.assertFalse(validate(directory)["protocol_valid"])
+                else:
+                    with self.assertRaises(ValueError):
+                        validate(directory)
+
+    def test_slo_fraction_counts_failed_attempts_and_excludes_warmup(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            ordinary, raw, summary = fixture(directory, slos=True)
+            # Add one independently identified warmup success, then fail one
+            # profiling request. Neither may inflate the two-attempt fraction.
+            for rows in (ordinary, raw):
+                warmup = copy.deepcopy(rows[0])
+                warmup["metadata"].update(
+                    x_request_id="warmup", benchmark_phase="warmup"
+                )
+                rows.append(warmup)
+            contents = (
+                (directory / "manifest.toml")
+                .read_text()
+                .replace("warmup_requests = 0", "warmup_requests = 1")
+            )
+            (directory / "manifest.toml").write_text(contents)
+            (directory / "invocation.json").write_text(
+                json.dumps(
+                    {"manifest_sha256": hashlib.sha256(contents.encode()).hexdigest()}
+                )
+            )
+            phase = copy.deepcopy(summary["input_config"]["phases"][0])
+            phase.update(
+                name="warmup", kind="warmup", exclude_from_results=True, requests=1
+            )
+            summary["input_config"]["phases"].insert(0, phase)
+            error = {"message": "overloaded", "code": 429}
+            ordinary[0].update(error=error, metrics={})
+            raw[0].update(status=429, responses=[], error=error)
+            summary["request_count"]["avg"] = 1
+            summary["error_request_count"] = {"avg": 1, "unit": "requests"}
+            summary["good_request_count"]["avg"] = 1
+            summary["good_request_fraction"]["avg"] = 0.5
+            for field in ("prompt_tokens", "completion_tokens", "total_tokens"):
+                summary[f"total_usage_{field}"]["avg"] /= 2
+            export(directory, ordinary, raw, summary)
+            report = validate(directory)
+            self.assertTrue(report["protocol_valid"])
+            self.assertEqual(
+                report["slo_attainment"],
+                {
+                    "request_outcomes": {"1": "met"},
+                    "good_requests": 1,
+                    "violated_requests": 0,
+                    "undefined_requests": 0,
+                    "failed_requests": 1,
+                    "attempted_fraction": 0.5,
+                },
+            )
+            summary["good_request_fraction"]["avg"] = 1.0
+            export(directory, ordinary, raw, summary)
+            with self.assertRaisesRegex(ValueError, "attempted SLO fraction"):
+                validate(directory)
+            summary["good_request_fraction"]["avg"] = 0.5
+            ordinary[0]["metrics"]["good_request_count"] = {
+                "value": 1,
+                "unit": "requests",
+            }
+            export(directory, ordinary, raw, summary)
+            self.assertFalse(validate(directory)["protocol_valid"])
+
+    def test_single_token_slo_is_undefined_not_a_zero_latency_pass(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            ordinary, raw, summary = fixture(directory, slos=True)
+            for record, request in zip(ordinary, raw, strict=True):
+                metrics = record["metrics"]
+                del metrics["inter_token_latency"], metrics["good_request_count"]
+                for name, value in (
+                    ("output_sequence_length", 1),
+                    ("usage_completion_tokens", 1),
+                    ("usage_total_tokens", 17),
+                ):
+                    metrics[name]["value"] = value
+                request["responses"][1]["packets"][0]["value"] = json.dumps(
+                    {
+                        "object": "text_completion",
+                        "choices": [],
+                        "usage": {
+                            "prompt_tokens": 16,
+                            "completion_tokens": 1,
+                            "total_tokens": 17,
+                        },
+                    }
+                )
+            summary["total_usage_completion_tokens"]["avg"] = 2
+            summary["total_usage_total_tokens"]["avg"] = 34
+            del summary["good_request_count"]
+            summary["good_request_fraction"]["avg"] = 0.0
+            export(directory, ordinary, raw, summary)
+            report = validate(directory)
+            self.assertTrue(report["protocol_valid"])
+            self.assertEqual(report["slo_attainment"]["undefined_requests"], 2)
+            self.assertEqual(report["slo_attainment"]["good_requests"], 0)
+            self.assertEqual(report["slo_attainment"]["attempted_fraction"], 0.0)
+            ordinary[0]["metrics"]["good_request_count"] = {
+                "value": 0,
+                "unit": "requests",
+            }
+            export(directory, ordinary, raw, summary)
+            self.assertFalse(validate(directory)["protocol_valid"])
 
     def test_missing_or_invalid_issued_start_cannot_produce_an_arrival_summary(self):
         for value in (None, True, -1, 1e9):

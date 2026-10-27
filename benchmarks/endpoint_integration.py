@@ -94,8 +94,17 @@ class EndpointFixture(BaseHTTPRequestHandler):
 
 class RealClientTests(unittest.TestCase):
     def exercise(
-        self, mode, rate=0, arrival="constant", input_stddev=0, requests=2, warmup=1
+        self,
+        mode,
+        rate=0,
+        arrival="constant",
+        input_stddev=0,
+        requests=2,
+        warmup=1,
+        slos=None,
     ):
+        if slos is None:
+            slos = {"ttft_ms": 1000, "itl_ms": 1000, "last_content_ms": 10000}
         with tempfile.TemporaryDirectory(prefix="ribn endpoint ") as tmp:
             directory = Path(tmp)
             tokenizer_dir = directory / "tokenizer"
@@ -143,7 +152,8 @@ class RealClientTests(unittest.TestCase):
                             'arrival_pattern = "poisson"',
                             f'arrival_pattern = "{arrival}"',
                         )
-                        + "\n[slo]\nttft_ms = 1000\nitl_ms = 1000\nlast_content_ms = 10000\n"
+                        + "\n[slo]\n"
+                        + "".join(f"{name} = {value}\n" for name, value in slos.items())
                     )
                     output = directory / "run"
                     result = subprocess.run(
@@ -241,9 +251,36 @@ class RealClientTests(unittest.TestCase):
         self.assertIn(
             "inter_token_latency", captured["audit"]["audited_request_timing_metrics"]
         )
+        self.assertEqual(captured["audit"]["slo_attainment"]["undefined_requests"], 2)
+        self.assertEqual(captured["audit"]["slo_attainment"]["good_requests"], 0)
         for record in captured["records"]:
             self.assertEqual(record["metrics"]["output_sequence_length"]["value"], 1)
             self.assertNotIn("inter_token_latency", record["metrics"])
+            self.assertNotIn("good_request_count", record["metrics"])
+
+    def test_single_token_can_meet_slos_without_an_itl_requirement(self):
+        captured = self.exercise(
+            "single-token",
+            warmup=0,
+            slos={"ttft_ms": 1000, "last_content_ms": 10000},
+        )
+        self.assertTrue(captured["audit"]["protocol_valid"])
+        attainment = captured["audit"]["slo_attainment"]
+        self.assertEqual(attainment["good_requests"], 2)
+        self.assertEqual(attainment["undefined_requests"], 0)
+        self.assertEqual(attainment["attempted_fraction"], 1.0)
+
+    def test_joint_slo_rejection_is_not_a_protocol_failure(self):
+        captured = self.exercise(
+            "valid",
+            warmup=0,
+            slos={"ttft_ms": 0.000001, "itl_ms": 1000},
+        )
+        self.assertTrue(captured["audit"]["protocol_valid"])
+        attainment = captured["audit"]["slo_attainment"]
+        self.assertEqual(attainment["good_requests"], 0)
+        self.assertEqual(attainment["violated_requests"], 2)
+        self.assertEqual(attainment["attempted_fraction"], 0.0)
 
     def test_variable_inputs_reach_the_endpoint_and_preserve_actual_usage(self):
         captured = self.exercise("valid", input_stddev=8, requests=16)
@@ -337,6 +374,9 @@ class RealClientTests(unittest.TestCase):
                     (2, 1, 1),
                 )
                 self.assertEqual(report["completion_tokens"], 2)
+                self.assertEqual(report["slo_attainment"]["good_requests"], 1)
+                self.assertEqual(report["slo_attainment"]["failed_requests"], 1)
+                self.assertEqual(report["slo_attainment"]["attempted_fraction"], 0.5)
                 starts = sorted(
                     r["start_perf_ns"]
                     for r in captured["raw"]

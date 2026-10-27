@@ -9,6 +9,7 @@ from statistics import median
 from aiperf_stream import completion_stream, timestamp, validate_clocks
 from endpoint_config import (
     AIPERF_VERSION,
+    SLOS,
     check_config,
     number,
     parse_manifest,
@@ -58,15 +59,15 @@ def metric(record, key, field="value", unit="tokens"):
 def audit_timing_metrics(metrics, timing, completion_tokens):
     # Match v0.13's internal ns arithmetic, then its display-unit conversion.
     expected = {
-        "time_to_first_token": timing["first_content"] * 1e-6,
-        "request_latency": timing["last_content"] * 1e-6,
+        "time_to_first_token": timing["first_content"],
+        "request_latency": timing["last_content"],
     }
     if completion_tokens >= 2:
         # Exact effective endpoint settings disable per-chunk usage. AIPerf
         # assumes one token in the first content chunk; these are not token taps.
         expected["inter_token_latency"] = (
-            (timing["last_content"] - timing["first_content"]) / (completion_tokens - 1)
-        ) * 1e-6
+            timing["last_content"] - timing["first_content"]
+        ) / (completion_tokens - 1)
     else:
         require(
             "inter_token_latency" not in metrics,
@@ -74,9 +75,57 @@ def audit_timing_metrics(metrics, timing, completion_tokens):
         )
     for name, value in expected.items():
         require(
-            metric(metrics, name, unit="ms") == value,
+            metric(metrics, name, unit="ms") == value * 1e-6,
             f"raw clock/metric mismatch: {name}",
         )
+    return expected
+
+
+def audit_slo_request(metrics, latencies_ns, slos):
+    # Native required-metric checks omit the counter when ITL is undefined.
+    if any(SLOS[name] not in latencies_ns for name in slos):
+        require(
+            "good_request_count" not in metrics,
+            "good_request_count must be absent for undefined SLO metrics",
+        )
+        return None
+    # Compare internal ns, not rounded exported ms. Match the pinned ms->ns factor.
+    good = int(
+        all(latencies_ns[SLOS[name]] <= limit * 1e6 for name, limit in slos.items())
+    )
+    require(
+        metric(metrics, "good_request_count", unit="requests") == good,
+        "per-request SLO classification mismatch",
+    )
+    return "met" if good else "violated"
+
+
+def audit_slo_summary(summary, outcomes, failures, attempted):
+    counts = Counter(outcomes.values())
+    good = counts["met"]
+    if counts["met"] + counts["violated"]:
+        require(
+            metric(summary, "good_request_count", "avg", "requests") == good,
+            "aggregate SLO count mismatch",
+        )
+    else:
+        require(
+            "good_request_count" not in summary,
+            "aggregate SLO count must be absent without defined request SLO metrics",
+        )
+    fraction = good / attempted
+    require(
+        metric(summary, "good_request_fraction", "avg", "ratio") == fraction,
+        "aggregate attempted SLO fraction mismatch",
+    )
+    return {
+        "request_outcomes": outcomes,
+        "good_requests": good,
+        "violated_requests": counts["violated"],
+        "undefined_requests": counts["undefined"],
+        "failed_requests": len(failures),
+        "attempted_fraction": fraction,
+    }
 
 
 def issued_load(raw, profiling, workload):
@@ -167,6 +216,8 @@ def validate(directory):
     )
     load = issued_load(raw, profiling, manifest["workload"])
     timings = {}
+    slos = manifest.get("slo", {})
+    slo_outcomes = {}
     failures = []
     invalid = []
     warmup_errors = []
@@ -184,11 +235,16 @@ def validate(directory):
                 warmup_errors.append(failure)
             try:
                 validate_clocks(request)
+                if slos:
+                    require(
+                        "good_request_count" not in record.get("metrics", {}),
+                        "failed request must not have a good_request_count",
+                    )
             except (ValueError, KeyError, TypeError) as error:
                 if phase == "profiling":
                     invalid.append({"request_id": key, "error": str(error)})
                 else:
-                    failure["clock_error"] = str(error)
+                    failure["validation_error"] = str(error)
             continue
         try:
             require(
@@ -198,7 +254,14 @@ def validate(directory):
             )
             require(request.get("status") == 200, "request did not return HTTP 200")
             usage, timing = completion_stream(request, manifest)
-            audit_timing_metrics(record["metrics"], timing, usage["completion_tokens"])
+            latencies_ns = audit_timing_metrics(
+                record["metrics"], timing, usage["completion_tokens"]
+            )
+            outcome = (
+                audit_slo_request(record["metrics"], latencies_ns, slos)
+                if slos
+                else None
+            )
             for field, value in usage.items():
                 if field in totals:
                     require(
@@ -212,6 +275,8 @@ def validate(directory):
             )
             if phase == "profiling":
                 timings[key] = timing
+                if slos:
+                    slo_outcomes[key] = outcome or "undefined"
                 successful += 1
                 for field in totals:
                     totals[field] += usage[field]
@@ -228,6 +293,7 @@ def validate(directory):
         native_success + native_errors == expected and native_errors == len(failures),
         "aggregate request counts differ",
     )
+    slo_attainment = None
     if not invalid:
         require(native_success == successful, "aggregate success count differs")
         for field, value in totals.items():
@@ -236,6 +302,10 @@ def validate(directory):
                     metric(summary, f"total_usage_{field}", "avg") == value,
                     f"aggregate usage mismatch: {field}",
                 )
+        if slos and not warmup_errors and successful:
+            slo_attainment = audit_slo_summary(
+                summary, slo_outcomes, failures, expected
+            )
     return {
         "protocol_valid": not invalid and not warmup_errors and successful > 0,
         "quality_scope": manifest["run"]["quality_scope"],
@@ -256,9 +326,10 @@ def validate(directory):
         "warmup_errors": warmup_errors,
         "failures": failures,
         **totals,
-        "slo": manifest.get("slo", {}),
+        "slo": slos,
+        "slo_attainment": slo_attainment,
         "metrics_source": "client/profile_export_aiperf.json",
         "performance_metrics_audited": False,
         "readiness": "Automatic probes disabled; endpoint must already be ready. Zero warmup does not prove cold state.",
-        "limitations": "Protocol/usage, prompt multiset and specified raw-clock/usage-ratio audit only; not observed token intervals, aggregate performance, planned arrivals, HTTP EOF, numerical, GPU or physical-memory qualification.",
+        "limitations": "Protocol/usage, prompt multiset, specified raw-clock/usage-ratio and configured joint SLO count/fraction audit only; not observed token intervals, aggregate rates/percentiles, planned arrivals, HTTP EOF, numerical, GPU or physical-memory qualification.",
     }

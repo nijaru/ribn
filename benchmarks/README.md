@@ -435,11 +435,24 @@ failed issued requests and excludes warmup; a single start has zero span and nul
 interval statistics. These clocks belong to the single-host client, not a distributed
 clock synchronization protocol. They do not reveal suppressed arrivals.
 
+For configured SLOs, `slo_attainment` reconciles each successful request's native
+`good_request_count`, the profiling aggregate count and `good_request_fraction`.
+All configured thresholds must pass, inclusively. The comparison uses internal
+nanoseconds after converting manifest thresholds from milliseconds; comparing
+rounded displayed metrics can change a boundary decision. An ITL requirement below
+two output tokens is undefined, not a zero-latency pass: the native counter must be
+absent and the request does not qualify. Failed attempts remain in the fraction's
+denominator; warmup does not. The report separates met, violated and undefined
+profiling outcomes, and returns no attainment audit without configured SLOs or
+when protocol/metric validation fails. These are issued-request attainment counts,
+not planned-arrival or product SLO acceptance.
+
 For finite-phase throughput, divide actual successful request/token totals by the
 aggregate `end_time - start_time`, including drain—not `benchmark_duration`, which
-ends at content. Aggregate rates, percentiles and SLO goodput remain unaudited;
-a study must cross-check those metrics separately. The per-request ITL arithmetic
-audit does not establish its aggregate tails or the first chunk's real token count.
+ends at content. Aggregate rates (including SLO goodput) and percentiles remain
+unaudited; a study must cross-check those separately. `performance_metrics_audited`
+stays false. The per-request ITL arithmetic audit does not establish its aggregate
+tails or the first chunk's real token count.
 
 Zero warmup omits AIPerf's positive-only warmup option; it does not establish cold execution.
 The [client timing/Metal gate](runtime-contract.md#gemma-endpoint-client-qualification-2026-10-21)
@@ -458,6 +471,11 @@ PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s benchmarks -p 'test_*.
 PYTHONDONTWRITEBYTECODE=1 /tmp/ribn-aiperf/bin/python benchmarks/endpoint_integration.py
 ```
 
+Leave `HF_HUB_OFFLINE` and `TRANSFORMERS_OFFLINE` unset for this integration gate:
+the pinned client's offline resolver treats its generated local tokenizer directory
+as a Hub repository ID and fails during setup. Normal local-path loading needs no
+model or tokenizer download.
+
 The integration gate exercises early EOS, silent truncation, late JSON errors,
 missing usage and rate-controlled partial overload through the actual client and
 CLI. A seeded variable-input case verifies that different tokenized prompt lengths
@@ -466,9 +484,11 @@ nominal lengths or output caps. Prompt fingerprints are independently reconciled
 against actual profiling payloads, retaining failed requests and excluding warmup.
 Delayed empty/terminal frames check content versus DONE clocks and the usage-based
 ITL divisor rather than visible chunk count or output cap. A single-token response
-checks that ITL is absent. A concurrency-capped rate case checks the reported actual
-start intervals against raw timestamps. These checks do not establish device qualification,
-aggregate metric accuracy or load-generator capacity.
+checks ITL absence and undefined SLO attainment; without an ITL requirement, its
+other latency SLOs remain measurable. Joint SLO rejection and partial overload check
+attainment counts and the all-attempt fraction. A concurrency-capped rate case checks
+actual start intervals against raw timestamps. These checks do not establish device
+qualification, aggregate rate/percentile accuracy or load-generator capacity.
 
 ## Ribn endpoint client configuration
 
