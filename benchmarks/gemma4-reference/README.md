@@ -480,6 +480,36 @@ to complete first-projection outputs; it does not locate the full-model divergen
 The F64 results are neither a BF16 rounding oracle nor a full-model quality budget.
 No device parity, numerical tolerance, performance gain or variant promotion follows.
 
+### Compare stored first-projection operands
+
+Use the existing CPU Torch/SafeTensors environment to inspect a capture without a
+model forward:
+
+```sh
+"$REFERENCE_PYTHON" benchmarks/gemma4_linear_compare.py \
+  --reference-report /path/to/gemma4-first-projection/report.json \
+  --capture /path/to/capture.safetensors --output /new/comparison --threads 1
+"$REFERENCE_PYTHON" benchmarks/gemma4-reference/test_linear_compare.py
+```
+
+The capture contains exactly BF16 `input` and `weight`, plus FP32 `output` before
+PLE scaling and normalization. Their logical shapes are `[rows, hidden]`,
+`[packed, hidden]` and `[rows, packed]`, matching the reference's one to four rows.
+Preserve the actual consumed operand bits in this layout: do not cast, round or
+substitute expected operands to make a capture match. Recording tensors, source,
+binary, execution mode and completion provenance remains the capture producer's
+responsibility; matching file hashes cannot attest device execution or batch width.
+
+The comparator checks reference identity, shapes, dtypes and finiteness, then
+requires **bit-identical stored operands**, including signed zero, before reducing
+errors. It reports maximum absolute error, RMSE and relative L2 error against the
+unrounded binary64 output; relative L2 is undefined when the reference norm is zero.
+A completed report means this diagnostic ran, not that numerical acceptance passed.
+No tolerance, precision choice, full-model budget or promotion verdict is supplied.
+Invalid inputs retain an incomplete failure report, and existing output directories
+are never replaced. The explicit tests and CPU-generated captures qualify analysis
+only; actual native operand capture remains a separate gate.
+
 ## Layer-math stage taps
 
 `benchmarks/gemma4_reference.py --stages` records the remaining decoder-layer
