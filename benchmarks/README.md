@@ -552,7 +552,31 @@ python -m sglang.benchmark.serving \
   --num-prompts <n>
 ```
 
-Again, preserve exact installed versions and commands rather than treating these examples as frozen APIs.
+This SGLang shape is **not a qualified Ribn invocation**. In the pinned
+[v0.5.22 client](https://github.com/sgl-project/sglang/blob/baa9befa381511cd4d56f83980951e5a45fffc6d/python/sglang/benchmark/serving.py),
+source review of its `sglang-oai` and `vllm` completion backends (not the vLLM CLI)
+found:
+
+- They send `best_of=1`, outside Ribn's supported request fields. Ribn rejects it.
+- They index `choices[0]` on each non-DONE frame, including usage frames. Ribn's
+  terminal usage frame has `choices: []` and cannot pass that parser.
+- Output length starts at the requested cap and updates only from usage on
+  nonempty content frames. Without those counts, early EOS can inflate reported
+  output tokens and distort TPOT. Separate retokenized counts do not establish
+  the actual generated token count.
+- Latency ends at the last nonblank frame, including `[DONE]`, rather than the
+  last-content clock audited for AIPerf. HTTP stream EOF can mark a request
+  successful without checking for `[DONE]`.
+
+For Ribn, `--disable-ignore-eos`, an explicit `--model`, and
+`--ready-check-timeout-sec 0` avoid the default EOS bypass and unsupported
+`/v1/models` readiness probe, but **do not resolve the gaps above**. Qualify a
+compatible native client before using its results; do not omit terminal usage or
+force generation to the cap to make a cross-check pass. These are source-reviewed
+client limitations, not an executed cross-check or a claim about SGLang's engine.
+
+Preserve exact installed versions and commands rather than treating these
+examples as frozen APIs.
 
 ## Result layout
 
