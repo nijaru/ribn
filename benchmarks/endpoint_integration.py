@@ -12,6 +12,7 @@ import tempfile
 import threading
 import time
 import unittest
+from contextlib import contextmanager
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -92,6 +93,38 @@ class EndpointFixture(BaseHTTPRequestHandler):
             self.wfile.write(body)
 
 
+@contextmanager
+def local_endpoint(directory, mode):
+    """Own the local tokenizer, loopback socket and serving thread together."""
+    tokenizer_dir = directory / "tokenizer"
+    tokenizer_dir.mkdir()
+    tokenizer = Tokenizer(models.WordLevel({"[UNK]": 0, "hello": 1}, unk_token="[UNK]"))
+    tokenizer.pre_tokenizer = pre_tokenizers.Whitespace()
+    tokenizer.save(str(tokenizer_dir / "tokenizer.json"))
+    (tokenizer_dir / "tokenizer_config.json").write_text(
+        json.dumps(
+            {
+                "tokenizer_class": "PreTrainedTokenizerFast",
+                "unk_token": "[UNK]",
+                "model_max_length": 8192,
+            }
+        )
+    )
+    with ThreadingHTTPServer(("127.0.0.1", 0), EndpointFixture) as server:
+        server.mode = mode
+        server.requests = 0
+        server.tokenizer = tokenizer
+        server.prompt_lengths = []
+        server.wire_events = {}
+        thread = threading.Thread(target=server.serve_forever)
+        thread.start()
+        try:
+            yield tokenizer_dir, server
+        finally:
+            server.shutdown()
+            thread.join()
+
+
 class RealClientTests(unittest.TestCase):
     def exercise(
         self,
@@ -107,130 +140,101 @@ class RealClientTests(unittest.TestCase):
             slos = {"ttft_ms": 1000, "itl_ms": 1000, "last_content_ms": 10000}
         with tempfile.TemporaryDirectory(prefix="ribn endpoint ") as tmp:
             directory = Path(tmp)
-            tokenizer_dir = directory / "tokenizer"
-            tokenizer_dir.mkdir()
-            tokenizer = Tokenizer(
-                models.WordLevel({"[UNK]": 0, "hello": 1}, unk_token="[UNK]")
-            )
-            tokenizer.pre_tokenizer = pre_tokenizers.Whitespace()
-            tokenizer.save(str(tokenizer_dir / "tokenizer.json"))
-            (tokenizer_dir / "tokenizer_config.json").write_text(
-                json.dumps(
-                    {
-                        "tokenizer_class": "PreTrainedTokenizerFast",
-                        "unk_token": "[UNK]",
-                        "model_max_length": 8192,
-                    }
+            with local_endpoint(directory, mode) as (tokenizer_dir, server):
+                manifest = directory / "manifest.toml"
+                manifest.write_text(
+                    MANIFEST.replace(
+                        'tokenizer = "fixture"', f'tokenizer = "{tokenizer_dir}"'
+                    )
+                    .replace(
+                        "http://127.0.0.1:18000",
+                        f"http://127.0.0.1:{server.server_port}",
+                    )
+                    .replace("warmup_requests = 0", f"warmup_requests = {warmup}")
+                    .replace("request_count = 2", f"request_count = {requests}")
+                    .replace(
+                        "input_tokens_stddev = 0",
+                        f"input_tokens_stddev = {input_stddev}",
+                    )
+                    .replace("request_rate = 0.0", f"request_rate = {rate}")
+                    .replace(
+                        'arrival_pattern = "poisson"',
+                        f'arrival_pattern = "{arrival}"',
+                    )
+                    + "\n[slo]\n"
+                    + "".join(f"{name} = {value}\n" for name, value in slos.items())
                 )
-            )
-            with ThreadingHTTPServer(("127.0.0.1", 0), EndpointFixture) as server:
-                server.mode = mode
-                server.requests = 0
-                server.tokenizer = tokenizer
-                server.prompt_lengths = []
-                server.wire_events = {}
-                thread = threading.Thread(target=server.serve_forever)
-                thread.start()
-                try:
-                    manifest = directory / "manifest.toml"
-                    manifest.write_text(
-                        MANIFEST.replace(
-                            'tokenizer = "fixture"', f'tokenizer = "{tokenizer_dir}"'
-                        )
-                        .replace(
-                            "http://127.0.0.1:18000",
-                            f"http://127.0.0.1:{server.server_port}",
-                        )
-                        .replace("warmup_requests = 0", f"warmup_requests = {warmup}")
-                        .replace("request_count = 2", f"request_count = {requests}")
-                        .replace(
-                            "input_tokens_stddev = 0",
-                            f"input_tokens_stddev = {input_stddev}",
-                        )
-                        .replace("request_rate = 0.0", f"request_rate = {rate}")
-                        .replace(
-                            'arrival_pattern = "poisson"',
-                            f'arrival_pattern = "{arrival}"',
-                        )
-                        + "\n[slo]\n"
-                        + "".join(f"{name} = {value}\n" for name, value in slos.items())
-                    )
-                    output = directory / "run"
-                    result = subprocess.run(
-                        [
-                            sys.executable,
-                            str(ROOT / "endpoint.py"),
-                            "run",
-                            str(manifest),
-                            "--output",
-                            str(output),
-                            "--aiperf",
-                            AIPERF,
-                        ],
-                        check=False,
-                        capture_output=True,
-                        text=True,
-                        timeout=90,
-                    )
-                    log = (output / "client.log").read_text()
-                    self.assertEqual(
-                        (output / "client-exit-code").read_text().strip(), "0", log
-                    )
-                    self.assertEqual(
-                        result.returncode,
-                        0
-                        if mode
-                        in ("valid", "mlx-usage", "overload", "timing", "single-token")
-                        else 1,
-                        result.stdout + result.stderr + log[-3000:],
-                    )
-                    report = json.loads((output / "validation.json").read_text())
-                    # Readiness probes are disabled: only declared issued attempts.
-                    self.assertEqual(server.requests, requests + warmup)
-                    client = output / "client"
-                    raw = [
+                output = directory / "run"
+                result = subprocess.run(
+                    [
+                        sys.executable,
+                        str(ROOT / "endpoint.py"),
+                        "run",
+                        str(manifest),
+                        "--output",
+                        str(output),
+                        "--aiperf",
+                        AIPERF,
+                    ],
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                    timeout=90,
+                )
+                log = (output / "client.log").read_text()
+                self.assertEqual(
+                    (output / "client-exit-code").read_text().strip(), "0", log
+                )
+                self.assertEqual(
+                    result.returncode,
+                    0
+                    if mode
+                    in ("valid", "mlx-usage", "overload", "timing", "single-token")
+                    else 1,
+                    result.stdout + result.stderr + log[-3000:],
+                )
+                report = json.loads((output / "validation.json").read_text())
+                # Readiness probes are disabled: only declared issued attempts.
+                self.assertEqual(server.requests, requests + warmup)
+                client = output / "client"
+                raw = [
+                    json.loads(line)
+                    for line in (client / "profile_export_raw.jsonl")
+                    .read_text()
+                    .splitlines()
+                ]
+                # Independent reference: count actual profiling prompt digests,
+                # including overload failures, without calling the auditor.
+                digests = [
+                    hashlib.sha256(r["payload"]["prompt"].encode("utf-8")).hexdigest()
+                    for r in raw
+                    if r["metadata"]["benchmark_phase"] == "profiling"
+                ]
+                pairs = [[d, digests.count(d)] for d in sorted(set(digests))]
+                encoded = json.dumps(pairs, separators=(",", ":")).encode("ascii")
+                self.assertEqual(
+                    report["prompt_cohort"],
+                    {
+                        "algorithm": "sha256-utf8-prompt-multiset-v1",
+                        "sha256": hashlib.sha256(
+                            b"ribn:profiling-prompt-multiset:v1\0" + encoded
+                        ).hexdigest(),
+                        "requests": requests,
+                        "unavailable_request_ids": [],
+                    },
+                )
+                return {
+                    "audit": report,
+                    "prompt_lengths": server.prompt_lengths[warmup:],
+                    "records": [
                         json.loads(line)
-                        for line in (client / "profile_export_raw.jsonl")
+                        for line in (client / "profile_export.jsonl")
                         .read_text()
                         .splitlines()
-                    ]
-                    # Independent reference: count actual profiling prompt digests,
-                    # including overload failures, without calling the auditor.
-                    digests = [
-                        hashlib.sha256(
-                            r["payload"]["prompt"].encode("utf-8")
-                        ).hexdigest()
-                        for r in raw
-                        if r["metadata"]["benchmark_phase"] == "profiling"
-                    ]
-                    pairs = [[d, digests.count(d)] for d in sorted(set(digests))]
-                    encoded = json.dumps(pairs, separators=(",", ":")).encode("ascii")
-                    self.assertEqual(
-                        report["prompt_cohort"],
-                        {
-                            "algorithm": "sha256-utf8-prompt-multiset-v1",
-                            "sha256": hashlib.sha256(
-                                b"ribn:profiling-prompt-multiset:v1\0" + encoded
-                            ).hexdigest(),
-                            "requests": requests,
-                            "unavailable_request_ids": [],
-                        },
-                    )
-                    return {
-                        "audit": report,
-                        "prompt_lengths": server.prompt_lengths[warmup:],
-                        "records": [
-                            json.loads(line)
-                            for line in (client / "profile_export.jsonl")
-                            .read_text()
-                            .splitlines()
-                        ],
-                        "raw": raw,
-                        "wire_events": server.wire_events,
-                    }
-                finally:
-                    server.shutdown()
-                    thread.join()
+                    ],
+                    "raw": raw,
+                    "wire_events": server.wire_events,
+                }
 
     def test_real_exports_accept_early_eos_and_reject_false_client_successes(self):
         for mode in ("valid", "mlx-usage", "truncated", "late-error", "no-usage"):

@@ -468,7 +468,7 @@ Host verification:
 ```sh
 PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s benchmarks -p 'test_*.py'
 # Explicit integration gate: real AIPerf plus a CPU-only HTTP fixture, no model/GPU.
-PYTHONDONTWRITEBYTECODE=1 /tmp/ribn-aiperf/bin/python benchmarks/endpoint_integration.py
+PYTHONDONTWRITEBYTECODE=1 /tmp/ribn-aiperf/bin/python -m unittest discover -s benchmarks -p '*_integration.py'
 ```
 
 Leave `HF_HUB_OFFLINE` and `TRANSFORMERS_OFFLINE` unset for this integration gate:
@@ -489,6 +489,56 @@ other latency SLOs remain measurable. Joint SLO rejection and partial overload c
 attainment counts and the all-attempt fraction. A concurrency-capped rate case checks
 actual start intervals against raw timestamps. These checks do not establish device
 qualification, aggregate rate/percentile accuracy or load-generator capacity.
+
+## Timestamped replay: client qualification only
+
+AIPerf 0.13.0 can replay a finite Mooncake JSONL trace instead of suppressing rate
+ticks at a full concurrency gate. This is a separate native-client path;
+`endpoint.py`'s manifest runner and validator still accept synthetic workloads only.
+For a small smoke, save these four independent requests as `schedule.jsonl`:
+
+```jsonl
+{"session_id":"req-0","timestamp":0,"text_input":"hello","output_length":8}
+{"session_id":"req-1","timestamp":50,"text_input":"hello hello","output_length":8}
+{"session_id":"req-2","timestamp":100,"text_input":"hello hello hello","output_length":8}
+{"session_id":"req-3","timestamp":150,"text_input":"hello hello hello hello","output_length":8}
+```
+
+Timestamps are milliseconds. With the already-local pinned tokenizer snapshot,
+leave the offline resolver flags unset as described above:
+
+```sh
+aiperf profile \
+  --model ribn --tokenizer "$TOKENIZER_PATH" --tokenizer-revision "$TOKENIZER_REVISION" \
+  --endpoint-type completions --endpoint /v1/completions --streaming \
+  --url http://127.0.0.1:18000 --input-file schedule.jsonl \
+  --custom-dataset-type mooncake_trace --fixed-schedule \
+  --dataset-sampling-strategy sequential --concurrency 1 \
+  --random-seed 42 --use-server-token-count --extra-inputs '{"temperature":0}' \
+  --connection-reuse-strategy never --wait-for-model-mode inference \
+  --wait-for-model-timeout 0 --request-timeout-seconds 10 \
+  --export-level raw --export-http-trace --no-server-metrics --no-gpu-telemetry \
+  --ui none --no-auto-plot --output-artifact-dir /tmp/ribn-fixed-replay
+```
+
+The fixed schedule ends at trace exhaustion; do not add a rate target to this
+recipe. Preserve the input hash, version, full command and exports. Reconcile all
+input session IDs and exact prompts against raw and ordinary request records,
+including failures, rather than treating exit zero as evidence of complete replay.
+This four-request smoke is not a representative serving workload.
+
+`endpoint_replay_integration.py` checks that the actual client preserves all four
+requests at concurrency four and one against the delayed CPU fixture, with usage,
+content clocks and native relative send-lag scalars reconciled. The latter use
+`request_start_ns - input_timestamp_ns`, anchored to the least-late request.
+The client's float64 epoch-offset column loses low bits before centering; the test
+reproduces that declared arithmetic, not integer-exact quantiles. Its 500 ms
+`replay_sched_degraded` threshold is a client diagnostic, not Ribn's SLO.
+
+**The absolute schedule origin is not exported.** Relative lag cannot detect a
+uniform delay, and dispatch-based TTFT still excludes queued time. This mode alone
+therefore does not establish planned-arrival latency or SLO goodput. It does not
+change either audit flag in the synthetic runner or qualify device performance.
 
 ## Ribn endpoint client configuration
 
