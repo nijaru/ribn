@@ -12,6 +12,7 @@ use ribn::{
 };
 use ribn_server::{Server, ServerConfig};
 use ribn_text::{GgufProcessor, ProcessorLimits, TextConfig, TextOwner};
+pub mod sdk;
 mod wire;
 use wire::{Reply, post};
 pub use wire::{exchange, first_delta, wait_until};
@@ -52,10 +53,12 @@ impl GenerationExecutor for Fixture {
             sequence,
             (
                 u32::try_from(request.tokens.len()).unwrap(),
-                if request.tokens[0] == u32::from(b'b') {
-                    256
-                } else {
-                    u32::from(b'x')
+                match request.tokens[0] {
+                    n if n == u32::from(b'b') => 256,
+                    // An early EOS gives independent clients a below-cap usage
+                    // case with no visible output, unlike decoded-stop races.
+                    n if n == u32::from(b'e') => 0,
+                    _ => u32::from(b'x'),
                 },
             ),
         );

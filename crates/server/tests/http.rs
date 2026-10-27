@@ -18,6 +18,71 @@ fn prompt(stream: bool, tokens: u32) -> String {
 }
 
 #[tokio::test]
+#[ignore = "requires RIBN_OPENAI_NODE and RIBN_OPENAI_SDK (installed official SDK)"]
+async fn openai_sdk_protocol_and_usage() {
+    let sdk = support::sdk::Client::configured();
+    let running = Running::start(ServerConfig::default(), Arc::new(Plan::default()), 2).await;
+    let result = sdk.run(running.address, "protocol").await;
+    let (_, stopped) = running.stop().await;
+    assert!(stopped.is_ok(), "{stopped:?}");
+    let report = result.expect("official SDK protocol gate");
+    assert_eq!(report["requests"], 6);
+    assert_eq!(report["hidden_eos_usage"]["completion_tokens"], 1);
+}
+
+#[tokio::test]
+#[ignore = "requires RIBN_OPENAI_NODE and RIBN_OPENAI_SDK (installed official SDK)"]
+async fn openai_sdk_break_abandons_before_client_exit_and_recovers() {
+    let sdk = support::sdk::Client::configured();
+    let plan = Arc::new(Plan::default());
+    plan.hold.store(true, Ordering::SeqCst);
+    let running = Running::start(
+        ServerConfig {
+            max_requests: 1,
+            ..ServerConfig::default()
+        },
+        plan.clone(),
+        1,
+    )
+    .await;
+    let abandoned = sdk.run(running.address, "abort").await;
+    plan.hold.store(false, Ordering::SeqCst);
+    let retired = tokio::time::timeout(Duration::from_secs(3), async {
+        while plan.live.load(Ordering::SeqCst) != 0 {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await;
+    let cancelled_produced = plan.produced.load(Ordering::SeqCst);
+    let recovered = if retired.is_ok() {
+        Some(sdk.run(running.address, "recover").await)
+    } else {
+        None
+    };
+    let (_, stopped) = running.stop().await;
+    assert!(stopped.is_ok(), "{stopped:?}");
+    assert!(
+        retired.is_ok(),
+        "retirement timed out; SDK result: {abandoned:?}"
+    );
+    assert_eq!(
+        abandoned.expect("official SDK abort gate")["observed_abandoned_before_exit"],
+        true
+    );
+    assert!(
+        cancelled_produced <= 2,
+        "SDK break must not finish 50 tokens"
+    );
+    assert_eq!(
+        recovered
+            .expect("retired owner permits recovery")
+            .expect("official SDK recovery gate")["recovered"],
+        true
+    );
+    assert_eq!(plan.live.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
 async fn completion_chat_streaming_and_usage_have_one_ordered_terminal() {
     let running = Running::start(ServerConfig::default(), Arc::new(Plan::default()), 2).await;
     for (path, body, text_key) in [
