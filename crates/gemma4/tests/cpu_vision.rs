@@ -1,6 +1,7 @@
 //! Independent stock-HF tiny vision fixture plus retained-source failure cases.
 use engine_gemma4::vision::{
-    Gemma4CpuVisionEncoder, Gemma4VisionConfig, Gemma4VisionCpuWeights, VisionImage,
+    Gemma4CpuVisionEncoder, Gemma4ImagePatches, Gemma4VisionConfig, Gemma4VisionCpuWeights,
+    VisionImage,
 };
 use engine_gemma4::{Gemma4Source, bf16};
 use ribn_hf::LocalModelPackage;
@@ -108,6 +109,34 @@ fn cpu_encoder_matches_independent_stock_fixture_at_every_stage() {
         .unwrap();
     assert_eq!(seen.len(), f["expected"].as_object().unwrap().len());
     assert_eq!(result.len(), 7);
+}
+
+#[test]
+fn resized_rgb_owner_feeds_existing_cpu_encoder() {
+    let dir = weights::Dir::new();
+    let source = Gemma4Source::open(&package(&dir, &fixture())).unwrap();
+    let vision = source.vision_source().unwrap();
+    let encoder = Gemma4CpuVisionEncoder::new(Gemma4VisionCpuWeights::load(&vision).unwrap());
+    let patches = Gemma4ImagePatches::from_resized_rgb(
+        encoder.config(),
+        8,
+        4,
+        &(0_u8..96).collect::<Vec<_>>(),
+        70,
+    )
+    .unwrap();
+    let result = encoder.encode(patches.as_image()).unwrap();
+    assert_eq!(
+        result.len(),
+        patches.soft_tokens() * encoder.config().output_width()
+    );
+    assert!(
+        result
+            .iter()
+            .all(|&v| f32::from_bits(u32::from(v) << 16).is_finite())
+    );
+    // This checks the real producer/consumer geometry and ownership boundary;
+    // the existing stock fixture, not these new pixels, owns encoder parity.
 }
 
 #[test]

@@ -171,6 +171,35 @@ keys. Output contains valid projected BF16 rows; `encode_observed` exposes borro
 patch/layer, pooled, normalization and projection stages without retaining a trace.
 No feature-cache identity, executor handoff or application byte admission is implied.
 
+`Gemma4ImagePatches::from_resized_rgb(&config, width, height, &rgb, budget)` now
+packs **already-resized**, tightly interleaved RGB8 into this exact input. Keep the
+returned owner alive and pass `patches.as_image()` to `encode`. It rescales in FP32,
+packs HWC within each patch, writes xy positions and pads to the selected soft-token
+budget (70, 140, 280, 560 or 1120). `soft_tokens()` counts valid pooled features,
+not the budget. Invalid byte counts, unaligned dimensions, oversized grids and learned
+position-table overflow reject before allocation; host allocation is fallible.
+This is not RGB decoding, aspect-ratio selection, bicubic/antialias resizing, color/EXIF
+handling, a shared-memory reservation or application media support.
+
+The prep-only stock comparison loads no model weights. In the pinned vision-reference
+environment above, use a new corpus directory:
+
+```sh
+python benchmarks/gemma4_rgb_reference.py /path/to/new-rgb-corpus
+CARGO_BUILD_JOBS=2 RUSTUP_TOOLCHAIN=1.98.0 \
+RIBN_GEMMA_RGB_REFERENCE=/path/to/new-rgb-corpus \
+  cargo test -p engine-gemma4 --locked --test rgb_patches \
+  full_resized_rgb_reference_corpus -- --ignored --nocapture --test-threads=1
+```
+
+The corpus checks all physical FP32 pixel words and i64 positions exactly against
+stock `Gemma4ImageProcessor` with **`do_resize=False`**: two asymmetric reduced
+geometries plus both E4B RGB orientations at all five budgets. The compact committed
+fixture keeps ordinary tests independent of Python; a separate test covers the largest
+full grid with no padding, and a small real CPU encoder consumes the owned patches.
+These checks do not repair or waive the failed full-checkpoint encoder gate below,
+qualify interpolation, or enable media through the text executor.
+
 The committed independent small stock-HF fixture checks every stage bit-for-bit,
 including grouped heads, two frequencies per spatial axis and trailing padding. It
 uses a saved stock model loaded with `from_pretrained(dtype=bfloat16)`, as the real
