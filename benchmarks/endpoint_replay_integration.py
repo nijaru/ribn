@@ -1,10 +1,11 @@
 """Explicit CPU-only qualification of AIPerf's finite timestamped replay.
 
-This invokes the native client directly, not endpoint.py's synthetic-only runner.
+This exercises the snapshotting runner and offline input-cohort validator.
 """
 
 import json
 import subprocess
+import sys
 import tempfile
 import unittest
 from itertools import pairwise
@@ -13,7 +14,8 @@ from pathlib import Path
 import numpy as np
 from aiperf_results import audit_timing_metrics
 from aiperf_stream import completion_stream
-from endpoint_integration import AIPERF, local_endpoint
+from endpoint_integration import AIPERF, ROOT, local_endpoint
+from test_endpoint_trace import TRACE_MANIFEST
 
 
 class ReplayClientTests(unittest.TestCase):
@@ -22,7 +24,8 @@ class ReplayClientTests(unittest.TestCase):
             {
                 "session_id": f"req-{i}",
                 "timestamp": i * 50,
-                "text_input": " ".join(["hello"] * (i + 1)),
+                "text_input": " ".join(["hello"] * (i + 1))
+                + ("\u0085\u2028\u2029" if i == 0 else ""),
                 "output_length": 8,
             }
             for i in range(4)
@@ -30,62 +33,41 @@ class ReplayClientTests(unittest.TestCase):
         expected = {row["session_id"]: row for row in rows}
         with tempfile.TemporaryDirectory(prefix="ribn replay ") as tmp:
             directory = Path(tmp)
-            trace = directory / "schedule.jsonl"
-            trace.write_text("".join(json.dumps(row) + "\n" for row in rows))
-            for concurrency in (4, 1):
-                with self.subTest(concurrency=concurrency):
-                    case = directory / f"c{concurrency}"
+            for mode, concurrency in (("timing", 4), ("timing", 1), ("overload", 1)):
+                with self.subTest(mode=mode, concurrency=concurrency):
+                    case = directory / f"{mode}-c{concurrency}"
                     case.mkdir()
-                    with local_endpoint(case, "timing") as (tokenizer, server):
-                        client = case / "client"
+                    (case / "schedule.jsonl").write_text(
+                        "".join(
+                            json.dumps(row, ensure_ascii=False) + "\n" for row in rows
+                        )
+                    )
+                    with local_endpoint(case, mode) as (tokenizer, server):
+                        client = case / "run" / "client"
+                        manifest = case / "manifest.toml"
+                        manifest.write_text(
+                            TRACE_MANIFEST.replace(
+                                'tokenizer = "fixture"', f'tokenizer = "{tokenizer}"'
+                            )
+                            .replace(
+                                "http://127.0.0.1:18000",
+                                f"http://127.0.0.1:{server.server_port}",
+                            )
+                            .replace("request_count = 2", "request_count = 4")
+                            .replace(
+                                "max_concurrency = 1",
+                                f"max_concurrency = {concurrency}",
+                            )
+                        )
                         command = [
+                            sys.executable,
+                            str(ROOT / "endpoint.py"),
+                            "run",
+                            str(manifest),
+                            "--output",
+                            str(case / "run"),
+                            "--aiperf",
                             AIPERF,
-                            "profile",
-                            "--model",
-                            "fixture",
-                            "--tokenizer",
-                            str(tokenizer),
-                            "--tokenizer-revision",
-                            "fixture",
-                            "--endpoint-type",
-                            "completions",
-                            "--endpoint",
-                            "/v1/completions",
-                            "--streaming",
-                            "--url",
-                            f"http://127.0.0.1:{server.server_port}",
-                            "--input-file",
-                            str(trace),
-                            "--custom-dataset-type",
-                            "mooncake_trace",
-                            "--fixed-schedule",
-                            "--dataset-sampling-strategy",
-                            "sequential",
-                            "--concurrency",
-                            str(concurrency),
-                            "--random-seed",
-                            "42",
-                            "--use-server-token-count",
-                            "--extra-inputs",
-                            '{"temperature":0}',
-                            "--connection-reuse-strategy",
-                            "never",
-                            "--wait-for-model-mode",
-                            "inference",
-                            "--wait-for-model-timeout",
-                            "0",
-                            "--request-timeout-seconds",
-                            "10",
-                            "--export-level",
-                            "raw",
-                            "--export-http-trace",
-                            "--no-server-metrics",
-                            "--no-gpu-telemetry",
-                            "--ui",
-                            "none",
-                            "--no-auto-plot",
-                            "--output-artifact-dir",
-                            str(client),
                         ]
                         (case / "command.json").write_text(json.dumps(command))
                         result = subprocess.run(
@@ -100,18 +82,37 @@ class ReplayClientTests(unittest.TestCase):
                             result.returncode, 0, result.stdout + result.stderr
                         )
                         self.assertEqual(server.requests, 4)
-                        raw = [
-                            json.loads(line)
-                            for line in (client / "profile_export_raw.jsonl")
-                            .read_text()
-                            .splitlines()
-                        ]
-                        records = [
-                            json.loads(line)
-                            for line in (client / "profile_export.jsonl")
-                            .read_text()
-                            .splitlines()
-                        ]
+                        report = json.loads(
+                            (case / "run" / "validation.json").read_text()
+                        )
+                        self.assertTrue(report["protocol_valid"])
+                        self.assertEqual(report["trace_cohort"]["matched_attempts"], 4)
+                        self.assertEqual(
+                            report["trace_cohort"]["input_offsets"],
+                            {r["session_id"]: r["timestamp"] for r in rows},
+                        )
+                        self.assertFalse(report["planned_arrivals_audited"])
+                        self.assertEqual(
+                            (case / "run" / "schedule.jsonl").read_bytes(),
+                            (case / "schedule.jsonl").read_bytes(),
+                        )
+                        if mode == "overload":
+                            self.assertEqual(
+                                (
+                                    report["successful_requests"],
+                                    report["failed_requests"],
+                                ),
+                                (3, 1),
+                            )
+                            continue
+                        with (client / "profile_export_raw.jsonl").open(
+                            encoding="utf-8"
+                        ) as source:
+                            raw = [json.loads(line) for line in source]
+                        with (client / "profile_export.jsonl").open(
+                            encoding="utf-8"
+                        ) as source:
+                            records = [json.loads(line) for line in source]
                         summary = json.loads(
                             (client / "profile_export_aiperf.json").read_text()
                         )

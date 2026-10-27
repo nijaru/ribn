@@ -308,8 +308,9 @@ or numerical evidence.
 `/v1/completions` endpoint, then audits its native aggregate, per-request and raw
 exports. It supports synthetic fixed or variable nominal prompt lengths with fixed
 output caps, greedy sampling with EOS enabled, concurrency-limited traffic and
-constant/Poisson rate control. Output caps are not expected generated-token counts.
-Variable output caps, explicit trace datasets and chat are not implemented here.
+constant/Poisson rate control. It also supports the finite single-turn text traces
+below. Output caps are not expected generated-token counts. Variable output caps,
+media, multi-turn traces and chat are not implemented here.
 
 Set `workload.input_tokens_stddev` to a nonnegative integer: zero keeps the fixed
 nominal length; positive values use AIPerf's seeded positive-normal length generator.
@@ -490,12 +491,25 @@ attainment counts and the all-attempt fraction. A concurrency-capped rate case c
 actual start intervals against raw timestamps. These checks do not establish device
 qualification, aggregate rate/percentile accuracy or load-generator capacity.
 
-## Timestamped replay: client qualification only
+## Timestamped text replay
 
-AIPerf 0.13.0 can replay a finite Mooncake JSONL trace instead of suppressing rate
-ticks at a full concurrency gate. This is a separate native-client path;
-`endpoint.py`'s manifest runner and validator still accept synthetic workloads only.
-For a small smoke, save these four independent requests as `schedule.jsonl`:
+For a finite declared arrival cohort, use `kind = "fixed_schedule"` rather than
+a rate target whose ticks can be suppressed at the concurrency ceiling. Keep the
+other manifest sections and replace its workload section with:
+
+```toml
+[workload]
+kind = "fixed_schedule"
+trace_file = "schedule.jsonl"
+output_tokens_mean = 8
+output_tokens_stddev = 0
+request_count = 4
+warmup_requests = 0
+max_concurrency = 1
+request_timeout_seconds = 10
+```
+
+Place `schedule.jsonl` beside that manifest:
 
 ```jsonl
 {"session_id":"req-0","timestamp":0,"text_input":"hello","output_length":8}
@@ -504,41 +518,41 @@ For a small smoke, save these four independent requests as `schedule.jsonl`:
 {"session_id":"req-3","timestamp":150,"text_input":"hello hello hello hello","output_length":8}
 ```
 
-Timestamps are milliseconds. With the already-local pinned tokenizer snapshot,
-leave the offline resolver flags unset as described above:
+Run the same entry point with a new output directory:
 
 ```sh
-aiperf profile \
-  --model ribn --tokenizer "$TOKENIZER_PATH" --tokenizer-revision "$TOKENIZER_REVISION" \
-  --endpoint-type completions --endpoint /v1/completions --streaming \
-  --url http://127.0.0.1:18000 --input-file schedule.jsonl \
-  --custom-dataset-type mooncake_trace --fixed-schedule \
-  --dataset-sampling-strategy sequential --concurrency 1 \
-  --random-seed 42 --use-server-token-count --extra-inputs '{"temperature":0}' \
-  --connection-reuse-strategy never --wait-for-model-mode inference \
-  --wait-for-model-timeout 0 --request-timeout-seconds 10 \
-  --export-level raw --export-http-trace --no-server-metrics --no-gpu-telemetry \
-  --ui none --no-auto-plot --output-artifact-dir /tmp/ribn-fixed-replay
+python3 benchmarks/endpoint.py run /path/to/manifest.toml \
+  --output /tmp/ribn-fixed-replay --aiperf /tmp/ribn-aiperf/bin/aiperf
 ```
 
-The fixed schedule ends at trace exhaustion; do not add a rate target to this
-recipe. Preserve the input hash, version, full command and exports. Reconcile all
-input session IDs and exact prompts against raw and ordinary request records,
-including failures, rather than treating exit zero as evidence of complete replay.
-This four-request smoke is not a representative serving workload.
+This small example is a smoke, not a representative serving workload. The initial
+trace subset accepts exactly these four row fields: unique nonempty session IDs
+using ASCII letters, digits, `_.:-`; sorted nonnegative integer millisecond offsets
+starting at zero; nonempty UTF-8 text; and a uniform output cap matching the manifest.
+The row count must match `request_count`. The sidecar must have a simple ASCII
+`.jsonl` filename, not a path. Warmup must be zero, and synthetic length, rate and
+arrival-pattern controls are rejected rather than ignored. Cache hashes, payloads,
+messages, media, delays and multi-turn sessions are outside this subset.
 
-`endpoint_replay_integration.py` checks that the actual client preserves all four
-requests at concurrency four and one against the delayed CPU fixture, with usage,
-content clocks and native relative send-lag scalars reconciled. The latter use
-`request_start_ns - input_timestamp_ns`, anchored to the least-late request.
-The client's float64 epoch-offset column loses low bits before centering; the test
-reproduces that declared arithmetic, not integer-exact quantiles. Its 500 ms
-`replay_sched_degraded` threshold is a client diagnostic, not Ribn's SLO.
+The runner validates the whole trace before launching the client, copies its bytes
+beside the copied manifest, records its SHA-256, and binds the effective native file
+configuration to that snapshot. Revalidation rejects changed bytes or mismatched
+session IDs, turns, prompts and caps—including failed attempts. `trace_cohort`
+reports the checked input offsets and attempt coverage; `issued_load` still reports
+actual starts, with no configured request rate. Keep the snapshot and exports at
+their recorded location when revalidating.
 
-**The absolute schedule origin is not exported.** Relative lag cannot detect a
-uniform delay, and dispatch-based TTFT still excludes queued time. This mode alone
-therefore does not establish planned-arrival latency or SLO goodput. It does not
-change either audit flag in the synthetic runner or qualify device performance.
+The CPU replay gate exercises the actual runner at concurrency four and one, proves
+that the single-slot streams do not overlap, and retains a partial-overload cohort.
+It reconciles native relative send-lag scalars using the client's float64 epoch-offset
+column, including its low-bit loss before centering—not integer-exact quantiles.
+The client's 500 ms `replay_sched_degraded` threshold is a diagnostic, not Ribn's SLO.
+
+**The absolute schedule origin is not exported.** Relative lag cannot detect uniform
+lateness, and dispatch-based TTFT excludes queued time. Checking the declared input
+cohort therefore does not establish planned-arrival latency or SLO goodput.
+`planned_arrivals_audited` and `performance_metrics_audited` remain false; CPU
+qualification does not establish device performance.
 
 ## Ribn endpoint client configuration
 

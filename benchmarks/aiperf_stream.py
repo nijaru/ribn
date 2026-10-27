@@ -21,8 +21,8 @@ def validate_clocks(raw):
     return start
 
 
-def completion_stream(raw, manifest):
-    """Audit one-choice completion events, not SSE wire framing or HTTP EOF."""
+def validate_payload(raw, manifest):
+    """Validate request policy independently of whether the transport succeeded."""
     payload = raw["payload"]
     require(isinstance(payload, dict), "missing request payload")
     require(
@@ -53,6 +53,12 @@ def completion_stream(raw, manifest):
         isinstance(options, dict) and options.get("include_usage") is True,
         "usage was not requested",
     )
+
+
+def completion_stream(raw, manifest):
+    """Audit one-choice completion events, not SSE wire framing or HTTP EOF."""
+    validate_payload(raw, manifest)
+    cap = manifest["workload"]["output_tokens_mean"]
     start = validate_clocks(raw)
     first = last = done = None
     finish = usage = None

@@ -12,11 +12,16 @@ from pathlib import Path
 
 from aiperf_results import validate
 from endpoint_config import AIPERF_VERSION, command, parse_manifest, require
+from endpoint_trace import parse_trace
 
 
 def run(manifest_path, output, executable):
     snapshot = manifest_path.read_bytes()
     manifest = parse_manifest(snapshot)
+    trace = None
+    if manifest["workload"]["kind"] == "fixed_schedule":
+        trace = (manifest_path.parent / manifest["workload"]["trace_file"]).read_bytes()
+        parse_trace(trace, manifest["workload"])
     executable = shutil.which(executable)
     require(executable is not None, "AIPerf executable not found")
     version = subprocess.run(
@@ -27,6 +32,8 @@ def run(manifest_path, output, executable):
     )
     output.mkdir(parents=True)  # Never replace a previous run or its evidence.
     (output / "manifest.toml").write_bytes(snapshot)
+    if trace is not None:
+        (output / manifest["workload"]["trace_file"]).write_bytes(trace)
     args = command(manifest, executable, output.resolve())
     provenance = {
         "command": args,
@@ -34,6 +41,8 @@ def run(manifest_path, output, executable):
         "platform": platform.platform(),
         "manifest_sha256": hashlib.sha256(snapshot).hexdigest(),
     }
+    if trace is not None:
+        provenance["trace_sha256"] = hashlib.sha256(trace).hexdigest()
     (output / "invocation.json").write_text(json.dumps(provenance, indent=2) + "\n")
     with (output / "client.log").open("w") as log:
         result = subprocess.run(args, check=False, stdout=log, stderr=subprocess.STDOUT)

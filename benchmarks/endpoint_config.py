@@ -1,6 +1,7 @@
 """Pinned AIPerf command, manifest validation and effective-config reconciliation."""
 
 import math
+import re
 import tomllib
 from urllib.parse import urlsplit
 
@@ -100,23 +101,58 @@ def parse_manifest(contents):
     )
     workload = manifest.get("workload", {})
     require(isinstance(workload, dict), "missing [workload]")
-    require(
-        workload.get("kind") == "synthetic", "only synthetic workloads are supported"
-    )
-    for field in (
-        "input_tokens_mean",
-        "output_tokens_mean",
-        "request_count",
-        "max_concurrency",
-    ):
+    kind = workload.get("kind")
+    require(kind in ("synthetic", "fixed_schedule"), "unsupported workload kind")
+    for field in ("output_tokens_mean", "request_count", "max_concurrency"):
         require(
             count(workload.get(field)) and workload[field] > 0,
             f"{field} must be positive",
         )
-    require(
-        count(workload.get("input_tokens_stddev")),
-        "input_tokens_stddev must be a nonnegative integer",
-    )
+    if kind == "synthetic":
+        require(
+            count(workload.get("input_tokens_mean"))
+            and workload["input_tokens_mean"] > 0,
+            "input_tokens_mean must be positive",
+        )
+        require(
+            count(workload.get("input_tokens_stddev")),
+            "input_tokens_stddev must be a nonnegative integer",
+        )
+        require(
+            number(workload.get("request_rate")),
+            "request_rate must be nonnegative (0 = unlimited)",
+        )
+        require(
+            workload.get("arrival_pattern") in ("constant", "poisson"),
+            "unsupported arrival_pattern",
+        )
+    else:
+        require(
+            workload.keys()
+            == {
+                "kind",
+                "trace_file",
+                "output_tokens_mean",
+                "output_tokens_stddev",
+                "request_count",
+                "warmup_requests",
+                "max_concurrency",
+                "request_timeout_seconds",
+            },
+            "unsupported fixed_schedule workload fields",
+        )
+        require(
+            isinstance(workload.get("trace_file"), str)
+            and re.fullmatch(
+                r"[A-Za-z0-9][A-Za-z0-9_.-]*\.jsonl", workload["trace_file"]
+            ),
+            "trace_file must be a simple .jsonl filename",
+        )
+        require(
+            type(workload.get("warmup_requests")) is int
+            and workload["warmup_requests"] == 0,
+            "fixed_schedule requires zero warmup",
+        )
     require(
         count(workload.get("output_tokens_stddev"))
         and workload["output_tokens_stddev"] == 0,
@@ -126,16 +162,8 @@ def parse_manifest(contents):
         count(workload.get("warmup_requests")), "warmup_requests must be nonnegative"
     )
     require(
-        number(workload.get("request_rate")),
-        "request_rate must be nonnegative (0 = unlimited)",
-    )
-    require(
         number(workload.get("request_timeout_seconds"), 1),
         "request_timeout_seconds must be >= 1",
-    )
-    require(
-        workload.get("arrival_pattern") in ("constant", "poisson"),
-        "unsupported arrival_pattern",
     )
     slos = manifest.get("slo", {})
     require(isinstance(slos, dict) and slos.keys() <= SLOS.keys(), "unknown SLO")
@@ -146,12 +174,14 @@ def parse_manifest(contents):
     return manifest
 
 
-def check_config(actual, manifest):
+def check_config(actual, manifest, trace_path=None):
     """Bind the sparse v0.13 export's effective workload to the requested run."""
     require(isinstance(actual, dict), "missing effective AIPerf configuration")
     workload = manifest["workload"]
     phase = {"type": "concurrency", "concurrency": workload["max_concurrency"]}
-    if workload["request_rate"]:
+    if workload["kind"] == "fixed_schedule":
+        phase["type"] = "fixed_schedule"
+    elif workload["request_rate"]:
         phase.update(type=workload["arrival_pattern"], rate=workload["request_rate"])
     phases = []
     if workload["warmup_requests"]:
@@ -172,23 +202,33 @@ def check_config(actual, manifest):
             "requests": workload["request_count"],
         }
     )
+    if workload["kind"] == "fixed_schedule":
+        require(trace_path is not None, "missing trace snapshot path")
+        dataset = {
+            "name": "main",
+            "type": "file",
+            "path": str(trace_path),
+            "format": "mooncake_trace",
+            "sampling": "sequential",
+            "random_seed": manifest["run"]["seed"],
+        }
+    else:
+        dataset = {
+            "name": "main",
+            "type": "synthetic",
+            "entries": workload["request_count"],
+            "random_seed": manifest["run"]["seed"],
+            "prompts": {
+                "isl": {
+                    "mean": workload["input_tokens_mean"],
+                    "stddev": workload["input_tokens_stddev"],
+                },
+                "osl": {"mean": workload["output_tokens_mean"], "stddev": 0},
+            },
+        }
     expected = {
         "models": {"items": [{"name": manifest["model"]["id"]}]},
-        "datasets": [
-            {
-                "name": "main",
-                "type": "synthetic",
-                "entries": workload["request_count"],
-                "random_seed": manifest["run"]["seed"],
-                "prompts": {
-                    "isl": {
-                        "mean": workload["input_tokens_mean"],
-                        "stddev": workload["input_tokens_stddev"],
-                    },
-                    "osl": {"mean": workload["output_tokens_mean"], "stddev": 0},
-                },
-            }
-        ],
+        "datasets": [dataset],
         "phases": phases,
         "tokenizer": {
             "name": manifest["model"]["tokenizer"],
@@ -247,20 +287,8 @@ def command(manifest, executable, output):
         "--streaming",
         "--url",
         manifest["server"]["base_url"],
-        "--isl",
-        str(workload["input_tokens_mean"]),
-        "--isl-stddev",
-        str(workload["input_tokens_stddev"]),
-        "--osl",
-        str(workload["output_tokens_mean"]),
-        "--osl-stddev",
-        "0",
         "--concurrency",
         str(workload["max_concurrency"]),
-        "--request-count",
-        str(workload["request_count"]),
-        "--num-prompts",
-        str(workload["request_count"]),
         "--random-seed",
         str(manifest["run"]["seed"]),
         "--use-server-token-count",
@@ -284,9 +312,34 @@ def command(manifest, executable, output):
         "--output-artifact-dir",
         str(output / "client"),
     ]
+    if workload["kind"] == "fixed_schedule":
+        args += [
+            "--input-file",
+            str(output / workload["trace_file"]),
+            "--custom-dataset-type",
+            "mooncake_trace",
+            "--fixed-schedule",
+            "--dataset-sampling-strategy",
+            "sequential",
+        ]
+    else:
+        args += [
+            "--isl",
+            str(workload["input_tokens_mean"]),
+            "--isl-stddev",
+            str(workload["input_tokens_stddev"]),
+            "--osl",
+            str(workload["output_tokens_mean"]),
+            "--osl-stddev",
+            "0",
+            "--request-count",
+            str(workload["request_count"]),
+            "--num-prompts",
+            str(workload["request_count"]),
+        ]
     if workload["warmup_requests"]:
         args += ["--warmup-request-count", str(workload["warmup_requests"])]
-    if workload["request_rate"]:
+    if workload.get("request_rate"):
         args += [
             "--request-rate",
             str(workload["request_rate"]),

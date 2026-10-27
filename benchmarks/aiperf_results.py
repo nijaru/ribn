@@ -15,6 +15,7 @@ from endpoint_config import (
     parse_manifest,
     require,
 )
+from endpoint_trace import audit_trace, trace_snapshot
 
 EXPORT_SCHEMA = "1.4"
 
@@ -133,7 +134,7 @@ def issued_load(raw, profiling, workload):
     starts = sorted(timestamp(raw[key].get("start_perf_ns")) for key in profiling)
     gaps = [right - left for left, right in pairwise(starts)]
     return {
-        "configured_request_rate": workload["request_rate"],
+        "configured_request_rate": workload.get("request_rate"),
         "max_concurrency": workload["max_concurrency"],
         "issued_requests": len(starts),
         "start_span_ns": starts[-1] - starts[0],
@@ -185,6 +186,7 @@ def validate(directory):
     require(
         provenance.get("manifest_sha256") == digest, "manifest changed after invocation"
     )
+    trace = trace_snapshot(directory, manifest, provenance)
     client = directory / "client"
     summary = read_json(client / "profile_export_aiperf.json")
     require(
@@ -196,7 +198,13 @@ def validate(directory):
         summary.get("is_complete") is True and summary.get("was_cancelled") is False,
         "AIPerf run was incomplete/cancelled",
     )
-    check_config(summary.get("input_config"), manifest)
+    check_config(
+        summary.get("input_config"),
+        manifest,
+        (directory / manifest["workload"]["trace_file"]).resolve()
+        if trace is not None
+        else None,
+    )
     ordinary = records(client / "profile_export.jsonl")
     raw = records(client / "profile_export_raw.jsonl")
     require(ordinary.keys() == raw.keys(), "ordinary/raw request IDs differ")
@@ -214,6 +222,7 @@ def validate(directory):
         len(ordinary) - len(profiling) == manifest["workload"]["warmup_requests"],
         "warmup count differs",
     )
+    trace_cohort = audit_trace(raw, trace, manifest) if trace is not None else None
     load = issued_load(raw, profiling, manifest["workload"])
     timings = {}
     slos = manifest.get("slo", {})
@@ -313,6 +322,7 @@ def validate(directory):
         "planned_arrivals_audited": False,
         "issued_load": load,
         "prompt_cohort": prompt_cohort(raw, profiling),
+        "trace_cohort": trace_cohort,
         "audited_request_timing_metrics": [
             "time_to_first_token",
             "request_latency",
