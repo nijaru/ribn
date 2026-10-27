@@ -9,7 +9,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from aiperf_results import prompt_cohort, validate
+from aiperf_results import audit_timing_metrics, prompt_cohort, validate
 from endpoint_config import check_config, parse_manifest
 
 ROOT = Path(__file__).resolve().parent
@@ -86,6 +86,7 @@ def fixture(directory):
         for key, value in usage.items()
     }
     metrics["output_sequence_length"] = {"value": 2, "unit": "tokens"}
+    metrics["inter_token_latency"] = {"value": 0.0, "unit": "ms"}
     for name in ("time_to_first_token", "request_latency"):
         metrics[name] = {"value": 100.0, "unit": "ms"}
     raw = []
@@ -271,6 +272,29 @@ class EndpointTests(unittest.TestCase):
             export(directory, ordinary, raw, summary)
             self.assertTrue(validate(directory)["protocol_valid"])
 
+    def test_itl_conversion_order_and_undefined_single_token_latency(self):
+        timing = {"first_content": 100_000_000, "last_content": 124_925_571}
+        # Independent pinned native-metric results, not rounded ms subtraction.
+        for tokens, expected in (
+            (0, None),
+            (1, None),
+            (2, 24.925570999999998),
+            (4, 8.308523666666666),
+            (8, 3.5607958571428573),
+        ):
+            with self.subTest(tokens=tokens):
+                metrics = {
+                    "time_to_first_token": {"value": 100.0, "unit": "ms"},
+                    "request_latency": {"value": 124.92557099999999, "unit": "ms"},
+                }
+                if expected is not None:
+                    metrics["inter_token_latency"] = {"value": expected, "unit": "ms"}
+                audit_timing_metrics(metrics, timing, tokens)
+                if expected is None:
+                    metrics["inter_token_latency"] = {"value": 0, "unit": "ms"}
+                    with self.assertRaisesRegex(ValueError, "must be absent"):
+                        audit_timing_metrics(metrics, timing, tokens)
+
     def test_rejects_corrupt_content_clocks_and_native_timings(self):
         for name, change in (
             ("missing clock", lambda o, r: r["responses"][0].pop("perf_ns")),
@@ -292,6 +316,28 @@ class EndpointTests(unittest.TestCase):
             (
                 "timing unit",
                 lambda o, r: o["metrics"]["request_latency"].update(unit="sec"),
+            ),
+            (
+                "ITL missing",
+                lambda o, r: o["metrics"].pop("inter_token_latency"),
+            ),
+            (
+                "ITL mismatch",
+                lambda o, r: o["metrics"]["inter_token_latency"].update(value=1),
+            ),
+            (
+                "ITL unit",
+                lambda o, r: o["metrics"]["inter_token_latency"].update(unit="sec"),
+            ),
+            (
+                "ITL boolean",
+                lambda o, r: o["metrics"]["inter_token_latency"].update(value=False),
+            ),
+            (
+                "ITL nonfinite",
+                lambda o, r: o["metrics"]["inter_token_latency"].update(
+                    value=float("nan")
+                ),
             ),
         ):
             with self.subTest(name=name), tempfile.TemporaryDirectory() as tmp:

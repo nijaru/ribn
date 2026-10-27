@@ -48,6 +48,9 @@ class EndpointFixture(BaseHTTPRequestHandler):
             },
             {"object": "text_completion", "choices": [], "usage": usage},
         ]
+        if self.server.mode == "single-token":
+            usage.update(completion_tokens=1, total_tokens=prompt_tokens + 1)
+            messages[0]["choices"][0]["text"] = "hello"
         if self.server.mode == "mlx-usage":
             messages[-1]["object"] = "chat.completion"
         if self.server.mode == "timing":
@@ -166,7 +169,8 @@ class RealClientTests(unittest.TestCase):
                     self.assertEqual(
                         result.returncode,
                         0
-                        if mode in ("valid", "mlx-usage", "overload", "timing")
+                        if mode
+                        in ("valid", "mlx-usage", "overload", "timing", "single-token")
                         else 1,
                         result.stdout + result.stderr + log[-3000:],
                     )
@@ -230,6 +234,17 @@ class RealClientTests(unittest.TestCase):
                     self.assertEqual(len(report["invalid_requests"]), 2)
                     self.assertEqual(len(report["warmup_errors"]), 1)
 
+    def test_single_token_response_has_no_itl_metric(self):
+        captured = self.exercise("single-token", warmup=0)
+        self.assertTrue(captured["audit"]["protocol_valid"])
+        self.assertEqual(captured["audit"]["completion_tokens"], 2)
+        self.assertIn(
+            "inter_token_latency", captured["audit"]["audited_request_timing_metrics"]
+        )
+        for record in captured["records"]:
+            self.assertEqual(record["metrics"]["output_sequence_length"]["value"], 1)
+            self.assertNotIn("inter_token_latency", record["metrics"])
+
     def test_variable_inputs_reach_the_endpoint_and_preserve_actual_usage(self):
         captured = self.exercise("valid", input_stddev=8, requests=16)
         report, prompt_lengths = captured["audit"], captured["prompt_lengths"]
@@ -273,12 +288,12 @@ class RealClientTests(unittest.TestCase):
                 },
             )
             for name, expected in {
-                "time_to_first_token": (first - start) / 1e6,
-                "request_latency": (last - start) / 1e6,
-                "inter_token_latency": (last - first) / 4e6,
+                "time_to_first_token": (first - start) * 1e-6,
+                "request_latency": (last - start) * 1e-6,
+                "inter_token_latency": ((last - first) / 4) * 1e-6,
             }.items():
                 self.assertEqual(metrics[name]["unit"], "ms")
-                self.assertAlmostEqual(metrics[name]["value"], expected, places=6)
+                self.assertEqual(metrics[name]["value"], expected)
             # Server usage wins over two visible chunks or retokenized text.
             self.assertEqual(metrics["output_sequence_length"]["value"], 5)
             self.assertEqual(len(metrics["inter_chunk_latency"]["value"]), 1)

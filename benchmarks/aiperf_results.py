@@ -3,6 +3,7 @@
 import hashlib
 import json
 from collections import Counter
+from itertools import pairwise
 from statistics import median
 
 from aiperf_stream import completion_stream, timestamp, validate_clocks
@@ -54,10 +55,34 @@ def metric(record, key, field="value", unit="tokens"):
     return value[field]
 
 
+def audit_timing_metrics(metrics, timing, completion_tokens):
+    # Match v0.13's internal ns arithmetic, then its display-unit conversion.
+    expected = {
+        "time_to_first_token": timing["first_content"] * 1e-6,
+        "request_latency": timing["last_content"] * 1e-6,
+    }
+    if completion_tokens >= 2:
+        # Exact effective endpoint settings disable per-chunk usage. AIPerf
+        # assumes one token in the first content chunk; these are not token taps.
+        expected["inter_token_latency"] = (
+            (timing["last_content"] - timing["first_content"]) / (completion_tokens - 1)
+        ) * 1e-6
+    else:
+        require(
+            "inter_token_latency" not in metrics,
+            "inter_token_latency must be absent below two output tokens",
+        )
+    for name, value in expected.items():
+        require(
+            metric(metrics, name, unit="ms") == value,
+            f"raw clock/metric mismatch: {name}",
+        )
+
+
 def issued_load(raw, profiling, workload):
     """Actual single-host starts, never the rate limiter's unrecorded arrival plan."""
     starts = sorted(timestamp(raw[key].get("start_perf_ns")) for key in profiling)
-    gaps = [right - left for left, right in zip(starts, starts[1:])]
+    gaps = [right - left for left, right in pairwise(starts)]
     return {
         "configured_request_rate": workload["request_rate"],
         "max_concurrency": workload["max_concurrency"],
@@ -173,16 +198,7 @@ def validate(directory):
             )
             require(request.get("status") == 200, "request did not return HTTP 200")
             usage, timing = completion_stream(request, manifest)
-            # AIPerf 0.13 MetricTimeUnit converts integer ns by multiplication,
-            # including that binary64 unit-factor rounding; no fitted tolerance.
-            for name, clock in (
-                ("time_to_first_token", "first_content"),
-                ("request_latency", "last_content"),
-            ):
-                require(
-                    metric(record["metrics"], name, unit="ms") == timing[clock] * 1e-6,
-                    f"raw clock/metric mismatch: {name}",
-                )
+            audit_timing_metrics(record["metrics"], timing, usage["completion_tokens"])
             for field, value in usage.items():
                 if field in totals:
                     require(
@@ -227,7 +243,11 @@ def validate(directory):
         "planned_arrivals_audited": False,
         "issued_load": load,
         "prompt_cohort": prompt_cohort(raw, profiling),
-        "audited_request_timing_metrics": ["time_to_first_token", "request_latency"],
+        "audited_request_timing_metrics": [
+            "time_to_first_token",
+            "request_latency",
+            "inter_token_latency",
+        ],
         "request_timing_ns": timings,
         "timing_source": "client/profile_export_raw.jsonl",
         "successful_requests": successful,
@@ -240,5 +260,5 @@ def validate(directory):
         "metrics_source": "client/profile_export_aiperf.json",
         "performance_metrics_audited": False,
         "readiness": "Automatic probes disabled; endpoint must already be ready. Zero warmup does not prove cold state.",
-        "limitations": "Protocol/usage, prompt multiset and specified raw-clock audit only; not aggregate performance, planned arrivals, HTTP EOF, numerical, GPU or physical-memory qualification.",
+        "limitations": "Protocol/usage, prompt multiset and specified raw-clock/usage-ratio audit only; not observed token intervals, aggregate performance, planned arrivals, HTTP EOF, numerical, GPU or physical-memory qualification.",
     }

@@ -404,7 +404,9 @@ Optional `[slo]` values must be positive; omit unset objectives. Their boundarie
 - `itl_ms`: the first-to-last content window divided by server-reported output tokens
   minus one. Without per-chunk token counts, that assumes one token in the first chunk;
   bundled/withheld output and suppressed stop tokens can change the interpretation.
-  It is not an individual-token or chunk-gap tail. Inspect `inter_chunk_latency` separately.
+  It is undefined below two output tokens: the per-request metric must be absent,
+  not zero. It is not an individual-token or chunk-gap tail. Inspect
+  `inter_chunk_latency` separately.
 
 These clocks start at actual client request initiation, not planned arrival. With a
 positive request rate, AIPerf skips scheduled ticks when its concurrency ceiling is full
@@ -417,10 +419,15 @@ can be recovered from these exports.
 The audit checks integer, nonnegative raw `start_perf_ns` and response `perf_ns`
 clocks: responses cannot precede the request or regress, but frames received together
 may share a timestamp. It reconciles each successful request's native TTFT and
-`request_latency` against first/last nonempty content, using the pinned client's
-nanosecond-to-millisecond conversion without a fitted tolerance. `request_timing_ns`
-retains first-content, last-content and `[DONE]`-receipt durations from actual request
-start for validated profiling successes. DONE receipt is not HTTP EOF.
+`request_latency` against first/last nonempty content. It also checks per-request
+`inter_token_latency` against that content window and actual terminal usage, including
+absence below two output tokens. Exact effective settings disable per-chunk usage,
+so the client's assumed first-chunk count is one. Arithmetic occurs in nanoseconds
+before the pinned nanosecond-to-millisecond conversion, without a fitted tolerance.
+This audits the client's average-ratio formula, not actual token delivery intervals.
+`request_timing_ns` retains first-content, last-content and `[DONE]`-receipt
+durations from actual request start for validated profiling successes. DONE receipt
+is not HTTP EOF.
 
 `issued_load` reports the configured rate/concurrency separately from actual profiling
 start span and minimum/median/maximum start intervals, in nanoseconds. It includes
@@ -430,8 +437,9 @@ clock synchronization protocol. They do not reveal suppressed arrivals.
 
 For finite-phase throughput, divide actual successful request/token totals by the
 aggregate `end_time - start_time`, including drain—not `benchmark_duration`, which
-ends at content. Aggregate rates, percentiles, ITL and SLO goodput remain unaudited;
-a study must cross-check those metrics separately.
+ends at content. Aggregate rates, percentiles and SLO goodput remain unaudited;
+a study must cross-check those metrics separately. The per-request ITL arithmetic
+audit does not establish its aggregate tails or the first chunk's real token count.
 
 Zero warmup omits AIPerf's positive-only warmup option; it does not establish cold execution.
 The [client timing/Metal gate](runtime-contract.md#gemma-endpoint-client-qualification-2026-10-21)
@@ -456,9 +464,10 @@ CLI. A seeded variable-input case verifies that different tokenized prompt lengt
 reach the endpoint and that actual usage excludes warmup rather than substituting
 nominal lengths or output caps. Prompt fingerprints are independently reconciled
 against actual profiling payloads, retaining failed requests and excluding warmup.
-Delayed empty/terminal frames check content versus DONE clocks, and a
-concurrency-capped rate case checks the reported actual start
-intervals against raw timestamps. These checks do not establish device qualification,
+Delayed empty/terminal frames check content versus DONE clocks and the usage-based
+ITL divisor rather than visible chunk count or output cap. A single-token response
+checks that ITL is absent. A concurrency-capped rate case checks the reported actual
+start intervals against raw timestamps. These checks do not establish device qualification,
 aggregate metric accuracy or load-generator capacity.
 
 ## Ribn endpoint client configuration
