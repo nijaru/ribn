@@ -97,8 +97,13 @@ and four unchanged argmaxes. It remains private and unpromoted; isolate the nume
 source before performance advancement. Later candidate cohorts and lifecycle/serving
 gates are unexecuted, not passed. A host-only [first-projection reference](../benchmarks/gemma4-reference/README.md#first-ple-projection-reference)
 now supplies expected BF16 operands and complete binary64 diagnostic sums for the
-first rejected decode inputs. Actual device operand capture and numerical isolation
-remain pending; no tolerance or promotion follows from the reference export.
+first rejected decode inputs. A bounded [native first-projection replay](../benchmarks/gemma4-cuda-baseline.md#first-ple-projection-native-capture-2026-10-28)
+now matches every consumed input/weight bit to that reference, but serial and four-row
+BF16 outputs differ at 12 of 10,752 coordinates per row (maximum difference 0.0625).
+This establishes component non-invariance, not the cause or propagation of the failed
+full-model decode: no cache histories or decoder forward are replayed. Keep the
+candidate unpromoted; full-model numerical isolation and an independently justified
+numerical contract remain prerequisites to performance advancement.
 The [shared-grant recovery gate](../benchmarks/gemma4-cuda-baseline.md#shared-grant-allocation-and-recovery-gate-2026-10-26)
 now qualifies real partial cache-allocation failure, healthy-peer preservation, charge
 retention for cancelled accepted submissions and subsequent reuse through the native Engine.

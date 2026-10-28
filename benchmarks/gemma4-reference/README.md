@@ -521,9 +521,11 @@ model forward:
 "$REFERENCE_PYTHON" benchmarks/gemma4-reference/test_linear_compare.py
 ```
 
-The capture contains exactly BF16 `input` and `weight`, plus FP32 `output` before
-PLE scaling and normalization. Their logical shapes are `[rows, hidden]`,
-`[packed, hidden]` and `[rows, packed]`, matching the reference's one to four rows.
+The capture contains exactly BF16 `input` and `weight`, plus BF16 or FP32 `output`
+before PLE scaling and normalization. Preserve its actual storage dtype: the native
+CUDA projection accumulates in FP32 but writes BF16, so its capture stays BF16.
+Their logical shapes are `[rows, hidden]`, `[packed, hidden]` and `[rows, packed]`,
+matching the reference's one to four rows.
 Preserve the actual consumed operand bits in this layout: do not cast, round or
 substitute expected operands to make a capture match. Recording tensors, source,
 binary, execution mode and completion provenance remains the capture producer's
@@ -533,11 +535,12 @@ The comparator checks reference identity, shapes, dtypes and finiteness, then
 requires **bit-identical stored operands**, including signed zero, before reducing
 errors. It reports maximum absolute error, RMSE and relative L2 error against the
 unrounded binary64 output; relative L2 is undefined when the reference norm is zero.
-A completed report means this diagnostic ran, not that numerical acceptance passed.
-No tolerance, precision choice, full-model budget or promotion verdict is supplied.
-Invalid inputs retain an incomplete failure report, and existing output directories
-are never replaced. The explicit tests and CPU-generated captures qualify analysis
-only; actual native operand capture remains a separate gate.
+The report records `output_dtype`. A completed report means this diagnostic ran,
+not that numerical acceptance passed. No tolerance, precision choice, full-model
+budget or promotion verdict is supplied. Invalid inputs retain an incomplete
+failure report, and existing output directories are never replaced. The comparator
+alone cannot attest native execution; the [bounded CUDA component replay](../gemma4-cuda-baseline.md#first-ple-projection-native-capture-2026-10-28)
+records actual native operands and BF16 outputs separately from these analysis checks.
 
 ## Layer-math stage taps
 

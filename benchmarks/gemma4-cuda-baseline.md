@@ -1242,3 +1242,57 @@ setup attempts remain under `gemma4-batch4/20261026T202039Z`. Two lock-resolutio
 failures preceded all model execution; native-only offline builds then preserved every
 workspace dependency pin. No dependency installation, model retry, tolerance change or
 campaign-clock reset occurred.
+
+## First PLE-projection native capture (2026-10-28)
+
+A bounded RTX 4090 component replay now compares the first PLE projection used by
+that prototype. **Its consumed operand bits match the independent reference, but
+its serial and four-row BF16 outputs are not invariant.** The four-sequence variant
+remains private and unpromoted.
+
+Separate fresh processes load the original `6d5035f` control and private candidate.
+The control executes four scalar projections; the candidate executes one projection
+through its prepared four-row decode buffers. All inputs are token 236776, the first
+teacher-forced decode input of each rejected row. Both use the model's existing
+scaled-embedding recipe, role binding, 8 MiB cuBLAS workspace and unchanged native
+GEMM. BF16 operands and output, FP32 accumulation, disallowed reduced-precision
+reductions and the default algorithm selector remain unchanged. This is a component
+replay, **not a decoder forward**: it recreates neither prefix/cache histories nor
+the failed full-model step, and does not fill any unexecuted prior cohort.
+
+After each native call acknowledges completion, checked readback captures the actual
+input, weight and output before PLE scaling or normalization. Only private host
+readback staging grows; device matrix geometry and backend code do not change.
+Every input and weight bit, including signed zero, matches the independent
+[first-projection pack](gemma4-reference/README.md#first-ple-projection-reference).
+All 43,008 output values are finite. Duplicate output rows match within each mode,
+but the modes differ at **12 of 10,752 coordinates in every row**: 48 differences
+altogether, with maximum absolute difference **0.0625**. For example, column 5466
+has scalar bits `0x4120` and four-row bits `0x411f`.
+
+The comparator preserves the real BF16 output dtype rather than changing the GEMM to
+produce FP32 or relabelling a cast. Against the unrounded binary64 reference, maximum
+absolute error is 0.086465673 in both modes; RMSE is 0.0051707224 scalar and
+0.0051707268 four-row. An independent standard-library reduction agrees with these
+whole-output metrics. They are descriptive, not a rounding oracle, error budget or
+precision vote. The replay establishes non-invariance at this component with matched
+operands; it does not identify cuBLAS's internal reduction order, prove which later
+operations amplify differences, or explain the full-model discrepancy by itself.
+
+Both native processes exit zero, explicitly retire their models, return logical pool
+charges to zero and leave no owned process groups or compute processes. The device
+is driver 615.71.10, CUDA toolkit 13.3.73; loaded cuBLAS/cuBLASLt 13.6.0.2 and NVRTC
+13.3.33 paths/hashes are retained. Source, binary, package and protocol identities
+are frozen before execution and unchanged afterward. Builds use locked offline
+Rust 1.98 with two jobs and separate fresh targets. One initial private baseline
+helper fails compilation before any model execution; its corrected build and the
+candidate build pass, with no device retry or deadline extension. Comparator tests,
+Python benchmark tests, Ruff, boundaries and formatting pass. Full production Rust
+and device suites are not rerun for this Python/docs-only change; unchanged production
+Rust retains the earlier qualification, not a new CUDA variant gate.
+
+Raw BF16 captures, typed SafeTensors packs, comparisons, process monitors, binaries,
+source patches and failed setup evidence remain under
+`gemma4-cuda-first-projection/20261028T113835Z`. The fixed task window begins at
+11:38:35 UTC, with device cutoff 12:33:35 and total deadline 12:38:35. No kernel,
+precision policy, numerical tolerance, performance selection or production Rust changes.

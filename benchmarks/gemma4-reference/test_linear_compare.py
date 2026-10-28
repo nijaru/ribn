@@ -108,10 +108,12 @@ class ComparisonTests(unittest.TestCase):
             "reference": target,
             "sum_abs_products": target,
         }
-        captured = {"input": x, "weight": w, "output": target.float()}
-        result = projection_errors(expected, captured, torch)
-        self.assertEqual(result["max_abs"], 1)
-        self.assertEqual(result["relative_l2"], 1 / (2**24 + 1))
+        for dtype in (torch.bfloat16, torch.float32):
+            with self.subTest(dtype=dtype):
+                captured = {"input": x, "weight": w, "output": target.to(dtype)}
+                result = projection_errors(expected, captured, torch)
+                self.assertEqual(result["max_abs"], 1)
+                self.assertEqual(result["relative_l2"], 1 / (2**24 + 1))
 
     def test_zero_reference_norm_stays_undefined(self):
         expected, captured = operands()
@@ -128,6 +130,7 @@ class ComparisonTests(unittest.TestCase):
             "weight-zero-sign",
             "transpose",
             "dtype",
+            "output-dtype",
             "nan",
             "ref-inf",
             "negative-scale",
@@ -142,6 +145,8 @@ class ComparisonTests(unittest.TestCase):
                     captured["output"] = captured["output"].T
                 elif name == "dtype":
                     captured["input"] = captured["input"].float()
+                elif name == "output-dtype":
+                    captured["output"] = captured["output"].double()
                 elif name == "nan":
                     captured["output"][0, 0] = float("nan")
                 elif name == "ref-inf":
@@ -159,6 +164,7 @@ class ComparisonTests(unittest.TestCase):
             result = compare(rp, cp, output)
             self.assertTrue(result["complete"])
             self.assertTrue(result["stored_operand_bits_equal"])
+            self.assertEqual(result["output_dtype"], "torch.float32")
             self.assertFalse(result["actual_device_operand_capture_verified"])
             self.assertFalse(result["native_execution_verified"])
             self.assertEqual(result["numerical_acceptance"], "none")
@@ -187,6 +193,18 @@ class ComparisonTests(unittest.TestCase):
                     report = json.loads((d / name / "report.json").read_text())
                     self.assertFalse(report["complete"])
                     self.assertIn("error", report)
+
+    def test_bf16_output_dtype_survives_file_comparison(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            d = Path(tmp)
+            rp, cp, _, _ = file_fixture(d)
+            _, captured = operands()
+            captured["output"] = captured["output"].bfloat16()
+            save_file(captured, cp)
+            result = compare(rp, cp, d / "comparison")
+            self.assertEqual(result["output_dtype"], "torch.bfloat16")
+            self.assertEqual(result["errors"]["max_abs"], 0)
+            self.assertFalse(result["native_execution_verified"])
 
     def test_replacements_cannot_rebase_validated_identity(self):
         for target in ("report", "tensors", "source"):

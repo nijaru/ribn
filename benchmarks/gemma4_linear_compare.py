@@ -78,7 +78,7 @@ def projection_errors(expected, captured, torch):
         )
     output = captured["output"]
     require(
-        output.dtype == torch.float32 and output.shape == shape,
+        output.dtype in (torch.bfloat16, torch.float32) and output.shape == shape,
         "wrong captured output shape/dtype",
     )
     require(bool(torch.isfinite(output).all()), "nonfinite captured output")
@@ -210,6 +210,7 @@ def compare(reference_report, capture, output, threads=1):
         report["stored_operand_bits_equal"] = True
         report["token_ids"] = frozen["token_ids"]
         report["output_shape"] = list(captured["output"].shape)
+        report["output_dtype"] = str(captured["output"].dtype)
         require(
             before == {name: sha256(path) for name, path in paths.items()},
             "comparison input changed",
