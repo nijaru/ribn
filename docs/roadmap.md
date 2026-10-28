@@ -734,6 +734,13 @@ completes 36 generations: completion waits dominate wall time, command preparati
 is below 0.7%, and nested GPU-command intervals cover roughly 68–73% across process
 medians. Only the 113-token prefill passes its frozen GPU-dominance criterion. This
 does not isolate driver/queue/scheduling causes or attribute the older AIPerf gap.
+A subsequent [single-row FFN fusion screen](../benchmarks/gemma4-metal-baseline.md#single-row-ffn-fusion-screen-2026-10-28)
+preserves BF16 rounding boundaries and matches full logits/KV and selected post-product
+words across 46 paired states, but all nine process/history decode cells fail the
+frozen 5% gain requirement. Even unchanged prefill paths show large timing swings.
+The candidate stays private; neither
+a causal slowdown nor a new automatic-selection policy is established. Do not repeat
+it unchanged without new implementation or measurement evidence.
 A [real-input FFN component pre-screen](../benchmarks/gemma4-metal-baseline.md#ffn-projection-component-pre-screen-2026-10-23)
 now separates RMS from projections and compares a native FP32 MPS candidate including
 conversion and per-call resource release. Prefill component calls improve, but decode

@@ -1536,6 +1536,64 @@ group behind; no forced cleanup or retry occurs. Device work finishes within the
 separate 60-minute budget. No production source, shader, precision policy, dependency
 or main build cache changes.
 
+## Single-row FFN fusion screen (2026-10-28)
+
+**Numerical checks pass; the frozen performance gate fails. No variant is promoted.**
+A private candidate based on `0877c99` fuses the single-row Gate and Up projections,
+GELU-table lookup and integer BF16 product. It targets only native E4B FFNs on M3 Max
+with hidden/intermediate widths 2,560/10,240. Each projection retains ascending-k FP32
+additions and its BF16 rounding boundary before the unchanged lookup/product. The
+FFN chain has four dispatches instead of six, still in one checked command buffer.
+It omits two 20 KiB Gate/Up intermediates per selected call; that is a logical payload
+reduction, not a measured physical-memory bound. Other shapes and Graph keep their
+existing paths. Submission, terminal completion and invalid-Gate handling are unchanged.
+
+The frozen numerical cohort compares 46 complete states per mode, including
+1/2/7/8/16/31/32/33/63/64/65-row chunks and the 512/513/576/577-token window cases
+with continuation. All 262,144 logits, all KV words, cache lengths and positions
+match exactly. Across these state pairs, the comparison includes 12,058,624 logit
+words, 175,644,672 KV words and 11,612,160 selected per-layer post-product words per
+mode. All are finite. The 92 control logit/KV files also match the independently
+archived control from the earlier native-chain qualification. Focused checks in both
+modes preserve invalid-Gate rejection, nonfinite-Up results and executor reuse.
+
+Three fresh processes each load one model and run one off/on warmup pair plus six
+measured pairs for each case below: **90 measured pairs and 30 warmup calls** in total.
+Case order rotates and pair order alternates. Decode histories are prepared through
+16-token control chunks outside the timer; a 100 ms pause also stays outside it.
+Every measured pair retains identical full logits, KV words and cache lengths.
+Product capture is disabled during timing, and serialization follows each timed call.
+The direct decoder probe does not add an HTTP or ordinary-TextOwner acceptance claim.
+
+The predeclared gate requires at least 5% median paired reduction in **every process
+for every decode history**, and no more than 3% median prefill regression per process.
+Cells show the median of six `1 - candidate_ns / control_ns` reductions, not a ratio
+of separately pooled medians; positive values mean faster:
+
+| Process | Decode after 18, % | Decode after 129, % | Decode after 513, % | Prefill 16, % | Prefill 64, % |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| 0 | 0.95 | -3.12 | -7.06 | 11.90 | -7.83 |
+| 1 | -0.45 | 2.41 | -6.55 | -11.60 | 10.41 |
+| 2 | -11.62 | -13.35 | -10.62 | -16.97 | -2.41 |
+
+All nine decode cells fail the gain requirement; three prefill cells fail the
+regression limit. Prefill does not select the fused kernel, yet its process medians
+swing from -16.97% to +11.90%. Load and clocks remain uncontrolled. This rejects
+promotion under the declared screen, not a causal claim that fusion always slows
+decode or changes prefill work. Do not repeat the unchanged candidate without new
+implementation or measurement evidence.
+
+Evidence in `gemma4-metal-fused-gateup/20261028T070634Z` retains the protocol,
+private source, isolated release executable, checkpoint identities, raw full-state
+files, timing pairs and process/aggregate Metal observations. All three processes
+exit 0 with natural model retirement and no surviving owned group; no retry or
+forced cleanup occurs. Device work finishes at 07:23:15 UTC, before the separate
+07:57:06 cutoff. Production source, shaders, selection, precision policy, dependencies
+and the main build cache remain unchanged. Production workspace/CUDA-feature/Metal
+suites are not rerun for this documentation-only result; the unchanged implementation
+retains its `e08775b` qualification. The experiment's isolated release build and all
+three device tests pass.
+
 ## Native HTTP versus stock MLX diagnostic (2026-10-24)
 
 **Actual HTTP protocol and accounting pass; the predeclared matched-result gate
