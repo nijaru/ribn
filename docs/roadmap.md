@@ -100,10 +100,14 @@ now supplies expected BF16 operands and complete binary64 diagnostic sums for th
 first rejected decode inputs. A bounded [native first-projection replay](../benchmarks/gemma4-cuda-baseline.md#first-ple-projection-native-capture-2026-10-28)
 now matches every consumed input/weight bit to that reference, but serial and four-row
 BF16 outputs differ at 12 of 10,752 coordinates per row (maximum difference 0.0625).
-This establishes component non-invariance, not the cause or propagation of the failed
-full-model decode: no cache histories or decoder forward are replayed. Keep the
-candidate unpromoted; full-model numerical isolation and an independently justified
-numerical contract remain prerequisites to performance advancement.
+An [actual decoder trace](../benchmarks/gemma4-cuda-baseline.md#actual-decoder-projection-trace-2026-10-28)
+confirms those PLE differences on the frozen histories and finds layer-zero Q differs
+at 5 of 2,048 coordinates per row (maximum 0.25), also with matching consumed operands;
+K and V match in this scope. All same-mode prefills and final logits remain bit-exact
+to the archived witnesses. PLE-only parity would not establish projection-wide bit
+invariance. Keep the candidate unpromoted: downstream propagation and independently
+justified numerical acceptance remain unresolved; these observations supply no tolerance
+or precision-policy change.
 The [shared-grant recovery gate](../benchmarks/gemma4-cuda-baseline.md#shared-grant-allocation-and-recovery-gate-2026-10-26)
 now qualifies real partial cache-allocation failure, healthy-peer preservation, charge
 retention for cancelled accepted submissions and subsequent reuse through the native Engine.

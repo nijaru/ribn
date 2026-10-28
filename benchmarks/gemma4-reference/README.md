@@ -539,8 +539,9 @@ The report records `output_dtype`. A completed report means this diagnostic ran,
 not that numerical acceptance passed. No tolerance, precision choice, full-model
 budget or promotion verdict is supplied. Invalid inputs retain an incomplete
 failure report, and existing output directories are never replaced. The comparator
-alone cannot attest native execution; the [bounded CUDA component replay](../gemma4-cuda-baseline.md#first-ple-projection-native-capture-2026-10-28)
-records actual native operands and BF16 outputs separately from these analysis checks.
+alone cannot attest native execution. The [bounded CUDA component replay](../gemma4-cuda-baseline.md#first-ple-projection-native-capture-2026-10-28)
+and [actual decoder trace](../gemma4-cuda-baseline.md#actual-decoder-projection-trace-2026-10-28)
+record native operand/output provenance separately from these analysis checks.
 
 ## Layer-math stage taps
 

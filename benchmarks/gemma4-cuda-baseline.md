@@ -1296,3 +1296,55 @@ source patches and failed setup evidence remain under
 `gemma4-cuda-first-projection/20261028T113835Z`. The fixed task window begins at
 11:38:35 UTC, with device cutoff 12:33:35 and total deadline 12:38:35. No kernel,
 precision policy, numerical tolerance, performance selection or production Rust changes.
+
+## Actual decoder projection trace (2026-10-28)
+
+The component result now has a bounded actual-path check: the original control and
+private four-sequence decoder each execute one step after the frozen prefixes
+1, 17, 64 and 513, using teacher-forced token 236776 in every row. Four serial calls
+are compared with one physical four-sequence call. This collects new projection
+traces; it does not retry the original acceptance gate or execute its later cohorts.
+
+Collection is disabled during prefills. After each selected native linear call
+acknowledges completion, checked readback retains its BF16 input, weight and output.
+The selection is global PLE projection and layer-zero Q/K/V only: sixteen records
+in the control and four in the candidate. Every paired projection has bit-identical
+consumed inputs and weights, including signed zero. PLE operands also match the
+independent reference pack. All captured values have valid shapes and are finite.
+
+| Native projection | Output width | Differing coordinates per row | Maximum absolute output difference |
+| --- | ---: | ---: | ---: |
+| Global PLE | 10,752 | 12 | 0.0625 |
+| Layer-zero Q | 2,048 | 5 | 0.25 |
+| Layer-zero K | 512 | 0 | 0 |
+| Layer-zero V | 512 | 0 | 0 |
+
+Each count holds for all four rows. Thus the first-PLE discrepancy occurs on the
+actual decoder path, but it is not the only early projection with non-invariant
+native output. Q differs despite matching its own inputs and weights; PLE-only
+parity would not establish projection-wide bit equality. K/V equality is limited to
+these operands, not a guarantee for other layers or histories. No vendor reduction
+order, downstream amplification mechanism or acceptable full-model error is inferred.
+
+All eight new prefill vectors match the previously retained independent control
+bit-for-bit. All eight final logit vectors also match their archived **same-mode**
+witnesses bit-for-bit. The original control/candidate logit discrepancies remain
+188,187 / 240,860 / 247,764 / 231,525 elements. These checks support observation of
+the known failed step; they do not turn it into a numerical pass, qualify cache-word
+equivalence, change precision policy or justify a performance experiment.
+
+Both native collectors exit zero for completed data collection, explicitly retire
+models/caches, return logical pool charges to zero and leave no owned groups or
+compute processes. The prior candidate's numerical rejection remains unchanged.
+Source, binary, package, input-deck and original-witness hashes are frozen before
+execution and verified afterward. Both locked offline release builds pass in fresh
+separate targets; native backend code, device geometry and arithmetic remain unchanged.
+Only private host readback staging and observation change. Independent standard-library
+analysis reproduces the output counts/maxima. Boundaries, formatting and diff checks
+pass; unchanged public Python/Rust/device gates are reused rather than rerun. This
+is neither performance, physical-memory-pressure nor lifetime-failure qualification.
+
+Raw captures, typed PLE packs, source patches, binaries, monitors and comparisons
+remain under `gemma4-cuda-decoder-trace/20261028T121633Z`. The task starts at
+12:16:33 UTC, with device cutoff 13:11:33 and deadline 13:16:33. Exactly one native
+process per mode runs, with no retry, arithmetic intervention or deadline extension.
