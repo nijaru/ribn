@@ -729,8 +729,11 @@ the joint latency objective; serving-performance acceptance remains open. A late
 [matched-history entrypoint diagnostic](../benchmarks/gemma4-metal-baseline.md#matched-history-entrypoint-cost-2026-10-28)
 places about 99.7% of observed wall time inside synchronous decoder calls in its three
 complete matched processes. Its four-process gate remains incomplete after a private
-harness readiness-path error; host work, device waits and thread scheduling inside
-those calls remain unseparated. The older AIPerf timing gap is not attributed.
+harness readiness-path error. A separate [native-command profile](../benchmarks/gemma4-metal-baseline.md#native-command-cost-2026-10-28)
+completes 36 generations: completion waits dominate wall time, command preparation
+is below 0.7%, and nested GPU-command intervals cover roughly 68–73% across process
+medians. Only the 113-token prefill passes its frozen GPU-dominance criterion. This
+does not isolate driver/queue/scheduling causes or attribute the older AIPerf gap.
 A [real-input FFN component pre-screen](../benchmarks/gemma4-metal-baseline.md#ffn-projection-component-pre-screen-2026-10-23)
 now separates RMS from projections and compares a native FP32 MPS candidate including
 conversion and per-call resource release. Prefill component calls improve, but decode

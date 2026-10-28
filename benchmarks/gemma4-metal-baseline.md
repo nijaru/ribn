@@ -1458,6 +1458,84 @@ forced cleanup. No production code, kernel, precision policy, dependency or main
 cache changed. This is cost attribution, not a throughput improvement, serving SLO,
 physical-pressure, cross-engine or broad task-quality acceptance.
 
+## Native-command cost (2026-10-28)
+
+A separate private profile of `4078dd7` completes its three-process, **36-generation**
+cohort through ordinary `TextOwner::load_gemma` with default Engine/Driver scheduling
+and native FFNs. It does not fill the earlier entrypoint campaign's missing samples.
+The pinned BF16 E4B package on M3 Max, the 18/113-token completion strings, 16-token
+prefill chunks, EOS policy and 32-token cap remain unchanged. Each process loads one model and
+owns one execution loop; case order rotates. Each case runs an alternating off/on
+warmup pair and two measured off/on pairs: 24 measured generations and 12 warmups.
+A fixed 100 ms pause precedes each request outside its timer.
+
+All 36 outputs match the frozen reference in visible IDs, text, usage, finish and
+complete ordered decoder input/choice histories. Every logit row passes shape and
+finiteness checks. The 18 collection-on requests retain **612 decoder steps and
+130,968 completed native command buffers**. Every traced step has 214 buffers, derived
+from the records rather than assumed for other shapes. Equivalent steps have identical
+operation counts. This is not a new full-logit/KV numerical qualification.
+
+The recorder preserves native preparation, commit, wait, status and executor-retirement
+order. Host timestamps cover command construction/owner acquisition through checked
+terminal completion. Preparation ends immediately before commit; commit and completion
+wait have separate timestamps. Status/retirement ends the tracked command region.
+Their nonoverlapping regions fit inside each decoder step. The remainder includes
+host algebra, allocation, upload/readback outside command construction, resource drops,
+observer work and possible preemption; it is not pure CPU computation.
+
+Only after successful `Completed` does the recorder read the retained buffer's
+`GPUStartTime`/`GPUEndTime`. The installed SDK specifies host seconds. All intervals are
+positive, serial/nonoverlapping and no longer than their corresponding host commit/wait
+envelope. GPU intervals are **nested** within host regions, not an additive cost, GPU
+busy time or an isolation of individual kernels. Collection is bounded to 8,192 records
+per step, retains journal capacity and holds no GPU resources. Serialization occurs
+after generation termination.
+
+Each cell below is the median of three process values; each process value is the median
+of its two measured collection-on requests. Fractions are calculated within requests
+before aggregation, so separate column medians need not add. Wall time sums all steps
+in that phase: two/eight prefill steps and 31/27 decode steps for the two prompts.
+
+| Prompt / phase | Summed step wall, ms | Preparation, % | Commit, % | Completion wait, % | Nested GPU intervals, % |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| 18-token prefill | 533.86 | 0.49 | 0.27 | 93.21 | 72.22 |
+| 18-token decode | 5,426.01 | 0.58 | 0.34 | 94.35 | 69.32 |
+| 113-token prefill | 2,258.86 | 0.47 | 0.26 | 93.45 | 73.06 |
+| 113-token decode | 4,915.45 | 0.62 | 0.36 | 94.22 | 69.46 |
+
+Status/retirement accounts for under 0.011% of step wall in these medians; the
+outside-native remainder is 4.72–6.17%. Across process medians, GPU intervals cover
+67.92–73.47% of step wall. The `native gated FFN` buffers retain 66.14/68.35% of GPU
+intervals in the two prefill cohorts and 51.80/49.73% in decode. These buffers include
+the six-dispatch RMS/projection/activation chain, not GEMM alone.
+
+All six process/case median paired collection-on/off request-wall ratios pass the
+frozen [0.95, 1.05] gate: observed medians are 0.9816–1.0449. Individual pair ratios
+range from 0.9552 to 1.0578. Off mode retains the common history/finiteness observer
+and uses the same instrumented binary, not untouched production. Recorded native
+collection and step-observer costs are below 0.06% and 0.13% of step wall respectively
+in the table's medians. Neither paired timing variation nor those recorded spans
+measure pure profiler overhead; host/device load and clocks remain uncontrolled.
+
+Only **113-token prefill** meets the frozen GPU-interval-dominance criterion of at
+least 70% in every process median. The other phase cohorts meet none of the declared
+priority thresholds: outside-native work is below 20%, preparation below 15%, and
+GPU intervals remain above the 60% ceiling for submission/queue/lifecycle dominance.
+Completion waits dominate observed wall time, but their difference from GPU intervals
+does not isolate driver work, queueing, notification latency or thread scheduling.
+This narrows the timing account without establishing a causal synchronization fix,
+a speedup, cross-engine quality equivalence or an explanation of the older AIPerf gap.
+Do not compare these absolute clocks with older uncontrolled cohorts as a regression.
+
+Evidence in `gemma4-metal-native-cost/20261028T063156Z` retains the frozen protocol,
+source worktree, isolated release executable, checkpoint identities, raw per-step
+command timestamps, on/off samples, independent reductions and process/aggregate Metal
+observations. All three processes exit 0, shut down physically and leave no owned
+group behind; no forced cleanup or retry occurs. Device work finishes within the
+separate 60-minute budget. No production source, shader, precision policy, dependency
+or main build cache changes.
+
 ## Native HTTP versus stock MLX diagnostic (2026-10-24)
 
 **Actual HTTP protocol and accounting pass; the predeclared matched-result gate
