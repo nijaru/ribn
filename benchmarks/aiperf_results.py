@@ -222,7 +222,17 @@ def validate(directory):
         len(ordinary) - len(profiling) == manifest["workload"]["warmup_requests"],
         "warmup count differs",
     )
-    trace_cohort = audit_trace(raw, trace, manifest) if trace is not None else None
+    trace_cohort = (
+        audit_trace(
+            raw,
+            trace,
+            manifest,
+            start_time=summary.get("start_time"),
+            client_timezone=provenance.get("client_timezone"),
+        )
+        if trace is not None
+        else None
+    )
     load = issued_load(raw, profiling, manifest["workload"])
     timings = {}
     slos = manifest.get("slo", {})

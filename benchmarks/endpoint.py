@@ -4,6 +4,7 @@
 import argparse
 import hashlib
 import json
+import os
 import platform
 import shutil
 import subprocess
@@ -22,10 +23,15 @@ def run(manifest_path, output, executable):
     if manifest["workload"]["kind"] == "fixed_schedule":
         trace = (manifest_path.parent / manifest["workload"]["trace_file"]).read_bytes()
         parse_trace(trace, manifest["workload"])
+    client_env = {**os.environ, "TZ": "UTC"}
     executable = shutil.which(executable)
     require(executable is not None, "AIPerf executable not found")
     version = subprocess.run(
-        [executable, "--version"], check=True, capture_output=True, text=True
+        [executable, "--version"],
+        check=True,
+        capture_output=True,
+        text=True,
+        env=client_env,
     ).stdout.strip()
     require(
         version == AIPERF_VERSION, f"expected AIPerf {AIPERF_VERSION}, got {version}"
@@ -39,13 +45,16 @@ def run(manifest_path, output, executable):
         "command": args,
         "python": sys.version,
         "platform": platform.platform(),
+        "client_timezone": client_env["TZ"],
         "manifest_sha256": hashlib.sha256(snapshot).hexdigest(),
     }
     if trace is not None:
         provenance["trace_sha256"] = hashlib.sha256(trace).hexdigest()
     (output / "invocation.json").write_text(json.dumps(provenance, indent=2) + "\n")
     with (output / "client.log").open("w") as log:
-        result = subprocess.run(args, check=False, stdout=log, stderr=subprocess.STDOUT)
+        result = subprocess.run(
+            args, check=False, stdout=log, stderr=subprocess.STDOUT, env=client_env
+        )
     (output / "client-exit-code").write_text(f"{result.returncode}\n")
     require(
         result.returncode == 0,

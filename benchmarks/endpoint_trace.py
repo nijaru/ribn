@@ -3,6 +3,7 @@
 import hashlib
 import json
 import re
+from datetime import datetime
 
 from aiperf_stream import validate_payload
 from endpoint_config import count, require
@@ -63,7 +64,51 @@ def trace_snapshot(directory, manifest, provenance):
     return parse_trace(contents, workload)
 
 
-def audit_trace(raw, rows, manifest):
+def reported_phase_clock(raw, rows, start_time, client_timezone):
+    """Bound only the serialized controller epoch; never infer monotonic alignment."""
+    require(client_timezone in (None, "UTC"), "unsupported recorded client timezone")
+    if client_timezone is None:
+        return None
+    require(
+        isinstance(start_time, str)
+        and re.fullmatch(
+            r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]{1,6})?",
+            start_time,
+        ),
+        "missing/invalid UTC phase start_time",
+    )
+    elapsed = datetime.fromisoformat(start_time) - datetime(1970, 1, 1)
+    epoch_ns = (elapsed.days * 86400 + elapsed.seconds) * 1_000_000_000
+    epoch_ns += elapsed.microseconds * 1000
+    require(
+        0 <= epoch_ns < (1 << 32) * 1_000_000_000, "phase epoch outside supported range"
+    )
+    # v0.13 converts integer ns to float seconds, then a microsecond datetime.
+    # Below 2**32 seconds, integer/float rounding plus datetime rounding is <2us.
+    # This interval does NOT bound distinct worker/controller clock anchors.
+    uncertainty = 2000
+    low, high = epoch_ns - uncertainty, epoch_ns + uncertainty
+    offsets = {}
+    for record in raw.values():
+        meta = record["metadata"]
+        started = meta.get("request_start_ns")
+        require(count(started), "missing/invalid epoch request_start_ns")
+        offset = rows[meta["conversation_id"]]["timestamp"] * 1_000_000
+        offsets[meta["conversation_id"]] = [
+            started - high - offset,
+            started - low - offset,
+        ]
+    return {
+        "source": "client/profile_export_aiperf.json:start_time",
+        "timezone": "UTC",
+        "origin_ns_bounds": [low, high],
+        "serialization_uncertainty_ns": uncertainty,
+        "dispatch_offset_ns_bounds": offsets,
+        "monotonic_alignment_audited": False,
+    }
+
+
+def audit_trace(raw, rows, manifest, *, start_time=None, client_timezone=None):
     """Bind every issued attempt, including failures, to its declared input."""
     seen = set()
     for record in raw.values():
@@ -90,4 +135,7 @@ def audit_trace(raw, rows, manifest):
         "timestamp_unit": "ms",
         "input_offsets": {key: row["timestamp"] for key, row in rows.items()},
         "absolute_origin_audited": False,
+        "reported_phase_clock": reported_phase_clock(
+            raw, rows, start_time, client_timezone
+        ),
     }

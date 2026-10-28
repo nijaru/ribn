@@ -464,7 +464,8 @@ See the pinned [metrics definitions](https://docs.nvidia.com/aiperf/v0.13.0/refe
 artifacts outside version control, and do not enable private-content collection
 merely to obtain a benchmark.
 
-Host verification:
+Host verification (the full unit suite needs NumPy; integration also needs the
+pinned AIPerf environment):
 
 ```sh
 PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s benchmarks -p 'test_*.py'
@@ -548,11 +549,45 @@ It reconciles native relative send-lag scalars using the client's float64 epoch-
 column, including its low-bit loss before centering—not integer-exact quantiles.
 The client's 500 ms `replay_sched_degraded` threshold is a diagnostic, not Ribn's SLO.
 
-**The absolute schedule origin is not exported.** Relative lag cannot detect uniform
-lateness, and dispatch-based TTFT excludes queued time. Checking the declared input
-cohort therefore does not establish planned-arrival latency or SLO goodput.
-`planned_arrivals_audited` and `performance_metrics_audited` remain false; CPU
-qualification does not establish device performance.
+The runner now sets `TZ=UTC` only in its client subprocess environment and records
+`client_timezone` in `invocation.json`; it does not change the caller's timezone.
+AIPerf's summary exports the profiling lifecycle's wall-clock start as `start_time`,
+converted through floating-point seconds to a timezone-naive, microsecond-resolution
+string. This is not the exact monotonic schedule origin.
+
+For UTC-pinned runs, `trace_cohort.reported_phase_clock` reports an epoch-origin
+interval with a conservative ±2,000 ns serialization uncertainty, restricted to
+1970 through epochs below 2³² seconds. `dispatch_offset_ns_bounds` subtracts that
+interval and each declared offset from the recorded request-start epoch, including
+failed attempts. Signed results are retained, not clamped. Snapshots without a
+recorded client timezone return a null diagnostic rather than guessing local time;
+malformed UTC origins or unsupported recorded timezones reject revalidation.
+
+These bounds cover **origin serialization only**, not alignment between worker and
+controller clock anchors. `monotonic_alignment_audited` remains false. Do not add
+these epoch-coordinate offsets to monotonic `request_timing_ns` or treat them as
+qualified planned-arrival latency/SLO goodput. Native relative lag still cannot
+detect uniform lateness, and dispatch-based TTFT excludes queued time.
+`planned_arrivals_audited` and `performance_metrics_audited` remain false.
+
+A private CPU fixture in `gemma4-phase-origin/20261028T085747Z` observes the native
+lifecycle anchors and shifts scheduler targets by 2³⁰ ns without changing trace
+offsets. Both retained four-request delay cases place the captured epoch origin
+inside the reported interval, including one HTTP-overload failure. Actual monotonic
+send lateness exceeds 1.07 s, yet native centered-lag p99 is 5.87/0.99 ms and its
+500 ms degradation flag stays zero. Subtracting the common delay leaves those
+centered scalars unchanged. Epoch-derived offsets differ from the directly observed
+monotonic offsets by 12.58–23.79 µs, beyond the serialization interval: clock alignment
+is a separate prerequisite, not a tolerance to widen.
+
+The intended three-case private cohort remains incomplete. Its control exits 1
+before issuing requests because the private harness incorrectly enabled the pinned
+client's offline resolver for a generated local tokenizer. That failure is retained;
+only the two unstarted delay cases use the documented local-path environment, with
+child-only outbound Python connections blocked. No control is repeated or filled.
+Installed dependency files remain unchanged; the observation/delay hooks stay private.
+The separate stock-client integration suite exercises the ordinary runner without
+these hooks. This is CPU client qualification, not device-performance evidence.
 
 ## Ribn endpoint client configuration
 

@@ -3,11 +3,13 @@
 This exercises the snapshotting runner and offline input-cohort validator.
 """
 
+import calendar
 import json
 import subprocess
 import sys
 import tempfile
 import unittest
+from datetime import datetime
 from itertools import pairwise
 from pathlib import Path
 
@@ -92,6 +94,12 @@ class ReplayClientTests(unittest.TestCase):
                             {r["session_id"]: r["timestamp"] for r in rows},
                         )
                         self.assertFalse(report["planned_arrivals_audited"])
+                        clock = report["trace_cohort"]["reported_phase_clock"]
+                        self.assertEqual(clock["timezone"], "UTC")
+                        self.assertFalse(clock["monotonic_alignment_audited"])
+                        self.assertEqual(
+                            set(clock["dispatch_offset_ns_bounds"]), set(expected)
+                        )
                         self.assertEqual(
                             (case / "run" / "schedule.jsonl").read_bytes(),
                             (case / "schedule.jsonl").read_bytes(),
@@ -118,6 +126,12 @@ class ReplayClientTests(unittest.TestCase):
                         )
                         self.assertEqual(summary["aiperf_version"], "0.13.0")
                         self.assertEqual(summary["schema_version"], "1.4")
+                        phase = datetime.fromisoformat(summary["start_time"])
+                        epoch = calendar.timegm(phase.timetuple()) * 1_000_000_000
+                        epoch += phase.microsecond * 1000
+                        self.assertEqual(
+                            clock["origin_ns_bounds"], [epoch - 2000, epoch + 2000]
+                        )
                         self.assertTrue(summary["is_complete"])
                         self.assertFalse(summary["was_cancelled"])
                         self.assertEqual(summary["request_count"]["avg"], 4)
@@ -174,6 +188,15 @@ class ReplayClientTests(unittest.TestCase):
                                 )
                             )
                             self.assertIs(type(meta["request_start_ns"]), int)
+                            lag = (
+                                meta["request_start_ns"]
+                                - epoch
+                                - row["timestamp"] * 1_000_000
+                            )
+                            self.assertEqual(
+                                clock["dispatch_offset_ns_bounds"][key],
+                                [lag - 2000, lag + 2000],
+                            )
                             offsets.append(
                                 meta["request_start_ns"] - row["timestamp"] * 1_000_000
                             )

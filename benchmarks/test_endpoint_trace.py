@@ -3,10 +3,11 @@
 import copy
 import hashlib
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from aiperf_results import validate
 from endpoint import run
@@ -71,6 +72,99 @@ def trace_fixture(directory):
 
 
 class TraceTests(unittest.TestCase):
+    def test_runner_pins_child_timezone_without_changing_parent(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            d = Path(tmp)
+            manifest = d / "manifest.toml"
+            manifest.write_text(TRACE_MANIFEST)
+            (d / "schedule.jsonl").write_text(
+                "".join(json.dumps(row) + "\n" for row in rows())
+            )
+            with (
+                patch.dict(os.environ, {"TZ": "Etc/GMT+9"}),
+                patch("endpoint.shutil.which", return_value="/fixture/aiperf"),
+                patch("endpoint.platform.platform", return_value="fixture"),
+                patch(
+                    "endpoint.subprocess.run",
+                    return_value=Mock(stdout="0.13.0", returncode=0),
+                ) as client,
+                patch("endpoint.validate", return_value={"protocol_valid": True}),
+            ):
+                run(manifest, d / "out", "aiperf")
+                self.assertEqual(os.environ["TZ"], "Etc/GMT+9")
+                self.assertEqual(len(client.call_args_list), 2)
+                for call in client.call_args_list:
+                    self.assertEqual(call.kwargs["env"]["TZ"], "UTC")
+            provenance = json.loads((d / "out" / "invocation.json").read_text())
+            self.assertEqual(provenance["client_timezone"], "UTC")
+
+    def test_uniform_delay_changes_epoch_diagnostic_not_monotonic_claims(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            d = Path(tmp)
+            ordinary, raw, summary = trace_fixture(d)
+            summary["start_time"] = "2026-01-01T00:00:00.000001"
+            export(d, ordinary, raw, summary)
+            self.assertIsNone(validate(d)["trace_cohort"]["reported_phase_clock"])
+            provenance = json.loads((d / "invocation.json").read_text())
+            provenance["client_timezone"] = "UTC"
+            (d / "invocation.json").write_text(json.dumps(provenance))
+            epoch = 1_767_225_600_000_001_000
+            for shift in (0, 1 << 30, -2_000_000_000):
+                for i, (o, r) in enumerate(zip(ordinary, raw, strict=True)):
+                    r["metadata"]["request_start_ns"] = (
+                        epoch + i * 50_000_000 + 1_000_000_000 + shift
+                    )
+                    o["metadata"] = copy.deepcopy(r["metadata"])
+                export(d, ordinary, raw, summary)
+                report = validate(d)
+                self.assertTrue(report["protocol_valid"])
+                self.assertFalse(report["planned_arrivals_audited"])
+                clock = report["trace_cohort"]["reported_phase_clock"]
+                self.assertFalse(clock["monotonic_alignment_audited"])
+                self.assertEqual(
+                    clock["origin_ns_bounds"], [epoch - 2000, epoch + 2000]
+                )
+                self.assertEqual(
+                    clock["dispatch_offset_ns_bounds"],
+                    {
+                        r["session_id"]: [
+                            1_000_000_000 + shift - 2000,
+                            1_000_000_000 + shift + 2000,
+                        ]
+                        for r in rows()
+                    },
+                )
+
+    def test_epoch_diagnostic_rejects_ambiguous_or_invalid_recorded_clocks(self):
+        for start, zone, wall in (
+            (None, "UTC", 1),
+            ("2026-01-01", "UTC", 1),
+            ("2026-01-01T00:00:00Z", "UTC", 1),
+            ("1969-12-31T23:59:59", "UTC", 1),
+            ("2106-02-07T06:28:16", "UTC", 1),
+            ("2026-01-01T00:00:00", "local", 1),
+            ("2026-01-01T00:00:00", "UTC", True),
+            ("2026-01-01T00:00:00", "UTC", -1),
+        ):
+            with (
+                self.subTest(start=start, zone=zone, wall=wall),
+                tempfile.TemporaryDirectory() as tmp,
+            ):
+                d = Path(tmp)
+                o, r, s = trace_fixture(d)
+                provenance = json.loads((d / "invocation.json").read_text())
+                provenance["client_timezone"] = zone
+                (d / "invocation.json").write_text(json.dumps(provenance))
+                s["start_time"] = start
+                for ordinary, raw in zip(o, r, strict=True):
+                    raw["metadata"]["request_start_ns"] = 1_767_225_601_000_000_000
+                    ordinary["metadata"] = copy.deepcopy(raw["metadata"])
+                r[0]["metadata"]["request_start_ns"] = wall
+                o[0]["metadata"] = copy.deepcopy(r[0]["metadata"])
+                export(d, o, r, s)
+                with self.assertRaises(ValueError):
+                    validate(d)
+
     def test_unicode_prompt_separators_are_not_jsonl_boundaries(self):
         data = rows()
         data[0]["text_input"] = "hello\u0085world\u2028again\u2029end"
