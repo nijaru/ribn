@@ -721,7 +721,11 @@ now keeps exact activation/products on device for M3 Max/E4B chunks through 64 r
 with separate-call fallback elsewhere. Three fresh processes pass the declared paired
 screen: median process reductions are 6.93% for direct decode after 18 tokens and
 9.37/10.98% for 16/64-row prefill. Full logits/KV remain bit-exact; this is not a new
-MLX comparison, serving-quality acceptance or a promotion of MPSGraph.
+MLX comparison, serving-quality acceptance or a promotion of MPSGraph. A subsequent
+[HTTP screen](../benchmarks/gemma4-metal-baseline.md#native-ffn-http-screen-2026-10-28)
+retains exact completed responses and observed paired gains, but hits its fixed cutoff
+before the three-pair cohort finishes. No c4/c8 request in its completed phases meets
+the joint latency objective; serving-performance acceptance remains open.
 A [real-input FFN component pre-screen](../benchmarks/gemma4-metal-baseline.md#ffn-projection-component-pre-screen-2026-10-23)
 now separates RMS from projections and compares a native FP32 MPS candidate including
 conversion and per-call resource release. Prefill component calls improve, but decode

@@ -1337,6 +1337,70 @@ These are paired direct-decoder results, not server throughput/SLO or physical-p
 acceptance. No new matched MLX/vLLM/SGLang/llama.cpp/MAX run was performed. Existing
 cross-engine quality disagreements remain open; exact preservation does not resolve them.
 
+## Native FFN HTTP screen (2026-10-28)
+
+**Incomplete: observed gains do not pass the frozen serving screen.** The fixed
+cutoff interrupted the fourth server process before the three-pair cohort finished.
+No workload was shortened, device cutoff extended or measurement retried.
+
+This compares uninstrumented `3aa8171` with `e08775b` through the real loopback
+`serve-gemma` HTTP/TextOwner/Driver/Engine path on the same M3 Max and cached E4B BF16
+package. AIPerf 0.13.0 uses seed 42, positive-normal nominal input mean 64/stddev 48,
+32-token caps, greedy EOS-enabled generation, 16 profiling requests and two warmups
+per phase. Observed inputs span 1–147 tokens and outputs 28–32. Three fresh server
+pairs were declared, with baseline/candidate order AB, BA, AB and rotating c1/c4/c8
+phase order. The default four active sequences are not four-row physical decode.
+
+The screen requires median paired output-throughput gains of at least 5% at c4/c8,
+at least two positive pairs at each, no pair losing over 5%, no concurrency's median
+paired p95 TTFT/DONE regression over 5%, and no lower aggregate joint-SLO pass count.
+Every completed response, including warmup, must agree in text, core usage and finish.
+The diagnostic joint objective is first nonempty content within 2 s and DONE within
+8 s of the actual request start, not a product SLO or planned-arrival guarantee.
+
+Eleven of eighteen phases finish: 176 profiling requests and 22 warmups. The interrupted
+phase retains another nine completed profiling requests and two warmups. All **209
+retained completed profiling/warmup responses** agree. Its in-flight offered-work
+total is unreconciled; that phase has no successful audit and is not silently treated
+as zero failures.
+There is no whole-cohort goodput or repeatability acceptance.
+
+The following descriptive rows include only fully completed, matched phase pairs;
+the extra unpaired candidate-c1 phase and interrupted baseline-c1 phase are excluded.
+Throughput divides actual committed output tokens by the integer-nanosecond envelope
+from earliest request start to latest DONE. Rates pool complete phase durations;
+tails pool request observations and are not tail guarantees.
+
+| Concurrency | Matched pairs | Baseline / candidate output tok/s | p95 TTFT (s) | p95 DONE (s) | Joint-SLO passes, baseline / candidate |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| c1 | 1 | 4.305 / 4.729 | 2.718 / 2.369 | 8.896 / 8.334 | 11/16 / 13/16 |
+| c4 | 2 | 4.470 / 5.225 | 9.362 / 7.673 | 34.045 / 30.025 | 0/32 / 0/32 |
+| c8 | 2 | 4.992 / 5.558 | 38.404 / 34.880 | 62.911 / 56.885 | 0/32 / 0/32 |
+
+The completed c4/c8 pairs show median throughput gains of 16.91%/11.46%, but do not
+supply the missing third pair. Joint-SLO goodput is 0.093/0.121 requests/s for the
+matched c1 phases and zero at c4/c8. Faster draining therefore still leaves poor
+loaded interactivity under these objectives. AIPerf's separate content-window rates
+and raw per-request clocks are retained; SSE chunk gaps are not claimed as token ITL.
+
+The new effort budget began at 02:20:05 UTC, with a 03:17:05 device-work cutoff and
+03:20:05 cleanup target. Setup caught a shared-Cargo-cache hit producing identical
+executables before any inference; the rejected artifacts remain preserved and the
+candidate was rebuilt into an isolated target. Main's cache was subsequently rebuilt
+from unchanged main sources, preserving its previous release cache. All four model
+processes shut down normally. Seven non-GPU AIPerf workers survived the interrupted
+client's SIGTERM and required owned-group SIGKILL; their absence was verified before
+the cleanup target. Non-device verification and documentation continued afterward.
+
+Evidence in `gemma4-metal-ffn-serving/20261028T023300Z` retains the frozen protocol,
+source worktrees/hashes, distinct executables, build failures, manifests, raw/partial
+exports, independent reduction, CPU/RSS/aggregate Metal samples and cleanup receipts.
+Unified-memory samples are not added together or called physical peaks. No incumbent
+native-client cross-check was available: vLLM was absent and the previously rejected
+SGLang client was not retried or shimmed. This is not competitive acceptance, sustained
+capacity, pressure/recovery, independent task quality or a new MLX comparison. The
+existing direct-decoder qualification and selection scope remain unchanged.
+
 ## Native HTTP versus stock MLX diagnostic (2026-10-24)
 
 **Actual HTTP protocol and accounting pass; the predeclared matched-result gate
