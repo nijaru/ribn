@@ -1401,6 +1401,63 @@ SGLang client was not retried or shimmed. This is not competitive acceptance, su
 capacity, pressure/recovery, independent task quality or a new MLX comparison. The
 existing direct-decoder qualification and selection scope remain unchanged.
 
+## Matched-history entrypoint cost (2026-10-28)
+
+**Partial campaign; the four-process classification gate remains unmet.** The three
+complete matched processes place about 99.7% of request wall time inside synchronous
+decoder calls. They do not support a large text/HTTP overhead outside those calls.
+This does not attribute the older AIPerf timing gap or separate CPU work from GPU waits.
+
+A private instrumented `e9736cc` harness shares one prepared native M3 Max/E4B model
+inventory across sequential raw-decoder, direct-Engine, TextOwner/Driver and real
+`Server` HTTP owners. Owner assembly uses the ordinary defaults; load and shutdown
+are excluded. The HTTP caller is a finite stdlib client, not AIPerf. Two fixed completion
+strings encode to the archived 18-token rendered chat prompt and a 113-token seed-42
+synthetic prompt. Greedy EOS-enabled generation commits 32 and 28 tokens respectively,
+including the latter's suppressed stop token. Raw prefill uses the same 16-token chunks
+as the Engine. Each case/mode warms once and measures twice per process.
+
+The observer records every decoder input position, input token IDs and greedy choice;
+all logit rows pass shape and finiteness checks. All **90 retained generations**
+(60 measured, 30 warmups) match in visible tokens, text, authoritative usage, finish
+and complete decoder token histories. HTTP token history comes from the decoder
+observer, not retokenizing text. This is not a new full-logit/KV qualification.
+
+The table includes only the three processes with all four modes. Each cell is the
+median of their per-process two-request medians, in seconds:
+
+| Prompt | Raw decoder | Direct Engine | TextOwner | HTTP |
+| --- | ---: | ---: | ---: | ---: |
+| Chat, 18 tokens | 3.698 | 3.702 | 3.693 | 3.726 |
+| Synthetic, 113 tokens | 4.295 | 4.326 | 4.491 | 4.304 |
+
+Across every retained per-process/case/mode median, decoder calls account for at
+least 99.67% of end-to-end time. The recorded observer cost is at most 0.19% in
+those medians. The largest positive paired text/HTTP outside-call increment over
+direct Engine is 0.056% of endpoint time. Timing variation occurs inside decoder calls, which include
+host algebra, submission, completion waits and possible thread preemption—not just
+GPU execution. Background load and clock/thermal conditions were not controlled.
+No causal hardware-counter or thread-priority conclusion follows.
+
+The frozen classification required all four processes, at least 90% decoder-call
+share throughout for decoder dominance, or a 10% added frontend outside-call share
+in at least three processes for a material frontend gap. The first process completed
+18 generations, then the harness incorrectly requested `/readyz` instead of the
+implemented and documented `/ready`; no HTTP generation reached that server. Those
+18 samples and the failure remain retained. Only the three unstarted processes ran
+after correcting that setup call; no valid sample was repeated. The native libraries
+remain byte-identical across the correction. The missing six samples were not filled
+by shortening or retrying the cohort, so no full-gate classification is accepted.
+
+Evidence in `gemma4-metal-entrypoint-cost/20261028T040100Z` retains the protocol,
+source snapshots, both executables, exact per-step histories/times, raw SSE, independent
+reduction, process/aggregate Metal samples and cleanup receipts. Device work finished
+within its distinct 90-minute effort budget. The first test process exits 101; the
+remaining three finish and retire normally. All owned groups are absent, with no
+forced cleanup. No production code, kernel, precision policy, dependency or main build
+cache changed. This is cost attribution, not a throughput improvement, serving SLO,
+physical-pressure, cross-engine or broad task-quality acceptance.
+
 ## Native HTTP versus stock MLX diagnostic (2026-10-24)
 
 **Actual HTTP protocol and accounting pass; the predeclared matched-result gate

@@ -725,7 +725,12 @@ MLX comparison, serving-quality acceptance or a promotion of MPSGraph. A subsequ
 [HTTP screen](../benchmarks/gemma4-metal-baseline.md#native-ffn-http-screen-2026-10-28)
 retains exact completed responses and observed paired gains, but hits its fixed cutoff
 before the three-pair cohort finishes. No c4/c8 request in its completed phases meets
-the joint latency objective; serving-performance acceptance remains open.
+the joint latency objective; serving-performance acceptance remains open. A later
+[matched-history entrypoint diagnostic](../benchmarks/gemma4-metal-baseline.md#matched-history-entrypoint-cost-2026-10-28)
+places about 99.7% of observed wall time inside synchronous decoder calls in its three
+complete matched processes. Its four-process gate remains incomplete after a private
+harness readiness-path error; host work, device waits and thread scheduling inside
+those calls remain unseparated. The older AIPerf timing gap is not attributed.
 A [real-input FFN component pre-screen](../benchmarks/gemma4-metal-baseline.md#ffn-projection-component-pre-screen-2026-10-23)
 now separates RMS from projections and compares a native FP32 MPS candidate including
 conversion and per-call resource release. Prefill component calls improve, but decode
