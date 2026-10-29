@@ -1,6 +1,6 @@
 # Resource, submission and snapshot protocol
 
-Status: accepted execution contract, revised 2026-10-23. Implemented behavior and
+Status: accepted execution contract, revised 2026-10-29. Implemented behavior and
 qualification limits are identified below; targets do not retroactively qualify source.
 AR preparation control is host-qualified. Dynamic Qwen growth, bounded overlap,
 non-AR application lifecycle and snapshot replacement remain unimplemented. Accepted text
@@ -1117,6 +1117,37 @@ Full-model greedy qualification requires finite complete rows, exact common hist
 positions, all 12 archived winners, no-tail final-row extraction and a window crossing
 inside a batch. Distribution metrics are diagnostic, not a newly inferred error budget;
 this scope does not establish sampling fidelity, task quality or SLO goodput.
+
+### Reordered cross-sequence CUDA decode
+
+Status: accepted **advancement contract**, not implemented qualification. The original
+four-sequence prototype still fails its frozen bit-equality gate. A new experiment may
+qualify reordered decode without scalar-logit bit equality; it must not relabel that
+old result. The [frozen Gemma gate](../benchmarks/gemma4-cuda-baseline.md#reordered-four-sequence-decode-advancement-contract-2026-10-29)
+owns the concrete cohort and pass criteria.
+
+Keep BF16 operands/results, FP32 accumulation and disallowed reduced-precision
+reductions. This permits different GEMM reduction order, not different precision,
+model equations, normalization or rounding boundaries. Inventory every changed matrix
+geometry, including the vocabulary head: prefill keeps that head scalar and therefore
+does not qualify a batched head. Independently bound changed GEMMs and compare unchanged
+operators on shared operands exactly. A binary64 diagnostic is not automatically an
+exact reference or a certified bound; prove its domain or use an enclosure.
+
+Validate full-model common histories, positions, finite complete logits, independent
+archived predictions and continuation routing. Cache bytes must match each sequence's
+own produced K/V and prior history; they need not equal serial K/V after a legitimate
+upstream GEMM difference. Preserve exact checks for unchanged prefill and serial fallback.
+A component bound is not an accumulated-logit budget. KL, TV and logit errors remain
+diagnostic unless a separate independent distributional contract is accepted.
+
+Require independent labeled generation evidence before performance advancement. The
+initial finite-corpus screen permits no per-item EM or token-F1 loss against a fresh
+serial control; improvements elsewhere cannot offset a loss. This avoids fitting a
+numerical tolerance but establishes neither population non-inferiority nor general
+quality equivalence. A pass permits only a private performance experiment. Automatic
+selection still needs the intended runtime path, ownership/failure gates and repeatable
+end-to-end benefit; sampling, broad quality and competitive acceptance remain separate.
 
 ### Native BF16 normalization
 

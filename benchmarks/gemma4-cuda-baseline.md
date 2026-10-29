@@ -1348,3 +1348,196 @@ Raw captures, typed PLE packs, source patches, binaries, monitors and comparison
 remain under `gemma4-cuda-decoder-trace/20261028T121633Z`. The task starts at
 12:16:33 UTC, with device cutoff 13:11:33 and deadline 13:16:33. Exactly one native
 process per mode runs, with no retry, arithmetic intervention or deadline extension.
+
+## Reordered four-sequence decode advancement contract (2026-10-29)
+
+**Accepted gate, not a passed experiment.** Reordered decode is now the selected
+investigation; the [execution contract](../docs/resource-protocol.md#reordered-cross-sequence-cuda-decode)
+permits a new experiment without scalar-logit bit equality. The original four-row
+rejection and its unexecuted cohorts remain unchanged. This gate supplies no fitted
+logit tolerance, precision vote or automatic-selection permission.
+
+### Scope and arithmetic
+
+Use the E4B BF16 package and reference pins in [model.toml](gemma4-reference/model.toml),
+RTX 4090, four independent full-history continuations and positions below 4096.
+Keep qualified sixteen/eight-row prefill, scalar decode for other batch sizes, BF16
+operands/results, FP32 accumulation, reduced-precision reductions disabled and the
+8 MiB cuBLAS workspace. No eviction, graph, overlap, sampling or policy change is
+part of this experiment. Freeze the actual toolkit/library/device, source, binary,
+processor and input identities before execution.
+
+The existing prefill component gate is insufficient: its matrix rows are 1/8/16,
+and its vocabulary head stays scalar. The new gate must cover rows **1/4** for all
+12 existing E4B projection geometries **plus the 2560→262144 tied vocabulary head**.
+Retain exact dyadic checks and the independently derived FP32/BF16 forward-error
+bound from the [prefill gate](gemma4-reference/README.md#numerical-acceptance-fixed-before-measurement).
+Use the same predeclared operand family, not inputs selected to make this candidate
+pass. Check all outputs, shape and finiteness. The exact-integer fixture's safe range
+is part of its proof; do not apply that proof blindly to arbitrary real operands.
+
+On the first archived four-row decode (rotation zero, prediction step one), capture
+actual consumed operands/results for PLE, layer-zero Q/K/V and the vocabulary head,
+after checked completion. Evaluate each mode against its **own** operands, since later inputs can
+legitimately differ. Any acceptance comparison needs exact encoded-operand dots or
+certified enclosures and validated underflow/overflow assumptions; the existing
+`math.fsum` diagnostic pack alone cannot grant acceptance. Shared inputs/weights must
+match where the paths promise equality. Unchanged RMS, rotary, elementwise and
+attention operations retain their exact shared-operand checks. These are operation
+checks, not an accumulated full-logit error bound.
+
+### Full-model and continuation gate
+
+Use a fresh public serial control, not two paths through a refactored candidate.
+Require exact common input IDs and positions, complete finite 262144-element logits,
+and all **12 independent archived predictions** from the chat/window CPU BF16
+reference. Use all four cyclic row rotations of
+`[chat, window_511, window_513, chat]`, each from fresh state through all four
+prediction steps. Feed archived inputs, not a backend's chosen continuation, to keep
+histories identical. The first prompt
+runs through unchanged prefill; subsequent steps must execute physical four-row decode.
+
+Add synthetic common-history groups starting at processed prefixes `[1,17,64,513]`,
+`[511,512,513,514]` and `[4092,4093,4094,4095]`, with respectively 3/2/1 decode steps.
+For length `p`, form the prompt from the archived chat's original first ID followed
+by `p-1` IDs cycling its remaining prompt. For sequence index `i` and step `s`, force
+`[236776,126641,568][(i+s) % 3]`; sequence identity and input do not change under
+permutation. Repeat each group with reversed row order. These synthetic rows have
+no independently labeled expected winner; do not invent one from the serial output.
+Keep complete paired logits and report differences, centered RMSE, relative L2, KL
+and TV descriptively. Neither greedy agreement nor a smaller distance grants a
+numerical budget.
+
+Check every KV owner's initialized prefix and committed position. Old cache rows
+must remain unchanged; appended rows must equal that sequence's own produced K/V
+encodings, and shared-tail reads must use its own full donor. Gather/scatter and
+per-row attention must match the qualified scalar operation on the **same** captured
+query, cache and span. Serial/candidate caches need not match after changed projections.
+All unchanged prefills and one/two/three-row fallbacks must remain bit-exact to the
+independent serial control. Invalid last-row input must leave every row's position,
+cache and charge unchanged. Missing state/routing checks cannot be replaced by logits
+or by logical pool charges returning to zero.
+
+### Independent generated-QA screen
+
+The task gate is **no per-question EM or token-F1 loss** relative to a fresh native
+serial control, on every frozen question. Score candidate and control independently
+against human aliases; gains on another question cannot compensate for a loss.
+Literal generation equality is not required. This strict finite-corpus rule needs
+no fitted non-inferiority margin, but proves no population non-inferiority, statistical
+equivalence, general instruction-following or distributional fidelity.
+
+Select 128 new SQuAD v1.1 development questions without consulting labels, lengths or
+model outputs. Use the [publisher dataset](https://rajpurkar.github.io/SQuAD-explorer/dataset/dev-v1.1.json)
+at publisher revision `e0c66cfec263165fb3c15cb76a22175e371b71d7`, SHA256
+`95aa6a52d5d6a735563366753ca50492a658031da74f301ac5238b03966972c9`.
+Exclude the original 32-question [Metal diagnostic](gemma4-metal-baseline.md#generated-extractive-qa-diagnostic)
+by reproducing its selection, not by inspecting its scores. On the remaining
+questions, take the 128 smallest SHA256 values of
+`ribn-gemma4-cuda-reordered-decode-qa-v1 + NUL + question_id`, breaking ties by ID.
+Retain that order and all original answer aliases. No truncation, resampling or
+replacement is permitted if a selected item cannot fit or fails.
+
+Construct each user message exactly as:
+
+```text
+Answer the question using only the exact answer span from the context. Do not explain.
+
+Context:
+{original context}
+
+Question: {original question}
+```
+
+The message has no trailing newline. Render the pinned publisher template with
+`add_generation_prompt=true` and `enable_thinking=false`; encode without a second
+BOS or template. Match the actual Rust processor's rendered tokens before model
+work. Consecutive groups of four use fresh continuation state and unchanged 16-token
+prefill chunks. The direct executor harness prepares all four prompts before decode;
+this controls the arithmetic experiment, not production scheduling. Use greedy
+generation, package EOS stops and a maximum of 64 new tokens. Decode through the
+real candidate executor and canonical processor, not a mock or a quality-only kernel.
+Within each group, remove a finished request without replacement and retain scalar
+fallback below four rows. Record actual physical calls per request; each question
+must reach at least one four-row decode (possibly producing its stop), or the screen
+is inconclusive. Do not force an ended request to continue to preserve batch width.
+
+Separately exercise physical four-row selection through the actual Engine and text
+facade on the archived chat group, checking all four archived token IDs, delivery,
+usage and completion. Default scheduling may select fallback: record that as missing
+integration evidence, not a pass inferred from four submitted requests. This gate
+precedes performance advancement; HTTP and mixed-arrival qualification follow it.
+
+Retain exact token IDs, complete text, actual usage and terminal outcome. Validate
+full-row finiteness before selecting each token. Score **whole returned text**, with
+no answer extraction or explanation stripping, by the pinned
+[Python evaluator mirror](https://github.com/allenai/bi-att-flow/blob/49004549e9a88b78c359b31481afa7792dbb3f4a/squad/evaluate-v1.1.py),
+SHA256 `f5a673dbbd173e29e9ea38f1b2091d883583b77b3a4c17144b223fb0f2f9bd09`.
+Use its SQuAD normalization and maximum over aliases; independently check token F1
+with exact rational overlap arithmetic. A `length` outcome stays scored whole and
+must report 64 generated tokens. A timeout, error, missing/duplicate ID, malformed
+usage, unretired owner or incomplete process is a failed/incomplete run, not a dropped
+question or a zero score hidden in the aggregate. Free-running histories may diverge;
+never aggregate numerical differences after divergence. Task scoring still includes
+both complete answers.
+
+The model-free freeze verifies all answer offsets and both tokenizer entry points:
+128 questions, **26421 prompt tokens**, range **75–581**, all within 4096 positions
+including the output cap. The ordered `[question_id, prompt_ids]` list has SHA256
+`d7048e2e7172913b0246031f59544b0920e5213eecabd73ba7f33a9a2f186ad5`, using UTF-8
+`json.dumps(pairs, ensure_ascii=False, separators=(',', ':'))` with no trailing newline.
+Selection, complete cases, tokenizer/package metadata hashes and the freeze source
+are retained under `gemma4-cuda-reordered-contract/20261029T034758Z`.
+No model weights are loaded and no new predictions or quality scores are collected.
+
+### Scoring retained results
+
+`gemma4_decode_quality.py` implements the fixed-corpus scoring boundary without Torch,
+model loading or code execution. Given the frozen cases and retained run records:
+
+```sh
+python3 benchmarks/gemma4_decode_quality.py \
+  --dataset /path/to/dev-v1.1.json --cases /path/to/cases.json \
+  --baseline /path/to/serial-results.json --candidate /path/to/four-row-results.json \
+  --output /path/to/new-score-directory
+```
+
+Each run is a JSON object with `schema_version: 1`, `complete: true` and a `results`
+list. Each result contains `id`, `prompt_ids`, `token_ids`, `text`, `finish_reason`,
+`usage` and `prediction_widths`. Generated IDs include the final EOS when present;
+usage counts every retained generated ID. Prediction widths align with those IDs:
+zero for the initial prefill prediction, then one or four for each decode prediction.
+The serial control uses only one; candidate widths must follow the fixed groups'
+actual active counts after EOS. Results may arrive out of order but not lose,
+duplicate or add IDs. The collector must establish canonical text/ID correspondence,
+EOS semantics, actual physical calls, numerical checks and successful retirement.
+The scorer cannot attest those facts from JSON.
+
+The scorer verifies the source dataset hash, independently selected IDs, every human
+alias, frozen prompt digest, terminal/usage consistency and recorded row exposure.
+F1 comparisons use exact fractions. Inputs are limited to 8 MiB each; duplicate JSON
+keys and nonfinite numbers reject. Outputs use a new directory; errors retain an
+incomplete report rather than replacing old evidence. A completed no-loss sample
+returns zero; an observed per-question loss returns one with a complete failure
+verdict. Neither exit zero nor a `complete` record grants numerical, lifecycle,
+execution-provenance or population-quality acceptance. Host tests cover compensating
+aggregate scores, F1-only losses, incomplete/invalid records, EOS shrinking, capped
+answers, corpus mutation and non-overwrite behavior.
+
+### Advancement and remaining work
+
+The scorer is host-tested; the model collector and device/full-model/quality runs
+above remain **unimplemented/unexecuted**.
+Before the next experiment, validate scorer/routing failure detection and freeze its
+sources, complete input deck, finite campaign budget and stop conditions. Compare
+scorer results with the pinned evaluator on every retained answer/alias. Preserve
+all old failures. A new verdict must name this contract and cannot rewrite the old
+bit-equality rejection; do not restart an unchanged failed cohort or fit a threshold
+to its output. A missing bound proof or inconclusive quality screen blocks advancement.
+
+Passing all these gates permits a **private performance experiment only**. Promotion
+still requires bounded repeated end-to-end benefit, actual HTTP/mixed-arrival selection,
+cancellation, partial-enqueue/failed-drain retirement, pressure and fallback evidence.
+The 128-question lexical screen does not qualify broad quality-equivalent serving,
+sampling or a full-distribution error budget. No production source, precision policy,
+automatic selection or prior qualification changes in this contract-preparation phase.

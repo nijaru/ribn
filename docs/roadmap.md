@@ -93,9 +93,9 @@ requests pass the diagnostic deadlines. Retain sixteen rows; select subsequent m
 cross-sequence physical execution from this remaining deficit, not wider prefill by default.
 The first [four-sequence decode prototype](../benchmarks/gemma4-cuda-baseline.md#four-sequence-decode-numerical-gate-2026-10-26)
 fails full-logit bit equality on its first common-history decode, despite finite outputs
-and four unchanged argmaxes. It remains private and unpromoted; isolate the numerical
-source before performance advancement. Later candidate cohorts and lifecycle/serving
-gates are unexecuted, not passed. A host-only [first-projection reference](../benchmarks/gemma4-reference/README.md#first-ple-projection-reference)
+and four unchanged argmaxes. It remains private and unpromoted; the new advancement
+contract below must pass before performance measurement. Later candidate cohorts and
+lifecycle/serving gates are unexecuted, not passed. A host-only [first-projection reference](../benchmarks/gemma4-reference/README.md#first-ple-projection-reference)
 now supplies expected BF16 operands and complete binary64 diagnostic sums for the
 first rejected decode inputs. A bounded [native first-projection replay](../benchmarks/gemma4-cuda-baseline.md#first-ple-projection-native-capture-2026-10-28)
 now matches every consumed input/weight bit to that reference, but serial and four-row
@@ -105,9 +105,20 @@ confirms those PLE differences on the frozen histories and finds layer-zero Q di
 at 5 of 2,048 coordinates per row (maximum 0.25), also with matching consumed operands;
 K and V match in this scope. All same-mode prefills and final logits remain bit-exact
 to the archived witnesses. PLE-only parity would not establish projection-wide bit
-invariance. Keep the candidate unpromoted: downstream propagation and independently
-justified numerical acceptance remain unresolved; these observations supply no tolerance
-or precision-policy change.
+invariance. Keep the candidate unpromoted; these observations supply no tolerance or
+precision-policy change. The accepted [reordered-decode advancement contract](resource-protocol.md#reordered-cross-sequence-cuda-decode)
+now permits a new, separately frozen experiment with unchanged BF16/FP32 policy,
+independent GEMM bounds including the batched vocabulary head, common-history and
+continuation-routing checks, and a per-question no-loss labeled generation screen.
+The [128-question cohort](../benchmarks/gemma4-cuda-baseline.md#reordered-four-sequence-decode-advancement-contract-2026-10-29)
+is selected and tokenized without model execution. The fixed-corpus scorer is
+host-tested, including per-item losses and incomplete records; the model collector,
+component/full-model and quality runs remain unimplemented/unexecuted. No old failure
+becomes a pass. Next implement and validate the remaining collector/bound/state checks
+before another model run, rather than trace another projection or choose thresholds
+from the failed logits. A numerical/quality pass would authorize private performance
+measurement, not automatic selection or
+quality-equivalent serving claims.
 The [shared-grant recovery gate](../benchmarks/gemma4-cuda-baseline.md#shared-grant-allocation-and-recovery-gate-2026-10-26)
 now qualifies real partial cache-allocation failure, healthy-peer preservation, charge
 retention for cancelled accepted submissions and subsequent reuse through the native Engine.
