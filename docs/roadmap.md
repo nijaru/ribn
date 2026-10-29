@@ -117,9 +117,13 @@ incomplete records and uncertain bounds. The checker certifies 110592 retained
 PLE/Q/K/V outputs against their own operands, not a full-model error budget. The
 expanded exact-integer component gate passes on RTX 4090: all 13 geometries at rows
 1/4, including the tied vocabulary head, with legacy non-head 8/16 coverage retained.
-The model collector, continuation-state checks, actual-head capture and full-model/quality
-runs remain pending. No old failure becomes a pass. Next implement and validate the
-remaining collector/state checks before another model run, rather than choose
+A separate [native routing fixture gate](../benchmarks/gemma4-cuda-baseline.md#native-routing-component-gate-2026-10-29)
+passes mixed prefixes, reversed rows, real owner/shared-tail boundaries and exact
+scalar-attention replay. Four deliberately wrong append/donor/gather/scatter variants
+fail at their expected assertions. This is not actual-model state or executor evidence.
+The model collector, actual continuation-state observations, head capture, full-model
+and quality runs remain pending. No old failure becomes a pass. Next wire and validate the
+bounded actual-model collector before another model run, rather than choose
 thresholds from the failed logits. A numerical/quality pass would authorize private performance
 measurement, not automatic selection or
 quality-equivalent serving claims.

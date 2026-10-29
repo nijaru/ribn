@@ -1448,6 +1448,49 @@ hashes. Source, binary, fixed deadline, controller and raw receipts are retained
 This qualifies the synthetic component scope, not actual head operands, continuation
 routing, model quality or four-row automatic selection.
 
+### Native routing component gate (2026-10-29)
+
+A separate no-model-weight device gate exercises the private prototype's actual
+`CacheRouting::Independent`, not a host simulation. It uses the pinned E4B configuration,
+local/global head widths 256/512, eight query heads, two KV heads and 42 cache slots.
+Owner/tail pairs 22→24 and 23→29 use the model's real sharing boundaries; distinct
+populated donor slots 0/5 expose wrong-donor reads. The fixed prefix groups and reversed
+row order from the continuation deck below run against 4096-position native caches.
+
+All **48 routing calls and 192 same-operand scalar replays pass bit-exactly** on RTX 4090.
+Each initialized K/V prefix matches the declared history plus that sequence's own new
+rows. The alternate donor stays unchanged and uninitialized tails stay unreadable.
+Every attended/scattered row matches qualified scalar attention on its own query,
+cache and absolute span; the final gathered query is also read back exactly. Poisoned
+unused K/V inputs on the shared-tail call must not be appended. Readback chunks are
+bounded to 1 MiB; the positive run returns its 256 MiB logical pool to zero.
+
+Four separately built, single-change counterexamples are detected on device: copying
+the wrong sequence's appended value, reading the alternate shared-tail donor, gathering
+row zero for every query, and scattering every result to row zero. Each exits 101 at
+the predeclared cache-value or scalar-replay/scatter assertion, not a compiler/driver
+error. The original route exits zero. All five owned process groups disappear without
+forced cleanup; no compute process remains. CUDA 13.3, NVRTC 13.3.33 and driver 615.71.10
+libraries are frozen and checked. Sources, configuration, mutations, targets, binaries,
+fixed deadline and raw positive/negative receipts are retained under
+`gemma4-cuda-routing/20261029T051810Z`; positive binary SHA256 is
+`e048c1c53ae5cfdebe1c6c3578092779e0a6fbdd3c5b783fe7e185b58f9382ef`.
+
+A separately frozen retained-row run adds explicit shape/finiteness evidence rather
+than relying on byte equality alone. It preserves all **192 actual/scalar row pairs**;
+an independent reader verifies complete ordered headers, exact shapes, bit equality
+and finiteness of all **589824 BF16 elements per side**. The 2363912-byte capture
+and source/binary/host-verifier receipts are retained at
+`gemma4-cuda-routing-capture/20261029T055507Z` (capture SHA256
+`24af4be8bca492b46803e75c38be8c6d003246cc33611b95c22ea75add4ac454`).
+The raw-output bound is 3 MiB. This changes only the private fixture's observation and
+validation, not the routing algorithm or prior experiment's recorded scope.
+
+This qualifies these native routing fixtures and their failure detection, **not**
+actual-model continuation state, invalid-row atomicity, executor/text selection,
+request retirement, numerical quality or serving performance. It does not promote the
+private prototype or replace the full-model collector and gates below.
+
 ### Full-model and continuation gate
 
 Use a fresh public serial control, not two paths through a refactored candidate.
@@ -1588,11 +1631,14 @@ answers, corpus mutation and non-overwrite behavior.
 
 ### Advancement and remaining work
 
-The scorer and encoded-operand bound checker are host-tested, and the expanded
-synthetic component-device gate passes. The new model collector and continuation-state
-checks are still pending; full-model, actual-head and quality runs remain **unexecuted**.
-Before the next experiment, validate scorer/routing failure detection and freeze its
-sources, complete input deck, finite campaign budget and stop conditions. Compare
+The scorer and encoded-operand bound checker are host-tested. The expanded synthetic
+GEMM gate and native routing fixtures pass, including explicit routing-fault controls.
+The actual-model collector and continuation-state observations are still pending;
+full-model, actual-head and quality runs remain **unexecuted**.
+Before the next model experiment, finish actual-boundary collection and shared-operand
+checks for unchanged operations, then freeze its sources, complete input deck, finite
+campaign budget and stop conditions. Retain the validated scorer/routing fault controls;
+rerun them when their affected inputs or implementation change. Compare
 scorer results with the pinned evaluator on every retained answer/alias. Preserve
 all old failures. A new verdict must name this contract and cannot rewrite the old
 bit-equality rejection; do not restart an unchanged failed cohort or fit a threshold
@@ -1602,5 +1648,5 @@ Passing all these gates permits a **private performance experiment only**. Promo
 still requires bounded repeated end-to-end benefit, actual HTTP/mixed-arrival selection,
 cancellation, partial-enqueue/failed-drain retirement, pressure and fallback evidence.
 The 128-question lexical screen does not qualify broad quality-equivalent serving,
-sampling or a full-distribution error budget. No production source, precision policy,
-automatic selection or prior qualification changes in this contract-preparation phase.
+sampling or a full-distribution error budget. These prerequisite gates change no
+production behavior, precision policy, automatic selection or prior full-model verdict.
