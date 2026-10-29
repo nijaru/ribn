@@ -1,6 +1,6 @@
 //! Adversarial work crosses the real Gemma executor and CPU decoder boundary.
 use super::*;
-use crate::{Gemma4CpuDecoder, Gemma4CpuWeights};
+use crate::{Gemma4CpuDecoder, Gemma4CpuWeights, weight_fixtures as weights};
 use ribn::{Engine, Event, GenerationOptions, RequestId, StepKind};
 use ribn_foundation::{BytePool, PoolLease};
 use std::sync::{
@@ -9,8 +9,6 @@ use std::sync::{
 };
 
 mod retirement;
-#[path = "../../tests/common/weights.rs"]
-mod weights;
 
 #[derive(Default)]
 enum Completion {

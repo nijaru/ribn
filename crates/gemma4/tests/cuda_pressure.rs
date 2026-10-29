@@ -2,7 +2,7 @@
 #![cfg(feature = "cuda")]
 
 use cudarc::driver::CudaContext;
-use engine_gemma4::{Gemma4CpuWeights, Gemma4CudaModel, Gemma4Executor, Gemma4Source};
+use engine_gemma4::{Gemma4CudaModel, Gemma4Executor, Gemma4Source};
 use ribn::{
     Engine, EngineConfig, Event, FinishReason, GenerationOptions, RequestId, SchedulePolicy,
     TokenRequest, Usage,
@@ -113,8 +113,7 @@ fn fixture() -> Fixture {
         .map(|step| u32::try_from(step["chosen"].as_u64().unwrap()).unwrap())
         .collect();
     assert_eq!(expected.len(), 4);
-    let host = Gemma4CpuWeights::load(&source).unwrap();
-    let config = host.config();
+    let config = source.config();
     let capacity = 4096;
     // Only KV-owning layers allocate storage; donor layers share those caches.
     let key_bytes =
@@ -129,7 +128,7 @@ fn fixture() -> Fixture {
     let first_key_bytes = key_bytes(config.layers()[0].head_dim);
     let pool = BytePool::new(20_u64 << 30).shared();
     let stream = CudaContext::new(0).unwrap().new_stream().unwrap();
-    let model = Gemma4CudaModel::load(&source, host, stream, &pool, capacity, 1 << 20).unwrap();
+    let model = Gemma4CudaModel::load(&source, stream, &pool, capacity, 1 << 20).unwrap();
     assert_eq!(model.prefill_rows(), 16);
     let model = Arc::new(Mutex::new(model));
     let engine = Engine::new(

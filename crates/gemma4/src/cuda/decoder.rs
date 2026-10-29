@@ -8,11 +8,11 @@
 //! through completion-owned device copies. Execution remains synchronous and
 //! greedy-only; this is not a competitive serving claim.
 
-use super::Gemma4CudaWeights;
+use super::{Gemma4CudaWeights, host::HostLookups};
 use crate::cpu::CpuParameter;
 use crate::{
-    AttentionKind, Gemma4Config, Gemma4CpuWeights, Gemma4Error, Gemma4Source, LayerGeometry,
-    LayerParameter, ParameterId,
+    AttentionKind, Gemma4Config, Gemma4Error, Gemma4Source, LayerGeometry, LayerParameter,
+    ParameterId,
 };
 use cudarc::driver::CudaStream;
 use engine_nvidia::{
@@ -41,9 +41,9 @@ struct Executors {
     attention: CudaBf16Attention,
 }
 
-/// Host inventory plus one device weight set, executors and reusable buffers.
+/// Host lookup tables plus one device weight set, executors and reusable buffers.
 pub struct Gemma4CudaModel {
-    host: Arc<Gemma4CpuWeights>,
+    host: HostLookups,
     cuda: Gemma4CudaWeights,
     executors: Executors,
     buffers: Buffers,
@@ -65,18 +65,18 @@ impl Gemma4CudaModel {
     /// whose storage could not be retired.
     pub fn load(
         source: &Gemma4Source,
-        host: Gemma4CpuWeights,
         stream: Arc<CudaStream>,
         pool: &Arc<BytePool>,
         max_positions: usize,
         scratch_entries: usize,
     ) -> Result<Self, Gemma4Error> {
-        let config = host.config().clone();
+        let config = source.config();
         let device = stream
             .context()
             .name()
             .map_err(|error| Gemma4Error::new("CUDA decoder preparation", error.to_string()))?;
-        let prepared = preparation::prepare(&config, max_positions, scratch_entries, &device)?;
+        let prepared = preparation::prepare(config, max_positions, scratch_entries, &device)?;
+        let host = HostLookups::load(source)?;
         let cuda = match Gemma4CudaWeights::load(source, Arc::clone(&stream), pool, WEIGHT_STAGING)
         {
             Ok(cuda) => cuda,
@@ -100,11 +100,11 @@ impl Gemma4CudaModel {
             attention: CudaBf16Attention::new(Arc::clone(&stream), pool, prepared.scratch_entries)
                 .map_err(|e| backend(&e))?,
         };
-        let buffers = Buffers::new(&config, 1, &stream, pool)?;
+        let buffers = Buffers::new(config, 1, &stream, pool)?;
         let mut prefill = Vec::with_capacity(PREFILL_LANES.len());
         for rows in PREFILL_LANES {
             if rows <= prepared.rows {
-                prefill.push(Buffers::new(&config, rows, &stream, pool)?);
+                prefill.push(Buffers::new(config, rows, &stream, pool)?);
             }
         }
         let mut factors = Vec::with_capacity(config.layers().len());
@@ -119,7 +119,7 @@ impl Gemma4CudaModel {
             );
         }
         Ok(Self {
-            host: Arc::new(host),
+            host,
             cuda,
             executors,
             buffers,
@@ -135,7 +135,14 @@ impl Gemma4CudaModel {
 
     #[must_use]
     pub fn config(&self) -> &Gemma4Config {
-        self.host.config()
+        &self.host.config
+    }
+
+    /// BF16 payload retained for host embedding lookups and layer scalars.
+    /// Excludes metadata, transient buffers, device storage and process RSS.
+    #[must_use]
+    pub fn host_lookup_bytes(&self) -> usize {
+        self.host.bytes()
     }
 
     #[must_use]
@@ -210,7 +217,7 @@ impl Gemma4CudaModel {
                 let rows = batch.hidden.shape().0;
                 while tokens.len() - offset >= rows {
                     run_rows(
-                        host.config(),
+                        &host.config,
                         host,
                         cuda,
                         executors,
@@ -223,12 +230,12 @@ impl Gemma4CudaModel {
                     offset += rows;
                 }
                 if offset == tokens.len() {
-                    return project_logits(host.config(), cuda, executors, batch);
+                    return project_logits(&host.config, cuda, executors, batch);
                 }
             }
             for (relative, token) in tokens[offset..].iter().enumerate() {
                 run_rows(
-                    host.config(),
+                    &host.config,
                     host,
                     cuda,
                     executors,
@@ -239,7 +246,7 @@ impl Gemma4CudaModel {
                     std::slice::from_ref(token),
                 )?;
             }
-            project_logits(host.config(), cuda, executors, buffers)
+            project_logits(&host.config, cuda, executors, buffers)
         })();
         match result {
             Ok(logits) => Ok(logits),
@@ -346,7 +353,7 @@ impl Gemma4CudaDecoder {
 )]
 fn run_rows(
     config: &Gemma4Config,
-    host: &Gemma4CpuWeights,
+    host: &HostLookups,
     cuda: &mut Gemma4CudaWeights,
     executors: &mut Executors,
     buffers: &mut Buffers,
@@ -374,8 +381,8 @@ fn run_rows(
     let ple = config.ple_dim();
     let packed = config.packed_ple_dim();
 
-    let embedding = parameter(host, ParameterId::TokenEmbedding)?;
-    let ple_embedding = parameter(host, ParameterId::PleEmbedding)?;
+    let embedding = &host.token_embedding;
+    let ple_embedding = &host.ple_embedding;
     let rows = tokens.len();
     let positions: Vec<u32> = (position..position + rows)
         .map(|value| {
@@ -493,7 +500,7 @@ fn project_logits(
 )]
 fn layer_forward(
     config: &Gemma4Config,
-    host: &Gemma4CpuWeights,
+    host: &HostLookups,
     cuda: &mut Gemma4CudaWeights,
     executors: &mut Executors,
     factors: &mut [CudaBf16RotaryFactors],
@@ -682,10 +689,7 @@ fn layer_forward(
         &mut buffers.post_ple,
     )?;
     elementwise.add_into(hidden, &buffers.post_ple, hidden_next)?;
-    let scalar = host
-        .layer(layer, LayerParameter::LayerScalar)
-        .map_err(|_| CudaBf16Error::Invalid("missing layer scalar"))?;
-    elementwise.scale_into(hidden_next, load(scalar.values()[0]), hidden)?;
+    elementwise.scale_into(hidden_next, load(host.layer_scalars[layer]), hidden)?;
     Ok(())
 }
 
@@ -715,11 +719,6 @@ fn scales(config: &Gemma4Config) -> Scale {
 
 fn layer_id(layer: usize, parameter: LayerParameter) -> ParameterId {
     ParameterId::Layer { layer, parameter }
-}
-
-fn parameter(host: &Gemma4CpuWeights, id: ParameterId) -> Result<&CpuParameter, CudaBf16Error> {
-    host.parameter(id)
-        .ok_or(CudaBf16Error::Invalid("missing active model parameter"))
 }
 
 fn row(parameter: &CpuParameter, token: u32) -> Result<&[u16], CudaBf16Error> {

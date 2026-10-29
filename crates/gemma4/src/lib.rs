@@ -27,6 +27,10 @@ mod source;
 mod text_decode;
 pub mod vision;
 
+#[cfg(test)]
+#[path = "../tests/common/weights.rs"]
+mod weight_fixtures;
+
 pub use config::{AttentionKind, Gemma4Config, LayerGeometry, Rope};
 pub use continuation::{AttentionSpan, KvOwnerStep, KvStep, RetainedSpan};
 mod executor;

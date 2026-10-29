@@ -1,8 +1,6 @@
 //! Ordinary package loading for the Gemma 4 executors.
 
 use crate::{GemmaProcessor, ProcessorLimits, TextConfig, TextError, TextOwner};
-#[cfg(feature = "cuda")]
-use engine_gemma4::Gemma4CpuWeights;
 use engine_gemma4::{Gemma4Executor, Gemma4Source};
 use ribn::Engine;
 use ribn::driver::{Driver, DriverConfig};
@@ -65,14 +63,12 @@ impl TextOwner {
     ) -> Result<(Self, GemmaLoadReport), TextError> {
         let package = LocalModelPackage::open(path).map_err(TextError::processor)?;
         let source = Gemma4Source::open(&package).map_err(TextError::processor)?;
-        let host = Gemma4CpuWeights::load(&source).map_err(TextError::processor)?;
-        let model_bytes = host.bytes();
+        let model_bytes = u64::try_from(source.encoded_bytes()).map_err(TextError::processor)?;
         let context = cudarc::driver::CudaContext::new(0).map_err(TextError::processor)?;
         let stream = context.new_stream().map_err(TextError::processor)?;
         let pool = ribn_foundation::BytePool::new(CUDA_POOL_BYTES).shared();
         let model = engine_gemma4::Gemma4CudaModel::load(
             &source,
-            host,
             stream,
             &pool,
             CUDA_MAX_POSITIONS,

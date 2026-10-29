@@ -2,9 +2,7 @@
 #![cfg(feature = "cuda")]
 
 use cudarc::driver::CudaContext;
-use engine_gemma4::{
-    Gemma4Config, Gemma4CpuWeights, Gemma4CudaModel, Gemma4Executor, Gemma4Source,
-};
+use engine_gemma4::{Gemma4Config, Gemma4CudaModel, Gemma4Executor, Gemma4Source};
 use ribn::driver::{Driver, DriverConfig};
 use ribn::{Engine, EngineConfig, FinishReason, GenerationOptions, SchedulePolicy};
 use ribn_foundation::BytePool;
@@ -53,12 +51,11 @@ fn cuda_text_facade_reproduces_the_archived_greedy_tokens() {
         .map(|step| u32::try_from(step["chosen"].as_u64().unwrap()).unwrap())
         .collect();
 
-    let host = Gemma4CpuWeights::load(&source).unwrap();
-    assert_eq!(host.config(), &config);
+    assert_eq!(source.config(), &config);
     let stream = CudaContext::new(0).unwrap().new_stream().unwrap();
     let pool = BytePool::new(20_u64 << 30).shared();
     let scratch = 32 * config.num_attention_heads() * 16;
-    let model = Gemma4CudaModel::load(&source, host, stream, &pool, 32, scratch).unwrap();
+    let model = Gemma4CudaModel::load(&source, stream, &pool, 32, scratch).unwrap();
     assert_eq!(model.prefill_rows(), 16, "qualified RTX 4090/E4B prefill");
     let model = Arc::new(Mutex::new(model));
     let executor = Gemma4Executor::cuda(&model).expect("CUDA executor");

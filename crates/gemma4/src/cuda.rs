@@ -1,6 +1,7 @@
 //! Model-owned BF16 materialization, compute bindings and the CUDA decoder.
 
 mod decoder;
+mod host;
 mod linear;
 mod norm;
 

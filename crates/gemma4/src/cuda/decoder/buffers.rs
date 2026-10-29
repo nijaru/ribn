@@ -255,7 +255,7 @@ impl super::Gemma4CudaModel {
             cache_retirement
                 .as_mut()
                 .expect("construction owner installed before allocation")
-                .build(host.config(), *max_positions, stream, pool)
+                .build(&host.config, *max_positions, stream, pool)
         };
         if let Err(error) = result {
             // Do not discard partial keys/layers even if their cleanup also fails.

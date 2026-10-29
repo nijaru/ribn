@@ -153,9 +153,16 @@ Its only complete pair preserves all 392 whole outputs, but c4/mixed8 throughput
 are only 0.46%/1.41%, with just 2.55%/8.37% of decode predictions using M4. The completed
 second candidate remains unpaired; later repetitions and the three-pair summary stay
 unrun. Preserve the failed process and all partial evidence, without filling or retrying
-that cohort. A new experiment needs an evidenced change to host capacity/isolation,
-then fresh sources, targets, deck, finite budget and absolute cutoff. No repeated-benefit
-or variability verdict exists. Retain the HTTP/mixed-arrival selection, cancellation,
+that cohort. The [CUDA host-lookup capacity change](../benchmarks/gemma4-cuda-baseline.md#cuda-host-lookup-capacity-qualification-2026-10-29)
+now removes 7,946,704,896 bytes of unnecessary retained CPU weights (53.24%): only token/PLE
+lookup tables and layer scalars remain on the host. All 160 full vocabulary rows remain
+bit-identical to the archived public scalar control; seven real CUDA tests and ordinary
+CLI loading pass below a frozen 10 GiB observed-RSS screen. This supplies an evidenced
+capacity reduction, not host isolation, a matched old/new RSS comparison or M4 performance
+acceptance. A new performance scope must rebase its private constructor callers, qualify
+that changed source and freeze resource preconditions, sources, targets, deck, budget
+and absolute cutoff afresh. No repeated-benefit or variability verdict exists. Retain
+the HTTP/mixed-arrival selection, cancellation,
 failed-drain, pressure, fallback and uninstrumented-performance gates before promotion.
 No automatic selection, full-model acceptance or quality-equivalent serving claim follows.
 The [shared-grant recovery gate](../benchmarks/gemma4-cuda-baseline.md#shared-grant-allocation-and-recovery-gate-2026-10-26)

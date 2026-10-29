@@ -2,8 +2,7 @@
 #![cfg(feature = "cuda")]
 use cudarc::driver::CudaContext;
 use engine_gemma4::{
-    Gemma4Config, Gemma4CpuWeights, Gemma4CudaDecoder, Gemma4CudaModel, Gemma4Source, GemmaDecode,
-    argmax,
+    Gemma4Config, Gemma4CudaDecoder, Gemma4CudaModel, Gemma4Source, GemmaDecode, argmax,
 };
 use engine_nvidia::CudaBf16Matrix;
 use ribn_foundation::{BytePool, ReserveError};
@@ -57,13 +56,12 @@ fn cuda_decoder_reproduces_the_archived_greedy_tokens() {
     assert_eq!(steps.len(), 4);
 
     let source = Gemma4Source::open(&package).unwrap();
-    let host = Gemma4CpuWeights::load(&source).unwrap();
-    assert_eq!(host.config(), &config);
+    assert_eq!(source.config(), &config);
     let context = CudaContext::new(0).unwrap();
     let stream = context.new_stream().unwrap();
     let pool = BytePool::new(20_u64 << 30).shared();
     let started = Instant::now();
-    let model = Gemma4CudaModel::load(&source, host, stream, &pool, 32, 512).expect("CUDA model");
+    let model = Gemma4CudaModel::load(&source, stream, &pool, 32, 512).expect("CUDA model");
     assert_eq!(model.prefill_rows(), 1, "scalar bitwise control");
     let model = Arc::new(Mutex::new(model));
     let mut decoder = Gemma4CudaDecoder::shared(&model).unwrap();
@@ -129,10 +127,9 @@ fn cuda_decoder_reproduces_archived_window_boundary_continuations() {
     let config = source.config().clone();
     let capacity = config.sliding_window().checked_add(4).unwrap();
     let scratch = capacity.checked_mul(config.num_attention_heads()).unwrap() * 8;
-    let host = Gemma4CpuWeights::load(&source).unwrap();
     let stream = CudaContext::new(0).unwrap().new_stream().unwrap();
     let pool = BytePool::new(20_u64 << 30).shared();
-    let model = Gemma4CudaModel::load(&source, host, stream, &pool, capacity, scratch).unwrap();
+    let model = Gemma4CudaModel::load(&source, stream, &pool, capacity, scratch).unwrap();
     assert_eq!(
         model.prefill_rows(),
         8,
@@ -208,12 +205,11 @@ fn cuda_decoder_reproduces_archived_window_boundary_continuations() {
 fn cuda_partial_cache_construction_retires_allocations_before_refund() {
     let package = LocalModelPackage::open(environment("RIBN_GEMMA_PACKAGE")).unwrap();
     let source = Gemma4Source::open(&package).unwrap();
-    let host = Gemma4CpuWeights::load(&source).unwrap();
-    let config = host.config().clone();
+    let config = source.config().clone();
     let stream = CudaContext::new(0).unwrap().new_stream().unwrap();
     let pool = BytePool::new(20_u64 << 30).shared();
     let model = Arc::new(Mutex::new(
-        Gemma4CudaModel::load(&source, host, Arc::clone(&stream), &pool, 32, 4096).unwrap(),
+        Gemma4CudaModel::load(&source, Arc::clone(&stream), &pool, 32, 4096).unwrap(),
     ));
     assert_eq!(model.lock().unwrap().prefill_rows(), 16);
     let baseline = pool.available();

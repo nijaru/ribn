@@ -168,6 +168,9 @@ A host-orchestrated CUDA decoder now binds the components, keeps KV owner caches
 device-resident and reproduces the archived greedy chat tokens through the engine, the
 text facade and `ribn run-gemma` (CUDA or Metal). Completion-owned device copies append
 K/V without a host round trip; initialized-row prefixes bound cache reads and attention.
+The decoder materializes only host token/PLE lookup tables and layer scalars from that
+same validated source, not a full CPU inventory alongside device projections/norms.
+See the [host-capacity qualification](../benchmarks/gemma4-cuda-baseline.md#cuda-host-lookup-capacity-qualification-2026-10-29).
 Decode remains synchronous and one token at a time. Qualified RTX 4090/E4B preparation
 selects the largest feasible sixteen/eight-row prefill width through 4096 positions,
 with eight/scalar fallbacks, preallocated working sets and maximum-reach scratch.

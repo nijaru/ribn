@@ -2,9 +2,7 @@
 #![cfg(feature = "cuda")]
 
 use cudarc::driver::{CudaContext, sys};
-use engine_gemma4::{
-    Gemma4Config, Gemma4CpuWeights, Gemma4CudaModel, Gemma4Executor, Gemma4Source,
-};
+use engine_gemma4::{Gemma4Config, Gemma4CudaModel, Gemma4Executor, Gemma4Source};
 use ribn::{
     Engine, EngineError, Event, FinishReason, GenerationExecutor, GenerationOptions, TokenRequest,
 };
@@ -54,13 +52,12 @@ fn cuda_executor_reproduces_the_archived_tokens_through_the_engine() {
         .collect();
     assert_eq!(expected.len(), 4);
 
-    let host = Gemma4CpuWeights::load(&source).unwrap();
-    assert_eq!(host.config(), &config);
+    assert_eq!(source.config(), &config);
     let context = cudarc::driver::CudaContext::new(0).unwrap();
     let stream = context.new_stream().unwrap();
     let pool = BytePool::new(20_u64 << 30).shared();
     let scratch = 32 * config.num_attention_heads() * 16;
-    let model = Gemma4CudaModel::load(&source, host, stream, &pool, 32, scratch).unwrap();
+    let model = Gemma4CudaModel::load(&source, stream, &pool, 32, scratch).unwrap();
     assert_eq!(model.prefill_rows(), 16, "qualified RTX 4090/E4B prefill");
     let model = Arc::new(Mutex::new(model));
     let executor = Gemma4Executor::cuda(&model).expect("CUDA executor");
@@ -116,11 +113,10 @@ fn cuda_executor_reproduces_the_archived_tokens_through_the_engine() {
 fn cuda_failed_drain_keeps_owners_until_capture_ends() {
     let package = LocalModelPackage::open(environment("RIBN_GEMMA_PACKAGE")).unwrap();
     let source = Gemma4Source::open(&package).unwrap();
-    let host = Gemma4CpuWeights::load(&source).unwrap();
     let stream = CudaContext::new(0).unwrap().new_stream().unwrap();
     let pool = BytePool::new(20_u64 << 30).shared();
     let model = Arc::new(Mutex::new(
-        Gemma4CudaModel::load(&source, host, Arc::clone(&stream), &pool, 32, 4096).unwrap(),
+        Gemma4CudaModel::load(&source, Arc::clone(&stream), &pool, 32, 4096).unwrap(),
     ));
     assert_eq!(model.lock().unwrap().prefill_rows(), 16);
     let model_charge = pool.granted();

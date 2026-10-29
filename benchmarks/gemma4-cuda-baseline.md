@@ -151,7 +151,9 @@ lower peaks than the run that also captured 12 quality rows. Native prepared RSS
 about 14.30 GiB in two sampled processes; stock post-upload RSS was about 0.88–0.89 GiB,
 with CPU peak RSS near 14.8 GiB. Native retains its CPU text inventory; stock releases
 CPU text parameters after upload. Compiled-run RSS reached about 2.75–2.78 GiB after
-execution. RSS is not CUDA allocation or a hard memory grant.
+execution. RSS is not CUDA allocation or a hard memory grant. These measurements
+predate the [host-lookup capacity change](#cuda-host-lookup-capacity-qualification-2026-10-29);
+the old timing/RSS comparison is not rerun or relabeled.
 
 Dropping only `model` while retaining the compiled callable left its captured model
 allocations live in the initial probe. Dropping the callable and resetting Dynamo before
@@ -1926,6 +1928,93 @@ needs a changed, evidenced host-capacity/isolation precondition and a new freeze
 not an unchanged retry. Instrumented facade timings do not qualify HTTP serving,
 uninstrumented production performance, incumbent parity or automatic selection.
 
+### CUDA host-lookup capacity qualification (2026-10-29)
+
+**The CUDA decoder now retains only its two host lookup tables and layer scalars,
+not a complete CPU weight inventory.** The model constructor materializes these from
+its validated `Gemma4Source`; the ordinary text/CLI loader no longer loads
+`Gemma4CpuWeights`. Device weights, kernels, arithmetic, prefill selection and runtime
+policies are unchanged. This is a host-capacity prerequisite, not another M4 performance
+campaign or a claim that unrelated host processes cannot cause an OOM.
+
+For the pinned E4B package, independently summed SafeTensors extents agree with the
+model's retained-payload report:
+
+| Host BF16 payload | Bytes | GiB |
+| --- | ---: | ---: |
+| Former complete active CPU inventory | 14,926,026,836 | 13.90095 |
+| Token table, PLE table and 42 scalars | 6,979,321,940 | 6.50000 |
+| Removed projection/norm payload | 7,946,704,896 | 7.40095 |
+
+That removes **53.24% of retained host weight payload**, not 53.24% of process RSS.
+The token/PLE shapes remain `[262144,2560]` and `[262144,10752]`. Metadata, source
+readers, staging, allocator overhead and device storage are outside this payload
+count. `GemmaLoadReport.model_bytes` still reports the complete logical active payload;
+`Gemma4CudaModel::host_lookup_bytes()` reports the retained host subset.
+
+The separately frozen capacity scope passes these checks on the same RTX 4090 and
+package, without keeping an external full CPU inventory alive:
+
+- All **160 complete, finite 262144-element BF16 rows** across the existing 13-cohort
+  [common-history deck](#actual-model-prerequisite-results-2026-10-29) are bit-identical
+  to the archived public scalar control: 41,943,040 elements, no fitted tolerance.
+  This includes window boundaries, 4092–4095-token histories, reordered continuation
+  owners and widths one through four; it does not select private M4 execution.
+- All seven existing ignored CUDA tests run and pass: three decoder cases cover
+  scalar/eight/sixteen-row preparation and partial-cache retirement; two executor cases
+  cover real Engine delivery and failed-drain ownership; text and allocation-pressure
+  cases cover facade delivery, healthy peers, cancellation charges and reuse.
+- The fresh `ribn run-gemma` binary exercises ordinary package loading and returns
+  `A mutex (short` for the archived four-token chat. Logical device materialization
+  remains 14,946,887,968 bytes in the direct-model control; all 13 cohorts return to
+  baseline and final device grants are zero.
+- Observed whole-owned-group RSS peaks range from 7.71 to 7.84 GB. The largest sampled
+  child process high-water RSS is **8,038,342,656 bytes (7.48629 GiB)**. Both measurements
+  stay below the predeclared absolute 10 GiB screen. These are sampled process
+  observations, not a matched old/new RSS comparison, physical VRAM peaks or a new
+  aggregate host-memory reservation guarantee.
+- All 13 actual forward-time pre/post mapped DSOs match the archived control.
+  Initialization/last-live child maps match their pre-frozen installed-library hashes;
+  last-live samples are not post-exit maps. Source, actual binaries and all nine
+  package pins remain stable through closure.
+
+Host format, workspace tests, default/CUDA all-target clippy and CUDA-feature release
+library tests pass; the latter run 15 tests with three corpus-dependent vision cases
+ignored. The new host-only test checks every lookup/scalar bit and the exact 250-byte
+fixture payload against a complete CPU inventory, including sharded/unsharded retained
+readers after package paths are replaced. Existing executor tests share that fixture
+module rather than loading it twice. Metal-feature clippy and Metal device qualification
+are not rerun for this CUDA-only change.
+
+The failed host packets remain under `gemma4-host-lookups-check/20261029T153500Z`
+(prelaunch formatter-command contract error; no Cargo/model execution) and
+`20261029T153800Z` (duplicate fixture-module clippy error; later stage unrun).
+The corrected source passes all five host stages in `20261029T154000Z`.
+The first device scope, `gemma4-host-lookups-device/20261029T160300Z`, stops when its
+new observer rejects an initial mapped-library identity. It retains zero logit rows;
+the observer failed before saving that map, so the specific path/hash cause cannot
+be recovered. Its verified owned group is forcibly retired, the GPU is empty, and
+all later stages remain unrun. No final model retirement/grant result is inferred.
+A changed observer persists identities before checking and the new inventory also
+pins installed system loader modules; this repairs the evidence gap without claiming
+to identify the earlier mismatch.
+
+The new frozen source/target scope `gemma4-host-lookups-device/20261029T161100Z`
+passes all ten stages, closing at **16:21:15 UTC before the unchanged 18:00 cutoff**.
+Build budgets are 600 seconds, library/audit budgets 300 and each serialized device
+stage 900, all for whole owned groups with independent watchdogs. All worker/watchdog
+groups are absent without forced cleanup in this successful scope; 196 independently
+supervised query checks pass, and the GPU is idle at 33 MiB with no compute PID.
+Every failed/partial scope, source, target, binary and raw result remains intact;
+no missing sample is filled and neither main binary is changed. Source manifest SHA256:
+`b41c16547cd1769a5bfb810b10af7044175353d7214ccba57d72591a97f9f0d0`.
+Direct-model/ordinary CLI binary SHA256:
+`f05399f45daa0c6a6718cdff9a9e0801d12ca98daa00388d8ff345243292f678` /
+`ea5b95246c5ed142e732f7ccc3be006494868807589ee1d25be0e41b4d805704`.
+Independent verification SHA256:
+`ba7edad023afeccb9bbe36bc6fdfac476326a6f3cdba1388d5aa72266e46b237`.
+The interrupted performance cohort remains closed and unqualified.
+
 ### Advancement and remaining work
 
 The scorer, component bounds, routing fixtures, actual-model prerequisites,
@@ -1942,10 +2031,14 @@ an unchanged failed cohort or fit a threshold to its output.
 
 Passing these prerequisite gates permits **private performance experiments only**.
 The first attempt above is incomplete after a host OOM; its one complete pair does
-not establish repeated benefit. Resolve the host-capacity/isolation blocker before
-freezing another experiment, without retrying or filling this closed cohort. Promotion
-still requires bounded repeated end-to-end benefit, actual HTTP/mixed-arrival selection,
+not establish repeated benefit. The host-lookup change now supplies an evidenced
+capacity reduction with exact unchanged public-scalar logits. It does not establish
+host isolation or complete the performance gate. Any new performance scope must rebase
+its private constructor callers, qualify the changed source and freeze resource
+preconditions afresh, without retrying or filling the closed cohort. Promotion still
+requires bounded repeated end-to-end benefit, actual HTTP/mixed-arrival selection,
 cancellation, partial-enqueue/failed-drain retirement, pressure and fallback evidence.
 The 128-question lexical screen does not qualify broad quality-equivalent serving,
-sampling or a full-distribution error budget. These prerequisite gates change no
-production behavior, precision policy, automatic selection or prior full-model verdict.
+sampling or a full-distribution error budget. The host-lookup change affects public
+CUDA loading and retention only; neither it nor the passed prerequisites promotes M4,
+changes precision policy or revises a prior full-model verdict.
