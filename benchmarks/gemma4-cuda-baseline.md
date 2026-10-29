@@ -1830,6 +1830,102 @@ This is one declared, observed concurrent-caller qualification workload, not a c
 of universal batching, uninstrumented timing or serving performance. No failed scope
 is retried or relabeled.
 
+### Private reordered-decode performance interruption (2026-10-29)
+
+**The first three-pair campaign stops on a host OOM during pair two. Performance
+advancement remains unqualified; no missing repetition is replaced or inferred.**
+Both sources reuse the qualified model arithmetic and observations: public serial
+versus the original private M4 candidate, with complete vocabulary-row validation
+before argmax. The new private harness uses the real text facade, one execution owner
+at a time, default Engine/Driver scheduling, one preprocessing worker and window four.
+There is no execution or prefill barrier. Sources, complete deck, isolated targets,
+budgets and a 17:00 UTC cutoff are frozen before execution. The planned process order
+is serial/candidate, candidate/serial, serial/candidate, with a fresh loaded model
+per process and fresh sequential owners for these profiles:
+
+- Four archived chat requests warm the process; their timings are excluded.
+- All 128 frozen QA inputs run at c1, c4 and eight closed-loop clients, unchanged
+  greedy cap 64 and package EOS. No question is selected using known output.
+- Eight-client initial delays are `[0,10,30,60,0,20,80,140]` ms; per-client think
+  times are `[0,5,15,30,0,10,25,50]` ms. Requests are assigned by index modulo client
+  count. Response feedback changes actual arrivals; this is not an identical open-loop trace.
+- Four accepted synthetic prompts repeat the archived chat IDs to lengths 4092–4095,
+  with caps 4/3/2/1 and initial delays 0/20/40/60 ms. They have no semantic labels.
+  This exercises near-limit residency, not physical OOM or eviction recovery.
+
+Throughput counts actual completion usage **including suppressed EOS**, divided by
+client-thread launch through all stream drains and owner shutdown. It includes planned
+think times, but excludes model/processor construction and JSON export. First/last
+content clocks measure actual nonempty text from request start; empty content retains
+null clocks and fails the joint 1000/5000 ms diagnostic deadlines. These are not product
+SLOs. Percentiles use nearest rank `ceil(0.95*n)` over nonempty content, with empty
+counts retained. The predeclared screen requires median paired throughput gains of
+at least 5% at c4 and mixed8, c1 throughput regression at most 5%, and at most 5%
+median paired p95 first/last-content regression with no paired deadline-pass loss
+across the QA profiles. Actual M4 selection must occur in each c4/mixed8 repetition.
+
+The **only complete pair**, pair zero, matches all 392 whole generated-ID sequences,
+texts, usage and finish reasons. Each QA profile produces 1227 IDs including EOS and
+checks 2808 complete vocabulary rows. Its instrumented results are descriptive only:
+
+| QA profile | Output tokens/s, serial → candidate | First-content p95, seconds | Last-content p95, seconds | Joint passes, both / 128 | Candidate M4 calls |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| c1 | 17.728 → 17.737 | 0.573 → 0.573 | 0.941 → 0.941 | 127 | 0 |
+| c4 | 17.681 → 17.761 | 2.267 → 2.352 | 3.526 → 3.489 | 19 | 7 |
+| mixed8 | 17.693 → 17.942 | 4.670 → 4.673 | 6.444 → 6.446 | 2 | 23 |
+
+The candidate executes 28/1099 c4 decode predictions and 92/1099 mixed8 decode
+predictions through actual M4 calls—2.55% and 8.37%. The rest use genuine scalar
+fallback. This pair's c4/mixed8 throughput gains are only 0.46%/1.41%, not a repeated
+benefit or a passed 5% screen. The near-limit profile has four resident owners, six
+raw generated IDs, two empty-content outcomes per mode, and no M4 calls. Observed
+peak logical grants are 14.795/14.799 GiB for serial/candidate; both return to their
+model baselines before final zero grants. These observations do not measure physical
+VRAM peaks, infeasible admission or driver OOM recovery.
+
+Pair one's candidate process also completes and passes an independent model audit,
+but remains **unpaired**. Its c1/c4/mixed8 rates are 17.656/17.716/17.475 tokens/s;
+c4/mixed8 execute 9/23 M4 calls. Its serial partner is killed after warmup and before
+any c1 result is saved: the kernel records a **global host OOM killing actual model
+PID 637234**, in owned group 637233,
+at 15:06:24 UTC. Concurrent Python and Rust compilation processes appear in that
+kernel snapshot; the evidence does not isolate their individual contributions to
+memory pressure. This is not a numerical rejection or watchdog/RSS-limit cleanup.
+The stage exits `-9` after 86.25 seconds, below its 900-second deadline, with observed
+owned RSS 16.10 GB. Its output directory retains only processor, prepared-deck and
+completed-warmup reports; pre-model maps are also retained. No c1 result, later
+profile, post-model map or final grant report is fabricated.
+Its group is absent and the GPU has no compute PID, but normal model retirement and
+final zero grants were **not observed for the killed process**.
+
+Pair-one comparison, both pair-two processes and the final three-pair summary remain
+unrun. The scope closes at 15:09:44 UTC before its cutoff. All owned worker/watchdog
+groups are absent without controller-forced cleanup; 186 independently supervised
+query checks pass, and the GPU is idle at 33 MiB. The three completed model processes verify all
+13 actual pre/post mapped DSOs and final zero grants. Source, both binaries and all
+nine package pins remain stable. Host library tests pass 14/15 cases with three
+vision tests ignored per mode; CUDA-feature release example clippy and both fresh
+release builds pass. The earlier host packet's single Clippy failure and the first
+performance packet's prelaunch environment-key error are preserved separately;
+neither ran a model.
+
+All raw failures, partial outputs, sources, binaries and targets remain intact under
+`gemma4-decode-perf-check/{20261029T142500Z,20261029T142700Z}` and
+`gemma4-decode-perf-campaign/{20261029T145000Z,20261029T145200Z}`. The latter campaign's
+source manifest SHA256 is
+`7f7b95743ce923d8c9e43bed044ed93c47c18352fb20ab799e6951a7ed2298c1`;
+serial/candidate binary hashes are
+`b2a75373cbb7ce9f6059e814c3a3ef4ddec2d1cf136669b7397c161f95970de3` /
+`a35fa2caf07ab5179a1c23b89740c952ccaa9cfa0ee87e6483580b103c913cc1`.
+The complete-pair audit SHA256 is
+`84f61876c301373cb143d8cc46723ea79cb6ae7d761d3f9666ec86b4fb0db9cf`;
+retained failure-investigation SHA256 is
+`9a35656659c3655f1d052c294c18fbf68fbe9f3c9a97ad26fb772a94d0e6b216`.
+No three-pair medians or variability estimate exist. A later performance experiment
+needs a changed, evidenced host-capacity/isolation precondition and a new freeze,
+not an unchanged retry. Instrumented facade timings do not qualify HTTP serving,
+uninstrumented production performance, incumbent parity or automatic selection.
+
 ### Advancement and remaining work
 
 The scorer, component bounds, routing fixtures, actual-model prerequisites,
@@ -1844,7 +1940,10 @@ the original full-logit bit-equality rejection. New work requires frozen sources
 complete deck, isolated targets, finite budget and absolute cutoff. Do not restart
 an unchanged failed cohort or fit a threshold to its output.
 
-Passing all these gates permits a **private performance experiment only**. Promotion
+Passing these prerequisite gates permits **private performance experiments only**.
+The first attempt above is incomplete after a host OOM; its one complete pair does
+not establish repeated benefit. Resolve the host-capacity/isolation blocker before
+freezing another experiment, without retrying or filling this closed cohort. Promotion
 still requires bounded repeated end-to-end benefit, actual HTTP/mixed-arrival selection,
 cancellation, partial-enqueue/failed-drain retirement, pressure and fallback evidence.
 The 128-question lexical screen does not qualify broad quality-equivalent serving,

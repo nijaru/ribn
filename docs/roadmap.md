@@ -146,11 +146,18 @@ outputs, usage and releases match, and device grants return to zero. Only the pr
 caller/observation harness changes; model arithmetic and the passed QA evidence remain
 unchanged. Sequential stream starts wait for enqueue acknowledgement and need not
 form a physical cohort; their earlier zero-M4 result stays closed, not relabeled.
-These scoped prerequisites permit a **private performance experiment only**. Freeze
-fresh sources, targets, deck, finite budget and absolute cutoff before execution;
-measure repeated end-to-end benefit and retain the HTTP/mixed-arrival selection,
-cancellation, failed-drain, pressure and fallback gates before promotion. No automatic
-selection, full-model acceptance or quality-equivalent serving claim follows.
+These scoped prerequisites permit **private performance experiments only**. The first
+[matched performance campaign](../benchmarks/gemma4-cuda-baseline.md#private-reordered-decode-performance-interruption-2026-10-29)
+stops on a kernel-confirmed global host OOM during the second pair's serial process.
+Its only complete pair preserves all 392 whole outputs, but c4/mixed8 throughput gains
+are only 0.46%/1.41%, with just 2.55%/8.37% of decode predictions using M4. The completed
+second candidate remains unpaired; later repetitions and the three-pair summary stay
+unrun. Preserve the failed process and all partial evidence, without filling or retrying
+that cohort. A new experiment needs an evidenced change to host capacity/isolation,
+then fresh sources, targets, deck, finite budget and absolute cutoff. No repeated-benefit
+or variability verdict exists. Retain the HTTP/mixed-arrival selection, cancellation,
+failed-drain, pressure, fallback and uninstrumented-performance gates before promotion.
+No automatic selection, full-model acceptance or quality-equivalent serving claim follows.
 The [shared-grant recovery gate](../benchmarks/gemma4-cuda-baseline.md#shared-grant-allocation-and-recovery-gate-2026-10-26)
 now qualifies real partial cache-allocation failure, healthy-peer preservation, charge
 retention for cancelled accepted submissions and subsequent reuse through the native Engine.
