@@ -1523,6 +1523,67 @@ independent serial control. Invalid last-row input must leave every row's positi
 cache and charge unchanged. Missing state/routing checks cannot be replaced by logits
 or by logical pool charges returning to zero.
 
+### Actual-model prerequisite results (2026-10-29)
+
+The separately frozen direct-model campaign passes its component, continuation,
+atomicity and noninterference prerequisites. It does **not** pass the generated-QA
+or Engine/text gates below, which remain unrun. The original full-logit bit-equality
+rejection is unchanged.
+
+Four fresh controls use public serial source, public serial plus observations, the
+original unobserved candidate patch, and that candidate plus the same observations.
+Each executes the complete 13-cohort, 160-row deck above, returning finite full
+262144-element BF16 logits. Each passes all 12 independent archived CPU prediction
+conditions, with 88 repeated checks. Histories are reconstructed from archived
+`input_ids` and checked against `history_ids`: the windows force **562**, not their
+prefill winners 6178/815. The first capture has IDs `[11,12,13,14]`, positions
+`[18,511,513,18]` and inputs `[236776,562,562,236776]`. No reference labels changed.
+
+Independent validation establishes:
+
+- All 160 public plain/observed rows and all 160 original candidate plain/observed
+  rows are bit-exact. Candidate prefill (46 rows) and width-one/two/three fallback
+  (18 rows) are bit-exact to public serial. The 96 reordered decode rows have complete
+  finite logits; their distances remain descriptive, not an acceptance budget.
+- The actual captured PLE, layer-zero Q/K/V and tied-head operands, weights and
+  outputs pass the unchanged encoded-operand certificate: 20 serial and five
+  four-row GEMMs, **2207744 outputs**, including **2097152 head outputs**. Each mode
+  is certified against its own operands. Actual learned weights and scales are
+  streamed bytewise against the pinned checkpoint; no full-head host vector is added.
+- Separate no-model processes replay every unchanged native RMS, rotary,
+  elementwise and scalar-attention operation on its own captured operands and span:
+  **2988 scalar rows per mode**, all bit-exact. Separate CPU processes check the
+  unchanged public embedding, scaling, PLE combination and softcap: **184 checks per
+  mode**, on desktop Linux/libm. Replay outputs are retained, native row scratch
+  returns to baseline, final pool grants are zero and cleanup errors are empty.
+- The captured graph binds actual attention outputs to projection-consumed scatter
+  rows, checks 336 same-logical-position rotary factor pairs and 192 initialized
+  prefill K/V prefix files across modes. Source-built ledgers check each observed
+  owner's old prefix and own produced append, including shared donors.
+- Eight actual before/after snapshots prove invalid-last-row atomicity for all four
+  continuations: initialized cache bytes, positions, charges, geometry, allocation
+  consistency tags and healthy model state. The next valid decode succeeds. Tags
+  are not treated as allocation-lifetime proofs. Internal capped rows also match
+  the actual caller-returned rows bytewise.
+
+The RTX 4090 run pins Rust 1.98.0, driver 615.71.10, CUDA 13.3, actual loaded
+NVRTC 13.3.33 and cuBLAS 13.6.0.2. Actual pre/post process library mappings match
+pre-frozen real-path hashes, not merely `ldd` discovery. All four release builds,
+four release all-target clippy checks and twelve execution/analysis stages exit zero;
+whole owned process groups and their independent watchdog groups are absent, with
+no forced cleanup. Model/replay processes are serialized. These are qualification
+runs, not serving-performance measurements.
+
+Sources, isolated targets, binaries, raw captures, validation reports, replay outputs
+and stage receipts are retained under `gemma4-model-campaign/20261029T103000Z`.
+Its source manifest SHA256 is
+`ab119df33a68fb33f2d346b385edab4964ae39369340758bfe377d9d1a5164a5`.
+`prerequisites.json` closes that scope at 11:15:13 UTC, before its frozen 12:20 UTC
+cutoff. The earlier controller failures and the rejected build packet
+`gemma4-model-campaign/20261029T102323Z` remain intact; that packet launched no model.
+No campaign is extended or missing sample filled. Further executor/QA work requires
+new frozen sources, targets, deck, budget and absolute cutoff.
+
 ### Independent generated-QA screen
 
 The task gate is **no per-question EM or token-F1 loss** relative to a fresh native
@@ -1633,12 +1694,15 @@ answers, corpus mutation and non-overwrite behavior.
 
 The scorer and encoded-operand bound checker are host-tested. The expanded synthetic
 GEMM gate and native routing fixtures pass, including explicit routing-fault controls.
-The actual-model collector and continuation-state observations are still pending;
-full-model, actual-head and quality runs remain **unexecuted**.
-Before the next model experiment, finish actual-boundary collection and shared-operand
-checks for unchanged operations, then freeze its sources, complete input deck, finite
-campaign budget and stop conditions. Retain the validated scorer/routing fault controls;
-rerun them when their affected inputs or implementation change. Compare
+The actual-model component, continuation, atomicity and noninterference prerequisites
+now pass as scoped above, including the actual head and separate same-operand replays.
+The frozen 128-question generation screen and actual Engine/text physical-four
+selection, delivery, token and usage checks remain **unexecuted**. Next integrate the
+candidate through the real executor and canonical processor in new private sources;
+direct-model `requested_width` is not Engine/text evidence. Freeze the new sources,
+complete deck, finite budget and absolute cutoff before execution. Retain the validated
+scorer/routing fault controls; rerun them when their affected inputs or implementation
+change. Compare
 scorer results with the pinned evaluator on every retained answer/alias. Preserve
 all old failures. A new verdict must name this contract and cannot rewrite the old
 bit-equality rejection; do not restart an unchanged failed cohort or fit a threshold

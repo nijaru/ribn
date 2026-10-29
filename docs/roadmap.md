@@ -121,11 +121,19 @@ A separate [native routing fixture gate](../benchmarks/gemma4-cuda-baseline.md#n
 passes mixed prefixes, reversed rows, real owner/shared-tail boundaries and exact
 scalar-attention replay. Four deliberately wrong append/donor/gather/scatter variants
 fail at their expected assertions. This is not actual-model state or executor evidence.
-The model collector, actual continuation-state observations, head capture, full-model
-and quality runs remain pending. No old failure becomes a pass. Next wire and validate the
-bounded actual-model collector before another model run, rather than choose
-thresholds from the failed logits. A numerical/quality pass would authorize private performance
-measurement, not automatic selection or
+The separately frozen [actual-model prerequisites](../benchmarks/gemma4-cuda-baseline.md#actual-model-prerequisite-results-2026-10-29)
+now pass: four complete 160-row controls, both observation-noninterference checks,
+unchanged prefill/fallback, initialized continuation bytes and invalid-last-row
+atomicity. The unchanged encoded-operand bound certifies 2207744 actual component
+outputs, including 2097152 head outputs; separate processes pass 5976 same-operand
+native scalar replays and 368 public CPU correlations. These are direct-model gates,
+not executor/text selection or generated-QA evidence. No old failure becomes a pass.
+Next wire the candidate through the real executor and canonical processor in new
+private sources, then run the frozen 128-question no-per-item-loss screen and actual
+Engine/text physical-four delivery/token/usage gate. Every QA question needs actual
+four-row exposure; nominal batch width is insufficient. Freeze fresh sources, targets,
+deck, finite budget and absolute cutoff before execution. Those remaining gates
+precede private performance measurement, not automatic selection or
 quality-equivalent serving claims.
 The [shared-grant recovery gate](../benchmarks/gemma4-cuda-baseline.md#shared-grant-allocation-and-recovery-gate-2026-10-26)
 now qualifies real partial cache-allocation failure, healthy-peer preservation, charge
