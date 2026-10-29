@@ -1526,9 +1526,9 @@ or by logical pool charges returning to zero.
 ### Actual-model prerequisite results (2026-10-29)
 
 The separately frozen direct-model campaign passes its component, continuation,
-atomicity and noninterference prerequisites. It does **not** pass the generated-QA
-or Engine/text gates below, which remain unrun. The original full-logit bit-equality
-rejection is unchanged.
+atomicity and noninterference prerequisites. It does **not** establish the separate
+generated-QA or Engine/text gates; their later results are recorded below. The original
+full-logit bit-equality rejection is unchanged.
 
 Four fresh controls use public serial source, public serial plus observations, the
 original unobserved candidate patch, and that candidate plus the same observations.
@@ -1654,7 +1654,7 @@ including the output cap. The ordered `[question_id, prompt_ids]` list has SHA25
 `json.dumps(pairs, ensure_ascii=False, separators=(',', ':'))` with no trailing newline.
 Selection, complete cases, tokenizer/package metadata hashes and the freeze source
 are retained under `gemma4-cuda-reordered-contract/20261029T034758Z`.
-No model weights are loaded and no new predictions or quality scores are collected.
+That model-free freeze loaded no weights and collected no predictions or quality scores.
 
 ### Scoring retained results
 
@@ -1690,23 +1690,98 @@ execution-provenance or population-quality acceptance. Host tests cover compensa
 aggregate scores, F1-only losses, incomplete/invalid records, EOS shrinking, capped
 answers, corpus mutation and non-overwrite behavior.
 
+### Executor QA and default text selection results (2026-10-29)
+
+**The frozen QA screen passes; default Engine/text physical-four selection does not.**
+Performance advancement remains blocked. These private sources reuse the original
+candidate patch's existing executor dispatcher, rather than adding another execution
+loop. Both controls validate every complete 262144-element BF16 logit row for shape
+and finiteness before argmax, including intermediate prefill returns. Bounded native
+receipts record actual prepared hidden/head matrix rows, returned rows and completed
+calls, correlated with accepted continuations, positions and input tokens—not a
+requested batch width. The CUDA-feature library tests and example clippy checks pass
+for both controls, as do both release builds and release example clippy checks.
+
+The first campaign exercises four archived chat requests through the real
+Engine/Driver/TextOwner/TextStream with **no prefill barrier or scheduling change**.
+All four deliver `[236776,126641,568,15721]`, canonical text `A mutex (short`,
+`Length` and 18/4/22 prompt/completion/total usage. Their admissions preserve the
+canonical 18-token prompts and separate request/continuation identities. However,
+all twelve decode predictions use scalar fallback: **zero actual native M4 calls**.
+The trace contains staggered prefill/decode; four submitted requests do not establish
+four physically batched decode rows. The integration assertion exits one, with all
+four continuations released, no cleanup errors and final device grants zero. The
+campaign stops there, leaving QA unrun in that scope. This is missing integration
+evidence, not a numerical rejection of an executed M4 call.
+
+A separately frozen **QA-only** campaign then executes the previously unrun arithmetic
+screen, without retrying the failed facade case. The prescribed QA prefill barrier
+prepares all four prompts before decode; it does not qualify production scheduling.
+The actual Rust processor matches every frozen rendered prompt and both encoding
+entry points before weights load. All 32 fresh groups finish without refill, using
+unchanged 16-token prefill chunks, package EOS and greedy cap 64:
+
+| Retained result | Public serial | Candidate |
+| --- | ---: | ---: |
+| Questions / generated IDs including EOS | 128 / 1227 | 128 / 1227 |
+| Stop / length outcomes | 127 / 1 | 127 / 1 |
+| Complete vocabulary rows checked before selection | 2808 | 2808 |
+| Actual native M4 calls | 0 | 105 |
+| Exact-match answers | 67 / 128 | 67 / 128 |
+| Token F1, descriptive percent | 77.882668834 | 77.882668834 |
+
+Every question receives actual physical-four exposure: 105 calls produce 420 M4
+predictions; 679 later decode predictions use scalar fallback as groups shrink.
+All 128 whole returned texts and generated-ID sequences match the fresh serial
+control. The strict scorer finds **zero per-question EM or exact-rational F1 losses**.
+It scores the capped answer whole, without explanation stripping. Independent checks
+cover all **866 retained answer/alias pairs** against the pinned official evaluator;
+the predeclared binary64 evaluator-roundoff check is not an inference tolerance.
+This is a passed finite-corpus screen, not population-quality or full-logit equivalence.
+
+Independent artifact validation binds admissions, actual native matrices/inputs,
+completed ranges, raw predictions, EOS suppression in actual Engine delivery, usage,
+releases and final zero grants. Each QA process's actual pre/post library maps verify
+13 loaded DSOs against the new real-path freeze. Source, package and binary inputs
+remain unchanged; all owned worker groups and independent watchdog groups are absent,
+with no forced cleanup and no remaining compute PID. The earlier host-check packet
+`gemma4-executor-check/20261029T114307Z` retains its Clippy and watchdog failures and
+launched no model. The stricter ownership reader and independently supervised
+read-only queries pass fresh Linux boundary, churn, orphan and deadline probes before
+these device campaigns. No specific cause is asserted for the old unverified-live
+`/proc` observation.
+
+All sources, targets, binaries, partial outputs, raw traces and receipts remain intact:
+
+- `gemma4-executor-campaign/20261029T121800Z`: failed default text selection;
+  closed 12:24:34 UTC before its frozen 13:50 UTC cutoff. Source manifest SHA256:
+  `856562f80a9aaacb1318be50bd7fe6ce17b1755b3351dc68f935e94d351e107b`.
+- `gemma4-executor-qa-campaign/20261029T122500Z`: passed QA-only scope;
+  closed 12:39:32 UTC before its frozen 13:45 UTC cutoff. Source manifest SHA256:
+  `d77a7f9f8d5165a7b4b21203c4f3c7d5672fda317a84ffa387e86535d0fdaf66`.
+
+The two campaigns produce identical respective binary hashes: serial
+`6101fc4c89f81635c00a57c377ccc96268bff0d2938b2c72c8574f30b9f6cc3c`, candidate
+`403a81a7b5c66e0a6b4affc096859664b6e207fccbd142d2ea1aa633136a5c94`.
+Fresh source copies and isolated targets are used in each scope. Fixed process-group
+budgets are 900 seconds per QA run and 300 seconds for the facade; neither campaign
+is extended, retried unchanged or filled with replacement samples. These are
+qualification runs, not serving-performance measurements.
+
 ### Advancement and remaining work
 
-The scorer and encoded-operand bound checker are host-tested. The expanded synthetic
-GEMM gate and native routing fixtures pass, including explicit routing-fault controls.
-The actual-model component, continuation, atomicity and noninterference prerequisites
-now pass as scoped above, including the actual head and separate same-operand replays.
-The frozen 128-question generation screen and actual Engine/text physical-four
-selection, delivery, token and usage checks remain **unexecuted**. Next integrate the
-candidate through the real executor and canonical processor in new private sources;
-direct-model `requested_width` is not Engine/text evidence. Freeze the new sources,
-complete deck, finite budget and absolute cutoff before execution. Retain the validated
-scorer/routing fault controls; rerun them when their affected inputs or implementation
-change. Compare
-scorer results with the pinned evaluator on every retained answer/alias. Preserve
-all old failures. A new verdict must name this contract and cannot rewrite the old
-bit-equality rejection; do not restart an unchanged failed cohort or fit a threshold
-to its output. A missing bound proof or inconclusive quality screen blocks advancement.
+The scorer, component bounds, routing fixtures, actual-model prerequisites and
+frozen-128 executor QA screen now pass in their stated scopes. The unbarriered
+Engine/text physical-four selection gate remains **missing**, despite correct scalar
+fallback delivery. Resolve that integration boundary in a changed, separately frozen
+experiment; do not add the arithmetic harness's prefill barrier to the facade or
+relabel its scalar calls. No scheduling remedy is selected by this result.
+
+Retain the validated scorer/routing controls and evaluator cross-checks; rerun them
+when their affected inputs or implementation change. Preserve all old failures and
+the original full-logit bit-equality rejection. New work requires frozen sources,
+complete deck, isolated targets, finite budget and absolute cutoff. Do not restart
+an unchanged failed cohort or fit a threshold to its output.
 
 Passing all these gates permits a **private performance experiment only**. Promotion
 still requires bounded repeated end-to-end benefit, actual HTTP/mixed-arrival selection,

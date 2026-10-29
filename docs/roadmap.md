@@ -94,8 +94,8 @@ cross-sequence physical execution from this remaining deficit, not wider prefill
 The first [four-sequence decode prototype](../benchmarks/gemma4-cuda-baseline.md#four-sequence-decode-numerical-gate-2026-10-26)
 fails full-logit bit equality on its first common-history decode, despite finite outputs
 and four unchanged argmaxes. It remains private and unpromoted; the new advancement
-contract below must pass before performance measurement. Later candidate cohorts and
-lifecycle/serving gates are unexecuted, not passed. A host-only [first-projection reference](../benchmarks/gemma4-reference/README.md#first-ple-projection-reference)
+contract below must pass before performance measurement. Later cohorts of that
+rejected experiment and its lifecycle/serving gates were not executed. A host-only [first-projection reference](../benchmarks/gemma4-reference/README.md#first-ple-projection-reference)
 now supplies expected BF16 operands and complete binary64 diagnostic sums for the
 first rejected decode inputs. A bounded [native first-projection replay](../benchmarks/gemma4-cuda-baseline.md#first-ple-projection-native-capture-2026-10-28)
 now matches every consumed input/weight bit to that reference, but serial and four-row
@@ -128,13 +128,21 @@ atomicity. The unchanged encoded-operand bound certifies 2207744 actual componen
 outputs, including 2097152 head outputs; separate processes pass 5976 same-operand
 native scalar replays and 368 public CPU correlations. These are direct-model gates,
 not executor/text selection or generated-QA evidence. No old failure becomes a pass.
-Next wire the candidate through the real executor and canonical processor in new
-private sources, then run the frozen 128-question no-per-item-loss screen and actual
-Engine/text physical-four delivery/token/usage gate. Every QA question needs actual
-four-row exposure; nominal batch width is insufficient. Freeze fresh sources, targets,
-deck, finite budget and absolute cutoff before execution. Those remaining gates
-precede private performance measurement, not automatic selection or
-quality-equivalent serving claims.
+The separately frozen [executor QA screen](../benchmarks/gemma4-cuda-baseline.md#executor-qa-and-default-text-selection-results-2026-10-29)
+now passes all 128 questions through the existing private dispatcher and canonical
+processor: 105 actual M4 calls expose every question, all generated IDs/texts match
+fresh serial, and exact per-item EM/F1 has no losses. All 866 retained answer/alias
+pairs cross-check against the pinned evaluator. The QA-only prefill barrier is not
+production scheduling evidence. The separate unbarriered Engine/text chat gate
+returns all four archived tokens and correct delivery/usage for every request, but
+uses **zero M4 calls**: all twelve decode predictions fall back to scalar. That
+campaign is stopped and preserved, not retried; the later QA-only scope does not
+repair its missing integration evidence. Both scopes retire ownership successfully.
+Private performance advancement remains blocked on actual default Engine/text M4
+selection. Resolve that integration boundary before another changed experiment;
+no scheduling remedy or facade barrier is selected here. Freeze fresh sources,
+targets, deck, finite budget and absolute cutoff before new execution. No automatic
+selection, full-model acceptance or quality-equivalent serving claim follows.
 The [shared-grant recovery gate](../benchmarks/gemma4-cuda-baseline.md#shared-grant-allocation-and-recovery-gate-2026-10-26)
 now qualifies real partial cache-allocation failure, healthy-peer preservation, charge
 retention for cancelled accepted submissions and subsequent reuse through the native Engine.
