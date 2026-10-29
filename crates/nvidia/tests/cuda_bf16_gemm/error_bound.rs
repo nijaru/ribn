@@ -73,9 +73,11 @@ fn assert_forward_error(
 #[ignore = "requires CUDA; full-geometry FP32 error bound; serialize release device runs"]
 fn model_projection_shapes_satisfy_an_independent_accumulation_bound() {
     let stream = CudaContext::new(0).unwrap().new_stream().unwrap();
-    let pool = BytePool::new(128 * 1024 * 1024).shared();
-    // All changed E4B projection geometries, including attention outputs. The
-    // vocabulary head stays one-row and is not a selected batched projection.
+    // The tied vocabulary head alone occupies 1.25 GiB. This is a component
+    // gate, not automatic selection of batched vocabulary/model decode.
+    let pool = BytePool::new(2 * 1024 * 1024 * 1024).shared();
+    // Preserve the qualified prefill rows and add the independent decode scope.
+    // The newly tested vocabulary head needs only the new one/four-row gate.
     for (k, n) in [
         (2560, 10752),
         (2560, 2048),
@@ -89,24 +91,32 @@ fn model_projection_shapes_satisfy_an_independent_accumulation_bound() {
         (4096, 2560),
         (10240, 2560),
         (256, 2560),
+        (2560, 262_144),
     ] {
-        let weight_bits: Vec<u16> = (0..n)
-            .flat_map(|column| {
-                (0..k).map(move |inner| {
-                    let bits = operand(column * 577 + inner / 2);
-                    if inner % 2 == 0 { bits } else { bits ^ 0x8000 }
-                })
-            })
-            .collect();
-        let weight_units: Vec<i32> = weight_bits.iter().copied().map(units).collect();
+        // Retain integer units for the oracle, not a third full BF16 copy of
+        // the head. Drop upload bytes before allocating the working matrices.
+        let mut weight_units = Vec::with_capacity(n * k);
+        let mut encoded = Vec::with_capacity(n * k * 2);
+        for column in 0..n {
+            for inner in 0..k {
+                let bits = operand(column * 577 + inner / 2);
+                let bits = if inner % 2 == 0 { bits } else { bits ^ 0x8000 };
+                weight_units.push(units(bits));
+                encoded.extend(bits.to_le_bytes());
+            }
+        }
         let spec =
             WeightTensorSpec::new("mixed", vec![n as u64, k as u64], DataType::BF16).unwrap();
         let mut weights =
             CudaBf16Weights::allocate(vec![spec], Arc::clone(&stream), &pool, 1 << 20).unwrap();
-        let encoded: Vec<u8> = weight_bits.iter().flat_map(|b| b.to_le_bytes()).collect();
         weights.upload(0, &mut Cursor::new(encoded)).unwrap();
         let mut gemm = CudaBf16Gemm::new(Arc::clone(&stream), &pool, 8 << 20).unwrap();
-        for m in [1, 8, 16] {
+        let rows: &[usize] = if n == 262_144 {
+            &[1, 4]
+        } else {
+            &[1, 4, 8, 16]
+        };
+        for &m in rows {
             let input_bits: Vec<u16> = (0..m)
                 .flat_map(|row| {
                     (0..k).map(move |inner| {

@@ -111,12 +111,16 @@ now permits a new, separately frozen experiment with unchanged BF16/FP32 policy,
 independent GEMM bounds including the batched vocabulary head, common-history and
 continuation-routing checks, and a per-question no-loss labeled generation screen.
 The [128-question cohort](../benchmarks/gemma4-cuda-baseline.md#reordered-four-sequence-decode-advancement-contract-2026-10-29)
-is selected and tokenized without model execution. The fixed-corpus scorer is
-host-tested, including per-item losses and incomplete records; the model collector,
-component/full-model and quality runs remain unimplemented/unexecuted. No old failure
-becomes a pass. Next implement and validate the remaining collector/bound/state checks
-before another model run, rather than trace another projection or choose thresholds
-from the failed logits. A numerical/quality pass would authorize private performance
+is selected and tokenized without model execution. The fixed-corpus scorer and
+certified encoded-operand bound checker are host-tested, including per-item losses,
+incomplete records and uncertain bounds. The checker certifies 110592 retained
+PLE/Q/K/V outputs against their own operands, not a full-model error budget. The
+expanded exact-integer component gate passes on RTX 4090: all 13 geometries at rows
+1/4, including the tied vocabulary head, with legacy non-head 8/16 coverage retained.
+The model collector, continuation-state checks, actual-head capture and full-model/quality
+runs remain pending. No old failure becomes a pass. Next implement and validate the
+remaining collector/state checks before another model run, rather than choose
+thresholds from the failed logits. A numerical/quality pass would authorize private performance
 measurement, not automatic selection or
 quality-equivalent serving claims.
 The [shared-grant recovery gate](../benchmarks/gemma4-cuda-baseline.md#shared-grant-allocation-and-recovery-gate-2026-10-26)

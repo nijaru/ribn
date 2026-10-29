@@ -1367,8 +1367,8 @@ operands/results, FP32 accumulation, reduced-precision reductions disabled and t
 part of this experiment. Freeze the actual toolkit/library/device, source, binary,
 processor and input identities before execution.
 
-The existing prefill component gate is insufficient: its matrix rows are 1/8/16,
-and its vocabulary head stays scalar. The new gate must cover rows **1/4** for all
+The original prefill component gate is insufficient: its matrix rows are 1/8/16,
+and its vocabulary head stays scalar. The decode gate covers rows **1/4** for all
 12 existing E4B projection geometries **plus the 2560→262144 tied vocabulary head**.
 Retain exact dyadic checks and the independently derived FP32/BF16 forward-error
 bound from the [prefill gate](gemma4-reference/README.md#numerical-acceptance-fixed-before-measurement).
@@ -1385,6 +1385,68 @@ certified enclosures and validated underflow/overflow assumptions; the existing
 match where the paths promise equality. Unchanged RMS, rotary, elementwise and
 attention operations retain their exact shared-operand checks. These are operation
 checks, not an accumulated full-logit error bound.
+
+### Encoded-operand component certificate
+
+`gemma4_linear_bound.py` supplies the certified enclosure for stored BF16 operands;
+`gemma4_linear_compare.py` remains diagnostic. It decodes BF16 directly into binary64,
+without a float32 intermediate that could flush subnormals on the host. For `K<=10240`,
+BF16 products are exact normal binary64 values and all possible partial sums lie on
+a grid no finer than `2^-266`, far above binary64 underflow. Explicit products and
+[`sum(dtype=float64)`](https://numpy.org/doc/2.5/reference/generated/numpy.sum.html)
+use binary64 accumulation, regardless of reduction order; no BLAS precision assumption
+is needed. With `g=gamma_K(2^-52)` and computed positive-product sum `S_hat`, enclose
+`S` by `S_hat/(1+g)` and `S_hat/(1-g)`, then enclose the dot by
+`d_hat ± g*S_upper`. Every bound operation rounds outward with `nextafter`; the
+rational gamma itself is enclosed before use.
+
+For the FP32/BF16 bound, conservatively require normal-or-zero BF16 operands, a common
+product quantum at least `2^-126`, and `S_upper<2^127`. BF16 products are then exact
+FP32 values; every nonzero partial sum remains on a normal FP32 grid, and rounding
+preserves that grid. The magnitude ceiling and `gamma_K(2^-23)<1/2` exclude accumulation
+and BF16 conversion overflow. If every product is zero, exact `S=d=0` is checked
+separately. These are sufficient proof conditions, not a claim that all other inputs
+are invalid. Unproven domains fail closed as **unsupported**.
+
+Acceptance requires the **largest** possible error over the dot interval to fit the
+**lower** allowed-error bound. A definite violation is separate from an indeterminate
+interval; neither passes. Host tests use independent exact rational BF16 dots,
+including cancellation exactly on the theoretical bound where interval uncertainty
+must not produce an optimistic pass. A real host-FP32-flush probe reproduces the
+pre-fix conversion's false zero-product acceptance and verifies rejection after direct
+binary64 decoding. No device arithmetic or inference tolerance changes.
+
+```sh
+python3 benchmarks/gemma4_linear_bound.py \
+  --capture /path/to/trace/00-ple.json --output /path/to/new-bound-directory
+```
+
+The raw trace descriptor names BF16 input/weight/output shapes, index, role and declared
+completion. The reader accepts only rows 1/4 and the 13 scoped geometries, checks byte
+extents and stable hashes, and memory-maps weights while processing at most 64 output
+columns at a time. The actual model head is **not yet captured or qualified**. Declared
+completion is not execution attestation; exit zero grants only the stored component
+bound, never full-model acceptance.
+
+Host-only validation of the retained decoder traces certifies **110592 outputs**
+across 16 serial and four batched PLE/layer-zero Q/K/V records, each against its own
+operands. There are no violations, indeterminate intervals or unsupported domains in
+that sample. The corrected source, fixed protocol, hashes and reports are retained at
+`gemma4-encoded-bound/20261029T044119Z`; this reads old operands, not a new model run
+or a reversal of the old bit-equality rejection.
+
+A fresh release-only RTX 4090 component run passes the expanded exact-integer test:
+**50 GEMMs, 2520832 outputs**, all 13 geometries, rows 1/4 including the tied head,
+and retained rows 8/16 on the 12 non-head geometries. Explicit close succeeds and
+logical pool charges return to zero after each geometry. The test uses a 2 GiB device
+pool and 3.75 GiB peak host weight payload; no model is loaded. The binary exits zero,
+its owned process group is absent, and compute processes are empty before and after.
+CUDA 13.3, driver 615.71.10 and cuBLAS 13.6.0.2 are recorded with actual loaded-library
+hashes. Source, binary, fixed deadline, controller and raw receipts are retained at
+`gemma4-cuda-component-bound/20261029T045730Z` (binary SHA256
+`5268b269798a12ce1503f456fb566e3d1f8483b5755537600d1fb67d70851285`).
+This qualifies the synthetic component scope, not actual head operands, continuation
+routing, model quality or four-row automatic selection.
 
 ### Full-model and continuation gate
 
@@ -1526,8 +1588,9 @@ answers, corpus mutation and non-overwrite behavior.
 
 ### Advancement and remaining work
 
-The scorer is host-tested; the model collector and device/full-model/quality runs
-above remain **unimplemented/unexecuted**.
+The scorer and encoded-operand bound checker are host-tested, and the expanded
+synthetic component-device gate passes. The new model collector and continuation-state
+checks are still pending; full-model, actual-head and quality runs remain **unexecuted**.
 Before the next experiment, validate scorer/routing failure detection and freeze its
 sources, complete input deck, finite campaign budget and stop conditions. Compare
 scorer results with the pinned evaluator on every retained answer/alias. Preserve
