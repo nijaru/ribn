@@ -1351,7 +1351,7 @@ process per mode runs, with no retry, arithmetic intervention or deadline extens
 
 ## Reordered four-sequence decode advancement contract (2026-10-29)
 
-**Accepted gate, not a passed experiment.** Reordered decode is now the selected
+**Accepted gate, not automatic-selection approval.** Reordered decode is the selected
 investigation; the [execution contract](../docs/resource-protocol.md#reordered-cross-sequence-cuda-decode)
 permits a new experiment without scalar-logit bit equality. The original four-row
 rejection and its unexecuted cohorts remain unchanged. This gate supplies no fitted
@@ -1424,9 +1424,10 @@ python3 benchmarks/gemma4_linear_bound.py \
 The raw trace descriptor names BF16 input/weight/output shapes, index, role and declared
 completion. The reader accepts only rows 1/4 and the 13 scoped geometries, checks byte
 extents and stable hashes, and memory-maps weights while processing at most 64 output
-columns at a time. The actual model head is **not yet captured or qualified**. Declared
-completion is not execution attestation; exit zero grants only the stored component
-bound, never full-model acceptance.
+columns at a time. Actual-model head capture and certification are recorded
+[separately below](#actual-model-prerequisite-results-2026-10-29). Declared completion
+is not execution attestation; exit zero grants only the stored component bound,
+never full-model acceptance.
 
 Host-only validation of the retained decoder traces certifies **110592 outputs**
 across 16 serial and four batched PLE/layer-zero Q/K/V records, each against its own
@@ -1692,8 +1693,9 @@ answers, corpus mutation and non-overwrite behavior.
 
 ### Executor QA and default text selection results (2026-10-29)
 
-**The frozen QA screen passes; default Engine/text physical-four selection does not.**
-Performance advancement remains blocked. These private sources reuse the original
+**The frozen QA screen passes; the first, sequential-caller Engine/text scope selects
+no physical-four calls.** The later concurrent-caller scope below supplies that missing
+selection evidence without changing scheduling. These private sources reuse the original
 candidate patch's existing executor dispatcher, rather than adding another execution
 loop. Both controls validate every complete 262144-element BF16 logit row for shape
 and finiteness before argmax, including intermediate prefill returns. Bounded native
@@ -1768,14 +1770,73 @@ budgets are 900 seconds per QA run and 300 seconds for the facade; neither campa
 is extended, retried unchanged or filled with replacement samples. These are
 qualification runs, not serving-performance measurements.
 
+### Concurrent-caller default text selection (2026-10-29)
+
+**The changed four-concurrent-caller workload passes actual Engine/text M4 selection.**
+The earlier sequential-caller failure remains closed and unchanged. Source inspection
+shows that `stream_request_blocking` waits for preprocessing and runtime-enqueue
+acknowledgement before returning. The driver can step between those sequential starts;
+`TextBatch::fill` also starts streams sequentially. An admission window of four does
+not promise four simultaneous decode rows. This does not establish a missing dispatcher
+or justify holding early decode behind a production prefill barrier.
+
+A fresh private scope changes only caller concurrency and consumption: four bounded
+scoped threads clone the same `TextModel`, each starting and draining its own stream.
+They share one real Engine/Driver/TextOwner, with unchanged default Engine scheduling,
+one preprocessing worker and batch window four. There is no start barrier, prefill
+barrier, sleep, output-cap increase or scheduling-policy change. Each request retains
+the same archived chat, canonical 18-token prompt, greedy cap four and independent CPU
+labels. The only source differences from the host-qualified candidate snapshot are the
+caller harness and observation fields binding rows to actual submission IDs, native
+receipt ordinals and admission frontiers. Model arithmetic, dispatch, dependencies and
+lockfile are unchanged; the passed 128-question QA evidence is reused, not rerun.
+
+The six actual submissions include staggered prefill, mixed scalar-decode/prefill,
+two homogeneous four-owner decode submissions, and a final two-owner scalar fallback.
+The two native calls report actual hidden/head/returned row counts four and completion
+acknowledgement. Their own-history inputs and absolute positions are:
+
+| Native call | Positions in submitted order | Input token IDs |
+| --- | --- | --- |
+| 1 | `[19,19,18,18]` | `[126641,126641,236776,236776]` |
+| 2 | `[20,20,19,19]` | `[568,568,126641,126641]` |
+
+Every request receives **two actual M4 predictions**. All four deliver exactly
+`[236776,126641,568,15721]`, canonical text `A mutex (short`, `Length` and 18/4/22
+usage. All 20 complete vocabulary rows pass shape/finiteness checks before selection:
+eight prefill returns, eight M4 decode returns and four scalar decode returns.
+Independent artifact validation binds each actual submission, owner, positive completed
+range, native input/position, raw prediction and text delivery; all four continuations
+are released and final device grants are zero. Actual pre/post mappings verify all
+13 loaded DSOs against the fresh real-path freeze. Package, source and binary hashes
+remain stable.
+
+The candidate release library tests pass **15 tests, with three corpus-dependent vision
+tests ignored**; CUDA/private-feature release example clippy and build pass. The device
+stage and independent analysis exit zero. All owned worker and watchdog groups are
+absent without forced cleanup; independently supervised read-only probes also pass,
+and the GPU has no compute PID afterward. No main binary or old artifact is changed.
+
+Sources, isolated target, binary, raw outputs and receipts remain under
+`gemma4-concurrent-facade-campaign/20261029T131400Z`. The scope closes at 13:17:14 UTC,
+before its frozen 14:10 UTC cutoff, with 600-second host-stage and 300-second
+library/model/analysis process-group budgets. Source manifest SHA256:
+`f9fbf25eceae3ad9dcf3b730e10cd3a99ffa2f7b333409440e5ea80bd8ef865a`.
+Candidate example binary SHA256:
+`8309cca7a0adb88f4766b51b6394da8d47398faa39d0b6fb61a4b77d5dbd0cc9`.
+Independent verification SHA256:
+`df6516267ab55869156c0e924bdae118a5455e5bfd8f116050ad26c87eb1a3f7`.
+This is one declared, observed concurrent-caller qualification workload, not a claim
+of universal batching, uninstrumented timing or serving performance. No failed scope
+is retried or relabeled.
+
 ### Advancement and remaining work
 
-The scorer, component bounds, routing fixtures, actual-model prerequisites and
-frozen-128 executor QA screen now pass in their stated scopes. The unbarriered
-Engine/text physical-four selection gate remains **missing**, despite correct scalar
-fallback delivery. Resolve that integration boundary in a changed, separately frozen
-experiment; do not add the arithmetic harness's prefill barrier to the facade or
-relabel its scalar calls. No scheduling remedy is selected by this result.
+The scorer, component bounds, routing fixtures, actual-model prerequisites,
+frozen-128 executor QA screen and concurrent-caller default Engine/text M4 selection
+now pass in their stated scopes. Sequential starts still have their preserved
+zero-M4 result; the concurrent-caller scope neither changes that outcome nor adds an
+execution barrier.
 
 Retain the validated scorer/routing controls and evaluator cross-checks; rerun them
 when their affected inputs or implementation change. Preserve all old failures and

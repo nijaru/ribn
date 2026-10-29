@@ -138,10 +138,18 @@ returns all four archived tokens and correct delivery/usage for every request, b
 uses **zero M4 calls**: all twelve decode predictions fall back to scalar. That
 campaign is stopped and preserved, not retried; the later QA-only scope does not
 repair its missing integration evidence. Both scopes retire ownership successfully.
-Private performance advancement remains blocked on actual default Engine/text M4
-selection. Resolve that integration boundary before another changed experiment;
-no scheduling remedy or facade barrier is selected here. Freeze fresh sources,
-targets, deck, finite budget and absolute cutoff before new execution. No automatic
+A later [concurrent-caller text scope](../benchmarks/gemma4-cuda-baseline.md#concurrent-caller-default-text-selection-2026-10-29)
+now supplies actual default Engine/text selection: four independent caller threads
+share one execution owner, with no start/prefill barrier, sleep, cap increase or
+scheduling change. Two native M4 calls expose every request twice; all four archived
+outputs, usage and releases match, and device grants return to zero. Only the private
+caller/observation harness changes; model arithmetic and the passed QA evidence remain
+unchanged. Sequential stream starts wait for enqueue acknowledgement and need not
+form a physical cohort; their earlier zero-M4 result stays closed, not relabeled.
+These scoped prerequisites permit a **private performance experiment only**. Freeze
+fresh sources, targets, deck, finite budget and absolute cutoff before execution;
+measure repeated end-to-end benefit and retain the HTTP/mixed-arrival selection,
+cancellation, failed-drain, pressure and fallback gates before promotion. No automatic
 selection, full-model acceptance or quality-equivalent serving claim follows.
 The [shared-grant recovery gate](../benchmarks/gemma4-cuda-baseline.md#shared-grant-allocation-and-recovery-gate-2026-10-26)
 now qualifies real partial cache-allocation failure, healthy-peer preservation, charge
