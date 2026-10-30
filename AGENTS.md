@@ -24,19 +24,16 @@ possible later execution system, not inference policy.
   repair is easiest to finish. When device access is unavailable, advance concrete
   baseline or real-model integration prerequisites; do not accumulate unqualified
   device changes or substitute unrelated subsystem completion for competitive evidence.
-- Gemma 4 E4B is the real second decoder. The host CPU decoder is its correctness oracle.
-  Metal and CUDA both run the full decoder through the executor and text facade. They
-  remain experimental greedy paths, not competitive acceptance; backend qualification
-  scopes and fallbacks belong in `docs/roadmap.md`.
 
 ## Authority and working reference
 
 - Work on `main` unless asked otherwise. All v0 APIs are unstable: replace flawed
   contracts and remove obsolete paths rather than add compatibility shims.
-- At session start read `README.md`, `docs/inference-engine-design.md`,
-  `docs/resource-protocol.md`, `docs/roadmap.md` and `docs/architecture.md`; then inspect
-  the relevant source/tests. The first three design documents own target architecture,
-  execution contracts and sequencing respectively.
+- Read the owners relevant to the requested change, then trace its source/tests:
+  `README.md` for setup and interfaces; `docs/inference-engine-design.md` for target
+  scope and architecture; `docs/resource-protocol.md` for execution/resource contracts;
+  `docs/roadmap.md` for sequencing and qualification status; `docs/architecture.md`
+  for current implementation structure. Do not load every document for every task.
 - `docs/execution-foundation.md` and `docs/pipeline-composition.md` retain experimental
   counterexamples and limitations, not provisional APIs to preserve. Historical evidence
   and private notes do not override current design owners.
@@ -51,56 +48,10 @@ possible later execution system, not inference policy.
 - Keep `README.md` stable and low-maintenance: identity, setup, current interfaces and
   documentation links. Do not turn it into a status log or a next-steps list.
 
-## Architecture constraints
-
-- Keep one mutable execution owner, bounded application submission and owned requests.
-  CLI/HTTP/Python/Rust reuse model behavior, not separate execution loops. Single-model
-  use does not require IPC, a stage graph or pass-through worker layers.
-- `crates/runtime` (`ribn`) is the AR token runtime, not the universal inference API.
-  Keep specialized scheduling for materially different execution regimes.
-- Keep raw media, preprocessing and protocol types above token scheduling. A real VLM
-  may require coupled encoder/AR scheduling rather than a separate encoder stage.
-- Ordinary architecture additions should change model/processor/backend, registration
-  and tests. Central enums/factories are fine; family branches throughout unrelated
-  lifecycle/routing code are not. A second real decoder and real VLM must prove this.
-- Keep architecture semantics separate from artifacts. GGUF and SafeTensors adapters
-  expose format data; HF package resolution does not choose model semantics. Models
-  own parameter interpretation and backend materialization.
-- Physical layouts, kernels and device execution remain backend-specific. Do not build
-  a compiler, plugin ABI, universal tensor layer or operator registry without concrete
-  model/backend evidence. Preparation-time specialization is preferable to repeated
-  hot-path support lookup where appropriate.
-- Keep logical parameters separate from encoding, quantization, placement and storage.
-  A version label is not executable ownership. Derived state must remain compatible
-  with the coherent snapshot that produced it.
-- Future training may share artifact/device/storage/completion/collective mechanisms.
-  Gradients, autograd, activation retention and optimizer scheduling belong outside
-  inference. Shared semantics do not require shared physical materializations.
-- Logical model topology is separate from deployment topology. External systems own
-  fleet allocation; Ribn owns execution within granted resources.
-
-## Execution invariants
-
-- `RequestId` identifies runtime requests; `SequenceId` identifies continuation owners.
-  Do not collapse them or use identity as proof of allocation lifetime.
-- Validate whole submissions before logical commitment; reserve output before launch.
-  Successful progress is positive. Completed ranges are not pre-submit reservations.
-- Cancellation is intent, not device completion. Failed/partial enqueue and failed
-  cleanup retain an executor-owned retirement/quarantine path. Never release memory
-  the device may still access.
-- Discard ownership belongs with the runtime mailbox, including after an execution
-  slot is reclaimed. Do not introduce frontend orphan-event or cancellation retry lists.
-- Resource waiting must have a real readiness/reactivation protocol, including lost
-  wakeup prevention and cancellation. `yield_now` is not parking. Permanently infeasible
-  work needs request-local rejection, not endless retries.
-- One accounting authority grants reservations per shared pool. Charges follow live
-  allocations through handoff/dequeue until safe reuse. Bound aggregate submissions
-  and prove downstream progress; count bounds alone are not byte bounds.
-- Continuation is not necessarily KV. Reusable hybrid prefixes require all necessary
-  attention/recurrent/other components to agree at the boundary.
-- Current separate queues, full-reachable reservation and one in-flight batch are
-  prototype mechanics, not permanent architecture. Change them with correctness and
-  workload evidence, not merely to imitate another engine.
+Architecture and execution invariants belong in the design and resource-protocol
+owners above, not a second specification here. Current queue topology, reservation
+strategy and in-flight batch limits are prototype mechanics; change them with
+correctness and workload evidence, not merely to imitate another engine.
 
 ## Qualification and performance
 
@@ -115,10 +66,10 @@ changing lifecycle, preparation, resource ownership or concurrent application ac
   require independently justified metrics and tolerances. Compare common histories.
 - GDN chunk scan remains opt-in while its full-model gate fails. Do not call it harmless
   or widen tolerances based on existing reference error.
-- Do not repeat measured losers without new evidence: `MAX_BATCH_ROWS=4`, shared IQ4
-  codebook, pre-elimination `decayed_keys`, transposed Metal weight upload and
-  warp-cooperative Metal linear reduction. The latter two were numerically acceptable
-  but slower than the four-wide exact kernel. See benchmark evidence for conditions.
+- Before repeating rejected kernel approaches, read the relevant Qwen results in
+  `benchmarks/qwen-prefill-qualification.md` or Gemma Metal results in `docs/roadmap.md`.
+  Reconsider them only with new evidence; preserve the workload, numerical and timing
+  conditions that made them lose.
 - Serialize full-model device tests on `ssh desktop`, one model process at a time, and
   check GPU utilization before launching. Its login shell is fish, so send multi-line
   scripts with `ssh desktop bash -s`. Preserve its untracked `cuda-rust-probe/simt/*`.
