@@ -2015,6 +2015,105 @@ Independent verification SHA256:
 `ba7edad023afeccb9bbe36bc6fdfac476326a6f3cdba1388d5aa72266e46b237`.
 The interrupted performance cohort remains closed and unqualified.
 
+### Lower-host-memory reordered-decode performance result (2026-10-30)
+
+**The complete three-pair instrumented screen is negative.** Median paired throughput
+improves only **0.98% at c4 and 1.57% at mixed8**, below the unchanged 5% requirement.
+Paired diagnostic deadline-pass losses also fail the screen. Keep the original M4
+candidate private; do not retry it unchanged, increase exposure artificially or relax
+thresholds. This is a completed negative result, unlike the earlier host-OOM interruption.
+
+The candidate is mechanically rebased onto public `4f04a41`'s host-lookup loader.
+Constructor and host-field access change; kernels, BF16/FP32 policy, device inventory,
+prefill, dispatch and routing do not. Fresh serial/candidate library suites pass
+15/16 tests, with three corpus-dependent vision tests ignored per mode; CUDA release
+example clippy and both builds pass. Before performance collection:
+
+- All **320 complete vocabulary rows** match their respective archived old-mode
+  controls bit for bit: 160 serial and 160 candidate, all 83,886,080 elements finite.
+- All 64 prefill/scalar-fallback rows remain cross-mode identical. The candidate
+  executes the expected 24 actual physical-four calls on the complete common-history
+  deck, with exact owner inputs, positions, native shapes and completion receipts.
+- All 13 cohorts per mode return to baseline, final grants are zero and all 13 actual
+  pre/post forward-time DSOs match the archived controls. Observed owned RSS and
+  process high-water RSS stay below the predeclared 10 GiB screen.
+
+This proves the loader rebase preserves each mode's arithmetic; it does **not** undo
+M4-versus-scalar full-logit bit-equality rejection or grant a new numerical tolerance.
+Qualification artifacts are under `gemma4-m4-lowhost-campaign/20261029T213000Z`.
+Collection is deferred before any performance process starts. That window closes
+with ten passed qualification stages and ten unrun performance/analysis stages,
+without changing its expired execution guard or fabricating samples.
+
+Collection resumes in `gemma4-m4-lowhost-performance/20261030T010000Z`, linking the
+same immutable source worktrees and targets: **no rebuild, changed workload or failed
+model retry**. All six model specifications and their serial/candidate,
+candidate/serial, serial/candidate order are frozen before the first collection.
+The [original performance protocol](#private-reordered-decode-performance-interruption-2026-10-29),
+complete QA population, default scheduling, phase clocks and acceptance criteria are
+unchanged. An additional pre-exec check requires at least 12 GiB `MemAvailable`;
+owned-group RSS and actual Linux `VmHWM` must each remain at most 10 GiB. These checks
+are not host isolation or a shared physical-memory reservation.
+
+| QA profile | Paired throughput changes, runs 0 / 1 / 2 | Median paired change | Median paired p95 first / last-content ratio | Candidate M4 calls, runs 0 / 1 / 2 |
+| --- | ---: | ---: | ---: | ---: |
+| c1 | +0.20% / −0.05% / +0.30% | +0.20% | 0.99626 / 1.00058 | 0 / 0 / 0 |
+| c4 | +1.19% / +0.67% / +0.98% | +0.98% | 0.99851 / 0.97200 | 9 / 9 / 10 |
+| mixed8 | −1.04% / +1.57% / +1.77% | +1.57% | 0.99957 / 0.99882 | 23 / 23 / 23 |
+
+These are medians of exact paired ratios, not ratios of median rates. All median p95
+latency checks pass, but mixed8's first pair individually regresses first-content p95
+by 8.69%, and its throughput does not improve. Joint 1 s / 5 s diagnostic passes are
+127→126, 127→127, 127→127 at c1; 17→20, 20→20, 20→18 at c4; and 2→2 in every mixed8
+pair, each out of 128 requests. The fixed no-paired-loss criterion therefore fails at
+c1 and c4. These diagnostic deadlines are not product SLOs; the observations do not
+isolate a causal latency effect of M4, which is never selected at c1.
+
+Actual M4 execution remains sparse: c4 uses 36/36/40 of 1099 decode predictions
+(3.28%/3.28%/3.64%), and mixed8 uses 92/1099 (8.37%) in every repetition. Remaining
+decode predictions use genuine scalar fallback; each QA profile also executes 1709
+prefill returns. These counts describe exposure, not measured GPU stall/occupancy causes.
+Do not infer that higher exposure would pass the end-to-end gate.
+
+All **1176 paired request outcomes** match complete IDs, text, usage and finish reasons.
+Across six fresh model processes, all 2352 requests complete; each QA profile retains
+1227 raw completion IDs, 127 stops and one length-64 result. All 18 QA profiles agree
+on each question's delivered output. Instrumented source checks 56,820 complete finite
+vocabulary rows across all profiles. Every profile returns to its model baseline and
+every process ends at zero grants. The descriptive near-context profile retains four
+owners, six raw generated IDs, two empty-content outcomes and no M4 calls in each mode;
+logical peaks remain 14.795/14.799 GiB. Physical VRAM peaks, infeasible admission and
+eviction/driver-OOM recovery are not qualified.
+
+The smallest pre-exec `MemAvailable` is 21,340,499,968 bytes. Maximum observed owned RSS
+is 8,231,776,256 bytes; maximum actual process `VmHWM` is 8,226,615,296 bytes. All six
+processes pass the frozen memory screens without a host OOM. This is not a matched
+old/new RSS comparison or a guarantee against unrelated host pressure. All 13 actual
+forward-time DSOs are identical across modes/repetitions, and sources, binaries and
+nine package pins remain stable. The scope closes at **01:27:24 UTC**, before its
+predeclared 03:59:42 execution guard. All owned worker/watchdog groups are
+absent, 74 supervised query checks pass and the GPU is idle at 33 MiB with no compute
+PID. No stage is missing or filled. The summary's exit 1 is the expected **complete
+negative screen**, with no controller error or forced cleanup, not another interrupted
+model process.
+
+Source manifest SHA256:
+`fc4b0c862a0c996694484089c037e7922529db473a98b64593c3dd47587dbc0d`.
+Serial/candidate performance binary SHA256:
+`0cbcc2a88f98f28c55f95586d001fed8383176319591aca24c98229f8332c668` /
+`e72cae31f3d67bda1e2bec644b1c2914399932b3cee5c1ef3587c472b94c3a7b`.
+Own-mode rebase verification SHA256:
+`848ac2b0b1eb791d1120933263e206155e9b9b5efeb61e9cc4a8478a7ee91666`.
+Complete three-pair summary SHA256:
+`34af7ac517034cd4d4ab2a5c46d4700086a290a7faa5e973ce25202a8f8ba7a9`.
+Closure SHA256:
+`58bfb069ff91250159c02f887d92233acb26951005320d31b33821d1e34a3037`.
+Raw profiles, prepared IDs, clocks, traces, memory preconditions, maps, receipts and
+analyses are also retained locally. Earlier failures, partial cohorts, sources,
+binaries and targets remain intact and are not pooled into this population. Public
+Rust is unchanged since `4f04a41`; its workspace/device qualification is reused, not
+rerun. Metal and uninstrumented/HTTP performance checks are not run in this scope.
+
 ### Advancement and remaining work
 
 The scorer, component bounds, routing fixtures, actual-model prerequisites,
@@ -2030,14 +2129,16 @@ complete deck, isolated targets, finite budget and absolute cutoff. Do not resta
 an unchanged failed cohort or fit a threshold to its output.
 
 Passing these prerequisite gates permits **private performance experiments only**.
-The first attempt above is incomplete after a host OOM; its one complete pair does
-not establish repeated benefit. The host-lookup change now supplies an evidenced
-capacity reduction with exact unchanged public-scalar logits. It does not establish
-host isolation or complete the performance gate. Any new performance scope must rebase
-its private constructor callers, qualify the changed source and freeze resource
-preconditions afresh, without retrying or filling the closed cohort. Promotion still
-requires bounded repeated end-to-end benefit, actual HTTP/mixed-arrival selection,
-cancellation, partial-enqueue/failed-drain retirement, pressure and fallback evidence.
+The first attempt above remains incomplete after a host OOM; its one complete pair
+is not pooled with the new population. The host-lookup reduction and exact own-mode
+rebase now pass, but the completed three-pair screen rejects the unchanged candidate:
+c4/mixed8 miss 5% throughput gains and paired diagnostic-pass losses remain. Do not
+advance this variant to further promotion gates without new bottleneck evidence and
+a changed experiment. Continue measured work on the remaining end-to-end execution
+deficit; thin M4 exposure alone does not select a scheduling or row-count change.
+Host isolation remains unqualified. Any future candidate still needs bounded repeated
+benefit, actual HTTP/mixed-arrival selection, cancellation, partial-enqueue/failed-drain
+retirement, pressure, fallback and uninstrumented-performance evidence.
 The 128-question lexical screen does not qualify broad quality-equivalent serving,
 sampling or a full-distribution error budget. The host-lookup change affects public
 CUDA loading and retention only; neither it nor the passed prerequisites promotes M4,

@@ -159,11 +159,21 @@ lookup tables and layer scalars remain on the host. All 160 full vocabulary rows
 bit-identical to the archived public scalar control; seven real CUDA tests and ordinary
 CLI loading pass below a frozen 10 GiB observed-RSS screen. This supplies an evidenced
 capacity reduction, not host isolation, a matched old/new RSS comparison or M4 performance
-acceptance. A new performance scope must rebase its private constructor callers, qualify
-that changed source and freeze resource preconditions, sources, targets, deck, budget
-and absolute cutoff afresh. No repeated-benefit or variability verdict exists. Retain
-the HTTP/mixed-arrival selection, cancellation,
-failed-drain, pressure, fallback and uninstrumented-performance gates before promotion.
+acceptance. The [lower-host-memory follow-up](../benchmarks/gemma4-cuda-baseline.md#lower-host-memory-reordered-decode-performance-result-2026-10-30)
+now passes the private rebase's exact own-mode check: 320 full rows, 24 actual M4 calls
+and all 64 unchanged prefill/fallback rows. A pause leaves its initial performance
+window unstarted; a fresh execution window reuses those immutable sources/binaries
+without rebuilding or retrying a failed model. All three planned pairs then complete,
+with all 1176 paired request outcomes matching and all memory screens/retirement
+checks passing. The instrumented screen is **negative**: median paired c4/mixed8
+throughput gains are only 0.98%/1.57%, below 5%, and paired diagnostic deadline-pass
+losses occur at c1/c4. M4 covers only 3.28–3.64%/8.37% of c4/mixed8 decode predictions;
+these counts do not prove a bottleneck or justify artificial batching. Preserve this
+complete negative separately from the old OOM cohort. Keep the candidate private;
+defer further promotion qualification until new bottleneck evidence selects a changed
+experiment on the remaining end-to-end execution deficit, not wider rows by default.
+HTTP/mixed-arrival selection, cancellation, failed-drain, pressure, fallback and
+uninstrumented-performance gates remain required for any future promotion.
 No automatic selection, full-model acceptance or quality-equivalent serving claim follows.
 The [shared-grant recovery gate](../benchmarks/gemma4-cuda-baseline.md#shared-grant-allocation-and-recovery-gate-2026-10-26)
 now qualifies real partial cache-allocation failure, healthy-peer preservation, charge
