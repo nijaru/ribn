@@ -236,6 +236,19 @@ bounded to experimental greedy E4B/RTX 4090; the text-facade speedup is not HTTP
 performance, broader hardware/model support, host isolation or competitive acceptance.
 Do not extend or repeat either completed three-pair population.
 
+The [post-head-omission native-call wall observation](../benchmarks/gemma4-cuda-baseline.md#post-head-omission-native-call-wall-observation-2026-10-30)
+selects **native attention** for the next bounded investigation. Its completed blocking
+calls account for 15.24% of c4 phase wall, with Down/Gate/Up projections close behind;
+the largest category exceeds the frozen 10% selection threshold. The single same-binary
+OFF→ON pair passes the ≤1.05 elapsed screen (1.01337), not a statistical overhead bound
+or a production speedup; joint diagnostic passes fall from 34 to 29. Original-call
+host wall includes driver, completion and device work, not kernel time or a GPU/host
+partition. Investigate the score/softmax/value and completion path without assuming
+which stage dominates or that fusion wins. Keep the observer private, preserve the
+qualified path and BF16/retirement contracts, and require the existing numerical,
+repeated-performance and lifecycle gates for any changed variant. No unchanged M4 retry,
+row widening or compiler project follows from this observation.
+
 The [shared-grant recovery gate](../benchmarks/gemma4-cuda-baseline.md#shared-grant-allocation-and-recovery-gate-2026-10-26)
 now qualifies real partial cache-allocation failure, healthy-peer preservation, charge
 retention for cancelled accepted submissions and subsequent reuse through the native Engine.

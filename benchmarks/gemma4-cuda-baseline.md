@@ -2433,6 +2433,108 @@ SHA256 identities:
   verification: `ab158c581076045077208131cabad8456bd9a59c54e77f1eb8c66e593e57869c`;
   analysis archive: `73558b81bc4a7fde5a34ff3f9d106081587f71afa5be3817a1d1d74907211ca6`.
 
+### Post-head-omission native-call wall observation (2026-10-30)
+
+**Attention is the largest observed call category, at 15.24% of c4 phase wall time.**
+It selects the next bounded investigation after public state-only prefill (`5f51148`),
+not a new optimized variant. Down, Gate and Up projections are close behind at
+14.33%, 13.24% and 13.20%; this single observation does not establish a stable ranking
+or attribute costs to GPU occupancy, stalls or host overhead.
+
+The private observer times original synchronous native calls with host `Instant`.
+Each call still executes exactly once with its original return value/error. No CUDA
+kernel, timing event, wait, arithmetic, scheduler or executor change is added.
+Nonoverlapping intervals include validation, driver work, device execution and
+completion as encountered by the blocking call: **these are not GPU kernel times or
+a GPU-versus-host partition**. The observer is model-owned and exports after explicit
+execution-owner shutdown, outside the phase clock. Prepared widths 1/8/16 describe
+one decoder working set, not concurrent-request counts. A normalized reverse-source
+check removes the observation changes and reconstructs the public decoder, accounting
+for rustfmt whitespace, closure blocks and trailing commas. The instrumented decoder
+itself is not byte-identical to public source. All other tracked files are unchanged
+apart from the private example manifest; no observer or harness is integrated publicly.
+
+Precollection criteria fix **one OFF→ON pair using the same binary**, each with four
+archived-chat warmups and the complete canonical c4 QA128 profile. The wrapper-off
+control is not an untouched production binary. Both modes explicitly report private
+instrumentation; OFF must have empty observations and zero counters. ON/OFF c4 elapsed
+must be at most 1.05 before selecting any investigation; the largest original-call
+category must account for at least 10% of observed c4 phase wall. Neither threshold is
+fitted to these results. Auditor controls use retained valid outputs and explicitly
+synthetic counter fixtures; corrupt outputs, clocks, populations, counts, timing sums,
+observer modes and a failed ratio are rejected before collection.
+
+| Observed c4 quantity | OFF | ON |
+| --- | ---: | ---: |
+| Complete phase wall, s | 64.232398 | 65.091219 |
+| Requests / completion tokens including suppressed stops | 128 / 1227 | 128 / 1227 |
+| p95 first / last content, s | 2.122860 / 3.225959 | 2.064243 / 3.266020 |
+| Joint 1 s / 5 s diagnostic passes | 34 | 29 |
+
+ON is **1.34% longer** in this ordered pair, passing the frozen elapsed-ratio screen.
+It is not a statistical overhead bound or a causal estimate of instrumentation cost.
+The diagnostic-pass count falls from 34 to 29; this observer is not a performance
+promotion and has not passed the repeated latency/goodput advancement gates.
+
+| Original blocking call category | Calls | Host wall, s | Share of ON c4 phase |
+| --- | ---: | ---: | ---: |
+| Layer attention | 135030 | 9.921687 | 15.24% |
+| Layer Down projection | 135030 | 9.325162 | 14.33% |
+| Layer Gate projection | 135030 | 8.616813 | 13.24% |
+| Layer Up projection | 135030 | 8.595039 | 13.20% |
+| Layer Query projection | 135030 | 2.925536 | 4.49% |
+| Layer attention-output projection | 135030 | 2.816564 | 4.33% |
+| Requested-head CPU softcap | 1227 | 1.923118 | 2.95% |
+| Requested tied-head projection | 1227 | 1.723463 | 2.65% |
+
+All measured categories sum to 63.734885 s within 64.242476 s of model-step wall and
+65.091219 s of phase wall. The 0.507591 s unwrapped step residual and 0.848743 s outside
+model steps are not assigned to a host bottleneck. The 2808 model steps consume
+27520 inputs: 26421 prompt tokens plus 1099 decode inputs. There are 3215 body groups
+(1590 sixteen-row, 65 eight-row, 1560 scalar); each complete layer role occurs 42 times
+per group and KV-owner roles 24 times. Exactly 1227 requested heads remain, with
+no intermediate-prefill head calls. Attention spans 4.824674 s at width one,
+0.222579 s at width eight and 4.874434 s at width sixteen; scalar work includes prompt
+tails as well as decode, so these bins do not partition prefill versus decode.
+
+All **132 paired observable outcomes / 264 requests** match the retained qualified
+visible IDs, text, usage and finish reasons, including warmups. Suppressed terminal
+EOS identity is not observed. Every profile returns its model grant baseline and both
+processes finish at zero grants. Actual pre/post mapped DSOs, all nine package pins,
+preserved desktop Git state/binary, the 12 GiB disk and host-availability floors, and
+the 10 GiB sampled RSS/HWM screens pass. All 15 execution/analysis stages pass and
+all 127 recorded process groups are absent, with no forced cleanup. An external
+closure runs only after every controller has exited; all 1980 retained file hashes
+verify after copying locally. Targets remain preserved remotely; the archive includes
+an exact copy of the model binary, not the build target tree.
+
+Final private Mac and Linux prerequisites pass formatting, release CUDA example
+Clippy and **18 library tests (3 ignored)**; Linux also passes boundaries and the release
+example build. Earlier host-only preparation failures (an identifier lint, then a
+Mac-only provenance stub) remain separate; fresh source/target scopes pass the corrected
+checks. No failed model process is retried. The existing 160-row common-history
+numerical evidence is retained, not rerun or relabeled as a new full-row collection.
+
+The next bounded investigation is the native attention call's three-stage
+score/softmax/value execution and completion path at this workload's widths and cache
+spans. The category measurement does not distinguish those stages or establish that
+fusion, launch reduction or another algorithm will win. Preserve the qualified path
+and existing BF16/numerical and retirement contracts; any changed variant still needs
+independent numerical qualification and repeated ≥5% median c4 **and** mixed8 throughput gains,
+with c1, latency/goodput, HTTP, cancellation, pressure and fallback protections.
+Do not substitute wider rows, unchanged M4, a compiler project or a softcap-only patch
+for this evidence-selected investigation. No production speedup or competitive
+acceptance is established by this diagnostic.
+
+Retained scope: `gemma4-headless-body-cost/20261030T112431Z`; separate post-exit closure:
+`gemma4-headless-body-cost-close/20261030T113333Z`. SHA256 identities:
+
+- Single OFF/ON binary: `40e0f1c2256e0fef2c93920a0180f3996885ea4b32b411860576505883412f59`.
+- Source manifest: `90416c51ff0542dd273527cd4f0c90b979bcea610848405c73d71799ba53b555`.
+- Diagnostic summary: `2d1c009c12ef707987a3e304116893f2d9ddeadeebd307ae6f5dcab6c2a76a47`.
+- Completed-file manifest: `a2764936d19091f127ada1906171d0f828dc713ece04f44c7a1c1776f3329e53`.
+- Evidence archive: `f71430b7f354b43e0702383d354f3442057e5e6cde1812f9fd6ff6aed1d8aff7`.
+
 ### Advancement and remaining work
 
 The scorer, component bounds, routing fixtures, actual-model prerequisites,
@@ -2458,7 +2560,9 @@ selected unused intermediate-prefill heads; the [changed head-omission screen](#
 passes exact common-history, runtime retirement and repeated text-facade gates. Its
 [subsequent uninstrumented and actual CLI HTTP qualification](#state-only-cuda-uninstrumented-and-http-qualification-2026-10-30)
 now passes the remaining bounded gates and supports public CUDA state-only integration.
-Do not restart either completed three-pair population.
+Do not restart either completed three-pair population. The
+[post-head-omission call-wall observation](#post-head-omission-native-call-wall-observation-2026-10-30)
+selects native attention for the next bounded investigation, not a qualified optimization.
 Thin M4 exposure alone still does not select a scheduling or row-count change.
 Host isolation remains unqualified. Further variants or broader selection scopes
 still require evidence for their HTTP/mixed-arrival selection, cancellation, partial-enqueue/failed-drain
