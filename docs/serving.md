@@ -192,7 +192,11 @@ SIGTERM shutdown passed, along with AIPerf and native vLLM client compatibility 
 Gemma's [Metal](../benchmarks/runtime-contract.md#gemma-http-cli-qualification-2026-10-21) and
 [CUDA CLI HTTP gates](../benchmarks/runtime-contract.md#cuda-device-requalification-2026-10-22)
 check real-package JSON/SSE output, decoded stops, request-local media rejection, disconnect
-recovery, loading/faulted health and SIGTERM cleanup. These do not qualify competitive
+recovery, loading/faulted health and SIGTERM cleanup. The
+[CUDA state-only follow-up](../benchmarks/gemma4-cuda-baseline.md#state-only-cuda-uninstrumented-and-http-qualification-2026-10-30)
+also checks the head-free intermediate-prefill path through the actual CLI, including
+cancellation with a runtime-enqueued healthy peer and subsequent reuse. Its throughput
+measurements use the Rust text facade, not HTTP. These do not qualify competitive
 serving performance.
 The [load-capacity host gate](../benchmarks/runtime-contract.md#text-load-capacity-host-gate)
 covers configured active limits beyond eight; those larger configured limits remain

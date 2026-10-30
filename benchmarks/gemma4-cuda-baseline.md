@@ -2212,7 +2212,9 @@ no full-workspace, Metal, HTTP or uninstrumented-performance checks run in this 
 paired throughput gains are **7.37% at c4** and **7.64% at mixed8**, with exact whole
 outputs and no paired loss of diagnostic-deadline passes. This is a measured
 text-facade improvement, not the earlier cost fraction treated as a speedup. The
-candidate remains private; public CUDA still uses the full-head advance fallback.
+candidate remains private at this screen; public CUDA still uses the full-head
+advance fallback. The [subsequent qualification](#state-only-cuda-uninstrumented-and-http-qualification-2026-10-30)
+below completes the remaining gates for integration.
 
 Both sources start from public `6d9b17e` (production Rust `448a3a0`), rather than
 reusing the older cost-observation executable. The only candidate/control production
@@ -2311,11 +2313,125 @@ Analysis closure SHA256:
 `361f03ef7e88ff60b4191703b2f8d2090c417f52a06c2139a3ff3d6747ba4d70`.
 
 This positive screen supports further qualification of this changed variant, not
-automatic promotion. HTTP selection/cancellation and **uninstrumented** end-to-end
-performance remain unrun; the matched row guards and trace are still observation
+automatic promotion. At its closure, HTTP selection/cancellation and **uninstrumented**
+end-to-end performance remain unrun; the matched row guards and trace are observation
 work. No broader device/model scope, isolation, competitive-engine parity or SOTA
 claim follows. Metal head omission is untested. Public Rust and the qualified
-full-head fallback remain unchanged, and M4 stays parked.
+full-head fallback remain unchanged at this point, and M4 stays parked.
+
+### State-only CUDA uninstrumented and HTTP qualification (2026-10-30)
+
+**Both remaining gates pass.** The uninstrumented fixed three-pair population measures
+median throughput gains of **7.62% at c4** and **6.91% at mixed8**. The actual CUDA CLI
+passes output/usage parity and cancellation with an already-enqueued healthy peer.
+The public CUDA executor now uses the qualified state-only operation for intermediate
+prefill. Final prefill/decode retain headed arithmetic; Metal retains its full-head
+fallback. This is bounded experimental greedy E4B/RTX 4090 qualification, not broader
+hardware/model support or competitive acceptance. M4 remains parked.
+
+The uninstrumented control starts from `c4666a5` (production Rust `448a3a0`). Its
+candidate changes only the CUDA decoder and `GemmaDecode` bridge described above.
+Those two production files are byte-identical to the qualified numerical/lifecycle
+candidate. Their 160 complete finite common-history rows and seven real CUDA tests
+are reused by exact identity, not rerun. The committed decoder tests cover invalid
+state-only chunks, headed/state-only full-row equality and teacher-forced continuation
+through scalar/window-boundary partitions. The failed-drain test's 17-token prompt
+forces its first 16 tokens through intermediate prefill.
+
+The minimal private measurement entry point directly constructs
+`Gemma4Executor::cuda` and `Engine::with_defaults`. It adds no executor/decoder row
+scans, counters, traces, boundary wrappers or CUDA timing events. Pool/provenance
+checks and JSON export remain outside the performance clock. Both sources pass
+boundaries, formatting, release example/CLI Clippy and release example/CLI builds
+in fresh isolated targets with Rust 1.98.0, two jobs, offline and locked dependencies.
+The unchanged device prerequisites retain their earlier evidence. Public integration
+also passes fresh macOS workspace tests (**438 passed, 11 ignored**), boundaries,
+formatting, default/CUDA-feature workspace all-target Clippy and Gemma/text/CLI Metal
+all-target Clippy. This adds compile/host evidence, not another device population.
+
+The frozen deck, timing denominator and criteria are unchanged from the screen:
+four warmups, all 128 QA questions at each of c1/c4/mixed8, then resident4 diagnostics;
+orders control/candidate, candidate/control, control/candidate, serialized. All
+**1176 paired observable outcomes / 2352 requests** match each other and the retained
+qualified visible IDs, text, usage and finish reasons. Without trace, the suppressed
+terminal EOS identity is not observed or inferred. No failed requests, retries,
+missing-sample filling or adaptive extension occur. Mixed8 retains closed-loop
+arrival/think delays, not an identical open-loop trace.
+
+| Profile | Paired throughput gains, % | Median gain, % | Median p95 first / last-content ratios | Joint diagnostic passes, control → candidate |
+| --- | --- | ---: | --- | --- |
+| c1 | 7.69 / 8.23 / 6.77 | 7.69 | 0.896 / 0.916 | 127→128 / 127→128 / 127→128 |
+| c4 | 7.62 / 7.94 / 6.53 | 7.62 | 0.919 / 0.917 | 20→32 / 20→30 / 20→31 |
+| mixed8 | 9.08 / 6.91 / 6.60 | 6.91 | 0.942 / 0.936 | 2→3 / 2→3 / 2→3 |
+| resident4, diagnostic | 9.60 / 9.26 / 9.00 | 9.26 | 0.915 / 0.915 | 0→0 / 0→0 / 0→0 |
+
+All frozen throughput/latency criteria pass with no paired diagnostic-pass loss.
+The 1 s/5 s thresholds remain diagnostics, not product SLOs; resident4 is not a
+selection gate. Every profile returns to its 14,946,887,968-byte model grant baseline,
+and each process ends at zero grants. Minimum pre-exec `MemAvailable` is
+26,412,421,120 bytes; maximum sampled owned RSS is 8,219,688,960 bytes and maximum
+process `VmHWM` is 8,215,543,808 bytes. The 12 GiB availability floor and 10 GiB
+RSS/HWM screens pass, without establishing host isolation or physical peaks. Model,
+package pins, driver/toolchain and actual mapped DSOs match the earlier screen.
+All 22 stages pass; all 200 recorded groups are absent at closure, without forced
+cleanup. The immutable scope is `gemma4-headless-uninstrumented/20261030T084306Z`.
+
+The separate functional scope, `gemma4-headless-http/20261030T093548Z`, uses its exact
+candidate CLI binary without rebuilding or repeating performance. It runs
+`ribn serve-gemma <package> --bind 127.0.0.1:0 --model-name gemma --max-requests 4
+--max-output-tokens 64` on the default CUDA path. Archived chat (18 prompt tokens,
+cap four) returns `A mutex (short` and usage 18/4/22. The fixed longest canonical QA
+has 581 prompt tokens and cap 64. Raw completions and chat, each JSON and SSE, match
+its retained whole text, usage and finish. SSE checks one finish, one usage-only
+final chunk and one `[DONE]`; chat also checks its assistant-role chunk. Wrong model
+returns request-local HTTP 400.
+
+Cancellation reads an actual nonempty delta, then receives a healthy QA peer's
+HTTP 200 headers before disconnecting the first stream. The server constructs those
+headers only after `TextModel::stream_request` has returned from runtime enqueue;
+metrics also show both requests active before disconnect. The healthy peer finishes
+exactly, abandonment increments by one, active requests settle to zero, readiness
+stays 200 and a later archived chat completes exactly. `ignore_eos` is used only on
+the cancellation request to keep it live, not as a numerical workaround. Final
+metrics record nine requests, seven completed, one rejected, one abandoned, zero
+failed and zero connection deadlines. Checked child SIGTERM drains the CLI to exit
+zero; the child is reaped, all 24 recorded groups are absent and no compute PID
+remains. CLI `VmHWM` is 8,050,618,368 bytes; maximum sampled owned-group RSS is
+8,080,232,448 bytes. Actual mapped DSOs match before/after. Both supervised stages
+pass without forced cleanup.
+
+This proves functional CLI path coverage and recovery, not HTTP performance,
+measured head-call counts or suppressed EOS identity. The CLI does not expose direct
+BytePool grants; final-zero grant evidence comes from the separate numerical/text
+facade scopes, not an HTTP observation. Long prompts plus the unchanged loader,
+executor and chunk wiring establish selection without hot-path instrumentation.
+
+Archive verification finds the original HTTP closure hashed `drive.stdout` before
+its controller appended the two closure announcements. Its expected hash matches
+the exact original 760-byte prefix; only those announcements extend it to 1090 bytes.
+All other retained hashes match. The original manifest and log remain intact. The
+fresh **analysis-only** scope `gemma4-headless-close-verification/20261030T094200Z`
+verifies the exact append, all retained sources/outputs/receipts and group absence,
+then records a full post-exit manifest after the controllers have exited. Its own
+closure hashes verify in full; no models, criteria or execution verdicts change.
+
+SHA256 identities:
+
+- Production CUDA decoder / bridge:
+  `44dd9482012658e7a77f1221241165702594bb35b682ec17c5f90f078ed05dcb` /
+  `01d90423dc1002bb18624903c476f019a756b81506f17af1ed49ed418a251fba`.
+- Uninstrumented control / candidate performance binaries:
+  `db1f8bba9cc3cf45d08e23f117544c9f58e131222621e01d92493016a0bbc200` /
+  `2c06dc5d2eb67f6b3089b0a5675669972fd3abb55f58eda3beaba0f197cd486d`.
+- Actual candidate CLI: `9619050695d3c3628d86cc5d471a53c25915b715417370a9aa606276df3707f3`.
+- Performance summary: `e257b4927ab05085e49ea0d4f36d077721b379841c7225f98612602a3ff4ce2e`.
+- HTTP audit: `381c52f523bf2a3c7ada2f355bdd0650169dac45da7967b7ec88d37dcd692422`.
+- Performance / HTTP evidence archives:
+  `a6342f10e76d0992a5904be1057986c1dc66e5e2eabc585bc6d018b15b62b73d` /
+  `5506d7aeba3fd8add9671b7034789221037c6ff979387300921ac4b7a3a7fb34`.
+- Post-exit manifest: `a022c8c68fb26b890bb247fdcf1bb12211adc5203e7b7bcabe71198d9a32e7f3`;
+  verification: `ab158c581076045077208131cabad8456bd9a59c54e77f1eb8c66e593e57869c`;
+  analysis archive: `73558b81bc4a7fde5a34ff3f9d106081587f71afa5be3817a1d1d74907211ca6`.
 
 ### Advancement and remaining work
 
@@ -2339,12 +2455,13 @@ c4/mixed8 miss 5% throughput gains and paired diagnostic-pass losses remain. Do 
 advance this variant to further promotion gates without new bottleneck evidence and
 a changed experiment. The [default c4 cost observation](#default-c4-execution-cost-observation-2026-10-30)
 selected unused intermediate-prefill heads; the [changed head-omission screen](#state-only-cuda-head-omission-screen-2026-10-30)
-now passes exact common-history, runtime retirement and repeated text-facade gates.
-Keep it private while advancing HTTP selection/cancellation and uninstrumented
-end-to-end qualification; do not restart its completed three-pair population.
+passes exact common-history, runtime retirement and repeated text-facade gates. Its
+[subsequent uninstrumented and actual CLI HTTP qualification](#state-only-cuda-uninstrumented-and-http-qualification-2026-10-30)
+now passes the remaining bounded gates and supports public CUDA state-only integration.
+Do not restart either completed three-pair population.
 Thin M4 exposure alone still does not select a scheduling or row-count change.
-Host isolation remains unqualified. Automatic promotion still requires evidence for
-the intended HTTP/mixed-arrival selection, cancellation, partial-enqueue/failed-drain
+Host isolation remains unqualified. Further variants or broader selection scopes
+still require evidence for their HTTP/mixed-arrival selection, cancellation, partial-enqueue/failed-drain
 retirement, pressure, fallback and uninstrumented-performance scope.
 The 128-question lexical screen does not qualify broad quality-equivalent serving,
 sampling or a full-distribution error budget. The host-lookup change affects public

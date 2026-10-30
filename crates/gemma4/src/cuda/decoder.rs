@@ -41,6 +41,13 @@ struct Executors {
     attention: CudaBf16Attention,
 }
 
+type Readout<T> = fn(
+    &Gemma4Config,
+    &mut Gemma4CudaWeights,
+    &mut Executors,
+    &mut Buffers,
+) -> Result<T, CudaBf16ComputeError>;
+
 /// Host lookup tables plus one device weight set, executors and reusable buffers.
 pub struct Gemma4CudaModel {
     host: HostLookups,
@@ -182,12 +189,13 @@ impl Gemma4CudaModel {
         Ok(())
     }
 
-    fn step(
+    fn step<T>(
         &mut self,
         tokens: &[u32],
         position: usize,
         caches: &mut [Option<DeviceCache>],
-    ) -> Result<Vec<u16>, Gemma4Error> {
+        readout: Readout<T>,
+    ) -> Result<T, Gemma4Error> {
         if self.cache_retirement.is_some() {
             return Err(Gemma4Error::new(
                 "CUDA decoder",
@@ -230,7 +238,7 @@ impl Gemma4CudaModel {
                     offset += rows;
                 }
                 if offset == tokens.len() {
-                    return project_logits(&host.config, cuda, executors, batch);
+                    return readout(&host.config, cuda, executors, batch);
                 }
             }
             for (relative, token) in tokens[offset..].iter().enumerate() {
@@ -246,10 +254,10 @@ impl Gemma4CudaModel {
                     std::slice::from_ref(token),
                 )?;
             }
-            project_logits(&host.config, cuda, executors, buffers)
+            readout(&host.config, cuda, executors, buffers)
         })();
         match result {
-            Ok(logits) => Ok(logits),
+            Ok(output) => Ok(output),
             Err(failure) => {
                 let message = failure.cause().to_string();
                 self.failure = Some(failure);
@@ -290,6 +298,21 @@ impl Gemma4CudaDecoder {
     /// Rejects an empty chunk, invalid tokens or excess capacity before mutation.
     /// A device failure faults the shared model and retains its retirement owner.
     pub fn prefill(&mut self, tokens: &[u32]) -> Result<Vec<u16>, Gemma4Error> {
+        self.step(tokens, project_logits)
+    }
+
+    /// Append a prompt chunk without computing a vocabulary head.
+    /// Success includes device completion at the accepted continuation boundary.
+    /// # Errors
+    /// As [`Self::prefill`], including model-owned retirement on device failure.
+    pub fn advance_prefill(&mut self, tokens: &[u32]) -> Result<(), Gemma4Error> {
+        // Each run_rows ends in completion-owned layer scaling: its successful
+        // Pending retirement has already drained this same stream. No final-logit
+        // readback or additional synchronization is needed to acknowledge continuation.
+        self.step(tokens, |_, _, _, _| Ok(()))
+    }
+
+    fn step<T>(&mut self, tokens: &[u32], readout: Readout<T>) -> Result<T, Gemma4Error> {
         if tokens.is_empty() {
             return Err(Gemma4Error::new("CUDA decoder", "empty prompt chunk"));
         }
@@ -314,9 +337,9 @@ impl Gemma4CudaDecoder {
                 Gemma4Error::new("CUDA decoder", "chunk exceeds the device cache capacity")
             })?;
         model.config().validate_text_tokens(tokens)?;
-        let logits = model.step(tokens, self.position, &mut self.caches)?;
+        let output = model.step(tokens, self.position, &mut self.caches, readout)?;
         self.position = end;
-        Ok(logits)
+        Ok(output)
     }
 
     /// Append one token and return its post-soft-cap logits.

@@ -193,12 +193,14 @@ executor requests this operation only for intermediate prefill; final prefill an
 decode still request logits. Whole-offer validation and all-rows-before-logical-commit
 remain mandatory. Any partial execution failure retains every affected decoder,
 resource and charge through the existing model-owned settlement/retirement path.
-The host prerequisite separates the CPU body from its readout; CUDA and Metal retain
-the qualified full-head/readback completion path even when no logits are requested.
-That public fallback is not head-free device execution. Any replacement must establish
-head-free completion before progress acknowledgement, qualify common-history state/output
-equivalence and show repeated end-to-end benefit. Do not trade away completion or
-precision to recover this measured cost, or reopen/promote unchanged M4.
+CPU and CUDA separate the body from its readout; Metal retains the qualified
+full-head/readback completion fallback even when no logits are requested. CUDA uses
+the final native layer scale's existing completion owner before acknowledging
+head-free progress, without adding a barrier or changing failure retention. The
+[bounded CUDA qualification](../benchmarks/gemma4-cuda-baseline.md#state-only-cuda-uninstrumented-and-http-qualification-2026-10-30)
+now establishes common-history equivalence, repeated uninstrumented benefit and the
+actual HTTP path on pinned E4B/RTX 4090. Do not trade away completion or precision,
+extend that device/model claim without evidence, or reopen/promote unchanged M4.
 
 The host prerequisite now passes varied-weight CPU full-row/common-history checks
 across sliding-window/shared-tail boundaries, a real Engine prompt crossing two
@@ -210,23 +212,29 @@ scope now [qualifies its never-started Metal executor stage](../benchmarks/runti
 with the unchanged binary: all four archived chat tokens through the real Engine,
 shutdown and complete supervision pass. That proves retained full-head fallback
 integration, not head-free Metal execution; the failed decoder scope stays separate.
-CUDA fallback integration now also passes alongside a **private head-free candidate**
-based on current public Rust. The final native layer scale already drains the same
-stream through its completion owner; the candidate skips readout without adding a
-barrier or changing failure retention. Both sources pass all 160 complete finite
-common-history rows bit-for-bit against qualified serial, headed/state-only scalar
+The initial CUDA fallback and private head-free candidate both pass all 160 complete
+finite common-history rows bit-for-bit against qualified serial, headed/state-only scalar
 and window-boundary continuation comparisons, and seven real CUDA decoder/Engine/
 text/pressure tests, including intermediate-prefill failed-drain retirement.
 
-All three fixed performance pairs preserve 1176 paired whole outcomes. Median paired
-throughput improves 7.37% at c4 and 7.64% at mixed8, passing the 5% screen without
-latency or paired diagnostic-pass regressions. An analysis-only repair of a stale M4
-field name re-audits the retained data; the original aggregation failure remains and
-no model is rerun. This is matched row-guard/trace text-facade evidence, not HTTP or
-uninstrumented production performance. **Keep the candidate private** and advance
-HTTP selection/cancellation and uninstrumented end-to-end qualification next. Public
-CUDA/Metal retain their full-head fallback; Metal head omission and broader device
-scope are unqualified. Do not extend or repeat the completed three-pair population.
+The first fixed three-pair screen preserves 1176 paired whole outcomes and measures
+7.37%/7.64% median c4/mixed8 gains with matched row guards and trace. Its original
+stale-field aggregation failure remains preserved alongside the successful
+analysis-only repair; no model is rerun. The separate **uninstrumented** three-pair
+population now passes the unchanged criteria: c1/c4/mixed8 median gains are
+7.69%/7.62%/6.91%, with all 1176 paired observable outcomes exact and no latency or
+paired diagnostic-pass regressions. The actual CUDA CLI also passes JSON/SSE parity,
+request-local rejection, cancellation with a runtime-enqueued healthy peer, later
+reuse and normal SIGTERM drain. A closure-manifest defect affected only the
+controller's still-open stdout log; a fresh post-exit integrity audit preserves the
+original defect and verifies the completed evidence without rerunning models.
+
+CUDA state-only prefill and its qualified decoder/failed-drain tests are now
+integrated into the public executor path after these gates. Final prefill/decode retain
+headed arithmetic, and Metal retains its full-head fallback. Qualification remains
+bounded to experimental greedy E4B/RTX 4090; the text-facade speedup is not HTTP
+performance, broader hardware/model support, host isolation or competitive acceptance.
+Do not extend or repeat either completed three-pair population.
 
 The [shared-grant recovery gate](../benchmarks/gemma4-cuda-baseline.md#shared-grant-allocation-and-recovery-gate-2026-10-26)
 now qualifies real partial cache-allocation failure, healthy-peer preservation, charge

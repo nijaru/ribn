@@ -198,9 +198,12 @@ attention matching with zero error; the archived 18-token chat row reproduces al
 greedy tokens. Intermediate prefill uses `GemmaDecode::advance_prefill`, which
 certifies completed continuation without returning logits. CPU execution omits final
 normalization, the tied projection and soft cap; final prefill/decode retain readout.
-CUDA and Metal currently implement this operation through their existing full-head
-completion path, not head-free device execution. The CPU cache keeps complete
-per-owner history and masks local spans instead of evicting them. Cache eviction, donor trimming, long-context behaviour,
+CUDA also omits readout for intermediate prefill, using the final native layer
+scale's existing completion owner before acknowledging progress. Its
+[common-history, uninstrumented and CLI HTTP qualification](../benchmarks/gemma4-cuda-baseline.md#state-only-cuda-uninstrumented-and-http-qualification-2026-10-30)
+is bounded to the pinned E4B/RTX 4090 path. Metal retains its qualified full-head
+completion fallback; head-free Metal execution is unqualified. The CPU cache keeps
+complete per-owner history and masks local spans instead of evicting them. Cache eviction, donor trimming, long-context behaviour,
 sampling and competitive performance remain unqualified; this
 is a correctness-first host path, not a portable tensor layer or a selected hardware
 priority.

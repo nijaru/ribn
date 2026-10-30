@@ -80,9 +80,7 @@ impl Gemma4Executor<Gemma4CpuDecoder> {
 #[cfg(feature = "cuda")]
 impl GemmaDecode for crate::Gemma4CudaDecoder {
     fn advance_prefill(&mut self, tokens: &[u32]) -> Result<(), Gemma4Error> {
-        // Retain the qualified full-head/readback completion path until head-free
-        // device execution and its completion ownership are qualified together.
-        Self::prefill(self, tokens).map(drop)
+        Self::advance_prefill(self, tokens)
     }
     fn prefill(&mut self, tokens: &[u32]) -> Result<Vec<u16>, Gemma4Error> {
         Self::prefill(self, tokens)

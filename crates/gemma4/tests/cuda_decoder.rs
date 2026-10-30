@@ -79,6 +79,8 @@ fn cuda_decoder_reproduces_the_archived_greedy_tokens() {
     ] {
         assert!(decoder.prefill(&invalid).is_err());
         assert_eq!(decoder.position(), prompt.len());
+        assert!(decoder.advance_prefill(&invalid).is_err());
+        assert_eq!(decoder.position(), prompt.len());
     }
     let mut step_times = Vec::with_capacity(steps.len() - 1);
     let mut chosen = argmax(&logits).unwrap();
@@ -97,17 +99,17 @@ fn cuda_decoder_reproduces_the_archived_greedy_tokens() {
     // Single-token heads and partial prompt chunks must produce exactly the same
     // logits and continuation as skipping heads within one complete prefill.
     for chunk_size in [1, 7] {
-        decoder.reset();
-        assert_eq!(decoder.position(), 0);
-        for chunk in prompt.chunks(chunk_size) {
-            logits = decoder.prefill(chunk).unwrap();
+        for state_only in [false, true] {
+            decoder.reset();
+            assert_eq!(decoder.position(), 0);
+            logits = prefill_chunked(&mut decoder, &prompt, chunk_size, state_only);
+            assert_logits(&logits, &expected_logits[0]);
+            for (token, expected) in steps.iter().zip(&expected_logits[1..]) {
+                logits = decoder.decode(*token).unwrap();
+                assert_logits(&logits, expected);
+            }
+            assert_eq!(decoder.position(), prompt.len() + steps.len() - 1);
         }
-        assert_logits(&logits, &expected_logits[0]);
-        for (token, expected) in steps.iter().zip(&expected_logits[1..]) {
-            logits = decoder.decode(*token).unwrap();
-            assert_logits(&logits, expected);
-        }
-        assert_eq!(decoder.position(), prompt.len() + steps.len() - 1);
     }
     decoder.reset();
     assert_eq!(decoder.position(), 0);
@@ -165,6 +167,7 @@ fn cuda_decoder_reproduces_archived_window_boundary_continuations() {
             assert!(decoder.prefill(&invalid).is_err());
             assert_eq!(decoder.position(), 0);
         }
+        let mut expected_logits = Vec::new();
         for (index, step) in steps.iter().enumerate().skip(first_step) {
             let input: Vec<u32> = step[if index == first_step {
                 "history_ids"
@@ -187,6 +190,7 @@ fn cuda_decoder_reproduces_archived_window_boundary_continuations() {
             };
             assert_eq!(logits.len(), config.vocab_size());
             assert!(logits.iter().all(|bits| bits & 0x7f80 != 0x7f80));
+            expected_logits.push(logits.clone());
             assert_eq!(
                 u64::from(argmax(&logits).unwrap()),
                 step["chosen"].as_u64().unwrap(),
@@ -197,6 +201,7 @@ fn cuda_decoder_reproduces_archived_window_boundary_continuations() {
                 step["history_ids"].as_array().unwrap().len()
             );
         }
+        check_state_only_history(&mut decoder, case, first_step, prefix, &expected_logits);
     }
 }
 
@@ -275,6 +280,59 @@ fn cuda_partial_cache_construction_retires_allocations_before_refund() {
     drop(decoder);
     drop(model);
     assert_eq!(pool.granted(), 0);
+}
+
+fn check_state_only_history(
+    decoder: &mut Gemma4CudaDecoder,
+    case: &Value,
+    first_step: usize,
+    prefix: usize,
+    expected_logits: &[Vec<u16>],
+) {
+    decoder.reset();
+    for (relative, expected) in expected_logits.iter().enumerate() {
+        let step = &case["steps"][first_step + relative];
+        let input: Vec<u32> = step[if relative == 0 {
+            "history_ids"
+        } else {
+            "input_ids"
+        }]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|id| u32::try_from(id.as_u64().unwrap()).unwrap())
+        .collect();
+        let start = if relative == 0 { prefix } else { 0 };
+        if start != 0 {
+            decoder.advance_prefill(&input[..start]).unwrap();
+        }
+        let logits = prefill_chunked(decoder, &input[start..], 16, true);
+        assert_logits(&logits, expected);
+        assert_eq!(
+            decoder.position(),
+            step["history_ids"].as_array().unwrap().len()
+        );
+    }
+}
+
+fn prefill_chunked(
+    decoder: &mut Gemma4CudaDecoder,
+    tokens: &[u32],
+    chunk_size: usize,
+    state_only: bool,
+) -> Vec<u16> {
+    let final_start = (tokens.len() - 1) / chunk_size * chunk_size;
+    let mut position = decoder.position();
+    for chunk in tokens[..final_start].chunks(chunk_size) {
+        if state_only {
+            decoder.advance_prefill(chunk).unwrap();
+        } else {
+            decoder.prefill(chunk).unwrap();
+        }
+        position += chunk.len();
+        assert_eq!(decoder.position(), position);
+    }
+    decoder.prefill(&tokens[final_start..]).unwrap()
 }
 
 fn assert_logits(actual: &[u16], expected: &[u16]) {

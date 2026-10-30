@@ -123,7 +123,7 @@ fn cuda_failed_drain_keeps_owners_until_capture_ends() {
     let mut engine = Engine::with_defaults(Gemma4Executor::cuda(&model).unwrap()).unwrap();
     engine
         .enqueue(TokenRequest::new(
-            vec![2; 16],
+            vec![2; 17],
             GenerationOptions {
                 max_output_tokens: 4,
                 ..GenerationOptions::default()
