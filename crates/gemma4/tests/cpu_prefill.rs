@@ -71,6 +71,7 @@ fn multirow_prefill_matches_serial_across_window_and_shared_tail_boundaries() {
         let weights = model(window);
         let mut serial = Gemma4CpuDecoder::shared(weights.clone()).unwrap();
         let mut chunked = Gemma4CpuDecoder::shared(weights.clone()).unwrap();
+        let mut state_only = Gemma4CpuDecoder::shared(weights).unwrap();
 
         // Equal last tokens with different prefixes must not produce a degenerate
         // fixture that could pass even if attention ignored continuation state.
@@ -109,22 +110,37 @@ fn multirow_prefill_matches_serial_across_window_and_shared_tail_boundaries() {
                     &reference[end - 1],
                     &format!("window {window}, chunk {position}..{end}"),
                 );
+                if end == prompt.len() {
+                    let logits = state_only.prefill(&prompt[position..end]).unwrap();
+                    assert_logits(
+                        &logits,
+                        &reference[end - 1],
+                        &format!("window {window}, final readout after state-only chunks"),
+                    );
+                } else {
+                    state_only.advance_prefill(&prompt[position..end]).unwrap();
+                }
+                assert_eq!(state_only.position(), end);
                 position = end;
             }
             assert_eq!(position, prompt.len());
             // Equal final prompt logits alone do not prove equivalent continuation.
             // Compare complete rows on a common teacher-forced history, not argmaxes.
             for (offset, &token) in continuation.iter().enumerate() {
-                let logits = chunked.decode(token).unwrap();
-                assert_logits(
-                    &logits,
-                    &reference[prompt.len() + offset],
-                    &format!("window {window}, continuation {offset}"),
-                );
+                for decoder in [&mut chunked, &mut state_only] {
+                    let logits = decoder.decode(token).unwrap();
+                    assert_logits(
+                        &logits,
+                        &reference[prompt.len() + offset],
+                        &format!("window {window}, continuation {offset}"),
+                    );
+                }
             }
-            assert_eq!(chunked.position(), prompt.len() + continuation.len());
-            chunked.reset();
-            assert_eq!(chunked.position(), 0);
+            for decoder in [&mut chunked, &mut state_only] {
+                assert_eq!(decoder.position(), prompt.len() + continuation.len());
+                decoder.reset();
+                assert_eq!(decoder.position(), 0);
+            }
         }
     }
 }
@@ -141,6 +157,8 @@ fn rejected_chunks_preserve_the_next_continuation() {
     let overlong = vec![0; weights.config().max_position_embeddings() - prompt.len() + 1];
     for chunk in [&[][..], &[2, 7], &overlong] {
         assert!(rejected.prefill(chunk).is_err());
+        assert_eq!(rejected.position(), prompt.len());
+        assert!(rejected.advance_prefill(chunk).is_err());
         assert_eq!(rejected.position(), prompt.len());
     }
     for token in [6, 0, 2] {

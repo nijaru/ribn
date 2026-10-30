@@ -74,12 +74,18 @@ impl<D: GemmaDecode> Execution<D> {
                 .expect("validated sequence");
             let prefix = item.prefix + item.token_budget;
             let logits = match item.kind {
-                StepKind::Prefill => state
-                    .decoder
-                    .prefill(&state.prompt[item.prefix as usize..prefix as usize]),
+                StepKind::Prefill => {
+                    let tokens = &state.prompt[item.prefix as usize..prefix as usize];
+                    if item.output_budget == 0 {
+                        state.decoder.advance_prefill(tokens).map(|()| None)
+                    } else {
+                        state.decoder.prefill(tokens).map(Some)
+                    }
+                }
                 StepKind::Decode => state
                     .decoder
-                    .decode(state.input.expect("validated decode input")),
+                    .decode(state.input.expect("validated decode input"))
+                    .map(Some),
             }
             .map_err(|error| execution(&error))?;
             if state.decoder.position() != prefix as usize {
@@ -87,10 +93,11 @@ impl<D: GemmaDecode> Execution<D> {
                     "decoder did not complete the accepted range",
                 ));
             }
-            let tokens = if item.output_budget == 0 {
-                Vec::new()
-            } else {
-                vec![argmax(&logits).ok_or_else(|| ExecutionError::new("logits are empty"))?]
+            let tokens = match logits {
+                Some(logits) => {
+                    vec![argmax(&logits).ok_or_else(|| ExecutionError::new("logits are empty"))?]
+                }
+                None => Vec::new(),
             };
             rows.push(StepCompletion {
                 sequence: item.sequence,

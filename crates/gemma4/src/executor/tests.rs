@@ -8,6 +8,7 @@ use std::sync::{
     atomic::{AtomicBool, AtomicUsize, Ordering},
 };
 
+mod prefill;
 mod retirement;
 
 #[derive(Default)]
@@ -19,6 +20,8 @@ enum Completion {
 }
 struct Probe {
     calls: AtomicUsize,
+    advance_calls: AtomicUsize,
+    head_calls: AtomicUsize,
     live: AtomicUsize,
     completion: Mutex<Completion>,
     close_calls: AtomicUsize,
@@ -32,6 +35,8 @@ impl Default for Probe {
     fn default() -> Self {
         Self {
             calls: AtomicUsize::new(0),
+            advance_calls: AtomicUsize::new(0),
+            head_calls: AtomicUsize::new(0),
             live: AtomicUsize::new(0),
             completion: Mutex::default(),
             close_calls: AtomicUsize::new(0),
@@ -69,11 +74,18 @@ impl Drop for CountedDecoder {
     }
 }
 impl GemmaDecode for CountedDecoder {
+    fn advance_prefill(&mut self, tokens: &[u32]) -> Result<(), Gemma4Error> {
+        self.probe.advance_calls.fetch_add(1, Ordering::SeqCst);
+        self.enter()?;
+        self.inner.advance_prefill(tokens)
+    }
     fn prefill(&mut self, tokens: &[u32]) -> Result<Vec<u16>, Gemma4Error> {
+        self.probe.head_calls.fetch_add(1, Ordering::SeqCst);
         self.enter()?;
         self.inner.prefill(tokens)
     }
     fn decode(&mut self, token: u32) -> Result<Vec<u16>, Gemma4Error> {
+        self.probe.head_calls.fetch_add(1, Ordering::SeqCst);
         self.enter()?;
         self.inner.decode(token)
     }
@@ -252,6 +264,16 @@ impl GenerationExecutor for Boundary {
             assert!(states.values().all(|state| {
                 state.cursor == 0 && state.input.is_none() && state.remaining == 2
             }));
+            let first = self.offered[0];
+            let second = self.offered[1];
+            assert_eq!(
+                states[&first.sequence].decoder.position(),
+                (first.prefix + first.token_budget) as usize
+            );
+            assert_eq!(
+                states[&second.sequence].decoder.position(),
+                second.prefix as usize
+            );
             for item in &self.offered {
                 assert!(self.inner.release(item.sequence).is_err());
             }

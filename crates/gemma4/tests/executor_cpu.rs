@@ -64,7 +64,8 @@ fn cpu_executor_matches_the_direct_decoder_through_the_engine() {
     let package = package(&dir, &inventory(), false);
     let source = Gemma4Source::open(&package).unwrap();
     let host = Arc::new(Gemma4CpuWeights::load(&source).unwrap());
-    let prompt = [1_u32, 2, 3];
+    // Cross two default 16-token intermediate chunks before requesting logits.
+    let prompt: Vec<_> = [1_u32, 2, 3].into_iter().cycle().take(35).collect();
     let expected = greedy(
         &mut Gemma4CpuDecoder::shared(host.clone()).unwrap(),
         &prompt,

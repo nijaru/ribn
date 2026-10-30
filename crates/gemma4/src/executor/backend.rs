@@ -7,6 +7,14 @@ use std::sync::Arc;
 /// Sequence-level decoder operations; execution failure does not permit replay.
 /// Teardown is separate: it may succeed even when continuation is invalid.
 pub trait GemmaDecode: Send {
+    /// Append a prompt chunk without returning logits.
+    ///
+    /// Success certifies completed continuation at the accepted end, not pending
+    /// device work. A backend may retain a full-head completion path internally.
+    /// # Errors
+    /// As [`Self::prefill`]. Failed execution retains resources for settlement and
+    /// close; an error never permits replay of a potentially advanced continuation.
+    fn advance_prefill(&mut self, tokens: &[u32]) -> Result<(), Gemma4Error>;
     /// Append a prompt chunk and return logits for its last token.
     /// # Errors
     /// Rejects invalid tokens, excess context or a backend execution failure.
@@ -32,6 +40,9 @@ pub(super) struct Backend<D> {
 }
 
 impl GemmaDecode for Gemma4CpuDecoder {
+    fn advance_prefill(&mut self, tokens: &[u32]) -> Result<(), Gemma4Error> {
+        Self::advance_prefill(self, tokens)
+    }
     fn prefill(&mut self, tokens: &[u32]) -> Result<Vec<u16>, Gemma4Error> {
         Self::prefill(self, tokens)
     }
@@ -68,6 +79,11 @@ impl Gemma4Executor<Gemma4CpuDecoder> {
 
 #[cfg(feature = "cuda")]
 impl GemmaDecode for crate::Gemma4CudaDecoder {
+    fn advance_prefill(&mut self, tokens: &[u32]) -> Result<(), Gemma4Error> {
+        // Retain the qualified full-head/readback completion path until head-free
+        // device execution and its completion ownership are qualified together.
+        Self::prefill(self, tokens).map(drop)
+    }
     fn prefill(&mut self, tokens: &[u32]) -> Result<Vec<u16>, Gemma4Error> {
         Self::prefill(self, tokens)
     }
@@ -119,6 +135,11 @@ impl Gemma4Executor<crate::Gemma4CudaDecoder> {
 
 #[cfg(all(feature = "metal", target_os = "macos"))]
 impl GemmaDecode for crate::Gemma4MetalDecoder {
+    fn advance_prefill(&mut self, tokens: &[u32]) -> Result<(), Gemma4Error> {
+        // Retain the qualified full-head/readback completion path until head-free
+        // device execution and its completion ownership are qualified together.
+        Self::prefill(self, tokens).map(drop)
+    }
     fn prefill(&mut self, tokens: &[u32]) -> Result<Vec<u16>, Gemma4Error> {
         Self::prefill(self, tokens)
     }

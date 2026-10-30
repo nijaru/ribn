@@ -111,17 +111,30 @@ impl Gemma4CpuDecoder {
     /// # Errors
     /// Rejects empty/out-of-range tokens or a chunk beyond the context bound.
     pub fn prefill(&mut self, tokens: &[u32]) -> Result<Vec<u16>, Gemma4Error> {
-        self.step(tokens)
+        self.step(tokens, project_logits)
+    }
+
+    /// Complete a prompt chunk without final normalization, projection or soft cap.
+    ///
+    /// Success advances the continuation position without producing logits.
+    /// # Errors
+    /// As [`Self::prefill`]; failure leaves the continuation unchanged.
+    pub fn advance_prefill(&mut self, tokens: &[u32]) -> Result<(), Gemma4Error> {
+        self.step(tokens, |_, _, _| Ok(()))
     }
 
     /// Process one token and return its post-soft-cap logits.
     /// # Errors
     /// As [`Self::prefill`].
     pub fn decode(&mut self, token: u32) -> Result<Vec<u16>, Gemma4Error> {
-        self.step(&[token])
+        self.step(&[token], project_logits)
     }
 
-    fn step(&mut self, tokens: &[u32]) -> Result<Vec<u16>, Gemma4Error> {
+    fn step<T>(
+        &mut self,
+        tokens: &[u32],
+        readout: impl FnOnce(&Gemma4Config, &Gemma4CpuWeights, &[u16]) -> Result<T, Gemma4Error>,
+    ) -> Result<T, Gemma4Error> {
         let sequence = tokens.len();
         let end = self
             .position
@@ -148,18 +161,22 @@ impl Gemma4CpuDecoder {
                     .map(|cache| (cache.keys.len(), cache.values.len()))
             })
             .collect();
-        let logits = run_step(
+        let result = run_body(
             &self.config,
             &self.weights,
             &mut self.caches,
             self.position,
             self.scales,
             tokens,
-        );
-        match logits {
-            Ok(logits) => {
+        )
+        .and_then(|hidden| {
+            let last = &hidden[(sequence - 1) * self.config.hidden_size()..];
+            readout(&self.config, &self.weights, last)
+        });
+        match result {
+            Ok(output) => {
                 self.position = end;
-                Ok(logits)
+                Ok(output)
             }
             Err(error) => {
                 // A failed step must not leave partly advanced continuation state.
@@ -314,7 +331,7 @@ pub fn argmax(logits: &[u16]) -> Option<u32> {
     Some(token)
 }
 
-fn run_step(
+fn run_body(
     config: &Gemma4Config,
     weights: &Gemma4CpuWeights,
     caches: &mut [Option<OwnerCache>],
@@ -388,12 +405,22 @@ fn run_step(
             &per_layer[layer],
         )?;
     }
-    let last = &hidden[(sequence - 1) * hidden_size..];
+    Ok(hidden)
+}
+
+fn project_logits(
+    config: &Gemma4Config,
+    weights: &Gemma4CpuWeights,
+    last: &[u16],
+) -> Result<Vec<u16>, Gemma4Error> {
+    let embedding = weights
+        .parameter(ParameterId::TokenEmbedding)
+        .ok_or_else(|| Gemma4Error::new("CPU decoder", "missing token embedding"))?;
     let normalized = rms_norm(
         last,
         1,
-        hidden_size,
-        epsilon,
+        config.hidden_size(),
+        config.rms_norm_eps(),
         weights
             .parameter(ParameterId::FinalNorm)
             .ok_or_else(|| Gemma4Error::new("CPU decoder", "missing final norm"))?,

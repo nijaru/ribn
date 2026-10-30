@@ -182,13 +182,31 @@ not a wider-row or scheduler change. Their head stream intervals plus downstream
 softcap account for 4.737 s / 69.381 s (6.83%), exceeding the predeclared 5% selection
 threshold. All 160 common-history full rows remain bit-identical to qualified serial;
 both 128-question controls preserve complete IDs/text/usage and retirement. One
-ordered observation pair is not an overhead bound or achieved speedup. Before a
-head-omission implementation, settle explicit state-only versus logits results and
-head-free device completion before progress acknowledgement, retaining the same
-partial-enqueue/drain-failure ownership. Require common-history state/output
-qualification and repeated end-to-end benefit; do not trade away completion or
-precision to recover this measured cost. The probe changes no public execution path
-and does not reopen or promote the unchanged M4 candidate.
+ordered observation pair is not an overhead bound or achieved speedup.
+
+The state-only contract is `GemmaDecode::advance_prefill(tokens) -> Result<(), _>`:
+append the accepted prompt chunk without returning logits. Success means completed
+continuation at the accepted end, not pending work or empty/sentinel logits. The
+executor requests this operation only for intermediate prefill; final prefill and
+decode still request logits. Whole-offer validation and all-rows-before-logical-commit
+remain mandatory. Any partial execution failure retains every affected decoder,
+resource and charge through the existing model-owned settlement/retirement path.
+The host prerequisite separates the CPU body from its readout; CUDA and Metal retain
+the qualified full-head/readback completion path even when no logits are requested.
+That fallback is not head-free device execution. A future device implementation must
+establish head-free completion before progress acknowledgement, qualify common-history
+state/output equivalence and show repeated end-to-end benefit. Do not trade away
+completion or precision to recover this measured cost, or reopen/promote unchanged M4.
+
+The host prerequisite now passes varied-weight CPU full-row/common-history checks
+across sliding-window/shared-tail boundaries, a real Engine prompt crossing two
+intermediate chunks, and partial state-only failure/retirement tests. Workspace tests
+and default/CUDA-feature/Metal all-target Clippy pass. These establish the host contract,
+not head-free device qualification or a measured speedup. The local Metal decoder
+assertions pass, but its supervision scope fails an observer-ownership check; the
+remaining Metal executor stage is unrun. CUDA integration requalification is also
+unrun while the desktop is unavailable. Preserve those device gates before claiming
+clean integration qualification; do not retry the unchanged failed observation scope.
 
 The [shared-grant recovery gate](../benchmarks/gemma4-cuda-baseline.md#shared-grant-allocation-and-recovery-gate-2026-10-26)
 now qualifies real partial cache-allocation failure, healthy-peer preservation, charge

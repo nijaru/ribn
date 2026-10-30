@@ -195,8 +195,12 @@ layer scalar, and the tied head with the final soft cap. Reference tests against
 CPU captures keep linear, head and normalization inside FP32 bounds, GELU inside its
 evaluation bound, residual/gated/combine cases bit-exact, rotary bit-exact and
 attention matching with zero error; the archived 18-token chat row reproduces all four
-greedy tokens. The CPU cache keeps complete per-owner history and masks local spans
-instead of evicting them. Cache eviction, donor trimming, long-context behaviour,
+greedy tokens. Intermediate prefill uses `GemmaDecode::advance_prefill`, which
+certifies completed continuation without returning logits. CPU execution omits final
+normalization, the tied projection and soft cap; final prefill/decode retain readout.
+CUDA and Metal currently implement this operation through their existing full-head
+completion path, not head-free device execution. The CPU cache keeps complete
+per-owner history and masks local spans instead of evicting them. Cache eviction, donor trimming, long-context behaviour,
 sampling and competitive performance remain unqualified; this
 is a correctness-first host path, not a portable tensor layer or a selected hardware
 priority.
