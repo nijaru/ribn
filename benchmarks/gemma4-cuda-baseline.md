@@ -2206,6 +2206,117 @@ state-only versus logits result contract. Common-history state/output qualificat
 and repeated end-to-end performance gates remain ahead. Public Rust is unchanged;
 no full-workspace, Metal, HTTP or uninstrumented-performance checks run in this scope.
 
+### State-only CUDA head-omission screen (2026-10-30)
+
+**The private head-omission candidate passes the fixed three-pair screen:** median
+paired throughput gains are **7.37% at c4** and **7.64% at mixed8**, with exact whole
+outputs and no paired loss of diagnostic-deadline passes. This is a measured
+text-facade improvement, not the earlier cost fraction treated as a speedup. The
+candidate remains private; public CUDA still uses the full-head advance fallback.
+
+Both sources start from public `6d9b17e` (production Rust `448a3a0`), rather than
+reusing the older cost-observation executable. The only candidate/control production
+source differences are in the CUDA decoder and its `GemmaDecode` bridge. A typed
+readout callback shares whole-chunk validation, body execution, model-fault retention
+and position commitment. Intermediate `advance_prefill` returns `Result<()>` without
+last-row extraction, final normalization, tied-head projection, final-logit readback
+or softcap. Final prefill and decode retain their original arithmetic.
+
+The final layer's native scale already acknowledges completion: its successful
+`Pending::retire` drains the same associated stream before publishing output. The
+head-free operation uses that existing boundary, with no added synchronization,
+event, kernel, scheduler or precision change. A failed body still faults the shared
+model and retains its operation/allocation envelope; neither position acknowledgement
+nor logical batch commitment bypasses retirement. The host PLE readback remains.
+
+Both sources receive identical qualification-only requested-logit finiteness guards
+and bounded executor traces. There are no CUDA timing events. Before performance,
+**each source passes all 160 complete common-history BF16 vocabulary rows bit-for-bit
+against the qualified serial reference**, with 41,943,040 finite elements, all archived
+CPU-winner conditions and all 13 cohort grant returns preserved. Prompts now advance
+in 16-token chunks without intermediate requested heads. Final rows and teacher-forced
+continuations therefore check the state produced by omission, not just its token
+choices. Separate real decoder tests compare headed/state-only partitions exactly at
+scalar and eight-row/window-boundary preparation, including invalid whole chunks.
+
+Each source also passes all seven ignored CUDA decoder/Engine/text/pressure tests.
+The real capture-failure test submits a 17-token prompt, making its first 16-token
+chunk intermediate: failed completion retains the admitted charges until capture
+ends and shutdown settles, then refuses execution reuse. This is a real driver-error
+and retirement check, not execution of a captured graph or arbitrary partial-kernel
+fault injection. Workspace tests pass on Linux (**412 passed, 10 ignored per source**),
+as do boundaries, formatting, CUDA-feature workspace all-target Clippy, release CUDA
+tests/examples and CLI builds. Every Cargo invocation uses Rust 1.98.0, two jobs,
+offline mode, locked dependencies where applicable and fresh isolated targets.
+
+The frozen performance deck is unchanged: archived four-request warmup, all 128 QA
+questions at c1/c4/mixed8, and four synthetic resident prompts of 4092–4095 tokens.
+Greedy caps/EOS, worker one, window four and default scheduling remain fixed. Mixed8
+uses the same closed-loop arrival/think delays, not an identical open-loop trace.
+Each pair compares all **392 whole outcomes** (raw IDs, text, usage and finish reason);
+all **1176 paired outcomes / 2352 requests** match, without retries or missing samples.
+Each QA phase completes 1581 intermediate advances, 128 final-prefill heads and 1099
+decode heads. Its **1227 requested complete vocabulary rows** are scanned finite;
+the 1581 head-free advances do not pretend to return or validate discarded logits.
+The control physically retains its full-head fallback on those advances.
+
+Pairs run control/candidate, candidate/control, control/candidate, one model process
+at a time. The predeclared screen requires median paired throughput gains of at least
+5% at both c4 and mixed8; c1 throughput may regress at most 5%. Median paired p95
+first/last-content latency may regress at most 5% in those three profiles, with no
+paired loss of joint 1 s/5 s diagnostic passes and no failed requests. These diagnostic
+thresholds are not product SLOs. Resident4 remains diagnostic rather than a selection
+gate. Throughput counts completion IDs including EOS over client launch through full
+text drain and explicit shutdown; loading, processor construction and JSON export
+are outside that clock.
+
+| Profile | Paired throughput gains, % | Median gain, % | Median p95 first / last-content ratios | Joint diagnostic passes, control → candidate |
+| --- | --- | ---: | --- | --- |
+| c1 | 7.22 / 8.50 / 3.38 | 7.22 | 0.927 / 0.916 | 127→128 / 127→128 / 127→128 |
+| c4 | 7.68 / 7.37 / 6.72 | 7.37 | 0.959 / 0.916 | 20→31 / 19→31 / 20→31 |
+| mixed8 | 7.67 / 7.64 / 6.52 | 7.64 | 0.940 / 0.930 | 2→3 / 2→3 / 2→3 |
+| resident4, diagnostic | 7.84 / 9.42 / 9.60 | 9.42 | 0.913 / 0.913 | 0→0 / 0→0 / 0→0 |
+
+The RTX 4090/driver 615.71.10, BF16 package and nine package pins are unchanged.
+Actual numerical/performance process maps retain the same 13 DSOs. All profile
+continuation grants return to the model baseline and every numerical/performance
+process ends at zero grants. Minimum pre-exec `MemAvailable` is 27,773,296,640 bytes;
+maximum sampled owned RSS is 8,213,192,704 bytes and maximum process `VmHWM` is
+8,204,681,216 bytes. The 12 GiB availability floor and 10 GiB RSS/HWM screens pass;
+these do not prove host isolation or a physical memory peak. Fresh launch preflights
+check preserved desktop Git/binary state, idle GPU and no compute PID; all recorded
+owned groups are absent at closure, with no forced cleanup.
+
+The immutable execution scope is `gemma4-headless/20261030T065021Z`. All model stages
+and three pair audits finish successfully. Its final aggregation exits 1 on a stale
+M4 field name, `native_selected_each_repeat`, before writing a summary. The fresh
+**analysis-only** scope `gemma4-headless-analysis/20261030T074522Z` corrects that key to
+`state_only_requested_each_repeat`, re-audits all retained pairs, numerical rows,
+source/binary/package/DSO identities and group absence, and passes the unchanged
+thresholds. No model is rerun, population extended or tolerance changed. The original
+aggregation failure remains intact. An earlier host-only Clippy failure on the
+inherited non-Linux provenance stub and a packaging-only AppleDouble extraction
+remain separate; neither launched a CUDA model.
+
+Source manifest SHA256:
+`0ab0581845f11bd069339d2c90b47b638a1903d67832e2674312840cd2321c44`.
+Control/candidate performance binary SHA256:
+`a1c202ff0fb7e8a9422b8f2d78199279114d24c005a962eb2006363fa7737de3` /
+`38ae29365dda38536059fbc2450ae62e5179e6c47a30428ee07fdb1bf429859a`.
+Repaired summary SHA256:
+`6094909e999dc0a1fc474c53e93a892ad560d5b64114aeeb2ebee39669b4365f`.
+Retained-output re-audit SHA256:
+`80f390b01390c9fc28f34a8fe0a8a4aa9885a384638989a1ddcc039772c52d0b`.
+Analysis closure SHA256:
+`361f03ef7e88ff60b4191703b2f8d2090c417f52a06c2139a3ff3d6747ba4d70`.
+
+This positive screen supports further qualification of this changed variant, not
+automatic promotion. HTTP selection/cancellation and **uninstrumented** end-to-end
+performance remain unrun; the matched row guards and trace are still observation
+work. No broader device/model scope, isolation, competitive-engine parity or SOTA
+claim follows. Metal head omission is untested. Public Rust and the qualified
+full-head fallback remain unchanged, and M4 stays parked.
+
 ### Advancement and remaining work
 
 The scorer, component bounds, routing fixtures, actual-model prerequisites,
@@ -2227,12 +2338,14 @@ rebase now pass, but the completed three-pair screen rejects the unchanged candi
 c4/mixed8 miss 5% throughput gains and paired diagnostic-pass losses remain. Do not
 advance this variant to further promotion gates without new bottleneck evidence and
 a changed experiment. The [default c4 cost observation](#default-c4-execution-cost-observation-2026-10-30)
-selects unused intermediate-prefill heads as the next bounded experiment, subject to
-head-free completion/output contracts and numerical qualification. Thin M4 exposure
-alone still does not select a scheduling or row-count change. Host isolation remains
-unqualified. Any future candidate still needs bounded repeated benefit, actual
-HTTP/mixed-arrival selection, cancellation, partial-enqueue/failed-drain
-retirement, pressure, fallback and uninstrumented-performance evidence.
+selected unused intermediate-prefill heads; the [changed head-omission screen](#state-only-cuda-head-omission-screen-2026-10-30)
+now passes exact common-history, runtime retirement and repeated text-facade gates.
+Keep it private while advancing HTTP selection/cancellation and uninstrumented
+end-to-end qualification; do not restart its completed three-pair population.
+Thin M4 exposure alone still does not select a scheduling or row-count change.
+Host isolation remains unqualified. Automatic promotion still requires evidence for
+the intended HTTP/mixed-arrival selection, cancellation, partial-enqueue/failed-drain
+retirement, pressure, fallback and uninstrumented-performance scope.
 The 128-question lexical screen does not qualify broad quality-equivalent serving,
 sampling or a full-distribution error budget. The host-lookup change affects public
 CUDA loading and retention only; neither it nor the passed prerequisites promotes M4,

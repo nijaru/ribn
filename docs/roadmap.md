@@ -177,12 +177,14 @@ uninstrumented-performance gates remain required for any future promotion.
 No automatic selection, full-model acceptance or quality-equivalent serving claim follows.
 
 A [default c4 cost observation](../benchmarks/gemma4-cuda-baseline.md#default-c4-execution-cost-observation-2026-10-30)
-now selects **unused intermediate-prefill heads** as the next bounded experiment,
-not a wider-row or scheduler change. Their head stream intervals plus downstream CPU
+selected **unused intermediate-prefill heads** for a bounded experiment, not a
+wider-row or scheduler change. Their head stream intervals plus downstream CPU
 softcap account for 4.737 s / 69.381 s (6.83%), exceeding the predeclared 5% selection
 threshold. All 160 common-history full rows remain bit-identical to qualified serial;
-both 128-question controls preserve complete IDs/text/usage and retirement. One
-ordered observation pair is not an overhead bound or achieved speedup.
+both 128-question controls preserve complete IDs/text/usage and retirement. That
+ordered observation pair is not an overhead bound or achieved speedup; the separate
+[head-omission screen](../benchmarks/gemma4-cuda-baseline.md#state-only-cuda-head-omission-screen-2026-10-30)
+now measures the changed variant.
 
 The state-only contract is `GemmaDecode::advance_prefill(tokens) -> Result<(), _>`:
 append the accepted prompt chunk without returning logits. Success means completed
@@ -193,10 +195,10 @@ remain mandatory. Any partial execution failure retains every affected decoder,
 resource and charge through the existing model-owned settlement/retirement path.
 The host prerequisite separates the CPU body from its readout; CUDA and Metal retain
 the qualified full-head/readback completion path even when no logits are requested.
-That fallback is not head-free device execution. A future device implementation must
-establish head-free completion before progress acknowledgement, qualify common-history
-state/output equivalence and show repeated end-to-end benefit. Do not trade away
-completion or precision to recover this measured cost, or reopen/promote unchanged M4.
+That public fallback is not head-free device execution. Any replacement must establish
+head-free completion before progress acknowledgement, qualify common-history state/output
+equivalence and show repeated end-to-end benefit. Do not trade away completion or
+precision to recover this measured cost, or reopen/promote unchanged M4.
 
 The host prerequisite now passes varied-weight CPU full-row/common-history checks
 across sliding-window/shared-tail boundaries, a real Engine prompt crossing two
@@ -208,7 +210,23 @@ scope now [qualifies its never-started Metal executor stage](../benchmarks/runti
 with the unchanged binary: all four archived chat tokens through the real Engine,
 shutdown and complete supervision pass. That proves retained full-head fallback
 integration, not head-free Metal execution; the failed decoder scope stays separate.
-CUDA integration requalification and the head-omission experiment remain open.
+CUDA fallback integration now also passes alongside a **private head-free candidate**
+based on current public Rust. The final native layer scale already drains the same
+stream through its completion owner; the candidate skips readout without adding a
+barrier or changing failure retention. Both sources pass all 160 complete finite
+common-history rows bit-for-bit against qualified serial, headed/state-only scalar
+and window-boundary continuation comparisons, and seven real CUDA decoder/Engine/
+text/pressure tests, including intermediate-prefill failed-drain retirement.
+
+All three fixed performance pairs preserve 1176 paired whole outcomes. Median paired
+throughput improves 7.37% at c4 and 7.64% at mixed8, passing the 5% screen without
+latency or paired diagnostic-pass regressions. An analysis-only repair of a stale M4
+field name re-audits the retained data; the original aggregation failure remains and
+no model is rerun. This is matched row-guard/trace text-facade evidence, not HTTP or
+uninstrumented production performance. **Keep the candidate private** and advance
+HTTP selection/cancellation and uninstrumented end-to-end qualification next. Public
+CUDA/Metal retain their full-head fallback; Metal head omission and broader device
+scope are unqualified. Do not extend or repeat the completed three-pair population.
 
 The [shared-grant recovery gate](../benchmarks/gemma4-cuda-baseline.md#shared-grant-allocation-and-recovery-gate-2026-10-26)
 now qualifies real partial cache-allocation failure, healthy-peer preservation, charge
