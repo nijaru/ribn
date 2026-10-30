@@ -72,6 +72,14 @@ records the primary sources and their scope.
 
 ## Qualification evidence
 
+Raw qualification artifacts on each host live in the canonical checkout under
+`benchmarks/results/qualification/`, ignored by Git. Historical
+`~/ribn-qualification/...` paths, including their absolute home-directory forms,
+map to the same suffix beneath that directory. Desktop lifecycle/prefill directories
+and loose profiling receipts are retained under `benchmarks/results/legacy-desktop/`
+with their original names. Historical receipts and manifests retain their original
+path strings.
+
 - [Runtime contract](runtime-contract.md) — runtime, driver and text-facade device gates.
 - [Encoder qualification](encoder-qualification.md) — BERT encoder numerical parity with an
   independent Hugging Face reference.
