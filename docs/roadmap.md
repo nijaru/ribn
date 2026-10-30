@@ -175,6 +175,21 @@ experiment on the remaining end-to-end execution deficit, not wider rows by defa
 HTTP/mixed-arrival selection, cancellation, failed-drain, pressure, fallback and
 uninstrumented-performance gates remain required for any future promotion.
 No automatic selection, full-model acceptance or quality-equivalent serving claim follows.
+
+A [default c4 cost observation](../benchmarks/gemma4-cuda-baseline.md#default-c4-execution-cost-observation-2026-10-30)
+now selects **unused intermediate-prefill heads** as the next bounded experiment,
+not a wider-row or scheduler change. Their head stream intervals plus downstream CPU
+softcap account for 4.737 s / 69.381 s (6.83%), exceeding the predeclared 5% selection
+threshold. All 160 common-history full rows remain bit-identical to qualified serial;
+both 128-question controls preserve complete IDs/text/usage and retirement. One
+ordered observation pair is not an overhead bound or achieved speedup. Before a
+head-omission implementation, settle explicit state-only versus logits results and
+head-free device completion before progress acknowledgement, retaining the same
+partial-enqueue/drain-failure ownership. Require common-history state/output
+qualification and repeated end-to-end benefit; do not trade away completion or
+precision to recover this measured cost. The probe changes no public execution path
+and does not reopen or promote the unchanged M4 candidate.
+
 The [shared-grant recovery gate](../benchmarks/gemma4-cuda-baseline.md#shared-grant-allocation-and-recovery-gate-2026-10-26)
 now qualifies real partial cache-allocation failure, healthy-peer preservation, charge
 retention for cancelled accepted submissions and subsequent reuse through the native Engine.

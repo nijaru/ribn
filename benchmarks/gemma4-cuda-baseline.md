@@ -2114,6 +2114,98 @@ binaries and targets remain intact and are not pooled into this population. Publ
 Rust is unchanged since `4f04a41`; its workspace/device qualification is reused, not
 rerun. Metal and uninstrumented/HTTP performance checks are not run in this scope.
 
+### Default c4 execution-cost observation (2026-10-30)
+
+**Unused intermediate-prefill heads select the next bounded experiment, not a
+speedup claim.** In the unchanged public-serial default c4 workload, their head
+stream intervals total **2.256285 s** and their downstream CPU softcap totals
+**2.480597 s**: **4.736882 s / 69.380802 s = 6.8274%** of the observed phase.
+This exceeds the predeclared 5% cost-selection threshold. No head is omitted in
+this measurement, and the rejected M4 candidate remains parked.
+
+The private probe changes observation only. It retains the canonical 128-question
+population, 26421 prompt tokens, greedy cap 64, EOS IDs, preprocessing worker count
+one, text window four and default Engine scheduling. It prepares the original full
+performance deck before loading weights, then executes its unchanged four-request
+warmup and c4 profile only. There is no prefill barrier, artificial sleep, row-count
+increase, kernel change or precision change.
+
+Three timing-enabled CUDA events belong to the existing mutable model owner and
+its original stream. They mark body start, head start and head enqueue completion,
+with the last marker **before** the existing full-logit readback. No new barrier
+splits body from head. All three events must already be complete after that owned
+readback, before querying their elapsed times or reusing them. Failure uses the
+existing model fault/retirement path. At most 4000 records are retained; each actual
+decoder call contributes one record, correlated with accepted owner inputs and
+positions rather than duplicated across submission rows. CPU clocks separately
+measure readback/BF16 decoding and softcap.
+
+[CUDA events](https://docs.nvidia.com/cuda/archive/13.3.0/cuda-driver-api/group__CUDA__EVENT.html)
+measure **stream intervals**, including host-enqueue gaps and possible
+contention, not isolated kernel execution or occupancy. CPU head/readback wall time
+can drain preceding body work; it is not head GPU cost. Body/head stream intervals
+and enclosing host wall times overlap and must not be added. The selected sum uses
+only the head stream interval and its downstream, nonoverlapping CPU softcap.
+
+| Actual c4 work | Calls | Body stream interval, s | Head stream interval, s | CPU softcap, s |
+| --- | ---: | ---: | ---: | ---: |
+| Intermediate prefill, no returned token | 1581 | 31.015762 | 2.256285 | 2.480597 |
+| Final prefill, token returned | 128 | 9.433150 | 0.181235 | 0.200584 |
+| Decode | 1099 | 19.301426 | 1.554361 | 1.719388 |
+
+Before workload collection, the observed decoder passes the entire 13-cohort
+common-history control: **160 complete BF16 vocabulary rows are bit-identical** to
+the qualified serial reference, with all 41,943,040 elements independently scanned
+finite and every archived CPU winner condition preserved. All cohort grants return
+to baseline. Both plain and observed c4 runs then preserve all 128 whole generated
+ID sequences, texts, usage and finish reasons, including all 1227 raw completion
+IDs, 127 stops and one length-64 result. Each run checks 2808 complete finite
+vocabulary rows before selection, including intermediate-prefill returns. All four
+warmup outputs also match the archived IDs.
+
+The plain/observed c4 phases take **69.832034 / 69.380802 s**, ratio **0.993538**.
+This passes the frozen single-pair observation screen (ratio at most 1.05), but an
+ordered pair is not a statistical overhead bound, negative overhead or a measured
+optimization gain. Loading, processor construction and JSON export remain outside
+the phase clock. These are text-facade observations, not HTTP or uninstrumented
+performance evidence.
+
+The private source/target is retained under `gemma4-default-cost/20261030T020500Z`.
+Its release CUDA library suite passes 15 tests, with three vision-corpus tests
+ignored; both qualification examples pass release CUDA clippy and build. An earlier
+host-only packet, `gemma4-default-cost/20261030T020000Z`, stops at Clippy's oversized
+retained-harness functions; its build and all model stages remain unrun. The revised
+packet splits those functions without removing validation. A GPU-occupied preflight
+then defers device work before any model attempt. The fresh execution-only scope
+`gemma4-default-cost-execution/20261030T024800Z` links the same qualified source and
+binaries without copying, rebuilding or retrying a failed model.
+
+All five numerical/model/analysis stages complete with exit zero. Sources, binaries
+and nine package pins stay unchanged; actual pre/post maps match the same 13 DSOs.
+Minimum pre-exec `MemAvailable` is 21,253,021,696 bytes; maximum sampled owned RSS
+is 8,187,928,576 bytes and maximum actual process `VmHWM` is 8,183,955,456 bytes.
+The 12 GiB availability floor and 10 GiB RSS/HWM screens pass, without proving host
+isolation. Every process ends at zero grants. Closure at **02:57:48 UTC** precedes
+the frozen execution guard; worker/watchdog groups are absent, all 38 supervised
+queries complete and the GPU is idle at 33 MiB with no compute PID. Raw rows, inputs,
+profiles, maps, receipts, analyses and an independent local recomputation are retained.
+
+Execution source manifest SHA256:
+`a65cfb1b22032c0c10ffa74c6f2b4432c58973a3ebc6353141d920ef07a9fa82`.
+Cost analysis SHA256:
+`2724bb987ff58a370a771128a8cf488dc2a745f3197813a469942a81d6c41e79`.
+Independent verification SHA256:
+`a3d6cedb882ae4a30132788a5329e0416965b17de3fca1ca7d6e0ccde695cf55`.
+Closure SHA256:
+`845b9c9c9f20019959e0b0d8b862e34860c549481384ff8f9cd23abbd2df3b3b`.
+
+This selects an experiment that avoids heads only when no logits are requested.
+It does not establish recoverable speedup: head-free progress needs explicit device
+completion and unchanged failure retention before acknowledgement, plus a clear
+state-only versus logits result contract. Common-history state/output qualification
+and repeated end-to-end performance gates remain ahead. Public Rust is unchanged;
+no full-workspace, Metal, HTTP or uninstrumented-performance checks run in this scope.
+
 ### Advancement and remaining work
 
 The scorer, component bounds, routing fixtures, actual-model prerequisites,
@@ -2134,10 +2226,12 @@ is not pooled with the new population. The host-lookup reduction and exact own-m
 rebase now pass, but the completed three-pair screen rejects the unchanged candidate:
 c4/mixed8 miss 5% throughput gains and paired diagnostic-pass losses remain. Do not
 advance this variant to further promotion gates without new bottleneck evidence and
-a changed experiment. Continue measured work on the remaining end-to-end execution
-deficit; thin M4 exposure alone does not select a scheduling or row-count change.
-Host isolation remains unqualified. Any future candidate still needs bounded repeated
-benefit, actual HTTP/mixed-arrival selection, cancellation, partial-enqueue/failed-drain
+a changed experiment. The [default c4 cost observation](#default-c4-execution-cost-observation-2026-10-30)
+selects unused intermediate-prefill heads as the next bounded experiment, subject to
+head-free completion/output contracts and numerical qualification. Thin M4 exposure
+alone still does not select a scheduling or row-count change. Host isolation remains
+unqualified. Any future candidate still needs bounded repeated benefit, actual
+HTTP/mixed-arrival selection, cancellation, partial-enqueue/failed-drain
 retirement, pressure, fallback and uninstrumented-performance evidence.
 The 128-question lexical screen does not qualify broad quality-equivalent serving,
 sampling or a full-distribution error budget. The host-lookup change affects public
