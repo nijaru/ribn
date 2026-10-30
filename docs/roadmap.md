@@ -202,11 +202,13 @@ The host prerequisite now passes varied-weight CPU full-row/common-history check
 across sliding-window/shared-tail boundaries, a real Engine prompt crossing two
 intermediate chunks, and partial state-only failure/retirement tests. Workspace tests
 and default/CUDA-feature/Metal all-target Clippy pass. These establish the host contract,
-not head-free device qualification or a measured speedup. The local Metal decoder
-assertions pass, but its supervision scope fails an observer-ownership check; the
-remaining Metal executor stage is unrun. CUDA integration requalification is also
-unrun while the desktop is unavailable. Preserve those device gates before claiming
-clean integration qualification; do not retry the unchanged failed observation scope.
+not head-free device qualification or a measured speedup. The first local Metal
+decoder observation remains failed on observer ownership. A fresh execution-only
+scope now [qualifies its never-started Metal executor stage](../benchmarks/runtime-contract.md#state-only-prefill-metal-fallback-2026-10-30)
+with the unchanged binary: all four archived chat tokens through the real Engine,
+shutdown and complete supervision pass. That proves retained full-head fallback
+integration, not head-free Metal execution; the failed decoder scope stays separate.
+CUDA integration requalification and the head-omission experiment remain open.
 
 The [shared-grant recovery gate](../benchmarks/gemma4-cuda-baseline.md#shared-grant-allocation-and-recovery-gate-2026-10-26)
 now qualifies real partial cache-allocation failure, healthy-peer preservation, charge

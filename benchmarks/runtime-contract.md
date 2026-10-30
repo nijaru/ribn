@@ -1904,6 +1904,40 @@ CARGO_BUILD_JOBS=2 RIBN_GEMMA_PACKAGE=<package> RIBN_GEMMA_REFERENCE=<reference.
 These functional/ownership checks do not establish physical peak memory, arbitrary CUDA
 fault recovery, sampling quality or competitive serving acceptance.
 
+### State-only prefill Metal fallback (2026-10-30)
+
+The required state-only operation added at `448a3a0` omits the CPU readout, but
+Metal still calls its existing full-head/readback path before acknowledging progress.
+A first local decoder observation passes its assertions but fails supervision on an
+unverifiable `vmmap` observer cookie. That scope stays closed and unqualified; its
+planned executor stage never starts. No unchanged decoder retry follows.
+
+A fresh execution-only scope runs that never-started executor test using the exact
+previously built binary, SHA-256
+`0c507e10a30fdd144e05b92955262e34f3c4338e2ec8efc36c0854064bcb7428`.
+Source hashes still match `448a3a0`; no rebuild, kernel, precision or scheduler change
+is involved. On M3 Max/macOS 26.6.2 (25G83), native BF16 Metal execution through the
+real Engine processes the archived 18-token chat prompt with default 16-token chunks,
+returns all four archived greedy tokens and shuts down successfully. This exercises
+one intermediate state-only chunk through the retained full-head completion path.
+The test and independent watchdog both exit zero; all recorded worker/guard groups
+are absent, without forced model cleanup. Maximum sampled group RSS is
+14,952,071,168 B, below the frozen 28 GiB screen, not a physical-memory peak bound.
+
+The replacement observer is dyld's own `DYLD_PRINT_LIBRARIES` logging inside the
+owned test process, not another `vmmap` subprocess or weaker ownership checks. It
+records 602 loaded-image paths/UUIDs; the smoke-test images keep the same identities.
+All nine package pins and the archived CPU reference match before and after execution.
+The execution manifest SHA-256 is
+`6b143bc28e233b15211df924845174db20421946e7c603677ff0f55af57a290b`;
+the independent audit is
+`80a58993e9e922cae0af5b2b9d45c37052c50cba5bda95e772815bb9e9b8c0d3`.
+
+This qualifies the existing Metal fallback's Engine integration, not head-free device
+execution, full-logit distributional equivalence, HTTP, exclusive host/GPU access or
+performance. The failed decoder observation remains separate. CUDA integration still
+needs its own device gate.
+
 ## Heterogeneous-capacity decode (2026-10-16)
 
 **Promoted for the existing whole-decode lane.** Compatible KV model geometry/dtype no
