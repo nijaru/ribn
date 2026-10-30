@@ -2535,6 +2535,106 @@ Retained scope: `gemma4-headless-body-cost/20261030T112431Z`; separate post-exit
 - Completed-file manifest: `a2764936d19091f127ada1906171d0f828dc713ece04f44c7a1c1776f3329e53`.
 - Evidence archive: `f71430b7f354b43e0702383d354f3442057e5e6cde1812f9fd6ff6aed1d8aff7`.
 
+### Attention-stage stream observation (2026-10-30)
+
+**No stage-specific optimization is selected.** Scores are the largest measured stream
+interval category, but account for only **44.74%** of the three-stage total, below the
+frozen 50% majority criterion. Softmax accounts for 36.32% and values 18.94%. This
+completes the attention-stage investigation selected by the preceding call-wall study;
+it does not establish that attention has no optimization opportunity.
+
+The private source starts from public `1e8f2f8`, with unchanged CUDA kernels, launch
+arguments/order, BF16 arithmetic and original `Pending` retirement. Four reusable
+same-stream timing events live in the kernel bundle retained by that pending owner,
+including on partial enqueue/drain failure. They delimit scores, softmax and values.
+Only after the original successful drain are all four queried for completion and
+three elapsed intervals read. The observer uses the raw elapsed query, not cudarc
+0.19.9's `elapsed_ms()` wrapper, which calls event synchronization internally. No new
+synchronization or stream-wait call is added. Normalized reverse-source checks recover
+the public Rust paths; the instrumented Rust files are not byte-identical to public
+source. No observer is integrated publicly.
+
+CUDA event intervals can include submission gaps and other scheduling effects; they
+are **not pure kernel time or a GPU/host partition**. See the pinned
+[CUDA 13.3 event API](https://docs.nvidia.com/cuda/archive/13.3.0/cuda-driver-api/group__CUDA__EVENT.html).
+The observer separately records host preflight, enqueue, original retirement and
+elapsed-query intervals. Those host intervals overlap the stream intervals and must
+not be added to them. Per-call event queries are inside the phase clock; only aggregate
+export occurs after explicit execution-owner shutdown, outside that clock.
+
+Precollection criteria fix one same-binary OFF→ON pair, each with four warmups and the
+complete canonical c4 QA128 profile. Both modes use one private instrumented build;
+OFF disables observations and creates none of this observer's timing markers. ON/OFF c4 elapsed must be at most 1.05.
+A stage is selected only if its aggregate interval is at least 50% of the three-stage
+sum **and** its duration is at least 5% of observed ON phase time. The latter is a
+selection comparison across clocks, not a claim that GPU execution occupies that
+fraction of the phase. The rules and auditor controls are frozen before collection;
+no repetition, missing-sample filling or threshold adjustment follows the result.
+
+| Observed c4 quantity | OFF | ON |
+| --- | ---: | ---: |
+| Complete phase wall, s | 64.304639 | 65.438715 |
+| p95 first / last content, s | 2.172626 / 3.227469 | 2.208891 / 3.283660 |
+| Joint 1 s / 5 s diagnostic passes | 31 | 31 |
+
+ON is **1.76% longer**, passing the elapsed-ratio screen. One ordered pair is not a
+statistical overhead bound, causal instrumentation-cost estimate or production gain.
+
+| Same-stream interval | Aggregate, s | Share of three-stage intervals | Duration / ON phase |
+| --- | ---: | ---: | ---: |
+| Scores | 4.501416 | 44.74% | 6.88% |
+| Softmax | 3.654138 | 36.32% | 5.58% |
+| Values | 1.905516 | 18.94% | 2.91% |
+
+The three intervals sum to 10.061070 s. Scores pass the 5% phase-duration screen but
+fail the majority screen, so the result remains **no selection**. Ranking also varies
+by geometry/cache bin; there is no qualified universal stage ranking. The 18 bounded
+bins combine prepared rows 1/8/16, local width 256/window 512 or global width 512, and
+key-span upper bounds 128/512/4096. The last bound is a bin label, not 4K qualification:
+accepted histories in this population reach at most 593 positions. Scalar bins include
+prompt tails as well as decode.
+
+Separately, host preflight/enqueue/original-retirement/elapsed-query totals are
+0.009833 / 0.643357 / 9.887204 / 0.061370 s, summing to 10.601765 s within 10.611899 s
+of complete attention-call wall. Retirement includes waiting for the queued device
+work: its 9.887204 s is **not measured host overhead**. Complete model-step wall is
+64.586468 s within the 65.438715 s phase. Do not combine these nested host clocks with
+the stream totals or infer occupancy/stalls from them.
+
+All **132 paired observable outcomes / 264 requests** match retained visible IDs,
+text, usage and finish reasons, including warmups; suppressed terminal EOS identity
+is not observed. ON records all 135030 attention calls across 3215 body groups and
+2808 model steps consuming 27520 inputs. Every geometry/cache-bin count independently
+matches the canonical prompt/chunk and accepted-continuation schedule. All profile
+grants return to baseline and both processes end at zero grants. Package pins, actual
+mapped DSOs, preserved desktop Git/binary, the 12 GiB disk/host-availability floors and
+10 GiB RSS/HWM screens pass. All 15 execution/analysis stages pass, all 127 recorded
+groups are absent and no forced cleanup occurs. External post-controller closure and
+local verification check all 2009 retained file hashes; targets stay preserved remotely.
+
+Fresh private Mac and Linux checks pass boundaries, formatting, release CUDA library/
+example Clippy and **74 library tests (4 ignored)**; Linux also builds the release
+example. Earlier host-only Clippy failures remain preserved separately; corrected
+sources use a fresh target, and no model run is retried. Existing common-history
+numerical evidence is retained, not relabeled as a new full-row collection.
+
+Keep the qualified attention path. Do not relax the majority criterion to select
+scores, equate blocking retirement with CPU work, or infer a fusion/row-width winner.
+A changed, separately frozen experiment is needed before choosing an optimization;
+this population is complete and must not be extended. Future variants retain the
+existing numerical, repeated-throughput, latency/goodput, retirement, HTTP, pressure
+and fallback gates. M4 stays parked; no production speedup or broader qualification
+follows from this diagnostic.
+
+Retained scope: `gemma4-attention-cost/20261030T183714Z`; separate post-exit closure:
+`gemma4-attention-cost-close/20261030T184530Z`. SHA256 identities:
+
+- Single OFF/ON binary: `4091582dbb6c504ada9bcb65ad725e03324203014e9e75f9d27ecc681bb9ab96`.
+- Source manifest: `ad4923bd416ab495fdba83baa094756664bf9db11fdfbd5aa8dc968b609d69e1`.
+- Diagnostic summary: `0363b8ea9275cc202d89e35bec03798d1e62a4bf73a215b9a220c144521581d3`.
+- Completed-file manifest: `2202796375c04765d6b6dc17fd0cbf278069d8b0545fc3ddd4046a36272ea966`.
+- Evidence archive: `b9c5f2ca12df3f07e4a7f8be0a6a64a2a27a4faf820b8379169458a86ee428f9`.
+
 ### Advancement and remaining work
 
 The scorer, component bounds, routing fixtures, actual-model prerequisites,
@@ -2562,7 +2662,8 @@ passes exact common-history, runtime retirement and repeated text-facade gates. 
 now passes the remaining bounded gates and supports public CUDA state-only integration.
 Do not restart either completed three-pair population. The
 [post-head-omission call-wall observation](#post-head-omission-native-call-wall-observation-2026-10-30)
-selects native attention for the next bounded investigation, not a qualified optimization.
+selected native attention; the subsequent [stage-stream observation](#attention-stage-stream-observation-2026-10-30)
+completes that investigation without selecting a stage-specific optimization.
 Thin M4 exposure alone still does not select a scheduling or row-count change.
 Host isolation remains unqualified. Further variants or broader selection scopes
 still require evidence for their HTTP/mixed-arrival selection, cancellation, partial-enqueue/failed-drain
