@@ -2910,6 +2910,94 @@ external closure: `gemma4-shared-completion-close/20261103T133714Z`.
 - Completed-file manifest: `ea3a549af124575458072b75fb40dd2482f4d8b76127b787fff0865b89beec00`.
 - Evidence archive: `cac62b716b00c119e74e4d0f3b7b12101b3da3ddc2403d13dc761b2059ecbbff`.
 
+### Private whole-FFN CUDA Graph screen (2026-11-03)
+
+**Keep this variant private.** Replaying the original five-operation FFN as a CUDA
+Graph passes numerical and ownership prerequisites, but reduces measured FFN wall
+by **8.14%**, below the prospective **15%** component gate. No model, HTTP or
+promotion work follows. Production code and qualified projections remain unchanged.
+
+This is a different work unit from the rejected two-GEMM shared-completion screen:
+Gate, Up, tanh-GELU → BF16, multiply → BF16, then Down. On one explicit stream,
+thread-local capture records the original GEMM configurations and existing elementwise
+functions, preserving dimensions, strides, math settings, separate buffers and every
+BF16 boundary. E4B geometry is H=2560, intermediate=10240 and rows 1/8/16, with the
+original 8 MiB workspace. There is no packing, row widening or new kernel. Each
+captured graph contains **five kernel nodes**; the source rejects transfers, host
+callbacks, child graphs and graph-managed allocations/frees. Instantiation flags are zero.
+
+The private fixture owns stable buffers and retains the graph, compiled functions,
+handle/workspace and associated stream through failure cleanup. A completed zero-input
+native FFN initializes the exact shapes before capture; actual operands are uploaded
+**after capture**. Nine graphs each replay two fixed histories: the original input
+and its sign-bit-flipped counterpart, across three synthetic patterns and three row
+counts. Before each candidate replay, all five outputs receive nonfinite sentinels,
+so missing writes cannot pass by retaining the preceding control's correct outputs.
+All **18 cases**, **6528000 paired BF16 values** and **2048000 independent Gate/Up
+dyadic-oracle checks** pass exactly and finitely. All raw weights, inputs and five
+intermediates/results are saved and independently checked; final grants reach zero.
+A separate CPU comparison matches all nine standard-input Gate/Up controls and inputs
+to the retained original separate-GEMM witnesses, without additional device execution.
+
+One CUDA lifecycle process checks abandoned real capture before instantiation,
+changed-allocation rejection without output mutation and healthy reuse, complete
+retention after a real launch followed by an injected completion refusal, and defensive
+Drop after another unacknowledged real launch. Weights, input, all five outputs,
+graph/programs and **165767168 charged bytes** remain held until retirement. Explicit
+retirement does not reopen poisoned execution or publish outputs. Graph destruction
+follows known stream completion and precedes buffer destruction; unsettled capture or
+uncertain instantiation/destruction quarantines the complete owner. These checks do not
+qualify driver OOM, failed free or running-kernel failure. Logical grants and sampled
+RSS are not physical or opaque graph-memory bounds.
+
+Before collection, the packet fixes four warmups per lane/shape, then three alternating
+native/graph pairs, sixteen completed FFNs per point: **18 points total**. The control
+completes each original operation; the candidate completes one graph replay. Host
+wall includes native submission/completion, not setup, readback or logging. For each
+pair index, sum graph durations across all three shapes and divide by summed native
+durations; require the median ratio ≤0.85 and every shape's median ≤1.05. The original
+Gate/Up/Down calls account for 40.77% of the recorded c4 phase wall: a prospective 15%
+whole-FFN reduction warrants investigating the unchanged ≥5% serving gate, not predicting
+that gain or relaxing the closed two-GEMM population's 25% screen.
+
+| Rows | Pair 0 ratio | Pair 1 ratio | Pair 2 ratio |
+| --- | ---: | ---: | ---: |
+| 1 | 0.910291 | 0.910163 | 0.910490 |
+| 8 | 0.920066 | 0.922263 | 0.924438 |
+| 16 | 0.918880 | 0.922354 | 0.919706 |
+| Aggregate | 0.916735 | 0.918687 | 0.918607 |
+
+The exact median aggregate ratio is **4370919/4758205 = 0.9186067015**. Every
+shape guard passes, but the ≤0.85 aggregate screen fails. Complete post-timing outputs
+remain exact and finite and match the common numerical witnesses. Preparation and
+first-warm-replay clocks remain diagnostics, not full startup-cost measurements.
+Do not extend repetitions, shrink scope, infer serving gains or attribute the measured
+saving entirely to host overhead or GPU execution.
+
+Fresh isolated macOS/Linux targets pass format, boundaries, CUDA-feature Clippy and
+host unit checks. Initial fixture/control-tool failures, prior sources and targets
+remain preserved; corrections precede collection. Fourteen Linux stages complete
+under independent guards, including exactly three device processes: numerical,
+lifecycle and timing. Relevant prefrozen DSO identities cover captured runtime maps
+and are checked before/after execution. External closure re-audits the complete fixed
+populations and establishes absence of 125 recorded groups. Local verification checks
+all **3296 files**, 16 internal hardlinks, the executable identity/mode, all full outputs,
+independent oracle and exact timing gate. Sources, targets, executable and raw evidence
+remain retained. Sanitizer, full-model, HTTP and promotion checks are **not run**;
+no quality process starts. The experiment's negative component result does not reject
+CUDA Graphs for other, independently specified workloads or qualify a graph API.
+
+Retained scope: `results/qualification/gemma4-ffn-graph/20261103T222124Z`;
+external closure: `gemma4-ffn-graph-close/20261103T222650Z`.
+
+- Frozen packet: `a0083e386c38097ef7a1e08a86e5132d9df6d0689ac5aec05ed8828608cf0dc1`.
+- Source manifest: `9caf5f5c5befc65327504ed90acccccda45d452f161a2a4dab14c481c8ed9443`.
+- Executable: `a87cde171e6b35edef409d6fc92e2a688c15f670a620249dface72f5e26f66ef`.
+- Numerical analysis: `bfbcb58e6013a7555874d8c8b0eaee45bde99d7b5561b06ba567558cc7227a31`.
+- Timing analysis: `0914be62164654dea25644485e4ace37a122f9d5bdc899b335df594f0b4cb137`.
+- Completed-file manifest: `5c507eeab8237739675f8009e6e583ecc83143878012d38dc74e47f106b75486`.
+- Evidence archive: `9a87b0f3b6ec41b3375b9202e5cda3e53da5ef903c747535e7804fbf56dd8dbe`.
+
 ### Advancement and remaining work
 
 The scorer, component bounds, routing fixtures, actual-model prerequisites,
@@ -2951,8 +3039,11 @@ then rejects a shape-changing vendor-GEMM substitution on one-row bit difference
 before timing or model execution. The shape-preserving
 [shared-completion screen](#private-gateup-shared-completion-screen-2026-11-03)
 passes numerical/ownership gates but stops at its 3.23% pair-wall reduction, below
-the prospective 25% screen. Neither result selects a model campaign; qualified
-projections remain unchanged.
+the prospective 25% screen. The subsequent
+[whole-FFN CUDA Graph screen](#private-whole-ffn-cuda-graph-screen-2026-11-03)
+passes all 18 changed-input histories and graph lifetime checks, but its 8.14% FFN-wall
+reduction misses the prospective 15% gate. None selects a model campaign; qualified
+projections remain unchanged. Do not extend or retime these closed populations.
 Thin M4 exposure alone still does not select a scheduling or row-count change.
 Host isolation remains unqualified. Further variants or broader selection scopes
 still require evidence for their HTTP/mixed-arrival selection, cancellation, partial-enqueue/failed-drain

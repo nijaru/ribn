@@ -263,7 +263,12 @@ The shape-preserving
 [shared-completion screen](../benchmarks/gemma4-cuda-baseline.md#private-gateup-shared-completion-screen-2026-11-03)
 then passes all nine numerical cases and partial-enqueue/failed-drain ownership,
 but reduces pair wall only 3.23% (0.96769 ratio; ≤0.75 required). It stops before
-model/HTTP work; qualified projections remain unchanged. Existing numerical,
+model/HTTP work. The subsequent
+[whole-FFN CUDA Graph screen](../benchmarks/gemma4-cuda-baseline.md#private-whole-ffn-cuda-graph-screen-2026-11-03)
+preserves all 18 changed-input histories and passes graph ownership checks, but its
+8.14% FFN-wall reduction misses the prospective 15% gate (0.91861 ratio; ≤0.85
+required). No model/HTTP work follows; qualified projections remain unchanged.
+Do not extend or retime these closed populations. Existing numerical,
 repeated-performance and lifecycle gates remain required for any changed variant.
 No unchanged M4 retry, row widening or compiler project follows.
 
