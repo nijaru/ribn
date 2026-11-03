@@ -2635,6 +2635,97 @@ Retained scope: `gemma4-attention-cost/20261030T183714Z`; separate post-exit clo
 - Completed-file manifest: `2202796375c04765d6b6dc17fd0cbf278069d8b0545fc3ddd4046a36272ea966`.
 - Evidence archive: `b9c5f2ca12df3f07e4a7f8be0a6a64a2a27a4faf820b8379169458a86ee428f9`.
 
+### Private softmax/value fusion screen (2026-10-30)
+
+**Do not promote this candidate.** Two complete uninstrumented pairs improve c4
+throughput by 4.95% / 4.33% and mixed8 by 4.88% / 4.29%, below the original 5%
+three-pair median gate. The third pair is incomplete after loss of desktop access;
+recovery on 2026-11-03 preserves its partial serial process without retry or filling.
+No possible third ratio can raise the median above the larger of two known ratios:
+c4 is bounded by 1.049499910 and mixed8 by 1.048758805, both below 1.05. These are
+bounds, not inferred third observations or a replacement two-pair acceptance rule.
+
+The private candidate starts from `bb0ec25` and retains the original score kernel,
+ascending FP32 reductions, BF16 score/weight/output boundaries and `Pending`
+retirement. It combines softmax and value accumulation in one CTA per query/head,
+with at most 4096 shared FP32 exponentials and no added host synchronization or
+allocation. Preparation enables it only on RTX 4090; dispatch covers rows 1/8/16,
+eight query heads, two KV heads, width 256/window 512 or width 512/global, and
+1–4096 keys. Other valid shapes retain the original three-kernel path. This source
+hypothesis does not revise the preceding diagnostic's stage-selection criterion.
+
+All 1764 component cases are bit-exact, finite and mask-sentinel preserving.
+The fixed 18-shape, three-pair component population records 108 timing points;
+its median paired aggregate completed-call ratio is 0.406648444, or 59.3% lower
+component wall. That is not a model, serving or pure-kernel gain. Automatic/fallback
+dispatch passes all 42 cases normally and under CUDA 13.3 memcheck with full leak
+checking, racecheck and synccheck. Both full-model variants preserve all 160 complete
+common-history BF16 vocabulary rows, each with 262144 elements, against the qualified
+serial witness; all 13 cohorts settle. The original ignored CUDA decoder, executor,
+text and pressure integration populations pass per variant. These results preserve
+the existing arithmetic policy; they do not establish broader quality acceptance.
+
+The performance population is unchanged: warmup4, canonical QA128 at c1/c4/mixed8,
+and a near-4096 resident4 diagnostic; unchanged greedy caps, Engine defaults, client
+clocks and closed-loop delays. Planned pair orders are serial/candidate,
+candidate/serial, serial/candidate. Acceptance still requires three whole pairs,
+median c4/mixed8 throughput gain ≥5%, median p95 first/last-content regression ≤5%,
+no paired diagnostic-deadline loss, no failed requests and c1 median throughput
+regression ≤5%. Resident4 is diagnostic only.
+
+| Complete pair | c1 gain | c4 gain | mixed8 gain | c4 joint passes, serial → candidate | mixed8 joint passes |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| 0: serial/candidate | 4.93% | 4.95% | 4.88% | 32 → 41 | 3 → 3 |
+| 1: candidate/serial | 4.56% | 4.33% | 4.29% | 31 → 40 | 3 → 3 |
+
+All 784 paired observable outcomes across the complete pairs match retained visible
+IDs, text, usage and finish reasons; suppressed terminal EOS identity is not observed.
+Each complete process returns profile grants to baseline and model grants to zero.
+Observed RSS/HWM and pre-model availability screens pass. First/last-content p95
+improves in every gated profile of both pairs. Resident4 throughput improves
+19.79% / 19.31%, but cannot substitute for the gated workload. These are internal
+Rust text-facade measurements, not HTTP performance or incumbent quality equivalence.
+
+Two infrastructure failures remain separate from model results. The first cohort's
+successful numeric control was stopped by an analysis check requiring historical
+mapped-library-set equality. Separate read-only adjudication verifies the unchanged
+160 rows, original prefrozen library hashes, actual map coverage, required roles,
+same-process pre/post stability and shared historical identity, with positive and
+negative controls. The sole extra actual DSO was the already-prefrozen NVIDIA PTX
+JIT library; cold JIT is not proved as its cause. The original failures remain failed.
+A separate continuation then stops before candidate executor launch when an external
+package update changes unrelated entries in an overbroad library inventory. Remaining
+work reuses successful evidence and exact ELFs, checks relevant original execution
+identities and retains the original actual-mapping allowlist. No environment is
+installed or reconfigured, and no successful prerequisite process is rerun.
+
+The final scope has 15 healthy completed stages. Third-pair serial retains only
+processor/deck/capacity, warmup, c1 and c4 files; mixed8, resident4 and model completion
+are absent. Its model/controller final receipts and watchdog receipts are missing,
+so original deadline settlement is unproved. Third-pair candidate and the original
+summary never start. Recovery establishes current absence of all 137 recorded groups;
+it does not manufacture historical guard completion. External closure and independent
+local verification check all 3315 retained files and 16 executable ELF copies. Keep
+the qualified production path; this candidate's numerical success and component
+speedup do not override the failed throughput gate. Further HTTP/promotion checks
+are not run, and the interrupted population must not be extended.
+
+Retained scopes under `results/qualification/`:
+
+- Component: `gemma4-fused-sv/20261030T195302Z`; independent verification:
+  `gemma4-fused-sv-verify/20261030T200200Z`.
+- Original model cohort: `gemma4-fused-sv-model/20261030T204516Z`; control adjudication:
+  `gemma4-fused-sv-adjudication/20261030T223320Z`.
+- Numeric/integration continuation: `gemma4-fused-sv-continuation/20261030T223531Z`;
+  closure: `gemma4-fused-sv-continuation-close/20261030T231635Z`.
+- Remaining integration/performance: `gemma4-fused-sv-finish/20261030T231810Z`;
+  recovery closure: `gemma4-fused-sv-finish-close/20261103T112615Z`.
+- Original model packet SHA256: `88caa18c19fecae85d1937a62a3547dd6466e490bd719168c3ac7e50d17c7ade`.
+- Performance source manifest: `40310f307fc979ef5705735bbcd1d167bf43ce96919382fff219492acde8eeb9`.
+- Recovered two-pair audit: `33d487622584c7a1dfe01862147b2a7f4eb729a53bd4a95b02adda51d165dd64`.
+- Recovery completed-file manifest: `2b9a80133839995fe5bf75852cee0ac82a0cb5c24cc582656af95cc37fd8a0be`.
+- Recovery evidence archive: `1aebce97ad4b43e67d2183b4320c1141a7b7e80ae77683d5775f0af226cc92eb`.
+
 ### Advancement and remaining work
 
 The scorer, component bounds, routing fixtures, actual-model prerequisites,
@@ -2664,6 +2755,10 @@ Do not restart either completed three-pair population. The
 [post-head-omission call-wall observation](#post-head-omission-native-call-wall-observation-2026-10-30)
 selected native attention; the subsequent [stage-stream observation](#attention-stage-stream-observation-2026-10-30)
 completes that investigation without selecting a stage-specific optimization.
+The subsequent [softmax/value fusion screen](#private-softmaxvalue-fusion-screen-2026-10-30)
+preserves component/full-row arithmetic and integrations but rules out its original
+throughput gate from two complete pairs; the interrupted third pair stays incomplete.
+Keep this variant private rather than promote on component timing or fill the cohort.
 Thin M4 exposure alone still does not select a scheduling or row-count change.
 Host isolation remains unqualified. Further variants or broader selection scopes
 still require evidence for their HTTP/mixed-arrival selection, cancellation, partial-enqueue/failed-drain
