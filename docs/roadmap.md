@@ -258,10 +258,14 @@ gate (0.54129 aggregate ratio; ≤1/3 required), without model execution. Keep t
 qualified attention path. The subsequent
 [packed Gate/Up prerequisite](../benchmarks/gemma4-cuda-baseline.md#private-packed-gateup-numerical-prerequisite-2026-11-03)
 rejects a shape-changing cuBLAS substitution: 897 BF16 differences at one-row decode,
-with the independent dyadic oracle passing. No timing or model campaign follows;
-qualified projections remain unchanged. Existing numerical, repeated-performance
-and lifecycle gates remain required for any changed variant; no unchanged M4 retry,
-row widening or compiler project follows.
+with the independent dyadic oracle passing. No timing or model campaign follows.
+The shape-preserving
+[shared-completion screen](../benchmarks/gemma4-cuda-baseline.md#private-gateup-shared-completion-screen-2026-11-03)
+then passes all nine numerical cases and partial-enqueue/failed-drain ownership,
+but reduces pair wall only 3.23% (0.96769 ratio; ≤0.75 required). It stops before
+model/HTTP work; qualified projections remain unchanged. Existing numerical,
+repeated-performance and lifecycle gates remain required for any changed variant.
+No unchanged M4 retry, row widening or compiler project follows.
 
 The [shared-grant recovery gate](../benchmarks/gemma4-cuda-baseline.md#shared-grant-allocation-and-recovery-gate-2026-10-26)
 now qualifies real partial cache-allocation failure, healthy-peer preservation, charge

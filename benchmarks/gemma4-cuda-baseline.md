@@ -2835,6 +2835,81 @@ external closure: `gemma4-packed-gate-up-close/20261103T122735Z`.
 - Completed-file manifest: `9f94d521ce30432461175f4e14bcd65eda00733e1f01294366ad531bd06166ea`.
 - Evidence archive: `d0dffd8a09a9bbcebf6b3ebae17d02f23bfea920d88c487bab7c9e744e18cea4`.
 
+### Private Gate/Up shared-completion screen (2026-11-03)
+
+**Keep this variant private.** Preserving the two original GEMM shapes and sharing
+one completion passes numerical and ownership gates, but reduces measured pair wall
+by only **3.23%**. The prospective component screen required at least 25%; no model,
+HTTP or promotion work follows. Production code and qualified projections are unchanged.
+
+Unlike the packed variant, this private operation retains two separate weight slots
+and output matrices. It enqueues the original Gate and Up GEMMs, in order, on their
+associated stream and completes once. BF16 operands/results, FP32 accumulation,
+reduced-precision-reduction prohibition, `GEMM_DEFAULT`, dimensions/strides and the
+8 MiB workspace remain unchanged. One access retains the entire immutable weight
+allocation; both outputs are validated before either enqueue, poisoned before FFI
+and published only after shared completion. No per-call device allocation is added.
+
+Before collection, the packet fixes the same nine synthetic cases: rows 1/8/16,
+input width 2560, projection width 10240 and three operand patterns. All **1536000
+paired BF16 values** are exact and finite; all **1024000 independent dyadic-oracle
+checks** pass. Complete raw weight/input/output bytes are retained and independently
+checked. Per-case grants settle to 113246208 bytes for weights/workspace, then final
+grants reach zero. A post-run CPU byte comparison also matches all nine separate
+controls to the retained original separate-GEMM witnesses, without additional device work.
+
+Three CUDA lifecycle tests use small odd shapes (three rows, K=7, N=11/13) and
+pass before timing. Invalid second slot/shape/stream preserves both prior outputs
+and healthy reuse. A real first enqueue followed by a
+`cfg(test)`-only second-enqueue refusal retains weights, input, both outputs and the
+handle/workspace until explicit retirement. Thread-local capture induces a real
+synchronization refusal; all owners and 8389168 charged bytes remain held until
+capture ends and retirement succeeds. Captured work is **never executed**, and
+retirement does not reopen poisoned execution. This is not driver OOM, failed-free
+or running-kernel-failure qualification.
+
+Timing uses the mixed-sign/exponent operands and the same three row counts, four
+warmups per lane/shape, then three alternating pairs (separate/shared,
+shared/separate, separate/shared), with sixteen completed projection pairs per
+point: **18 points total**. The host wall includes native submission and completion,
+not setup/readback/logging. For each pair index, sum durations across all three
+shapes and divide shared by separate; require the median ratio ≤0.75 and every
+shape's median ≤1.05. The aggregate screen is an advancement criterion,
+not a prediction that component savings produce a model throughput gain.
+
+| Rows | Pair 0 ratio | Pair 1 ratio | Pair 2 ratio |
+| --- | ---: | ---: | ---: |
+| 1 | 0.970524 | 0.968962 | 0.970776 |
+| 8 | 0.968079 | 0.966740 | 0.968960 |
+| 16 | 0.960717 | 0.967499 | 0.968612 |
+| Aggregate | 0.966263 | 0.967691 | 0.969402 |
+
+The exact median aggregate ratio is **714552/738409 = 0.9676913472**: the
+per-shape guard passes, but the ≤0.75 aggregate screen fails. Post-timing complete
+outputs remain exact and finite. Do not extend repetitions, shrink scope, or infer
+serving gains or a pure host/GPU time attribution from this negative screen.
+
+Fresh isolated macOS/Linux targets pass format, boundaries, CUDA-feature Clippy and
+host unit checks. An initial fixture-only needless-borrow lint failure and its source
+and target remain preserved; correction preceded device collection. Sixteen Linux stages
+complete under independent guards. Relevant prefrozen DSO identities cover every
+captured runtime map and are checked before/after execution. External closure re-audits
+all operands, outputs, lifecycle results and timing points, establishing absence of
+143 recorded groups. Local verification checks all 3296 retained files, 17 internal
+hardlinks, both executable identities/modes and the full numerical/timing results.
+Sources, failed/successful targets, ELFs and raw evidence remain retained. Sanitizer,
+full-model, HTTP and promotion checks are **not run**; no quality process starts.
+
+Retained scope: `results/qualification/gemma4-shared-completion/20261103T132621Z`;
+external closure: `gemma4-shared-completion-close/20261103T133714Z`.
+
+- Frozen packet: `366aa3a5e0dc5b3572a1f8194127bba731eeff3f4a446d5d3c71cf667c97059a`.
+- Source manifest: `604c54c35c84abbf2cc4cb8233a4b8110bebd9ca033484fb5c4006cd6e27656d`.
+- Numerical analysis: `8cb4f9d895bf2fd096a5c0ec7064e35d92903c8731a33bd7d2b69a7512a14f06`.
+- Timing analysis: `74d0c41c065c0a4fd88b381be142bb1f75628d7a8de495c56d6b6049c07edb6a`.
+- Completed-file manifest: `ea3a549af124575458072b75fb40dd2482f4d8b76127b787fff0865b89beec00`.
+- Evidence archive: `cac62b716b00c119e74e4d0f3b7b12101b3da3ddc2403d13dc761b2059ecbbff`.
+
 ### Advancement and remaining work
 
 The scorer, component bounds, routing fixtures, actual-model prerequisites,
@@ -2873,7 +2948,11 @@ also stops at its negative component screen, without a model process. Do not rep
 these completed populations or infer a serving gain from component timing.
 The [packed Gate/Up prerequisite](#private-packed-gateup-numerical-prerequisite-2026-11-03)
 then rejects a shape-changing vendor-GEMM substitution on one-row bit differences,
-before timing or model execution. Qualified projections remain unchanged.
+before timing or model execution. The shape-preserving
+[shared-completion screen](#private-gateup-shared-completion-screen-2026-11-03)
+passes numerical/ownership gates but stops at its 3.23% pair-wall reduction, below
+the prospective 25% screen. Neither result selects a model campaign; qualified
+projections remain unchanged.
 Thin M4 exposure alone still does not select a scheduling or row-count change.
 Host isolation remains unqualified. Further variants or broader selection scopes
 still require evidence for their HTTP/mixed-arrival selection, cancellation, partial-enqueue/failed-drain
