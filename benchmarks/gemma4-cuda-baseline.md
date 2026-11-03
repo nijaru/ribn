@@ -2775,6 +2775,66 @@ external closure: `gemma4-fused-all-close/20261103T115119Z`.
 - Completed-file manifest: `4de1ce188e461943786370f29e7471d4c0eb97b4c226b2b904b18cc912bd3c81`.
 - Evidence archive: `b87bf2e07233ddfa36a6261f51f933b857507fa030096ad5b6207ea205765e3f`.
 
+### Private packed Gate/Up numerical prerequisite (2026-11-03)
+
+**Reject this packed-GEMM variant.** One GEMM over concatenated Gate/Up weight
+rows produces 897 different BF16 outputs among 1536000 paired values. All differences
+occur at one-row decode. The independent integer oracle passes, every output is
+finite and all grants settle, but these do not waive the frozen bit-equality gate.
+No timing or model campaign follows; production projections remain unchanged.
+
+The recorded c4 native-call observation assigned 13.24%/13.20% of phase wall to
+Gate/Up. Both projections read the same normalized input, motivating a model-free
+check before changing loading, activation layout or completion ownership. This is
+not a speedup measurement or a claim that the two calls' wall is host overhead.
+
+The private fixture adds no production code. It compares two existing completed
+`CudaBf16Gemm::linear_into` calls against one call with weight rows `gate || up`;
+each packed output row is compared against its separate Gate and Up rows. Installed
+cuBLAS settings remain BF16 operands/output, FP32 compute, reduced-precision
+reduction disabled, `GEMM_DEFAULT` and an 8 MiB workspace. Changing the GEMM shape
+must not be assumed arithmetic-preserving; no specific vendor algorithm is identified.
+
+Before device execution, the packet freezes nine cases: E4B's input width 2560 and
+projection width 10240, rows 1/8/16, and three deterministic operand patterns. The
+bounded dyadic pattern has an independent exact integer-dot/BF16-rounding oracle;
+the other patterns exercise mixed signs/exponents and paired cancellation with
+small offsets. One process collects the entire fixed population, saves complete
+inputs and outputs, settles resources, then asserts acceptance. No case is retried,
+filled or selected away after failure.
+
+| Operand pattern | Different BF16 values, rows 1 / 8 / 16 |
+| --- | ---: |
+| Bounded dyadic | 0 / 0 / 0 |
+| Mixed signs/exponents | 5 / 0 / 0 |
+| Paired cancellation with small offsets | 892 / 0 / 0 |
+
+All 1024000 independently checked dyadic values agree with the integer oracle.
+Actual per-case/final mapped DSOs are covered by prefrozen driver/cuBLAS identities;
+original execution guards verify input bytes before and after. The comparator holds
+both separate and packed weights, so its peak observed owned RSS of 718041088 bytes
+is not a production-model memory bound. Final device-pool grants are zero.
+
+Fresh isolated macOS/Linux targets pass format, boundaries, CUDA-feature Clippy and
+host unit checks. Nine Linux stages succeed; the numerical component exits 101 and
+remains failed. Its CPU-only audit and external closure independently reproduce the
+mismatches without executing another device workload. All recorded groups are
+absent and independent watchdogs complete without forced cleanup. Local archive
+verification checks all 2917 retained Linux files, executable modes and 17 hardlinks,
+then independently compares every output and repeats the integer-oracle checks.
+Sources, targets, binaries and raw arrays remain retained. Timing, packed activation
+integration, full-model, HTTP and promotion checks are **not run**. No quality
+process or new numerical tolerance is introduced.
+
+Retained scope: `results/qualification/gemma4-packed-gate-up/20261103T122101Z`;
+external closure: `gemma4-packed-gate-up-close/20261103T122735Z`.
+
+- Frozen packet: `41883132ffe8f21d7cf6da70d6d1f9f3e356b8a3c2a82e4e77ecfa883428c6e0`.
+- Source manifest: `6356b564845d94b6354e89ea29e852525a40d840ebae367403394a4222fa4d11`.
+- Raw analysis: `3d020f809677c4b7edee327160b5dd33233069d2e1045c00b43475d3ebed94d2`.
+- Completed-file manifest: `9f94d521ce30432461175f4e14bcd65eda00733e1f01294366ad531bd06166ea`.
+- Evidence archive: `d0dffd8a09a9bbcebf6b3ebae17d02f23bfea920d88c487bab7c9e744e18cea4`.
+
 ### Advancement and remaining work
 
 The scorer, component bounds, routing fixtures, actual-model prerequisites,
@@ -2811,6 +2871,9 @@ Keep this variant private rather than promote on component timing or fill the co
 The changed [single-CTA whole-attention variant](#private-single-cta-whole-attention-screen-2026-11-03)
 also stops at its negative component screen, without a model process. Do not repeat
 these completed populations or infer a serving gain from component timing.
+The [packed Gate/Up prerequisite](#private-packed-gateup-numerical-prerequisite-2026-11-03)
+then rejects a shape-changing vendor-GEMM substitution on one-row bit differences,
+before timing or model execution. Qualified projections remain unchanged.
 Thin M4 exposure alone still does not select a scheduling or row-count change.
 Host isolation remains unqualified. Further variants or broader selection scopes
 still require evidence for their HTTP/mixed-arrival selection, cancellation, partial-enqueue/failed-drain

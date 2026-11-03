@@ -255,9 +255,13 @@ access; no retry or filling follows. A changed
 [single-CTA whole-attention screen](../benchmarks/gemma4-cuda-baseline.md#private-single-cta-whole-attention-screen-2026-11-03)
 also preserves all 1764 component cases but stops at its stricter prospective timing
 gate (0.54129 aggregate ratio; ≤1/3 required), without model execution. Keep the
-qualified attention path. Existing numerical, repeated-performance and lifecycle
-gates remain required for any changed variant; no unchanged M4 retry, row widening
-or compiler project follows.
+qualified attention path. The subsequent
+[packed Gate/Up prerequisite](../benchmarks/gemma4-cuda-baseline.md#private-packed-gateup-numerical-prerequisite-2026-11-03)
+rejects a shape-changing cuBLAS substitution: 897 BF16 differences at one-row decode,
+with the independent dyadic oracle passing. No timing or model campaign follows;
+qualified projections remain unchanged. Existing numerical, repeated-performance
+and lifecycle gates remain required for any changed variant; no unchanged M4 retry,
+row widening or compiler project follows.
 
 The [shared-grant recovery gate](../benchmarks/gemma4-cuda-baseline.md#shared-grant-allocation-and-recovery-gate-2026-10-26)
 now qualifies real partial cache-allocation failure, healthy-peer preservation, charge
