@@ -251,9 +251,13 @@ Do not extend this completed diagnostic or relax its criteria. The subsequent
 passes component/full-row and CUDA integration checks, but two complete pairs already
 rule out its original 5% three-pair median throughput gate: c4 gains 4.95%/4.33%,
 mixed8 4.88%/4.29%. The third serial process remains partial after loss of desktop
-access; no retry or filling follows. Keep the qualified attention path. Existing
-numerical, repeated-performance and lifecycle gates remain required for any changed
-variant; no unchanged M4 retry, row widening or compiler project follows.
+access; no retry or filling follows. A changed
+[single-CTA whole-attention screen](../benchmarks/gemma4-cuda-baseline.md#private-single-cta-whole-attention-screen-2026-11-03)
+also preserves all 1764 component cases but stops at its stricter prospective timing
+gate (0.54129 aggregate ratio; ≤1/3 required), without model execution. Keep the
+qualified attention path. Existing numerical, repeated-performance and lifecycle
+gates remain required for any changed variant; no unchanged M4 retry, row widening
+or compiler project follows.
 
 The [shared-grant recovery gate](../benchmarks/gemma4-cuda-baseline.md#shared-grant-allocation-and-recovery-gate-2026-10-26)
 now qualifies real partial cache-allocation failure, healthy-peer preservation, charge

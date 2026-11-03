@@ -2726,6 +2726,55 @@ Retained scopes under `results/qualification/`:
 - Recovery completed-file manifest: `2b9a80133839995fe5bf75852cee0ac82a0cb5c24cc582656af95cc37fd8a0be`.
 - Recovery evidence archive: `1aebce97ad4b43e67d2183b4320c1141a7b7e80ae77683d5775f0af226cc92eb`.
 
+### Private single-CTA whole-attention screen (2026-11-03)
+
+**Do not advance this variant to a model campaign.** Combining scores, softmax and
+values into one CTA per query/head preserves all 1764 component cases bit-for-bit,
+but its median paired aggregate completed-call ratio is 0.541291696: 45.9% lower
+component wall, short of its predeclared two-thirds reduction screen. All 18 shape
+medians remain ≤1.05; the one-row global 4096-key shape is 1.021976070. No population
+is extended, narrowed or retried after this result.
+
+This changed source keeps every original BF16 boundary and ascending FP32 dot,
+maximum, denominator and value accumulation, without a new allocation or host wait.
+Public preparation remains the original three-kernel path; only the private fixture
+selects the candidate. Scope and operands match the preceding component population:
+RTX 4090; rows 1/8/16; local width 256/window 512 or global width 512; eight query
+heads/two KV heads; 1–4096 keys, front/tail queries, starts 0/37 and three patterns.
+Fewer score CTAs at long spans are a source-level parallelism risk, not a measured
+occupancy/stall explanation.
+
+Before collection, this new experiment freezes a stricter aggregate ratio ≤1/3,
+retaining every-shape median ratio ≤1.05. The earlier variant's 59.3% component
+reduction did not satisfy the model throughput gate, so another modest synthetic
+gain would not justify model work. This prospective screen neither compares the
+variants on matched clocks nor predicts serving performance. The fixed collection
+still uses 18 shapes, four warmups/lane/shape, three alternating-order pairs and
+16 completed calls/point: 108 timing points, no device events inside the clock.
+
+Every output and visible weight is finite and exact; masked cells keep their
+sentinel. All original control output/weight arrays also bit-match the retained
+three-kernel witness. Invalid geometry rejects before mutation, valid reuse passes
+and final grants are zero. Actual same-process pre/post DSO maps are stable and
+covered by newly prefrozen identities, including the current libgcc/libstdc++ bytes;
+this does not qualify the changed environment against historical model results.
+
+Host format/boundary/Clippy/unit checks pass on macOS and CUDA-feature Linux, with
+fresh isolated targets. Ten Linux stages complete under their independent guards;
+external closure establishes absence of all 89 recorded groups and re-audits every
+raw array. Independent local archive verification covers all 11519 retained files,
+including valid hardlinks and executable identity. Sanitizer, automatic-dispatch,
+model integration, HTTP and promotion stages are **not run** after the negative
+component screen. No model or quality process starts; qualified production is unchanged.
+
+Retained scope: `results/qualification/gemma4-fused-all/20261103T114703Z`;
+external closure: `gemma4-fused-all-close/20261103T115119Z`.
+
+- Source manifest: `fa09fa6f92131d5d9001f3c5100c7360bd00c0d8354a5a530d87d3520d774de0`.
+- Raw analysis: `af06b4aedee82985221dd13782045dae692d1fd1201aee565284c024ee8bd919`.
+- Completed-file manifest: `4de1ce188e461943786370f29e7471d4c0eb97b4c226b2b904b18cc912bd3c81`.
+- Evidence archive: `b87bf2e07233ddfa36a6261f51f933b857507fa030096ad5b6207ea205765e3f`.
+
 ### Advancement and remaining work
 
 The scorer, component bounds, routing fixtures, actual-model prerequisites,
@@ -2759,6 +2808,9 @@ The subsequent [softmax/value fusion screen](#private-softmaxvalue-fusion-screen
 preserves component/full-row arithmetic and integrations but rules out its original
 throughput gate from two complete pairs; the interrupted third pair stays incomplete.
 Keep this variant private rather than promote on component timing or fill the cohort.
+The changed [single-CTA whole-attention variant](#private-single-cta-whole-attention-screen-2026-11-03)
+also stops at its negative component screen, without a model process. Do not repeat
+these completed populations or infer a serving gain from component timing.
 Thin M4 exposure alone still does not select a scheduling or row-count change.
 Host isolation remains unqualified. Further variants or broader selection scopes
 still require evidence for their HTTP/mixed-arrival selection, cancellation, partial-enqueue/failed-drain
