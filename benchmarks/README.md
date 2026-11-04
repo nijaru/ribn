@@ -349,6 +349,15 @@ uv pip freeze --python /tmp/ribn-aiperf/bin/python \
 python3 benchmarks/endpoint.py validate benchmarks/results/my-baseline
 ```
 
+If a deep `TMPDIR` exceeds the platform's UNIX socket pathname limit, add
+`--aiperf-ipc-path "$PWD/benchmarks/results/qualification/ipc"` to `run`.
+Use a fresh, private directory; the socket filename also counts toward the limit.
+The runner forwards AIPerf's native `--zmq-ipc-path` and records the resolved argument
+in `invocation.json`; omitting it preserves the native default. Linux supervisors
+that read ownership cookies from `/proc/PID/environ` should also set per-process
+`SPT_NOENV=1` when `setproctitle` rewrites worker titles. This preserves ownership
+visibility rather than bypassing the supervisor's checks.
+
 With `HF_HUB_OFFLINE=1` or `TRANSFORMERS_OFFLINE=1`, AIPerf 0.13.0's tokenizer
 loader resolves `model.tokenizer` as a cached Hub repository ID, not a local directory.
 Use the repository ID and exact `model.tokenizer_revision`; verify that they resolve

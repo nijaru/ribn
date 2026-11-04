@@ -402,6 +402,11 @@ paths; do not turn every unfinished subsystem into a dependency of text measurem
    Compare identical artifacts where supported; keep independently quality-qualified
    different-artifact comparisons separate. Cross-check client timing/token semantics and
    preserve failed offered work. Protocol validation alone is not a performance result.
+   The [current-source Qwen endpoint diagnostic](../benchmarks/runtime-contract.md#current-source-equal-artifact-endpoint-diagnostic-2026-11-04)
+   now retains one fixed cohort per engine: Ribn rejected nine burst attempts at its
+   HTTP bound; llama completed all 32. Admission policies differ, and planned-arrival
+   goodput, memory-pressure recovery and independent quality remain unqualified.
+   Match those conditions before using the latency samples to select a competitive win.
 2. **First measured improvement.** Identify the dominant loss, select one bounded
    experiment and demonstrate repeatable end-to-end benefit without hiding quality,
    memory, fairness or latency regressions. Scalable prefill, heterogeneous physical

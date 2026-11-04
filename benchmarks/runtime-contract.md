@@ -1428,6 +1428,112 @@ page indices are consecutive and no cache, reuse policy or growth path exists ye
 shared arena with non-identity tables and page growth is the next slice, and the
 per-request device allocation it removes is still on the admission path.
 
+### Current-source equal-artifact endpoint diagnostic (2026-11-04)
+
+One fixed 32-request episode per engine establishes issued-request latency, usage
+and admission outcomes, not a competitive acceptance result. Ribn completed 23
+requests and returned nine HTTP 503s, all in the burst; llama.cpp completed all 32.
+The different accepted populations must not be hidden by successful-only summaries.
+
+**Inputs and policy.** Ribn uses unchanged production Rust at `ed3d426`, freshly built
+with Rust 1.98.0, release CUDA and an isolated target; its CLI SHA-256 is
+`2bfa194898ff5886144196d53d1c5fe3af699a30b52ea1d58036dd98e504362d`.
+The client adds only the native IPC-path control described in
+[the runner instructions](README.md#audited-endpoint-runner). The installed incumbent
+is llama.cpp `6050b467c` (0.7.0-dev, build 11887). Both use the same Qwen3.8-27B
+UD-Q4_K_M GGUF, SHA-256
+`322e194ff79741c7baa497c240f677f54b201b0efab44ca8e50f122b39123482`,
+on the RTX 4090 with driver 615.71.10 / CUDA toolkit 13.3. AIPerf 0.13.0 runs in its
+existing Python 3.12 environment, offline, with cached tokenizer revision
+`1d4bf0f2ff6012fd82039f2fa52739d0dd7c60c0`. No installation or model download was needed.
+
+The sixteen retained Shakespeare performance prompts repeat once, in original order;
+offline tokenization gives 22–119 input tokens. The trace issues eight spaced requests
+at 0–10.5 s, sixteen burst requests in two groups at 12.0/12.1 s, then eight
+recovery-labelled requests at 30–40.5 s. Client concurrency is capped at 16, output at
+32, temperature is zero and EOS remains enabled. There are no inference-readiness
+requests, warmup requests, prefix reuse or BOS overrides. Zero warmup does not prove
+cold state. Actual prompts, all 32 attempt identities and output caps reconcile for
+both engines; their common prompt-multiset fingerprint is
+`ce9ec52f9d2cade854a1d4528df02bab50bf7e98c9e06264c5fbef64b766e1a1`.
+
+Both prepare four active sequences with 512 context positions each. Ribn has eight
+HTTP generation slots, 32 connection slots and sixteen independent application
+permits; these are not interchangeable bounds or a physical-batch claim. HTTP slots
+remain held through response-body consumption/abandonment, not merely response-header
+handoff. Final counters show 32 requests, nine rejected, 23 completed, zero generation
+failures/abandonments/connection rejections/deadlines and readiness still serving.
+Together with the source rejection paths, these identify HTTP-slot saturation, not a
+failed model. Llama uses `-c 2048 -np 4 --no-kv-unified --no-cache-prompt --cache-ram 0
+--no-warmup --load-mode none -ngl 999 -fa on`; its startup confirms 512 positions per
+slot. Its pending-admission policy is **not matched** to Ribn's rejection policy.
+
+All table values are **median / maximum milliseconds among successful requests**.
+The spaced phase is an arrival pattern, not a forced concurrency-one measurement.
+Burst rows have different accepted populations and are not paired latency ratios.
+
+| Engine / phase | Successes / attempts | TTFT | Last content | Average ITL |
+| --- | ---: | ---: | ---: | ---: |
+| Ribn spaced | 8 / 8 | 685.5 / 1047.0 | 1963.8 / 2960.0 | 40.6 / 73.1 |
+| Ribn burst | 7 / 16 | 2273.8 / 5525.6 | 5264.1 / 6796.6 | 79.3 / 96.5 |
+| Ribn recovery-labelled | 8 / 8 | 512.7 / 722.4 | 1408.2 / 1643.1 | 28.9 / 29.7 |
+| llama spaced | 8 / 8 | 106.7 / 132.9 | 720.3 / 751.1 | 19.8 / 19.9 |
+| llama burst | 16 / 16 | 1910.2 / 3521.1 | 2644.5 / 4254.6 | 23.7 / 23.7 |
+| llama recovery-labelled | 8 / 8 | 103.8 / 107.7 | 719.0 / 721.9 | 19.8 / 19.9 |
+
+Authoritative successful completion usage is 736 tokens for Ribn and 1024 for llama;
+failed-request tokens are not inferred. Average ITL is
+`(last_content - first_content) / (completion_tokens - 1)`, not a distribution of
+individual token intervals. The prospectively chosen diagnostic objectives were
+5 s TTFT, 200 ms average ITL and 10 s last content. Counts meeting all three are
+21/32 and 32/32 issued attempts respectively, **not qualified goodput rates**.
+
+**Limits and next decision.** Native request starts and content clocks support these
+issued-request observations. The export does not establish an aligned planned-arrival
+origin or a monotonic attempt-end/HTTP-EOF clock: `request_end_ns` is epoch time.
+Last content and `[DONE]` do not substitute for EOF. Fully separated recovery,
+planned-arrival goodput, aggregate throughput and cold-start comparisons remain
+unqualified. There is one episode, no repeatability estimate, no memory-pressure
+qualification, no incumbent-native client cross-check and no new quality evaluation
+or quality-equivalence claim. Observed whole-owned-group RSS, including client workers,
+was 3,595,264,000 / 4,973,400,064 bytes; neither number is a physical peak or server-only
+memory comparison. Match admission and qualify clocks/pressure/quality before claiming
+competitive acceptance; this does not select another isolated kernel optimization.
+
+**Preserved preparation and closure.** Successful cohorts were never repeated or
+filled. A pre-worker environment-key error, two Ribn startup-only controller stops
+(capacity observer and overlong IPC path), two llama startup-only library-audit stops,
+and an unstarted freezer packet remain retained. All six server lifetimes exited
+cleanly. A CPU-only four-request protocol fixture exposed `setproctitle` clobbering
+ownership-cookie visibility; its failed watchdog proof remains failed despite current
+absence. A separate fixture with documented per-process `SPT_NOENV=1` passed unchanged
+cookie/PID-generation checks before model traffic. The subsequent llama continuation
+prospectively pins the complete retained compiler map, including `libnvidia-gpucomp`
+and `libnvidia-nvvm70`; it does not retroactively qualify the failed startup scopes.
+
+Artifacts beneath `benchmarks/results/qualification/` retain Ribn's immutable
+`qwen-endpoint-envelope-collection/20261104T005827Z/payload` and llama's
+`qwen-endpoint-envelope-llama/20261104T011931Z/payload`, with explicit episode ownership.
+The CPU-only closure `qwen-endpoint-envelope-close/20261104T012811Z` revalidates both
+original raw cohorts and scope-specific prefrozen native-map proofs, records current
+absence of 228 recorded groups, and preserves the historical ownership gap and eight
+failed stage receipts. Its 1,113,354,240-byte archive contains 14,390 file entries and
+43 hardlinks, independently verified locally for hashes, modes, raw SSE/cohorts,
+usage and descriptive calculations:
+
+- archive SHA-256: `c385db6971d6b93ede8b902246a2605c639122ed0b5b3c1690f28f3d13da9098`;
+- file-manifest SHA-256: `30fda44257d91bf0f3bb08e01c7fc94d576c16d8a39f9c19a67d803ff5f7c306`;
+- analysis SHA-256: `caabec180baea08fb2e3a48f89f34b90865cc46b4d6fd22f10b861e378f76000`.
+
+Mac source/control history, including failed verifier versions and never-started
+packets, is separately readback-verified in a 447,662,080-byte archive, SHA-256
+`3473d9c3932ffa2c77c64c5547769ab15dd4e735512d3d0b8ae714189248c966`.
+The external 16-GB GGUF is identity-pinned, not duplicated into either archive. Source,
+fresh build target/ELF, successful and failed controls, raw exports and never-started
+inputs remain available. Only disposable verification extractions and settled IPC
+sockets/empty directories were removed. This is descriptive baseline evidence, not
+an optimization promotion or completion of the first competitive milestone.
+
 ### Matched cross-engine decode baseline (2026-10-18)
 
 The first comparison against an incumbent on the same artifact, same client and same

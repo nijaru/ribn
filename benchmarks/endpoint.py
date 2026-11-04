@@ -16,7 +16,7 @@ from endpoint_config import AIPERF_VERSION, command, parse_manifest, require
 from endpoint_trace import parse_trace
 
 
-def run(manifest_path, output, executable):
+def run(manifest_path, output, executable, *, ipc_path=None):
     snapshot = manifest_path.read_bytes()
     manifest = parse_manifest(snapshot)
     trace = None
@@ -41,6 +41,8 @@ def run(manifest_path, output, executable):
     if trace is not None:
         (output / manifest["workload"]["trace_file"]).write_bytes(trace)
     args = command(manifest, executable, output.resolve())
+    if ipc_path is not None:
+        args.extend(["--zmq-ipc-path", str(ipc_path.resolve())])
     provenance = {
         "command": args,
         "python": sys.version,
@@ -72,6 +74,9 @@ def main():
         "--output", type=Path, required=True, help="new artifact directory"
     )
     execute.add_argument("--aiperf", default="aiperf")
+    execute.add_argument(
+        "--aiperf-ipc-path", type=Path, help="short directory for AIPerf's UNIX sockets"
+    )
     audit = commands.add_parser(
         "validate", help="audit the copied manifest and native exports"
     )
@@ -80,7 +85,7 @@ def main():
     directory = args.output if args.action == "run" else args.directory
     try:
         report = (
-            run(args.manifest, directory, args.aiperf)
+            run(args.manifest, directory, args.aiperf, ipc_path=args.aiperf_ipc_path)
             if args.action == "run"
             else validate(directory)
         )

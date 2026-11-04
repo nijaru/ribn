@@ -83,7 +83,10 @@ constructor default. Assembly keeps the default global event grant or increases
 it enough to cover every requested active sequence's mailbox. Overflow in the
 active-plus-queued count or global event grant rejects before model/device access.
 
-`--max-requests` separately limits HTTP generation slots. Application request
+`--max-requests` separately limits HTTP generation slots. A slot stays charged while
+reading the request and consuming or abandoning its response body, including SSE;
+returning response headers does not release it. This is not a peer-observed HTTP EOF
+guarantee, because transport buffering can outlive body consumption. Application request
 permits cover preprocessing, queued work, execution and retained output/retirement;
 `TextModel::request_capacity()` reports this fixed bound, not currently free permits.
 Qwen startup reports HTTP slots, the active-sequence limit and application capacity
@@ -103,7 +106,7 @@ are discarded without retention while observing disconnect; they cannot hide EOF
 | Envelope | Default |
 | --- | --- |
 | Accepted connection tasks | 64 |
-| Generation HTTP slots (body reading through response-body handoff) | 32 |
+| Generation HTTP slots (body reading through response-body consumption/abandonment) | 32 |
 | Header/parser buffer; header count | 16 KiB; 32 |
 | Header read timeout | 5 seconds |
 | Body bytes (including JSON syntax) | 256 KiB |
