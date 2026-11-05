@@ -167,7 +167,7 @@ Do not blindly copy complete model tables into HBM. Pinned Gemma 4 E4B's
 BF16 per-layer embedding is 262144 × 42 × 256 × 2 = 5,637,144,576 bytes
 (5.25 GiB), before weights, KV, workspace and transient copies. Compare
 full-device residency against indexed-row staging with actual physical
-peaks. The earlier synchronous device-PEL/PLE-combine substitution
+peaks. The earlier synchronous device-side PLE-combine substitution
 improved 64-token prefill only 0.16% and failed its advancement gate.
 The new model-wide path may change the economics, but repeating that
 isolated candidate is not selected work.
