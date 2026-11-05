@@ -481,11 +481,14 @@ See the pinned [metrics definitions](https://docs.nvidia.com/aiperf/v0.13.0/refe
 artifacts outside version control, and do not enable private-content collection
 merely to obtain a benchmark.
 
-Host verification uses a CPU-only Python 3.13 environment with the same dependencies
-as CI. Integration also needs the pinned AIPerf environment:
+Host verification targets the latest stable Python 3 release; CI also checks Python
+3.13 compatibility. The CPU-only suite uses the dependencies below. Model capture
+and AIPerf integration keep their separately pinned environments; those pins do not
+restrict host validation or analysis.
 
 ```sh
-uv venv /tmp/ribn-benchmark-tests --python 3.13
+uv python install 3
+uv venv /tmp/ribn-benchmark-tests --python 3
 uv pip install --python /tmp/ribn-benchmark-tests/bin/python -r benchmarks/requirements-test.txt
 PYTHONDONTWRITEBYTECODE=1 /tmp/ribn-benchmark-tests/bin/python -m unittest discover -s benchmarks -p 'test_*.py'
 # Explicit integration gate: real AIPerf plus a CPU-only HTTP fixture, no model/GPU.

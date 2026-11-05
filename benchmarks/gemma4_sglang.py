@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Pinned SGLang Gemma E4B one-batch diagnostic, not serving qualification.
 
-Run in an isolated Linux/CUDA SGLang 0.5.22 environment. --validate-only needs
-only Python 3.13 and reads the reference without importing Torch or SGLang.
+Run capture in an isolated Python 3.13 Linux/CUDA SGLang 0.5.22 environment.
+--validate-only uses Python 3.11+ and reads the reference without importing
+Torch or SGLang.
 """
 
 import argparse
@@ -121,6 +122,7 @@ def timing_cases(cases):
 
 
 def check_installation():
+    require(sys.version_info[:2] == (3, 13), "use Python 3.13 for SGLang capture")
     versions = {name: importlib.metadata.version(name) for name in PACKAGES}
     require(versions == PACKAGES, f"wrong engine environment: {versions}")
     spec = importlib.util.find_spec("sglang")
@@ -344,7 +346,6 @@ def sequence(torch, upstream, wrapped, case, output, report, trial=None):
 
 
 def collect(snapshot, reference_path, output, validate_only=False, eager=False):
-    require(sys.version_info[:2] == (3, 13), "use Python 3.13")
     require(
         not output.resolve().is_relative_to(snapshot.resolve()),
         "keep evidence outside package",

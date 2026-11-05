@@ -12,7 +12,14 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 import numpy as np
-from gemma4_sglang import MANIFEST, VOCAB, reference_cases, sequence, timing_cases
+from gemma4_sglang import (
+    MANIFEST,
+    VOCAB,
+    check_installation,
+    reference_cases,
+    sequence,
+    timing_cases,
+)
 
 SCRIPT = Path(__file__).with_name("gemma4_sglang.py")
 MANIFEST_DATA = tomllib.loads(MANIFEST.read_text())
@@ -51,6 +58,19 @@ def corpus():
 
 
 class SglangInputTests(unittest.TestCase):
+    def test_capture_rejects_unqualified_python_before_package_lookup(self):
+        for version in ((3, 12), (3, 14), (3, 15)):
+            with (
+                self.subTest(version=version),
+                patch("gemma4_sglang.sys.version_info", version),
+                patch("gemma4_sglang.importlib.metadata.version") as lookup,
+            ):
+                with self.assertRaisesRegex(
+                    ValueError, "Python 3.13 for SGLang capture"
+                ):
+                    check_installation()
+                lookup.assert_not_called()
+
     def test_quality_and_timing_force_consumed_inputs_not_predictions(self):
         reference = corpus()
         original = copy.deepcopy(reference)
