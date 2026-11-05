@@ -1,0 +1,2 @@
+# CPU-only host unit tests; model/reference and AIPerf environments stay separate.
+numpy==2.5.4
