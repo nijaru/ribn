@@ -85,6 +85,10 @@ See [current source owners](docs/architecture.md) for the crate map and limitati
 
 ## Development
 
+Python is used for developer and benchmark tools, not the Rust engine runtime.
+See [Python environments](benchmarks/README.md#python-environments) for supported
+interpreters and isolated reference-tool dependencies.
+
 ```sh
 python3 tools/check-boundaries.py
 cargo fmt --all -- --check

@@ -1,0 +1,4 @@
+# NumPy-only analyzers and host unit tests; capture/AIPerf environments stay separate.
+# NumPy 2.5 requires Python 3.12+; keep Python 3.11 installs on 2.4.
+numpy==2.4.6; python_version == '3.11'
+numpy==2.5.4; python_version >= '3.12'

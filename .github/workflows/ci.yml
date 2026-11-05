@@ -17,11 +17,6 @@ jobs:
         with:
           toolchain: 1.98.0
           components: rustfmt, clippy
-      - uses: actions/setup-python@v6
-        with:
-          python-version: '3.x'
-          check-latest: true
-      - run: python3 tools/check-boundaries.py
       - run: cargo fmt --all -- --check
       - run: cargo test -p engine-qwen --no-default-features --test model_config --locked
       - run: cargo test --workspace --locked
@@ -34,7 +29,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python-version: ['3.x', '3.13']
+        python-version: ['3.x', '3.14', '3.13', '3.12', '3.11']
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v6
@@ -42,8 +37,9 @@ jobs:
           python-version: ${{ matrix.python-version }}
           check-latest: true
           cache: pip
-          cache-dependency-path: benchmarks/requirements-test.txt
-      - run: python3 -m pip install -r benchmarks/requirements-test.txt
+          cache-dependency-path: benchmarks/requirements-host.txt
+      - run: python3 -m pip install -r benchmarks/requirements-host.txt
+      - run: python3 tools/check-boundaries.py
       - run: python3 -m unittest discover -s benchmarks -p 'test_*.py'
   cuda-feature-check:
     runs-on: ubuntu-latest

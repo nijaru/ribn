@@ -21,6 +21,32 @@ Current references:
 - https://docs.vllm.ai/en/latest/cli/bench/serve/
 - https://github.com/sgl-project/sglang/blob/main/docs/developer_guide/benchmark_and_profiling.md
 
+## Python environments
+
+Ribn's Rust crates, CLI and HTTP server do not require Python. HTTP clients use the
+[serving protocol](../docs/serving.md), not a Ribn Python package, so a client's Python
+version is independent of the tools below.
+
+The standalone endpoint runner, result validators, NumPy-only analyzers and boundary
+checker support **CPython 3.11–3.15**, using the latest patch of each minor release.
+Use the latest stable Python for new environments. CI tests every supported minor;
+its primary `3.x` target tracks the latest stable release, not prereleases. Python
+3.11 provides the required standard-library `tomllib`; it is also the oldest
+[upstream-maintained release](https://devguide.python.org/versions/). Review the
+support floor at upstream end of life and qualify new stable minors as they arrive.
+
+Install NumPy-dependent host tools and their unit tests from
+[`requirements-host.txt`](requirements-host.txt). NumPy 2.5 requires Python 3.12+;
+the requirements select NumPy 2.4.6 on Python 3.11 rather than forcing users to
+upgrade their interpreter. The endpoint runner and boundary checker need only the
+standard library. See [host verification](#host-verification) for setup and checks.
+
+Model captures and Torch-based component probes retain the Python and dependency
+pins of their qualified reference environments. AIPerf runs as a separate executable
+in its own pinned environment. These restrictions do not set the support range for
+Ribn's host tools or HTTP clients. Free-threaded builds and alternative Python
+implementations are not currently qualified.
+
 ## Reproducibility rules
 
 Every recorded run must capture at least:
@@ -330,8 +356,9 @@ client/tokenizer and exported effective distribution preserve the run configurat
 they do not establish identical wall-clock arrivals or a representative production mix.
 `output_tokens_stddev` must remain integer zero.
 
-The runner needs Python 3.11+. AIPerf 0.13.0 needs Python 3.11–3.13; use a separate
-environment rather than installing it into an unsupported interpreter:
+The runner follows the [host Python support range](#python-environments). AIPerf
+0.13.0 needs Python 3.11–3.13; use a separate environment rather than installing it
+into an unsupported interpreter:
 
 ```sh
 uv venv /tmp/ribn-aiperf --python 3.13
@@ -481,15 +508,17 @@ See the pinned [metrics definitions](https://docs.nvidia.com/aiperf/v0.13.0/refe
 artifacts outside version control, and do not enable private-content collection
 merely to obtain a benchmark.
 
-Host verification targets the latest stable Python 3 release; CI also checks Python
-3.13 compatibility. The CPU-only suite uses the dependencies below. Model capture
-and AIPerf integration keep their separately pinned environments; those pins do not
-restrict host validation or analysis.
+### Host verification
+
+Use the latest stable Python by default, or an existing supported interpreter with
+`uv venv --python 3.11` (for example). CI runs this CPU-only suite and the boundary
+checker across the [supported host interpreters](#python-environments).
 
 ```sh
 uv python install 3
 uv venv /tmp/ribn-benchmark-tests --python 3
-uv pip install --python /tmp/ribn-benchmark-tests/bin/python -r benchmarks/requirements-test.txt
+uv pip install --python /tmp/ribn-benchmark-tests/bin/python -r benchmarks/requirements-host.txt
+/tmp/ribn-benchmark-tests/bin/python tools/check-boundaries.py
 PYTHONDONTWRITEBYTECODE=1 /tmp/ribn-benchmark-tests/bin/python -m unittest discover -s benchmarks -p 'test_*.py'
 # Explicit integration gate: real AIPerf plus a CPU-only HTTP fixture, no model/GPU.
 PYTHONDONTWRITEBYTECODE=1 /tmp/ribn-aiperf/bin/python -m unittest discover -s benchmarks -p '*_integration.py'
