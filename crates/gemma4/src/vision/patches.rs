@@ -6,7 +6,7 @@ use crate::{Gemma4Error, cpu::try_vector};
 ///
 /// This is a host component, not an application media request or reservation.
 /// It neither resizes nor decodes images, applies EXIF/color conversion, or
-/// normalizes pixels to the encoder's internal [-1,1] range.
+/// normalizes pixels to the encoder's internal `[-1,1]` range.
 pub struct Gemma4ImagePatches {
     pixels: Vec<f32>,
     positions: Vec<[i64; 2]>,
@@ -17,7 +17,7 @@ impl Gemma4ImagePatches {
     /// Pack tightly interleaved RGB8 pixels in row-major HWC order. Dimensions
     /// must already be aligned to `patch_size * pooling_kernel_size`.
     ///
-    /// Pixel values are rescaled to FP32 [0,1], with RGB innermost within each
+    /// Pixel values are rescaled to FP32 `[0,1]`, with RGB innermost within each
     /// row-major patch. Both arrays include the selected budget's trailing padding.
     /// The borrowed RGB input is not retained. Allocations are fallible and bounded
     /// by this image's budget and validated model geometry, not a shared byte pool.
