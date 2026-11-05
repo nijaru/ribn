@@ -1,6 +1,6 @@
 # Inference engine design
 
-Status: accepted target, revised 2026-10-26; not implemented support or a SOTA claim.
+Status: accepted target, revised 2026-11-05; selected model-wide GPU execution redesign, not implemented support or a SOTA claim.
 [Resource protocol](resource-protocol.md) owns execution/resource transitions;
 [roadmap](roadmap.md) owns delivery order, open implementation choices and gates;
 [architecture](architecture.md) maps current source. Public v0 interfaces are unstable.
@@ -32,8 +32,9 @@ shims; retain correctness evidence and explicitly scoped qualified fallbacks.
 
 1. **Artifacts and model definition:** validated configuration, processors, parameter
    interpretation, operations and continuation semantics; no serving lifecycle.
-2. **Prepared execution:** owning backend-specific weights, storage, kernels, workspaces
-   and completion dependencies; lower accepted logical work into actual device work.
+2. **Prepared execution:** owning a model-wide backend program, persistent sequence
+   state, physical GPU batch layouts, kernels, workspaces and completion dependencies;
+   CPU and qualified single-sequence device paths remain legitimate fallbacks.
 3. **Execution policy:** specialized AR, batch/encoder and later iterative/training
    runtimes; own admission, progress, fairness and logical commitment.
 4. **Application access:** operation-specific owned requests/results, bounded submission,
@@ -103,6 +104,79 @@ or GPU polling. An owned stream yields ordered deltas and one terminal outcome;
 abandoning it never asserts device completion. Direct access need not create a worker.
 
 ## Execution and scheduling
+
+
+### Model-wide physical execution (selected 2026-11-05)
+
+**The optimized GPU execution unit is a prepared model and a physical batch,
+not a synchronous per-sequence decoder object.** Retain `GenerationExecutor`
+for logical policy, bounded admission, output credits, cancellation and
+commitment. The Gemma `GemmaDecode` interface and
+`executor/batch.rs` serial loop remain CPU/reference and qualified
+single-sequence GPU fallback mechanisms; they must not be the foundation
+for multi-request CUDA/Metal execution. Do not build a second scheduler
+or universal graph IR to replace them.
+
+One model/backend owner binds (sequence identity and incarnation, executable
+snapshot, committed prefix, accepted range, full continuation state) to
+one or more **physical lanes**. Preparation records packed token and
+position spans, continuation/state indices, original result destinations,
+qualified kernel variant, immutable transfer staging and memory/output
+grants for the aggregate offer. Compatibility follows concrete kernel,
+dtype, KV/recurrent layout and attention constraints; different prefixes
+or reachable capacities are not intrinsically incompatible. A mixed
+logical offer may initially use separately packed prefill/decode lanes.
+
+Submission consumes exactly that prepared transaction. Shared projections,
+attention and state operations must perform actual multi-sequence work:
+a loop of complete per-sequence model forwards is a *serial fallback*,
+not physically batched serving. Each in-flight submission owns its
+staging, descriptor/page-table versions, output slots, workspace and
+completion dependencies. Partial enqueue is uncertain execution, not a
+clean request rejection. After physical completion, validate all rows,
+map them to their original stable identities and accepted boundaries,
+and only then commit logical progress, sampling results, usage and output.
+Cancellation never implies device completion; failed drain retains
+every potentially device-visible owner and byte charge.
+
+Begin depth one with whole-offer completion. Prepare ownership now so
+bounded independent-sequence preparation/execution overlap can be
+introduced without reusing in-flight buffers. Same-sequence work-ahead,
+graph replay and speculation require stronger per-submission dependencies
+and projected-versus-committed state contracts; they are not implied by
+an async frontend.
+
+Gemma's shared `Gemma4CudaModel` already owns weights, kernels, stream
+and working sets: make it the nucleus of the new model-wide executor,
+including physical sequence cache ownership, rather than acquiring the
+model mutex for one complete per-sequence forward. Preserve CPU and
+qualified CUDA serial implementations as numerical/lifecycle references.
+Qwen retains its own paged, recurrent and quantized backend representation
+but follows the same behavioral ownership and batching principles.
+
+### Device dataflow, staging and numerical qualification
+
+Prefer staging indexed tokens/positions and needed PLE rows *once per
+physical batch*, keeping intermediate activations and layer dependencies
+on device where they win. Ordinary greedy serving can return just sampled
+token IDs and completion evidence; full logits/logprobs are separately
+bounded, charged outputs. Device argmax/sampling must preserve the selected
+model numerical semantics before replacing host processing.
+
+Do not blindly copy complete model tables into HBM. Pinned Gemma 4 E4B's
+BF16 per-layer embedding is 262144 × 42 × 256 × 2 = 5,637,144,576 bytes
+(5.25 GiB), before weights, KV, workspace and transient copies. Compare
+full-device residency against indexed-row staging with actual physical
+peaks. The earlier synchronous device-PEL/PLE-combine substitution
+improved 64-token prefill only 0.16% and failed its advancement gate.
+The new model-wide path may change the economics, but repeating that
+isolated candidate is not selected work.
+
+Qualify packed/ragged GEMMs and attention, vendor kernels, fusion and graph
+capture end-to-end with actual goodput, TTFT/ITL, fallback frequency,
+physical memory and independently justified numerical/quality acceptance.
+Graphs own stable addresses, per-replay input metadata and retirement
+fences. Launch count alone does not establish improvement.
 
 ### One owner, bounded overlap
 
@@ -249,15 +323,25 @@ layer that nothing read has been removed. What remains is not the universal mode
 Replace hard-coded geometry and obsolete bridge contracts with their actual model/backend
 owners during those integrations, without creating another catch-all crate.
 
-Model preparation may reuse external model implementations and compilers rather than
-reimplement every architecture in Rust. Evaluate that boundary against native execution
-for an existing decoder before expanding handwritten integrations. This is an open
-implementation choice, not a selected package format, compiler project or universal ABI.
-Any prepared path must expose its backend-specific capacities, complete continuation
-state and owned storage/completion dependencies to the same execution owner. Preserve
-independent numerical references and qualify portability per backend; a CUDA export
-does not establish CPU or Metal support. Model-support velocity and maintenance cost
-matter alongside execution speed, memory and serving reliability.
+**Test native versus externally prepared model execution alongside the
+model-wide backend work**, using the pinned Gemma decoder before hand-porting
+many more architectures. An external tool may compile/export offline, but
+the prepared program must be executable by the Rust-owned backend without
+a Python request scheduler, unaccounted device allocations, independently
+mutable continuation state or bypassed cancellation and retirement.
+Pin compiler, kernels, model/processor, executable snapshot, dynamic-shape
+limits, numerical policy, state layout and completion dependencies.
+Unsupported serving shapes must reject or take a qualified fallback,
+not silently compile in a request's fast path.
+
+Compare common-history and task-quality acceptance, mixed-request goodput,
+latency, physical peaks, cold compile/load cost, re-specialization,
+integration time and ongoing maintenance. Python eager/compiled forwards
+are useful references, not proof of a production Rust handoff. Select
+external preparation where the complete serving and model-support
+economics win; retain native specializations where they win. Neither
+path requires a universal compiler, tensor IR or plugin ABI. A CUDA
+export does not prove Metal or CPU portability.
 
 GGUF and SafeTensors expose artifact data. HF package resolution owns source/revision/files,
 not model semantics. Target byte-aware streaming materialization with bounded concurrent
@@ -358,6 +442,10 @@ adapters, realtime sessions and wider hardware through concrete operation contra
 universal execution API. The [roadmap](roadmap.md) defines the next delivery gates.
 
 ### Research basis
+
+- [vLLM V1 architecture](https://docs.vllm.ai/en/latest/design/arch_overview/): separates logical scheduling from model runner execution.
+- [TensorRT-LLM overlap](https://github.com/NVIDIA/TensorRT-LLM/blob/main/docs/source/features/overlap-scheduler.md): device work-ahead needs explicit state and lifetime dependencies.
+- [HiState (2026-10-30)](https://arxiv.org/abs/2610.41508): checkpoint storage versus per-reuse restoration; evaluate on real hybrid traffic later.
 
 DeepInfer, vLLM, SGLang and NVIDIA engines are complementary first-class design resources.
 Choose source paths by the mechanism being investigated, not by matching the project's

@@ -7,433 +7,78 @@ open implementation choices and acceptance gates. All v0 interfaces may change.
 
 ## Current execution order
 
-**Next: measured Gemma/Qwen execution improvements and remaining quality/capacity gates.**
-The real second decoder runs on CPU, Metal and CUDA through the synchronous greedy
-executor, token runtime, text facade and CLI. The CPU full-history decoder remains the
-independent arithmetic oracle. CUDA now selects [qualified sixteen/eight-row prefill](../benchmarks/gemma4-cuda-baseline.md#sixteen-row-full-reach-and-integration-qualification-2026-10-25)
-for RTX 4090/E4B geometry, up to 4096 positions and sufficient prepared scratch. Eight-row
-and scalar fallbacks, complete owner histories and completion-owned device K/V copies remain.
+**2026-11-05 decision: redesign the optimized GPU backend as model-wide
+physical execution while retaining the Rust AR serving authority.**
+The [model-wide design](inference-engine-design.md#model-wide-physical-execution-selected-2026-11-05)
+and [physical resource protocol](resource-protocol.md#model-wide-physical-preparation-and-result-mapping)
+are now the implementation contracts, not achieved functionality.
 
-The [matched diagnostic](../benchmarks/runtime-contract.md#bounded-eight-row-cuda-prefill-2026-10-21-utc)
-reduces 18/64-token prefill from 271.93/1004.29 to 68.44/146.96 ms, with +1.35% pooled
-decode latency and 3.94 MiB additional charged workspace. It meets independently declared
-GEMM/greedy, ownership, sanitizer and performance gates, including no-tail heads and a
-window crossing inside a group. All 12 archived winners agree across 19 evaluations,
-but full distributions differ more from stock CPU than scalar CUDA; no distributional,
-sampling, task-quality or competitive serving acceptance follows. Executor admission now
-uses actual prepared capacity and rejects invalid vocabulary/media/non-greedy input
-locally. Keep the scalar exact partition test scoped to its unchanged row-one arithmetic.
+The source confirms Gemma's `executor/batch.rs` executes each offered
+sequence with a synchronous decoder call. Its CUDA sixteen/eight-row
+prefill groups tokens from *one* request and still reads PLE to host,
+uploads contexts each layer and reads full logits to host. The promoted
+loopback c4/c8 cohort reached roughly 41 output tokens/s versus fresh
+SGLang 281–291; the models were **not independently quality-equivalent**.
+Qwen's 2026-11-04 equal-artifact diagnostic completed 23/32 requests
+versus llama.cpp's 32/32 under differing admission policies. Neither
+establishes a clean competitive ranking.
+[Gemma evidence](../benchmarks/gemma4-cuda-baseline.md);
+[Qwen evidence](../benchmarks/runtime-contract.md#current-source-equal-artifact-endpoint-diagnostic-2026-11-04).
 
-A larger row count is not the next milestone by default. Compare a matched incumbent,
-preserve numerical-policy distinctions and measure mixed arrivals/capacity before claiming
-competitive progress. Cache eviction, sampling and mixed-retention lifetime remain separate
-work. The [host multi-row oracle](../benchmarks/gemma4-reference/README.md#host-multi-row-prefill-oracle)
-and [CUDA row-count preflight](../benchmarks/gemma4-reference/README.md#cuda-projection-row-count-preflight-2026-10-21-utc)
-retain the evidence that CPU bitwise batching cannot be assumed for cuBLAS.
+### Active deliveries
 
-**Preparation-boundary comparison — direct-call evidence:** the earlier [matched CUDA diagnostic](../benchmarks/gemma4-cuda-baseline.md)
-uses the same active BF16 parameters and common histories. Eight-row native 18/64-token
-prefill was 2.81x/5.81x slower than stock Transformers eager; pooled native/eager decode was
-19.33/21.18 ms. Stock whole-forward compilation works, but `dynamic=False` produced eight
-specializations for nine advancing decodes; `dynamic=True` reduced that to two, with
-63/53 s first-forward costs and changed logits. Fixed-position warm calls near 14 ms
-are not a general serving result. Full rows, cold costs, allocator/RSS observations and
-scope limits are retained; no numerical budget or automatic promotion follows.
+1. **Matched quality/serving baseline, in parallel.** Preserve all offered,
+   admitted/rejected, cancelled and completed arrivals with actual usage
+   and terminal semantics. Match the admission envelope, artifact and
+   quality policy; measure TTFT, ITL, E2E, SLO goodput, fairness, pressure,
+   physical memory and recovery. Repair benchmark accounting rather
+   than ranking only successful request subsets.
+2. **Model-wide Gemma CUDA execution.** Replace optimized per-sequence
+   `GemmaDecode` dispatch with a shared model/backend prepared batch.
+   Bind stable sequence incarnations, physical lane membership, exact
+   prefixes, caches, accepted ranges and full resource grants.
+   Start depth one; retain CPU/qualified CUDA reference fallbacks.
+   Gate malformed later rows, mixed reaches, row reorder, state routing,
+   cancellation, partial enqueue and failure retirement.
+   **Exit:** at least two sequences actually share physical GPU
+   weight/model work. A renamed serial loop does not pass.
+3. **Competitive packed device execution.** Qualify multi-request
+   decode/prefill and compatible attention/state lanes. Measure
+   physical rows/tokens, fallback rates, GPU work, transfers, host
+   gaps, memory and actual HTTP goodput. Then choose indexed-row
+   device PLE, sampled-token readout, capture or fusion from measured
+   losses, not the launch count. Do not repeat unchanged negative
+   M4, descriptors, PLE-only, attention and FFN graph candidates.
+4. **Native versus externally prepared executor, concurrently.**
+   Test a pinned Gemma model and at least two contexts/shapes through
+   a truly Rust-invocable prepared program; compare full numerical/
+   task results, mixed-request goodput, cold compile/load, memory,
+   state/retirement fidelity and integration/maintenance effort.
+   Stock PyTorch is a reference, not the native production candidate.
+   Choose the superior qualified method without prematurely building
+   a universal IR/compiler.
+5. **Capacity and safe overlap.** Close deferred-free accounting,
+   qualify physical resident grants, recomputation progress and
+   stalled-output recovery, then overlap independent submissions
+   with immutable per-submission storage and real fences. Exact hybrid
+   prefix reuse remains a separate workload-dependent experiment.
+6. **Broader architecture/hardware.** Complete Gemma VLM's failed
+   full-checkpoint numerical and feature-handoff gates, then test
+   a different architecture and backend. Track support velocity
+   and ongoing maintenance, not just model registry entries.
 
-This supports further investigation of model/compiler reuse, not a selected Rust importer,
-package format or universal graph ABI. Model-support velocity, Rust-owned preparation,
-recovery and backend portability remain unqualified. Preserve the independent CPU oracle.
-The [SGLang engine-level direct-call comparison](../benchmarks/gemma4-cuda-baseline.md#owned-fp32-host-output-engine-comparison-2026-10-22)
-now runs on the RTX 4090 with the full pinned Linux stack and fresh native/stock controls.
-All clocks include a completed owned FP32 host row. Across three fresh processes per
-configuration, eight-row native 64-token prefill measured 146.844 ms versus 18.280 ms for graph-configured
-SGLang; pooled decode is 19.271 versus 12.037 ms—about 8.0x/1.60x slower. SGLang's full
-one-request graph runs every decode, not prefill. All 12 common-history winners agree,
-but native/SGLang KL and TV maxima exceed stock; this is not quality-equivalent acceptance.
-Old BF16-host timings are not reused. The [eight-row loopback serving study](../benchmarks/gemma4-cuda-baseline.md#matched-loopback-serving-diagnostic-2026-10-22)
-measured 48 common variable-length prompts, c1/c4/c8 and rate-controlled admission overload,
-with three fresh server processes per engine. Native stayed near 38 output tokens/s while
-SGLang reached 281–291 at c4/c8; c8 TTFT p95 was 4.68 s versus 0.49 s. Raw client clocks,
-actual usage, phase-window rates and joint diagnostic deadlines reconcile across all 24
-phases; six servers exit cleanly. At c1 only 34/48 continuations match, so these are not
-quality-equivalent ratios. AIPerf can suppress concurrency-gated arrival ticks; its issued
-cohort is not a planned-arrival ledger. Physical pressure/recovery, independent quality,
-representative SLO acceptance and incumbent-native client cross-checks remain open.
-Target the measured concurrency/prefill deficit without selecting a universal compiler/importer
-or widening rows by default.
+### Decision milestones
 
-The [fresh CUDA execution-cost trace](../benchmarks/gemma4-cuda-baseline.md#native-cuda-execution-cost-trace-2026-10-25)
-records 86.6 ms of collected matrix/reduction work in a 161.7 ms instrumented 64-token
-prefill. Collection warnings prevent a complete GPU/host partition; synchronization
-spans overlap device execution and are not pure host overhead. This positive device-cost
-evidence selects one bounded, model-local **16-row prefill candidate versus the qualified
-eight-row lane**, not a row-count sweep or another synchronous PLE-only patch. The
-[fresh private 16-row cohort](../benchmarks/gemma4-cuda-baseline.md#private-16-row-repeatability-rescreen-2026-10-25)
-now passes the original three-pair advancement screen after an exclusive GPU handoff
-and isolation-monitor repair. Median 64-token prefill falls 147.038→76.743 ms (47.8%)
-and 18-token prefill 68.523→51.570 ms (24.7%); every pair improves both shapes, other
-prefix/decode aggregates stay within their gates, and charged memory rises 7.0 MiB.
-All 372 matched full-row comparisons are bit-exact on this cohort. The same frozen
-candidate retains eight-row/scalar fallback and the existing independent component,
-archived greedy/window and constrained-pool cache-retirement evidence. The earlier
-interrupted cohort and zero-row monitor failure remain preserved, not pooled into
-these results. The [full-reach and integration follow-up](../benchmarks/gemma4-cuda-baseline.md#sixteen-row-full-reach-and-integration-qualification-2026-10-25)
-now adds 40 bit-exact full-reach comparisons, focused whole-model and maximum-span
-attention memchecks, actual-sixteen-row executor/text checks and an ordinary CUDA CLI
-smoke. Automatic selection is enabled only for the qualified device/geometry/reach and
-prepared ceiling, retaining eight/scalar fallbacks and unchanged decode. This preserves
-the existing GPU numerical policy; it does not establish new long-context CPU parity
-or quality-equivalent acceptance. The [promoted-lane serving comparison](../benchmarks/gemma4-cuda-baseline.md#promoted-sixteen-row-serving-comparison-2026-10-26)
-now measures three fresh eight/sixteen-row process pairs on that mixed-length loopback
-cohort. Median paired c4/c8 throughput improves 9.9%/9.8%, and all 501 shared successful
-native prompt comparisons preserve text, usage and finish. The internal advancement
-screen passes, but native throughput still flattens near 41 tokens/s versus fresh SGLang
-281–291, without quality equivalence. Native c8 TTFT p95 remains 4.10 s and only 4/48
-requests pass the diagnostic deadlines. Retain sixteen rows; select subsequent model-local
-cross-sequence physical execution from this remaining deficit, not wider prefill by default.
-The first [four-sequence decode prototype](../benchmarks/gemma4-cuda-baseline.md#four-sequence-decode-numerical-gate-2026-10-26)
-fails full-logit bit equality on its first common-history decode, despite finite outputs
-and four unchanged argmaxes. It remains private and unpromoted; the new advancement
-contract below must pass before performance measurement. Later cohorts of that
-rejected experiment and its lifecycle/serving gates were not executed. A host-only [first-projection reference](../benchmarks/gemma4-reference/README.md#first-ple-projection-reference)
-now supplies expected BF16 operands and complete binary64 diagnostic sums for the
-first rejected decode inputs. A bounded [native first-projection replay](../benchmarks/gemma4-cuda-baseline.md#first-ple-projection-native-capture-2026-10-28)
-now matches every consumed input/weight bit to that reference, but serial and four-row
-BF16 outputs differ at 12 of 10,752 coordinates per row (maximum difference 0.0625).
-An [actual decoder trace](../benchmarks/gemma4-cuda-baseline.md#actual-decoder-projection-trace-2026-10-28)
-confirms those PLE differences on the frozen histories and finds layer-zero Q differs
-at 5 of 2,048 coordinates per row (maximum 0.25), also with matching consumed operands;
-K and V match in this scope. All same-mode prefills and final logits remain bit-exact
-to the archived witnesses. PLE-only parity would not establish projection-wide bit
-invariance. Keep the candidate unpromoted; these observations supply no tolerance or
-precision-policy change. The accepted [reordered-decode advancement contract](resource-protocol.md#reordered-cross-sequence-cuda-decode)
-now permits a new, separately frozen experiment with unchanged BF16/FP32 policy,
-independent GEMM bounds including the batched vocabulary head, common-history and
-continuation-routing checks, and a per-question no-loss labeled generation screen.
-The [128-question cohort](../benchmarks/gemma4-cuda-baseline.md#reordered-four-sequence-decode-advancement-contract-2026-10-29)
-is selected and tokenized without model execution. The fixed-corpus scorer and
-certified encoded-operand bound checker are host-tested, including per-item losses,
-incomplete records and uncertain bounds. The checker certifies 110592 retained
-PLE/Q/K/V outputs against their own operands, not a full-model error budget. The
-expanded exact-integer component gate passes on RTX 4090: all 13 geometries at rows
-1/4, including the tied vocabulary head, with legacy non-head 8/16 coverage retained.
-A separate [native routing fixture gate](../benchmarks/gemma4-cuda-baseline.md#native-routing-component-gate-2026-10-29)
-passes mixed prefixes, reversed rows, real owner/shared-tail boundaries and exact
-scalar-attention replay. Four deliberately wrong append/donor/gather/scatter variants
-fail at their expected assertions. This is not actual-model state or executor evidence.
-The separately frozen [actual-model prerequisites](../benchmarks/gemma4-cuda-baseline.md#actual-model-prerequisite-results-2026-10-29)
-now pass: four complete 160-row controls, both observation-noninterference checks,
-unchanged prefill/fallback, initialized continuation bytes and invalid-last-row
-atomicity. The unchanged encoded-operand bound certifies 2207744 actual component
-outputs, including 2097152 head outputs; separate processes pass 5976 same-operand
-native scalar replays and 368 public CPU correlations. These are direct-model gates,
-not executor/text selection or generated-QA evidence. No old failure becomes a pass.
-The separately frozen [executor QA screen](../benchmarks/gemma4-cuda-baseline.md#executor-qa-and-default-text-selection-results-2026-10-29)
-now passes all 128 questions through the existing private dispatcher and canonical
-processor: 105 actual M4 calls expose every question, all generated IDs/texts match
-fresh serial, and exact per-item EM/F1 has no losses. All 866 retained answer/alias
-pairs cross-check against the pinned evaluator. The QA-only prefill barrier is not
-production scheduling evidence. The separate unbarriered Engine/text chat gate
-returns all four archived tokens and correct delivery/usage for every request, but
-uses **zero M4 calls**: all twelve decode predictions fall back to scalar. That
-campaign is stopped and preserved, not retried; the later QA-only scope does not
-repair its missing integration evidence. Both scopes retire ownership successfully.
-A later [concurrent-caller text scope](../benchmarks/gemma4-cuda-baseline.md#concurrent-caller-default-text-selection-2026-10-29)
-now supplies actual default Engine/text selection: four independent caller threads
-share one execution owner, with no start/prefill barrier, sleep, cap increase or
-scheduling change. Two native M4 calls expose every request twice; all four archived
-outputs, usage and releases match, and device grants return to zero. Only the private
-caller/observation harness changes; model arithmetic and the passed QA evidence remain
-unchanged. Sequential stream starts wait for enqueue acknowledgement and need not
-form a physical cohort; their earlier zero-M4 result stays closed, not relabeled.
-These scoped prerequisites permit **private performance experiments only**. The first
-[matched performance campaign](../benchmarks/gemma4-cuda-baseline.md#private-reordered-decode-performance-interruption-2026-10-29)
-stops on a kernel-confirmed global host OOM during the second pair's serial process.
-Its only complete pair preserves all 392 whole outputs, but c4/mixed8 throughput gains
-are only 0.46%/1.41%, with just 2.55%/8.37% of decode predictions using M4. The completed
-second candidate remains unpaired; later repetitions and the three-pair summary stay
-unrun. Preserve the failed process and all partial evidence, without filling or retrying
-that cohort. The [CUDA host-lookup capacity change](../benchmarks/gemma4-cuda-baseline.md#cuda-host-lookup-capacity-qualification-2026-10-29)
-now removes 7,946,704,896 bytes of unnecessary retained CPU weights (53.24%): only token/PLE
-lookup tables and layer scalars remain on the host. All 160 full vocabulary rows remain
-bit-identical to the archived public scalar control; seven real CUDA tests and ordinary
-CLI loading pass below a frozen 10 GiB observed-RSS screen. This supplies an evidenced
-capacity reduction, not host isolation, a matched old/new RSS comparison or M4 performance
-acceptance. The [lower-host-memory follow-up](../benchmarks/gemma4-cuda-baseline.md#lower-host-memory-reordered-decode-performance-result-2026-10-30)
-now passes the private rebase's exact own-mode check: 320 full rows, 24 actual M4 calls
-and all 64 unchanged prefill/fallback rows. A pause leaves its initial performance
-window unstarted; a fresh execution window reuses those immutable sources/binaries
-without rebuilding or retrying a failed model. All three planned pairs then complete,
-with all 1176 paired request outcomes matching and all memory screens/retirement
-checks passing. The instrumented screen is **negative**: median paired c4/mixed8
-throughput gains are only 0.98%/1.57%, below 5%, and paired diagnostic deadline-pass
-losses occur at c1/c4. M4 covers only 3.28–3.64%/8.37% of c4/mixed8 decode predictions;
-these counts do not prove a bottleneck or justify artificial batching. Preserve this
-complete negative separately from the old OOM cohort. Keep the candidate private;
-defer further promotion qualification until new bottleneck evidence selects a changed
-experiment on the remaining end-to-end execution deficit, not wider rows by default.
-HTTP/mixed-arrival selection, cancellation, failed-drain, pressure, fallback and
-uninstrumented-performance gates remain required for any future promotion.
-No automatic selection, full-model acceptance or quality-equivalent serving claim follows.
-
-A [default c4 cost observation](../benchmarks/gemma4-cuda-baseline.md#default-c4-execution-cost-observation-2026-10-30)
-selected **unused intermediate-prefill heads** for a bounded experiment, not a
-wider-row or scheduler change. Their head stream intervals plus downstream CPU
-softcap account for 4.737 s / 69.381 s (6.83%), exceeding the predeclared 5% selection
-threshold. All 160 common-history full rows remain bit-identical to qualified serial;
-both 128-question controls preserve complete IDs/text/usage and retirement. That
-ordered observation pair is not an overhead bound or achieved speedup; the separate
-[head-omission screen](../benchmarks/gemma4-cuda-baseline.md#state-only-cuda-head-omission-screen-2026-10-30)
-now measures the changed variant.
-
-The state-only contract is `GemmaDecode::advance_prefill(tokens) -> Result<(), _>`:
-append the accepted prompt chunk without returning logits. Success means completed
-continuation at the accepted end, not pending work or empty/sentinel logits. The
-executor requests this operation only for intermediate prefill; final prefill and
-decode still request logits. Whole-offer validation and all-rows-before-logical-commit
-remain mandatory. Any partial execution failure retains every affected decoder,
-resource and charge through the existing model-owned settlement/retirement path.
-CPU and CUDA separate the body from its readout; Metal retains the qualified
-full-head/readback completion fallback even when no logits are requested. CUDA uses
-the final native layer scale's existing completion owner before acknowledging
-head-free progress, without adding a barrier or changing failure retention. The
-[bounded CUDA qualification](../benchmarks/gemma4-cuda-baseline.md#state-only-cuda-uninstrumented-and-http-qualification-2026-10-30)
-now establishes common-history equivalence, repeated uninstrumented benefit and the
-actual HTTP path on pinned E4B/RTX 4090. Do not trade away completion or precision,
-extend that device/model claim without evidence, or reopen/promote unchanged M4.
-
-The host prerequisite now passes varied-weight CPU full-row/common-history checks
-across sliding-window/shared-tail boundaries, a real Engine prompt crossing two
-intermediate chunks, and partial state-only failure/retirement tests. Workspace tests
-and default/CUDA-feature/Metal all-target Clippy pass. These establish the host contract,
-not head-free device qualification or a measured speedup. The first local Metal
-decoder observation remains failed on observer ownership. A fresh execution-only
-scope now [qualifies its never-started Metal executor stage](../benchmarks/runtime-contract.md#state-only-prefill-metal-fallback-2026-10-30)
-with the unchanged binary: all four archived chat tokens through the real Engine,
-shutdown and complete supervision pass. That proves retained full-head fallback
-integration, not head-free Metal execution; the failed decoder scope stays separate.
-The initial CUDA fallback and private head-free candidate both pass all 160 complete
-finite common-history rows bit-for-bit against qualified serial, headed/state-only scalar
-and window-boundary continuation comparisons, and seven real CUDA decoder/Engine/
-text/pressure tests, including intermediate-prefill failed-drain retirement.
-
-The first fixed three-pair screen preserves 1176 paired whole outcomes and measures
-7.37%/7.64% median c4/mixed8 gains with matched row guards and trace. Its original
-stale-field aggregation failure remains preserved alongside the successful
-analysis-only repair; no model is rerun. The separate **uninstrumented** three-pair
-population now passes the unchanged criteria: c1/c4/mixed8 median gains are
-7.69%/7.62%/6.91%, with all 1176 paired observable outcomes exact and no latency or
-paired diagnostic-pass regressions. The actual CUDA CLI also passes JSON/SSE parity,
-request-local rejection, cancellation with a runtime-enqueued healthy peer, later
-reuse and normal SIGTERM drain. A closure-manifest defect affected only the
-controller's still-open stdout log; a fresh post-exit integrity audit preserves the
-original defect and verifies the completed evidence without rerunning models.
-
-CUDA state-only prefill and its qualified decoder/failed-drain tests are now
-integrated into the public executor path after these gates. Final prefill/decode retain
-headed arithmetic, and Metal retains its full-head fallback. Qualification remains
-bounded to experimental greedy E4B/RTX 4090; the text-facade speedup is not HTTP
-performance, broader hardware/model support, host isolation or competitive acceptance.
-Do not extend or repeat either completed three-pair population.
-
-The [post-head-omission native-call wall observation](../benchmarks/gemma4-cuda-baseline.md#post-head-omission-native-call-wall-observation-2026-10-30)
-selected **native attention** for investigation at 15.24% of c4 phase wall, with
-Down/Gate/Up projections close behind. The subsequent
-[attention-stage stream observation](../benchmarks/gemma4-cuda-baseline.md#attention-stage-stream-observation-2026-10-30)
-now completes that investigation **without selecting a stage-specific optimization**.
-Scores/softmax/values account for 44.74%/36.32%/18.94% of measured stream intervals;
-no stage meets the frozen 50% majority criterion. The same-binary OFF→ON pair passes
-the ≤1.05 elapsed screen (1.01764), not a statistical overhead bound or production gain.
-Event intervals include submission gaps, not pure kernel time; original drain time is
-not measured host overhead. Keep the observer private and the qualified path unchanged.
-Do not extend this completed diagnostic or relax its criteria. The subsequent
-[private softmax/value fusion screen](../benchmarks/gemma4-cuda-baseline.md#private-softmaxvalue-fusion-screen-2026-10-30)
-passes component/full-row and CUDA integration checks, but two complete pairs already
-rule out its original 5% three-pair median throughput gate: c4 gains 4.95%/4.33%,
-mixed8 4.88%/4.29%. The third serial process remains partial after loss of desktop
-access; no retry or filling follows. A changed
-[single-CTA whole-attention screen](../benchmarks/gemma4-cuda-baseline.md#private-single-cta-whole-attention-screen-2026-11-03)
-also preserves all 1764 component cases but stops at its stricter prospective timing
-gate (0.54129 aggregate ratio; ≤1/3 required), without model execution. Keep the
-qualified attention path. The subsequent
-[packed Gate/Up prerequisite](../benchmarks/gemma4-cuda-baseline.md#private-packed-gateup-numerical-prerequisite-2026-11-03)
-rejects a shape-changing cuBLAS substitution: 897 BF16 differences at one-row decode,
-with the independent dyadic oracle passing. No timing or model campaign follows.
-The shape-preserving
-[shared-completion screen](../benchmarks/gemma4-cuda-baseline.md#private-gateup-shared-completion-screen-2026-11-03)
-then passes all nine numerical cases and partial-enqueue/failed-drain ownership,
-but reduces pair wall only 3.23% (0.96769 ratio; ≤0.75 required). It stops before
-model/HTTP work. The subsequent
-[whole-FFN CUDA Graph screen](../benchmarks/gemma4-cuda-baseline.md#private-whole-ffn-cuda-graph-screen-2026-11-03)
-preserves all 18 changed-input histories and passes graph ownership checks, but its
-8.14% FFN-wall reduction misses the prospective 15% gate (0.91861 ratio; ≤0.85
-required). No model/HTTP work follows; qualified projections remain unchanged.
-Do not extend or retime these closed populations. Existing numerical,
-repeated-performance and lifecycle gates remain required for any changed variant.
-No unchanged M4 retry, row widening or compiler project follows.
-
-The [shared-grant recovery gate](../benchmarks/gemma4-cuda-baseline.md#shared-grant-allocation-and-recovery-gate-2026-10-26)
-now qualifies real partial cache-allocation failure, healthy-peer preservation, charge
-retention for cancelled accepted submissions and subsequent reuse through the native Engine.
-It changes no production behavior and proves logical-grant recovery, not driver OOM,
-physical peaks or already-enqueued asynchronous cancellation. Endpoint pressure/recovery
-and independent common-history quality remain measurement priorities; representative
-arrivals and product SLO acceptance are still open.
-
-vLLM remains source-reviewed only, and unmodified Flare excludes SM89. Use their mechanisms
-and the [Flare findings](inference-engine-design.md#nvidia-flare-reviewed-2026-10-21) without
-narrowing hardware breadth or replacing ownership gates.
-
-The same-artifact llama.cpp comparison (2026-10-18) measured 32.7 versus 39.9 tok/s at
-c1—about 18% lower Ribn throughput, with better TTFT—and 2.2x/3.3x throughput gaps at c4/c8. This is not
-single-stream parity or independently quality-qualified competitive acceptance.
-[Baseline](../benchmarks/runtime-contract.md#matched-cross-engine-decode-baseline-2026-10-18)
-
-Fresh [Qwen descriptor A/B evidence](../benchmarks/runtime-contract.md#member-descriptor-native-ab-2026-10-23)
-measures 1,764→1,252 decode launches per eight-row step, superseding the historical
-3,862 count for this scope. Three paired native repetitions improve burst throughput
-4.26%/6.91% at c4/c8, but only 0.31% on the mixed-arrival trace. The candidate misses
-its predeclared >=5% gain at both widths; joint diagnostic-deadline goodput stays zero.
-Keep it default-off and defer further lifetime qualification without new bottleneck
-evidence. Its parity and five-kernel memcheck pass, not whole-engine sanitizer or
-serving-owner lifetime qualification. The qualified per-member path remains the control.
-Historical prefill-host-cost observations and the modest mixed benefit motivate measuring
-remaining prefill/projection/device costs, not attributing the entire gap to the host.
-The Gemma prefill result does not qualify Qwen descriptors, graphs or hybrid-state lifetimes.
-
-Qualify the cross-engine numerical comparison and target remaining prefill/projection
-costs on the contiguous path. The [first endpoint diagnostic](../benchmarks/runtime-contract.md#first-equal-artifact-endpoint-diagnostic-2026-10-16)
-exposed flat mixed c4/c8 throughput at about 22 tok/s. The [first measured lane improvement](../benchmarks/runtime-contract.md#heterogeneous-capacity-decode-2026-10-16)
-now batches compatible decode rows across different KV capacities: the same cohort
-improved to about 32/35 tok/s (+44%/+59%), with unchanged sampled outputs and short-c1
-latency. Its c8 TTFT p95 remains near 5 s. Keep logical policy as the control when
-selecting the next bounded execution experiment.
-The earlier llama.cpp observations were 48/97/187 tok/s, but cross-engine histories
-differ and the incumbent's mixed outputs vary. Quality-equivalent competitive acceptance
-remains open; classify differences on common histories rather than chase greedy equality.
-The bounded CUDA HTTP/reference gates and host input-retention gates passed.
-The real second decoder is now the integration test bed. Continue toward a real VLM
-alongside baseline work; do not wait for hybrid caching or scheduling completion.
-Choose physical execution and constrained-memory experiments from the measured deficit.
-Prefix-cache benefit, a second decoder/VLM, CUDA Rust migration and distributed execution
-are not prerequisites for the first baseline. They remain important product work.
-
-This replaces the serial 4b/4c → 4d → 5 dependency. The historical slice identifiers below
-still locate evidence; they no longer require finishing prefix reuse before serving or
-measuring scheduling. Safety prerequisites apply to the path being enabled, not every
-future capability. No redesigned capability is implemented or qualified by this document.
-
-| Delivery | Required outcome | Dependency |
-| --- | --- | --- |
-| Owned-input repair — host-qualified | Accepted heap capacity/options checked before preprocessing queue insertion; excess rejects without normalization | Completed prerequisite for bounded text admission; not a process-RSS bound |
-| Minimal text serving (5) | Thin owned-facade adapter, protocol/overload/cancellation gates, matched endpoint measurements | Repaired text retention and current path's applicable lifecycle gates; no paging dependency |
-| Physical execution and scheduling (4d) | Useful heterogeneous lanes, measured scheduling costs/goodput, bounded metadata | Numerical/retirement qualification for each selected lane; can start on contiguous storage |
-| Dynamic continuation (4b/4c) | Paged writes/growth, resident accounting and recomputation progress | Physical retirement, replay history and all-active-pressure proof before partial envelopes |
-| Exact prefix reuse (4b reuse) | Valid hybrid restoration with measured net workload benefit | Qualified dynamic storage and bounded checkpoint ownership; not a serving prerequisite |
-| Model-local breadth (4e) — alongside baseline | Real dense second decoder through ordinary package loading, then VLM, proving integration and loading boundaries | Relevant operation/backend contracts, not every runtime optimization; not a prerequisite for measuring current Qwen |
-
-Desktop unavailability permits host implementation and CUDA-feature compilation, not
-device qualification. Preserve contiguous/full-reachable Qwen and qualified small-row
-kernels until their replacements pass. The [CUDA Rust gate-2 candidate](cuda-rust-migration.md#gate-2-candidate-deferred-2026-09-22)
-remains deferred: arithmetic/sanitizer results do not offset its single-row projection
-and GDN regressions. Do not start gate 3 or build a compiler project around it.
-
-### Planned slices: batch-width launch reduction
-
-The original order followed the 2026-10-18 host-cost diagnostic. Fresh decode-only
-profiles now measure 1,764 control launches at eight rows, not the historical 3,862.
-The default-off candidate reaches 1,252, misses its native advancement gate, and leaves
-mixed throughput nearly unchanged. These are mechanisms to reconsider from measured
-costs, not a mandatory implementation staircase; unpassed acceptance below stays open.
-
-**Slices 1–2 have a default-off decode candidate, not a promotion.**
-`QwenLoadOptions::member_descriptors` and the native benchmark's `--member-descriptors`
-select a single uploaded packet and member-dimension convolution, recurrent update,
-KV append and attention kernels. A gather kernel replaces the per-member q/k copies.
-Packet assembly/bounds are host-tested; Rust CUDA-feature checks cover the binding and
-access-guard lifetimes, not device completion. Publication explicitly waits for the H2D
-copy before reusing its host packet; uncertain copies retain or quarantine that packet.
-The qualified per-member path remains the default; prefill, arenas and graphs are unchanged.
-Numerical parity and a complete five-kernel memcheck pass on the RTX 4090.
-The [native timing screen](../benchmarks/runtime-contract.md#member-descriptor-native-ab-2026-10-23)
-does not meet its advancement gate. Asynchronous-owner lifetime and broader performance
-qualification remain open if new evidence warrants revisiting it.
-The launch target below remains unproven: projections, norms and residual operations
-already batch members, so removing state loops alone cannot imply a batch-width reduction
-of the entire step. Profile the remaining fixed layer chain before choosing further fusion.
-
-1. **Member descriptor.** One device descriptor per step: per-member KV layer pointers and
-   page-table pointers, per-member recurrent matrix and convolution-history pointers, and
-   the member count, published in a single host-to-device copy. Host-tested assembly,
-   bounds and lifetime; replaces per-member view arguments for state-access operations.
-2. **Member-dimension kernels.** KV append, paged attention, GDN convolution and state
-   update, and per-member copies consume the descriptor. Acceptance (device): launches per
-   eight-row step fall below ~600 (fresh control 1,764; candidate 1,252), with bit-identical
-   hidden state, KV and sampled tokens against the current path on `cuda_reference` and the
-   Qwen reference gate.
-   Keep the per-member path until that passes.
-3. **Prefill descriptor.** The same descriptor at chunk granularity. Acceptance (device):
-   eight-row 30-token prefill host enqueue below ~100 ms (from 0.94-1.5 s) with unchanged
-   outputs.
-4. **Resident KV arena.** Pages granted by the one authority and materialized from a
-   resident arena, so descriptor entries and cache pointers stop moving; non-identity page
-   tables exercised by the heterogeneous decode suite. Host-tested accounting; device
-   evidence for the mapping.
-5. **CUDA graph capture.** Decode step captured per (member count, position bucket) with
-   device-resident positions and counts. Acceptance (device): host enqueue under 5 ms per
-   step, bit-identical outputs, and cancellation/retirement semantics preserved through
-   replay. This is the slice vLLM and llama.cpp both rely on.
-
-Slice 2 precedes arena integration; graph capture requires stable captured storage and
-completion-safe descriptor updates. A resident arena is the planned storage increment,
-not evidence that descriptors alone eliminate the fixed per-layer launch chain. Do not claim any
-throughput figure from this sequence without the device suites; the c1 path stays the
-correctness oracle throughout.
-
-## Decision milestones
-
-Work should produce evidence that changes the next engineering decision, or remove a
-concrete prerequisite for that evidence. Fix correctness/security failures on affected
-paths; do not turn every unfinished subsystem into a dependency of text measurement.
-
-1. **First competitive baseline.** Establish low-concurrency latency, saturation and SLO
-   goodput, heterogeneous arrivals, and capacity/recovery under a tight grant. Start with
-   the smallest credible matched suite, not the entire eventual acceptance matrix below.
-   Compare identical artifacts where supported; keep independently quality-qualified
-   different-artifact comparisons separate. Cross-check client timing/token semantics and
-   preserve failed offered work. Protocol validation alone is not a performance result.
-   The [current-source Qwen endpoint diagnostic](../benchmarks/runtime-contract.md#current-source-equal-artifact-endpoint-diagnostic-2026-11-04)
-   now retains one fixed cohort per engine: Ribn rejected nine burst attempts at its
-   HTTP bound; llama completed all 32. Admission policies differ, and planned-arrival
-   goodput, memory-pressure recovery and independent quality remain unqualified.
-   Match those conditions before using the latency samples to select a competitive win.
-2. **First measured improvement.** Identify the dominant loss, select one bounded
-   experiment and demonstrate repeatable end-to-end benefit without hiding quality,
-   memory, fairness or latency regressions. Scalable prefill, heterogeneous physical
-   batching, persistent metadata/graphs, overlap and paging are candidates, not a fixed
-   implementation staircase. Compare logical-policy changes with the same physical lanes.
-3. **Decoder generality.** Deliver the real second decoder early enough to change the
-   boundaries. Measure integration effort and cross-cutting edits as well as numerical
-   correctness and loading peaks. A registry entry or host-only parameter mapping does
-   not establish executable support. Use the real second decoder to compare native and
-   externally prepared execution before expanding handwritten integrations; model-support
-   velocity and maintenance burden are part of the result, not inferred from host language.
-   A real VLM follows this test.
-4. **Broader qualification.** Select subsequent model/workload and hardware targets from
-   observed gaps. Another NVIDIA GPU class tests performance portability; a materially
-   different backend tests backend portability. Neither follows from the other.
-
-Choose workload objectives before the baseline; choose the incumbent gap to address,
-acceptance criteria and an effort budget before the optimization experiment. Individual
-experiment thresholds below are not product SLOs or a general effort commitment. Record
-the result and whether it warrants promotion, another experiment or redesign in the existing
-benchmark evidence. Do not count a completed abstraction as a competitive milestone.
-
-While device access is unavailable, close specific host-testable baseline gaps or prepare
-independent references and real integration boundaries for the second decoder. Do not
-build a general benchmarking framework, fill time with unrelated repairs, or accumulate
-untested GPU kernels. Physical accounting gates apply before enabling their dependent
-features; they do not require completing the entire non-AR lifecycle before text timing.
+If multi-sequence work still launches serial model forwards, fix
+physical lanes before retuning scheduler policy. If executable
+external preparation passes full state/lifetime/quality requirements
+and wins overall serving *and* integration economics, adopt it for
+its qualified scope; otherwise use model-wide native execution.
+Select kernels/layout for measured device losses, graph/overlap for
+actual launch gaps, and compatible packing for excessive fallback.
+No SOTA claim without matched admission, quality, SLO goodput,
+representative traffic and physical pressure recovery per the
+[competitive matrix](#first-competitive-acceptance-matrix).
 
 ## Completed foundations
 
@@ -623,473 +268,62 @@ Host swap/tiered caching follows measured replay/retention costs, not paging by 
 
 ### 4d. Scheduling with real costs
 
-This work starts alongside serving and paging, not after prefix reuse.
+**Make physical batches real before rewriting scheduling policy.**
+The AR engine already offers aggregate work; Gemma serializes it
+under that contract. First implement backend-owned prepared physical
+lanes with exact sequence/state mapping, whole-offer resource grants
+and model-wide shared-weight execution. Keep CPU/single-row oracles.
 
-1. **Observe actual execution.** Record phase costs, physically batched rows/tokens,
-   fallback frequency, host/device gaps, queue age and allocated/resident/occupied bytes.
-   Keep instrumentation bounded; kernel timelines establish hypotheses before expensive
-   profiler-counter work. The historical 13.74 tok/s / zero-goodput smoke is not a matched
-   baseline. The new endpoint cohort exposes flat mixed c4/c8 throughput and rising latency.
-   [Bounded device probes and a native CUDA timeline](../benchmarks/runtime-contract.md#bounded-device-mapping-and-trace-2026-10-16-dc4aed0)
-   map the opt-in snapshot to actual one/four/nine-row and prefill-chunk work. The mixed
-   native trace has 128 scalar decode calls and no whole-decode groups; quantized warp
-   GEMV takes 70.2% of summed kernel time and kernels occupy 96.1% of its single-stream
-   first-to-last-kernel span. These are instrumented native-workload observations, not
-   endpoint phase attribution, occupancy or an overhead bound. Investigate physical
-   projection/prefill throughput and heterogeneous decode before a scheduler-only rewrite;
-   compare qualified native/vendor options as well as custom kernels. Queue age, physical
-   memory attribution, endpoint exposure and broad diagnostics overhead remain open.
-   **First experiment promoted:** the existing whole-decode lane now accepts different
-   positive KV capacities with matching model layout. Stream-ordered score reuse needs
-   no new kernel, policy or continuation padding. The one-cycle experiment passed its
-   predeclared >=10% mixed-c4/c8 median throughput and <=5% short-c1 p95 E2E-regression
-   criteria, unchanged cohort outputs/usage, capacity-invariance/attention memcheck and
-   independent reference/cancellation/retirement gates. These are scoped experimental
-   results, not broad numerical equivalence or product SLOs. The native replay now has
-   23 whole-decode groups instead of zero, while retaining identical work-token totals.
-   Mixed phases still fall back; investigate prefill/tail and projection costs next.
-   **Second experiment promoted:** the eight-token prefill lane now samples its final chunk
-   row by default instead of re-running that token on the serial path. It applies only when
-   the chunk already advanced every persistent component for the token, the lane runs warp
-   projections without the chunk scan, and the prompt is an exact whole number of chunks;
-   every other shape or mode keeps the serial final step, and no kernel or grant changed.
-   All predeclared criteria passed over three alternating-order endpoint repeats: median
-   short-c1 p95 TTFT fell 57.3% (272.68 → 116.56 ms, ≥20% required), throughput and p95
-   content E2E stayed within 5% in every cohort (short-c1 gained 16.0%; mixed c4/c8 gained
-   2.1%/2.4%), and all 144 paired visible outputs and core usage counts matched. Chunk rows
-   remain bit-identical to the serial final residual, with a clean memcheck and a
-   re-executed independent reference/cancellation/retirement suite. See the
-   [endpoint measurement](../benchmarks/runtime-contract.md#sampled-final-prefill-chunk-2026-10-17-promoted).
-   These are scoped experimental results, not product SLOs. Short prompts now spend about
-   half their previous prefill latency in the remaining chunks and serial remainder; long
-   prompts move less in proportion. Sampling remains greedy-only.
-2. **Qualify useful physical lanes.** Compare packed/ragged heterogeneous-capacity work,
-   scalable prefill GEMM and tiled attention against qualified small-row kernels and native
-   vendor options. Preserve independent nonadjacent histories/completion mapping. Do not
-   weaken geometry/addressing checks without qualification, or restore maximum-context
-   reservation just to batch. The capacity-only restriction above is removed after its
-   addressing gate; other lanes need their own evidence. Measure conversion/repacking/
-   workspace costs.
-3. **Evaluate unified logical policy.** Select bounded prefill/decode/replay frontiers using
-   age/priority, output credits, token bounds and aggregate backend feasibility. Protect
-   decode latency and prefill/replay progress. Compare against current queues with the same
-   physical lanes, then compare lane changes separately. Tune chunk sizes with actual
-   TTFT/ITL/E2E objectives, mixed arrivals and pressure; submission counts are not time bounds.
-   Once lane/dispatch costs stabilize, compare calibrated prefill-time quotas with token
-   budgeting on those same lanes. Report prediction error/headroom, context/length skew,
-   fairness and SLO goodput; retain the token baseline and losing cases. DeepInfer's fitted
-   quadratic is a production reference, not a selected Ribn formula.
-4. **Persistent metadata and bounded overlap.** Separate stable request rows from kernel
-   ordering. Start with independent-sequence preparation/execution overlap only after
-   per-submission owners and physical release qualify. Gate immutable staging/table versions,
-   out-of-order completion, stalled delivery, shutdown and failed-drain recycling. Graph
-   capture needs qualified stable storage and measured eager-versus-replay benefit.
-   After launch reduction, use timelines to measure recoverable CPU scheduling, metadata,
-   enqueue and device gaps. DeepInfer's result reconciliation informs later dependent
-   overlap; it does not bypass projected/committed cursor or EOS/cancellation gates.
+Compare physically packed/ragged decode, prefill and separated mixed
+phases under identical logical offers. Track true batched rows/tokens,
+fallback, transfer and kernel/host costs, pressure, queue age and
+latency-objective goodput. Preserve output identity, complete
+continuation state, numerical acceptance and failure retirement.
+Do not pad to maximum context merely to batch.
 
-Promote policies/variants only over their qualified scope, with repeatable benefit beyond
-run variability and no hidden quality, memory, fairness or latency regressions. Retain
-losing cases. Dependent work ahead of host commitment and speculation need their own
-[contracts](resource-protocol.md#bounded-overlap-and-submission-ownership) and gates.
+Only once physical costs stabilize compare chunked prefill, decode
+protection, replay aging and measured-time versus token budgets
+on identical lanes. Depth-two initially overlaps independent
+sequences with separate immutable staging, metadata, workspace,
+outputs and completion owners. Same-sequence work-ahead, graphs
+and speculation need their own qualified state dependencies.
 
 ### 4e. Model-local integration and composition
 
-Integrate a real dense second decoder through ordinary package/SafeTensors loading,
-model/processor/backend, central registration and tests alongside baseline work, then a
-real VLM/processor. Pin a concrete checkpoint and independent reference before coding;
-exercise another configuration/checkpoint without another architectural rewrite. Use
-these to replace hard-coded kernel geometry where the second model needs a different shape,
-not to add family branches in lifecycle/routing or create a universal operator layer. The
-plan/description/capability layer between the model and its backend is gone; what remains
-shared is the prepared batch, continuation state declarations and artifact weight
-descriptions. Start after applicable baseline contracts; it need
-not wait for prefix-cache or overlap promotion. Pin independent numerical references and
-measure integration effort and loading/physical peaks, not just compilation.
+Gemma 4 E4B text already has a real CPU/Metal/CUDA experimental
+greedy decoder and bounded within-request prefill, not competitive
+concurrent execution. Keep its model-local processor/configuration,
+independent CPU oracle and qualified fallbacks. Retain historical
+experiment data in [Gemma CUDA](../benchmarks/gemma4-cuda-baseline.md),
+[Metal](../benchmarks/gemma4-metal-baseline.md) and
+[model reference](../benchmarks/gemma4-reference/README.md).
 
-The selected second-decoder workload is **Gemma 4 E4B instruction-tuned, BF16,
-text-first**. Its
-[manifest](../benchmarks/gemma4-reference/model.toml) pins the real package and independent
-reference; [CPU reference collection](../benchmarks/gemma4-reference/README.md) covers
-FP32/BF16 operands and the 511/512/513-position local-window transition. These are
-integration prerequisites, not executable Ribn support, multimodal qualification or
-GPU-fit evidence.
+Native and externally prepared physical executors must both preserve
+the same Rust owner for admission, mutable state, submission, outputs,
+cancellation and fallible device retirement. Pin compiler/artifact,
+dynamic shapes, numerical scope and cold startup. Judge compiled
+programs on quality, serving economics, integration speed and
+maintenance, not just stock Python forward timing. Keep model
+semantics/model-specific kernels local; no universal graph ABI.
 
-The [canonical image reference](../benchmarks/gemma4-reference/README.md#canonical-image-reference)
-now adds the real checkpoint's image encoder/projector and full image+text CPU forwards:
-four frozen RGB cases in each precision, ten exact archived text controls and 230 finite
-captured tensors. The two-image answer remains capped at eight tokens; this is not
-vision-quality acceptance. E4B uses causal text masks, not the larger-Gemma
-vision-bidirectional branch. A model-local CPU vision component now selects its 659
-BF16 encoder/projector tensors from the text source's retained artifact inventory,
-without changing text-only selection. An independent small stock-HF fixture checks
-all encoder/projection stages exactly, including grouped heads and padding. The
-[strict full-checkpoint vision gate](../benchmarks/gemma4-reference/README.md#native-cpu-vision-component)
-failed across all four cases/five images: patch embeddings match exactly, but
-layer 0 and projected features disagree. Do not use the small fixture to claim
-full-model fidelity. Shared-operand layer-0 comparisons now reproduce all four
-stock layer outputs exactly before checking 140 Native operations: axial RoPE,
-GELU, gated products and residual adds match exactly, while RMS norms, projections
-and attention differ on identical inputs. The first local difference is input RMS
-normalization. The [RMS working-precision audit](../benchmarks/gemma4-reference/README.md#vision-rms-working-precision-audit)
-now covers all seven norms/five images: 1,669 of 67,737,600 BF16 words differ, while
-using the stock inverse makes every unrounded FP32 product output exact. Statistics
-and inverse evaluation differ; this does not identify a unique faulty operator.
-A separate real-equation enclosure diagnoses final rounding, not FP32-policy
-correctness or a precision winner. Production arithmetic and acceptance remain
-unchanged. Establish independently justified numerical acceptance or repair a
-demonstrated defect before binding processor features to AR execution; these
-local diagnostics do not waive the failed full-model gate. Bounded feature
-ownership, snapshot compatibility and admission through the existing executor/text
-path remain open. Ribn still rejects media; this component does not establish a general
-staged/coupled execution contract or waive the separate text-serving fidelity gate.
-
-The file-backed SafeTensors path now reads its approximately 16-GB artifact without
-whole-file payload allocations. The [host loading gate](../benchmarks/loader-memory/README.md)
-checks the complete artifact and every encoded tensor against the independent source,
-plus BERT F32 bit preservation and a matched host-memory comparison. This is artifact
-I/O evidence, not Gemma execution, whole-loader byte accounting or device preparation.
-
-The model-local `engine-gemma4` host preflight now validates this real package's
-665 active BF16 parameters, preserves their encoded bytes and represents the output
-head as the same logical embedding parameter. The 54 inactive shared-tail tensors
-and 1,411 non-text tensors are explicitly excluded from text selection. Host fixtures
-also exercise a second, reduced geometry and sharded loading without new family branches. This is
-source selection alone, not the second-decoder exit gate. The optional CUDA loader now
-prepares those native BF16 weights in one charged allocation with a tied head and owned
-partial-load retirement. Two real-package runs matched all 665 source/device hashes and
-restored free VRAM on unload; storage and partial-source cleanup gates passed memcheck. The
-[device weight gate](../benchmarks/gemma4-reference/README.md#native-bf16-device-weight-gate)
-is not numerical forward execution.
-
-Model-local KV range semantics now separate persistent suffixes from full current
-attention spans and resolve shared-owner/last-consumer routing at configuration load.
-All 24 archived prediction rows (FP32/BF16) match the 24 persistent owner and two donor
-shapes. The [mixed-retention contract](resource-protocol.md#mixed-retention-and-shared-kv)
-requires executor-bound validity, reservation and completion-safe donor retention;
-pure range arithmetic establishes none of those physical properties.
-
-The canonical host text processor now matches 291 independent cases: exact raw/chat
-token IDs, rendered chat, whole/finalized decoding and all generation stops. It rejects
-unsupported media placeholders in both encoded and direct-token input. Its stateful
-decoder retains whole byte-fallback runs because a later malformed byte invalidates
-the entire run in HF. The text facade now creates an owned, bounded decoder during
-permit-backed preprocessing, before runtime enqueue. Gemma's adapter preserves its
-metadata stop policy; GGUF retains strict UTF-8 and its existing control policy.
-Host lifecycle tests cover interleaved streams, cancellation, owner failure, and
-request-local push/finalization failures, including immediate scratch release.
-These are host delivery checks, not Gemma execution or CUDA lifecycle qualification.
-
-An independent stock Transformers BF16 eager run now fits a 4096-token prompt plus
-32 greedy predictions on the 4090: 17.10 GiB peak allocator reservation, 17.62 GiB sampled
-whole-device use. No quantization/offload was needed for that single-request workload;
-this does not establish Ribn's eventual workspace/serving peak.
-
-The first native BF16 linear component now binds model projections to cuBLAS with
-preallocated output, charged workspace and completion-owned failure guards. Its
-shared-allocation refactor and arithmetic now pass the
-[device component gates](../benchmarks/gemma4-reference/README.md#native-bf16-linear-component-gate)
-at `53c8aed`: six tests normally and under memcheck, plus two real-package
-665-parameter byte/readback/unload regressions against the independent source audit.
-These qualify the linear building block, not a second executable decoder or model support.
-Native grouped BF16 RMS now also passes its
-[device component gate](../benchmarks/gemma4-reference/README.md#native-bf16-rms-component-gate),
-including direct learned scales, per-head/packed-PLE grouping, owner-only scale-free V,
-memcheck, racecheck and synccheck. Native BF16 rotary execution now passes its
-[device component gate](../benchmarks/gemma4-reference/README.md#native-bf16-rotary-execution-gate):
-the backend prepares factors from the model's FP32 inverse frequencies and positions
-and applies them with exact per-product rounding, reproducing stock-CUDA cosine, sine
-and rotated output bits at positions up to 131071. Frequency derivation from theta
-remains host-side. Shared completion ownership and full weight readback/unload were
-requalified; none of these components establishes full-model numerical acceptance. Separately, the
-model-owned [host rotary-frequency gate](../benchmarks/gemma4-reference/README.md#host-rotary-frequency-gate)
-now checks the padded proportional/global and ordinary/local factors against pinned
-Transformers and an independent FP64 equation. This is preparation evidence, not
-large-position phase, device rotation or whole-model acceptance. Independent
-[recomputed component operands](../benchmarks/gemma4-reference/README.md#recomputed-attention-components)
-now cover input/Q/K/V RMS, projections and RoPE for local/global owners 0/5/22/23,
-using the archived real-model hidden inputs under both CPU precision policies.
-Their one-token processing schedule is distinct from original prefill taps; no new
-Ribn device slice or full-model qualification follows.
-
-The remaining elementwise layer math is now device-qualified against those stage
-references: both residual adds, PLE combine, layer scaling, the gated product, GELU
-and the final soft cap. Exact transformations match the archived encodings; GELU stays
-inside the host audit's FP32 bound and soft-capped logits matched every one of 262,144
-encodings. See the [elementwise gate](../benchmarks/gemma4-reference/README.md#elementwise-layer-math-component-gate).
-Native attention now also matches the archived stock operands bit-for-bit for
-local/global layers, including sliding windows and decode-against-history
-([gate](../benchmarks/gemma4-reference/README.md#native-bf16-attention-component-gate)).
-A first CUDA decoder now reproduces the archived tokens with explicit KV owners,
-shared-tail reads, the runtime executor and the text facade; `ribn run-gemma` selects
-it when built with `--features cuda`. See the
-[decoder gate](../benchmarks/gemma4-reference/README.md#native-cuda-gemma-decoder-gate).
-Device-side K/V append now passes byte-preservation, initialized-prefix and memcheck
-gates, with exact short-history logits against host append. The subsequent
-[eight-row lane](../benchmarks/gemma4-reference/README.md#bounded-eight-row-cuda-prefill-2026-10-21-utc)
-binds whole-group attention/donor spans and prepared workspace while retaining full
-histories and scalar fallback. Its [sixteen-row extension](../benchmarks/gemma4-cuda-baseline.md#sixteen-row-full-reach-and-integration-qualification-2026-10-25)
-retains the same numerical policy and eight/scalar fallbacks. The greedy contract permits
-independently bounded reordered GEMMs, not presumed scalar bit equality.
-The shared `ribn serve-gemma` HTTP entry
-point now passes its [Metal](../benchmarks/runtime-contract.md#gemma-http-cli-qualification-2026-10-21)
-and [CUDA functional gates](../benchmarks/runtime-contract.md#cuda-device-requalification-2026-10-22),
-including JSON/SSE output, decoded stops, disconnect peer progress and shutdown during loading.
-Trimmed/mixed-retention cache lifetime, sampling and eviction remain unqualified; no
-competitive serving acceptance follows.
-The host CPU path now composes a full Gemma decoder step — embeddings, PLE, all 42
-hybrid layers with owner/shared-tail KV, attention, the remaining layer math and the
-tied head — and reproduces all four greedy tokens of the archived 18-token chat row.
-It keeps complete per-owner history and masks local spans rather than evicting them.
-A synchronous greedy executor now runs the host decoder through the token runtime and
-the text facade for admitted sequences sharing one prepared weight set; device executors
-are exported by `ribn run-gemma` on Metal and CUDA. Cache eviction, donor trimming,
-sampling and long-context behaviour remain open; the Metal and CUDA decode timings are
-diagnostic, not performance or serving claims. On Apple silicon, a first
-Metal (GPU, not ANE) slice now runs BF16 linear, RMS, causal/sliding attention, rotary
-and elementwise operations on real hardware with independent-reference tests, and the
-validated Gemma inventory uploads bitwise to one Metal device, and a host-orchestrated
-Metal decoder reproduces the archived four greedy chat tokens through the runtime
-engine and the text facade, and a synchronous greedy executor shares weights across
-admitted sequences. Splitting attention into ordered score, reduction and value
-dispatches cut single-sequence decode from ~5.5 s to ~0.4-0.5 s per token on the M3 Max in
-the diagnostic benchmark; that is not a competitive result. The package now also runs
-through the ordinary CLI path (`ribn run-gemma`, macOS Metal, greedy). Two
-reordered-accumulation GEMM variants (transposed weight layout and warp-cooperative
-reduction) were numerically qualified but measured slower than the four-wide exact
-kernel, so both were removed and recorded. Four-output-column register blocking also
-lost and was removed. Pairing input rows with wide weight loads is now selected on
-M3 Max for even 8–64-row batches: the diagnostic median prefill fell from 474 to 365 ms
-at 18 tokens and 694 to 527 ms at 32, with exact common-history logits and continued
-execution. Other GPUs and shapes retain the original kernel. The
-[qualification](../benchmarks/runtime-contract.md#paired-row-linear-qualification-2026-10-20)
-records substantial timing variance and does not establish serving performance.
-Metal CPU embedding reads borrow the shared weight inventory. Direct source loading
-now also removes the full CPU inventory and parameter-sized upload copy from preparation,
-using at most 64 KiB of read/copy scratch
-([measurement](../benchmarks/runtime-contract.md#direct-metal-source-loading-2026-10-20)).
-This is one synchronous load, not a global concurrent-loader grant.
-A [command-buffer profile](../benchmarks/runtime-contract.md#metal-command-buffer-profile-and-ple-batching-experiment-2026-10-20)
-now distinguishes repeated short-op synchronization from GPU intervals and model-side
-CPU work. The initial bounded PLE normalization batching candidate missed its
-predeclared promotion gate and was removed. A later rescreen after the other chains
-and GELU changes is qualified below; neither study attributes CUDA costs.
-The subsequent [fixed linear → RMS chain](../benchmarks/runtime-contract.md#metal-linear-rms-chain-qualification-2026-10-20)
-keeps the BF16 projection on device and removes its intermediate readback/upload and
-216 synchronous waits per step. The [FFN input chain](../benchmarks/runtime-contract.md#metal-ffn-input-chain-qualification-2026-10-20)
-now removes another 84 waits by sharing normalization across the gate/up projections.
-The [query/key rotary chain](../benchmarks/runtime-contract.md#metal-rotary-projection-chain-qualification-2026-10-20)
-removes another 66 waits while preserving both intermediate BF16 boundaries and sharing
-read-only factors. A refreshed profile identified CPU GELU as a large prefill cost;
-an [exact prepared BF16 table](../benchmarks/runtime-contract.md#metal-exact-gelu-table-qualification-2026-10-20)
-now replaces repeated host tanh evaluation without changing the CPU oracle. A separate
-[four-input-row linear kernel](../benchmarks/runtime-contract.md#four-row-metal-linear-qualification-2026-10-20)
-further reduces 32/64-token prefill by 30/31% with exact logits, selected only for M3 Max
-32–64-row chunks divisible by four and vector-width inner dimensions; qualified two-row
-and original kernels remain the fallbacks. Other activation transfers and CPU elementwise
-work remain; no universal graph or CUDA policy was introduced.
-The 2026-10-20 [same-artifact MLX calibration](../benchmarks/gemma4-metal-baseline.md)
-measured 148.5 ms versus 31.1 ms pooled warmed direct decode. Both backends match the 12 archived
-winners but differ from stock CPU full logits; this is not a quality-equivalent serving
-baseline. Large Ribn timing swings remain unexplained. After the bounded command/transfer chains below, a
-[fresh execution-cost profile](../benchmarks/gemma4-metal-baseline.md#execution-cost-refresh-2026-10-23)
-puts 71–76% of prefill GPU-command intervals in the compound FFN gate/up and down chains.
-The [native main-FFN chain](../benchmarks/gemma4-metal-baseline.md#native-main-ffn-chain-2026-10-27)
-now keeps exact activation/products on device for M3 Max/E4B chunks through 64 rows,
-with separate-call fallback elsewhere. Three fresh processes pass the declared paired
-screen: median process reductions are 6.93% for direct decode after 18 tokens and
-9.37/10.98% for 16/64-row prefill. Full logits/KV remain bit-exact; this is not a new
-MLX comparison, serving-quality acceptance or a promotion of MPSGraph. A subsequent
-[HTTP screen](../benchmarks/gemma4-metal-baseline.md#native-ffn-http-screen-2026-10-28)
-retains exact completed responses and observed paired gains, but hits its fixed cutoff
-before the three-pair cohort finishes. No c4/c8 request in its completed phases meets
-the joint latency objective; serving-performance acceptance remains open. A later
-[matched-history entrypoint diagnostic](../benchmarks/gemma4-metal-baseline.md#matched-history-entrypoint-cost-2026-10-28)
-places about 99.7% of observed wall time inside synchronous decoder calls in its three
-complete matched processes. Its four-process gate remains incomplete after a private
-harness readiness-path error. A separate [native-command profile](../benchmarks/gemma4-metal-baseline.md#native-command-cost-2026-10-28)
-completes 36 generations: completion waits dominate wall time, command preparation
-is below 0.7%, and nested GPU-command intervals cover roughly 68–73% across process
-medians. Only the 113-token prefill passes its frozen GPU-dominance criterion. This
-does not isolate driver/queue/scheduling causes or attribute the older AIPerf gap.
-A subsequent [single-row FFN fusion screen](../benchmarks/gemma4-metal-baseline.md#single-row-ffn-fusion-screen-2026-10-28)
-preserves BF16 rounding boundaries and matches full logits/KV and selected post-product
-words across 46 paired states, but all nine process/history decode cells fail the
-frozen 5% gain requirement. Even unchanged prefill paths show large timing swings.
-The candidate stays private; neither
-a causal slowdown nor a new automatic-selection policy is established. Do not repeat
-it unchanged without new implementation or measurement evidence.
-A [real-input FFN component pre-screen](../benchmarks/gemma4-metal-baseline.md#ffn-projection-component-pre-screen-2026-10-23)
-now separates RMS from projections and compares a native FP32 MPS candidate including
-conversion and per-call resource release. Prefill component calls improve, but decode
-gate/up regress; retained FP32 shadows add 300 MiB per layer and 86 BF16 elements differ
-across the 27 sampled tuples. No production variant is promoted. Resolve independent
-full-model numerical acceptance and a bounded materialization/memory envelope before
-prefill-lane integration. A [BF16-storage vendor follow-up](../benchmarks/gemma4-metal-baseline.md#bf16-storage-vendor-pre-screen-2026-10-23)
-now runs MPSGraph directly on the same BF16 operands without caller FP32 weight shadows;
-all 27 sampled outputs match the earlier FP32 MPS results. Direct MPSMatrix BF16 inputs
-abort at encoding on the tested runtime. The private native Rust full-model pilot now
-passes 117 exact paired logit/cache states and observes **14.61/28.11%** lower paired
-direct-prefill wall time at 16/64 rows over 48 pairs/three processes. It reuses BF16 weights,
-with native RMS around prepared pair/Down graphs. A subsequent
-[private owned-retirement proof](../benchmarks/gemma4-metal-baseline.md#completion-owned-graph-retirement-proof)
-now replaces fail-stop with callback-owned retention, model-local closure, retryable
-settlement and defensive quarantine. Nine real device/owner cases pass, including delayed
-writes, exception-after-enqueue, full-model shutdown and a nonblocking native-retirement
-regression. Another 117 exact logit/cache pairs preserve numerical behavior; 48 new prefill
-pairs observe 15.29/27.32% lower paired wall time. That proof remains historical evidence,
-not an automatic selection policy.
-
-The [integrated model-local option](../benchmarks/gemma4-metal-baseline.md#model-local-graph-integration-2026-10-23)
-now exposes `Gemma4MetalFfn::ExperimentalGraph` through Rust model/text loading, with
-SDK/runtime checks and the native deployment floor preserved. Native remains the
-default and CLI/HTTP policy. Actual selection passes 117 exact full-logit pairs,
-26 complete KV-state comparisons, public text loading and real runtime retry/Drop
-qualification. Forty-eight new paired prefills observe **14.24/27.44%** reductions at
-16/64 rows; a separate frozen-native comparison passes its ≤3% regression gate.
-This is an experimental opt-in, not automatic promotion. A matched
-[memory screen](../benchmarks/gemma4-metal-baseline.md#model-local-graph-memory-screen-2026-10-23)
-now observes equal sampled Metal allocation maxima and flat post-Drop Metal totals
-across three model reloads per process; all 195 full-row pairs remain exact. The
-reviewed SDK exposes no Graph allocator hook or worst-case workspace query. Sampling
-and process high-water counters do not resolve internal allocation authority or hard
-physical bounds. Resolve that external-pool accounting/envelope policy before widening
-selection. A [public text-driver diagnostic](../benchmarks/gemma4-metal-baseline.md#public-text-driver-graph-diagnostic-2026-10-24)
-now exercises real default scheduling and mixed arrivals: 390 requests match exactly;
-paired total burst/staggered trace times fall 14.43/18.92%. Default 16-token chunks select
-Gate/Up pair16, not Down64. Most mixed requests miss the predeclared latency targets,
-and burst target-meeting requests fall from 4/48 to 1/48 despite faster total draining.
-Short pooled median E2E also rises 5.25%, though its p95 regression screen passes.
-This is not HTTP, sustained-load, physical-pressure or competitive SLO acceptance.
-A separate [Native HTTP versus stock MLX diagnostic](../benchmarks/gemma4-metal-baseline.md#native-http-versus-stock-mlx-diagnostic-2026-10-24)
-now passes reference-text, protocol and accounting checks on both real servers.
-All nine paired traffic groups have identical inputs/counts, but 12 of 72 paired
-profiling outcomes differ in visible text across three synthetic prompts. The
-predeclared matched-result gate stops the remaining process pairs; no quality-equivalent
-serving speed ratio is accepted. A follow-up at 20 common prediction histories reproduces
-raw-logit batch-width effects without HTTP; independent CPU BF16/FP32 references also
-disagree, and distribution errors are not merely argmax ties. All 250 captured MLX raw
-and normalized argmax pairs agree. Matched-chunk layer traces locate the first difference
-at PLE projection and independently reproduce Native's documented FP32 addition order;
-CPU BF16 prediction rows remain unchanged from whole-prompt prefill. Controlled raw-PLE
-substitutions now leave all four forced-history predictions unchanged in each engine,
-even with identical first-projection matrices. That operation is not the sole explanation;
-a precision rewrite based only on its first bit difference is not an established quality
-fix. A head-only replay with exact raw/post-softcap self-controls then makes the disputed
-winner follow the normalized hidden input, not the head backend: both heads choose 3872
-on Native's vector and 3823 on CPU's. All ten shared hidden inputs preserve raw and
-post-softcap winner agreement. Replaying the pre-RMS decoder states then gives identical
-BF16 normalized vectors from both RMS implementations on all ten shared inputs. All four
-RMS/head combinations keep the disputed winner with the pre-RMS state. Captured-upstream
-shared-KV replays first check layer 41, then the full sharing suffix; their winners follow
-the joint input stream, but distribution gaps remain. A fuller eight-cell decoder-body
-factorial then crosses the actual prefix backend, suffix backend and all 42 captured PLE
-inputs, carrying the prefix's real KV with it. All original layer outputs and tail rows
-are reproduced exactly before interpretation. The mixed Native-prefix/CPU-PLE stream
-selects 3872 through the Native suffix but 3823 through the CPU suffix. A conditional
-RMS/head replay makes that choice follow the suffix decoder output state, not its tail
-implementation. Thus the observed effect is not a universal prefix-only cause: prefix,
-suffix and PLE inputs interact. Across factorial contrasts, post-softcap total variation
-reaches about 0.475 for the prefix axis, 0.095 for the suffix and 0.115 for PLE. No error
-budget, faulty operation or accuracy winner is established. The 21-token history does not
-qualify sliding-window eviction. A separate
-[57-question labeled diagnostic](../benchmarks/gemma4-metal-baseline.md#independent-labeled-multiple-choice-diagnostic)
-then freezes one MMLU test item per subject, raw zero-shot prompts and four-choice scoring
-before model runs, retaining every selected item. Native and diagnostic CPU FP32 choose
-identically on all 57 and score 30/57; CPU BF16 scores 28/57, differing on three choices.
-All five original full prediction rows per backend reproduce exactly before evaluation.
-This small sample shows no Native task-score deficit against these references, not broad
-accuracy acceptance; FP32 is not ground truth. A subsequent
-[32-question generated-QA diagnostic](../benchmarks/gemma4-metal-baseline.md#generated-extractive-qa-diagnostic)
-uses independent SQuAD v1.1 labels through the real default Native and stock MLX HTTP
-servers. Each passes 13 archived controls before its questions. Both score 17/32
-whole-answer exact match and 79.1127429 token F1 on a 0–100 scale; 30 literal answers
-and all 32 normalized answers agree. The same 15 EM failures remain included, without
-answer extraction or explanation stripping. This is small-sample lexical generation
-evidence, not broad task-quality, distributional or quality-equivalent serving acceptance.
-Keep the original fidelity counterexample and failed serving gate open. Broader generated
-task acceptance still needs a justified scope, and serving comparisons still need their
-matched-result gate. Neither diagnostic supplies an equivalence budget or justifies
-further causal bisection without a concrete decision it would resolve. Production
-arithmetic stays unchanged; do not loosen tolerances or omit disagreeing prompts.
-Opaque Graph submissions are not a single-command chain. Broader residency/synchronization
-gains remain possible; no universal Graph ABI is selected.
-This does not change CUDA sequencing or qualify capacity, recovery or SLO goodput.
-A [lifetime ablation](../benchmarks/runtime-contract.md#metal-native-handle-lifetime-ablation-2026-10-21-utc)
-now bounds autoreleased command/encoder handles at their backend factories instead of
-leaving them to a caller pool. Repeated-call host retention falls, but the latency swings
-were not consistently removed. A [bounded PLE RMS rescreen](../benchmarks/gemma4-metal-baseline.md#bounded-packed-ple-rms-rescreen-2026-10-23)
-now uses randomized old/new trials within each warmed process: 126 runtime pairs show
-5.23% lower c1 decode interval, with bit-identical full logits and unchanged generated
-tokens. Metal groups the existing RMS kernel only for chunks up to 64 tokens and packed
-payloads up to 2 MiB each; larger chunks/geometries keep the per-layer path. Actual
-64/65-token decoder-boundary, executor and text-facade tests pass. This is M3 Max/E4B
-execution evidence, not HTTP/SLO, physical-pressure or CUDA qualification.
-The [attention-input projection chain](../benchmarks/gemma4-metal-baseline.md#attention-input-projection-chain-2026-10-23)
-now keeps normalized inputs private through Q/K/V preparation in one serial command,
-removing another 90 synchronous waits per selected E4B step. Across 126 matched runtime
-pairs, median c1 decode interval fell 13.29% (process gains 7.44–13.48%) with exact full
-rows and unchanged runtime tokens. A separate 96-pair whole-chunk screen passed at
-7/8/32/64 tokens. Selection is bounded to 64 tokens and 4 MiB of total native chain
-buffers, with the old calls retained above either bound. CPU/CUDA and scheduling are
-unchanged; this is not a new incumbent, SLO or physical-pressure qualification.
-The [attention-output chain](../benchmarks/gemma4-metal-baseline.md#attention-output-projection-chain-2026-10-23)
-also removes 42 waits per selected step (298 → 256), preserving the attended BF16
-boundary without its host roundtrip. It passes exact full-row and matched runtime gates:
-4.42% lower primary decode interval over 126 pairs (process gains 4.38–6.28%), plus
-96 whole-chunk pairs and the 576/577-key continuation boundary. Selection is limited
-to 64 input rows, 576 keys and 4 MiB total native chain-buffer payload. Some individual
-process cohorts regressed; the linked owner records variability and the predeclared
-aggregate diagnostic gates. This is not serving/SLO or physical-pressure acceptance.
-Sampling and eviction remain open. Shader/pipeline failures now fail both primitive
-and materialization tests rather than being mistaken for missing hardware.
-Then mixed-width local/global KV with donor spans pinned through shared-tail device reads. Use strongly typed model/backend state
-behind `GenerationExecutor`, not the current first-`kv()`/homogeneous-cache convenience
-or family branches in routing/scheduling. Qualified physical allocation/retirement and
-numerical execution remain device-gated.
-
-A byte-aware streaming loader must bound concurrent reads, decoded weights, retained shard
-clones and upload staging before large-model memory claims. Remote resolution and package
-processors follow a concrete integration need; a registry alone is not day-zero support.
-
-Then qualify a sequential encoder-decoder and a small iterative model. Actual models decide
-staged versus coupled execution. Prove downstream workspace progress under a shared grant;
-separate AR/BERT fixtures do not establish it. Non-AR access repairs precede encoder serving.
+The Gemma VLM reference and CPU vision code are not serving support:
+the strict full-checkpoint numerical gate remains unresolved,
+including normalization differences. Qualify numerical policy,
+feature lifetime, media processor, shared workspace and complete
+handoff before multimodal serving. The specialized BERT batch
+runtime retains separate input-byte, readiness and shutdown gates.
 
 ## 5. Minimal serving, then wider systems
 
-This is the first user-facing milestone, not the final step of slice 4.
-
-The initial loopback adapter is implemented in `ribn-server` with `ribn serve` CUDA
-assembly; [serving](serving.md) owns the protocol subset and operational bounds.
-Host TCP tests exercise the real tokenizer/facade/driver with device substitution:
-completion/chat order and usage, ordinary and trailing-byte disconnect under saturation,
-malformed/oversized/unsupported input, message and encoded envelopes, stalled-peer
-progress, connection/body deadlines, response and atomic terminal/usage limits,
-loading/faulted readiness, metrics and retryable/cancelled-load shutdown.
-The trailing-byte disconnect regression failed before its EOF observer was added.
-These host gates do not establish GPU serving behavior. The separate short-context
-CUDA HTTP gate, actual CLI shutdown and AIPerf/native-client protocol smokes passed;
-see [HTTP qualification](../benchmarks/runtime-contract.md#initial-text-http-qualification-2026-10-13).
-Those smokes alone establish no competitive measurement or physical-peak claim. The
-[first equal-artifact diagnostic](../benchmarks/runtime-contract.md#first-equal-artifact-endpoint-diagnostic-2026-10-16)
-adds measured deficits but leaves numerical equivalence and the representative acceptance
-matrix below open—not another execution-loop adapter.
-
-Deliver a documented text protocol subset over `TextModel`/`TextOwner`, preserving the
-existing execution owner. Start with conventional completion/chat streaming semantics;
-state supported parameters and explicitly reject unsupported ones. Bound connections,
-body parsing, messages/options, preprocessing and streaming buffers; default to local
-binding and require an explicit authentication/exposure policy for non-local deployment.
-No remote URL/media fetching is needed for this first text path.
-
-Gate streaming/terminal order, disconnect and queue-saturated cancellation, overload,
-malformed/oversized requests, stalled clients with healthy-peer progress, readiness,
-metrics and retryable shutdown. Health/readiness must distinguish loading, serving,
-closing and faulted states. Networked Python access uses the existing protocol subset.
-Native Python bindings follow a usable shared Qwen/Gemma execution path, without
-waiting for every engine feature; they reuse its owned semantics as specified in the
-[application API design](inference-engine-design.md#application-api-and-serving).
+The bounded loopback HTTP adapter, text facade, shared AR owner,
+cancellation and shutdown paths already exist and have host/
+bounded CUDA qualification. [Serving](serving.md) owns the current
+protocol and limits. Broader exposure, sampling/model breadth and
+competitive SLO results remain unqualified. Do not add a second
+frontend scheduler; instead measure real model-wide execution
+through the existing text/HTTP owner alongside matched quality/
+pressure baselines. Native Python bindings must reuse that same
+execution lifecycle. Non-local use needs a separate security policy.
 
 ### First competitive acceptance matrix
 

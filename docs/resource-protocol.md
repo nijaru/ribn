@@ -1,6 +1,6 @@
 # Resource, submission and snapshot protocol
 
-Status: accepted execution contract, revised 2026-10-29. Implemented behavior and
+Status: accepted execution contract, revised 2026-11-05. Implemented behavior and
 qualification limits are identified below; targets do not retroactively qualify source.
 AR preparation control is host-qualified. Dynamic Qwen growth, bounded overlap,
 non-AR application lifecycle and snapshot replacement remain unimplemented. Accepted text
@@ -116,6 +116,34 @@ Device completion may initially require timed event polling. A worker should sle
 on commands/readiness while idle and use bounded timed waits while polling such a
 backend. Document that fallback rather than claiming fully event-driven execution.
 Do not stall healthy requests merely because another request is waiting.
+
+
+### Model-wide physical preparation and result mapping
+
+Status: selected target, **not implemented** for Gemma GPU execution.
+The AR runtime keeps ordinary `BatchItem` offers and
+`GenerationExecutor`. The model/backend binds every accepted row to
+a stable sequence identity/incarnation, committed prefix, exact positive
+range, snapshot and concrete continuation owner. Physical lanes record
+packed token/position spans, state indices, compatible kernel/layout,
+output slots and the mapping back to the original sequence. Physical
+row order or an allocation pointer never establishes logical identity.
+
+Aggregate preparation budgets persistent growth, immutable input/PLE
+staging, descriptor/table versions, simultaneous scratch, output/reorder
+buffers and retirement overlap across **all** selected lanes. A mixed
+logical offer may use separately batched physical prefill/decode lanes.
+Infeasible requests reject or park on a real readiness condition;
+no accepted row executes beyond its prepared boundary. Actual physical
+batching must reuse weight work across requests; repeated whole-decoder
+calls are serial fallback even if logically offered together.
+
+Completion maps original identities and accepted ends, not the current
+physical row order. Validate every row before committing any logical
+progress. A partially enqueued failure retains every referenced
+submission, sequence owner and physical charge and faults the execution
+owner. Measure offered, accepted, physically batched, fallback, enqueued
+and completed work separately.
 
 ## Output ownership and boundedness
 
@@ -469,6 +497,26 @@ The engine owns which sequence holds which committed prefix and the policy decis
 (admission, eviction, preemption, priority). The model/backend owns layout, block or
 page granularity, checkpoint materialization and kernel-facing indexing. The authority
 owns bytes. None of these three charges the same reservation again.
+
+
+### Prepared programs and submission settlement
+
+An immutable executable snapshot owns weights, kernels/graphs and
+numerical policy. Every submitted physical batch separately owns
+mutable token/position/PLE staging, live continuation references,
+page/descriptor versions, workspace, output slots, device events and
+byte charges. A replay cannot overwrite staging still visible to an
+older device submission. No release acknowledgement may refund
+backing before it is safely reusable, including asynchronous frees.
+
+Native and externally compiled, Rust-invocable programs obey the same
+execution authority. Offline Python preparation is permitted, but
+external per-token scheduling, untracked allocations and unowned
+mutation of a live model are not. Failed enqueue after any device
+access enters the model-wide uncertain-retirement envelope. Validated
+completion may produce device-selected token IDs; full logits and
+logprobs are separately bounded outputs. Cancellation or client
+disinterest is never a completion fence.
 
 ### Bounded overlap and submission ownership
 
