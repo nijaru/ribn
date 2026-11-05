@@ -67,6 +67,41 @@ establishes a clean competitive ranking.
    a different architecture and backend. Track support velocity
    and ongoing maintenance, not just model registry entries.
 
+### First implementation cutover
+
+Keep the change under the optimized Gemma CUDA backend; do not rewrite
+the common AR scheduler or the CPU oracle.
+
+1. In `crates/gemma4/src/executor.rs` and `executor/backend.rs`,
+   retain synchronous `Gemma4Executor<D: GemmaDecode>` as CPU/scalar
+   reference and fallback. Add a distinct model-wide CUDA executor
+   implementing the existing `GenerationExecutor`; it owns shared
+   weights, sequence physical state and prepared submissions. Share
+   pure validation, not a per-request forward interface.
+2. In `crates/gemma4/src/cuda/decoder.rs` and `decoder/buffers.rs`,
+   move mutable cache handles and positions under the model-wide
+   owner and separate them from submission workspace. Stage packed
+   rows with original sequence mapping. Initially prove actual
+   multi-sequence matrix work with correct per-member KV/attention;
+   keep the qualified 8/16-token single-request and scalar fallbacks.
+3. In `crates/text/src/gemma_load.rs`, change only the CUDA
+   constructor behind the existing `Engine`, model processor and
+   owned `TextModel`. Preserve CPU/Metal loading and existing
+   run/serve behavior; do not add a frontend scheduler.
+4. Leave `crates/runtime/src/executor.rs` and `engine.rs`
+   unchanged for depth one. A physical lane may reorder work,
+   but the current `poll` contract returns completions in
+   originally submitted row order. Any later depth-two extension
+   needs its own qualified runtime/resource change.
+
+Host acceptance: whole-offer prevalidation, exact range/cursor
+and row mapping, state-only intermediate prefill, fallback,
+cancellation, partial enqueue, failed drain and retryable release.
+4090 device acceptance: at least two sequences sharing real
+weight work, correct independent KV histories, full-row numerical
+checks, access sanitizers, memory grants and complete retirement.
+Then measure actual text/HTTP mixed-arrival SLO goodput.
+
 ### Decision milestones
 
 If multi-sequence work still launches serial model forwards, fix
@@ -133,7 +168,9 @@ Source audits at `093cd28` and `70e5586` found gaps that passing fixtures do not
 3. **Physical release/accounting.** BERT partial construction and normal result/quarantine
    teardown need charge ownership until safe allocator reuse or backing release. Locked
    cudarc 0.19.9 can lose an allocation pointer if tracking-event creation fails; a drain
-   cannot release an unreachable pointer. NVIDIA's deferred-release acknowledgement and
+   cannot release an unreachable pointer. Cudarc 0.19.10 includes a pinned-allocation
+   error cleanup change. Qualify the patch against the locked 0.19.9 path, including
+   failed construction and retirement, before editing the lockfile. NVIDIA's deferred-release acknowledgement and
    Qwen's following logical refund must be reconciled before overlapping submissions make
    that an ordinary path. Pinned allocation construction also needs an owner before
    fallible tracking-event creation. BERT's default quarantine/result teardown can refund
