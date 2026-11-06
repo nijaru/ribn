@@ -459,6 +459,19 @@ partial-construction retirement must qualify before sharing it with the encoder.
    until executor-owned settlement or quarantine. Aggregate demand, not per-row resets,
    determines the accepted batch.
 
+### AR admission transaction
+
+`GenerationExecutor::admit` publishes `Admission::Ready` only after it owns a coherent
+initial continuation. `Deferred` registers a recoverable resource wait; `Rejected`
+is a clean request-local refusal. Neither retains new admission resources. An `Err`
+faults the execution owner immediately: no later admission, preparation or submission
+may proceed, and uncertain construction storage stays owned until synchronization
+establishes safe retirement. An allocation failure is not automatically request-local:
+failed cleanup can retain partial caches even before any sequence was admitted.
+Unsupported inputs and permanently infeasible demand must be rejected without touching
+healthy peers. Do not move ordinary capacity refusal into fatal preparation merely to
+hide an ambiguous constructor error; classify failure at the resource owner.
+
 ### AR preparation transaction
 
 `GenerationExecutor::prepare` negotiates one offered batch at a time. The executor,

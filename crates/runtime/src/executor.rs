@@ -119,6 +119,9 @@ pub struct StepCompletion {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Admission {
     Ready,
+    /// Permanent request-local refusal. No new admission resources are retained;
+    /// existing peer continuations remain usable.
+    Rejected(ExecutionError),
     /// No sequence resources were retained. Register before checking the
     /// blocking condition; the engine retries only when the source changes.
     /// The driver arms this registration on its bounded wake transport before parking.
@@ -174,12 +177,15 @@ pub trait GenerationExecutor: Send {
     /// current Qwen implementation keeps full request-reachable reservation.
     /// `request_id` is stable for the runtime request and may correlate model-
     /// prepared inputs or tracing; `sequence` identifies executor continuation
-    /// ownership at prefix zero. `Deferred` or an error must retain no admission resources.
+    /// ownership at prefix zero. `Deferred` and `Rejected` retain no new admission
+    /// resources. An error faults the execution owner, including when partial
+    /// construction cannot establish safe retirement.
     /// Preparation, restore, fork, and migration need their own concrete proofs;
     /// an arbitrary nonzero logical prefix is not a restoration API.
     ///
     /// # Errors
-    /// Returns an unsupported-input or resource error before execution.
+    /// Reports an execution-owner failure. Retain uncertain construction resources
+    /// until synchronization; report clean request refusal with `Admission::Rejected`.
     fn admit(
         &mut self,
         request_id: RequestId,

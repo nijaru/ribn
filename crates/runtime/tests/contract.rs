@@ -107,7 +107,9 @@ impl<S: PrivateState> GenerationExecutor for Model<S> {
     ) -> Result<Admission, ExecutionError> {
         let mut control = self.control.lock().unwrap();
         if control.reject_admission {
-            return Err(ExecutionError::new("unsupported request"));
+            return Ok(Admission::Rejected(ExecutionError::new(
+                "unsupported request",
+            )));
         }
         if control.defer {
             return Ok(Admission::Deferred(control.readiness.register()));

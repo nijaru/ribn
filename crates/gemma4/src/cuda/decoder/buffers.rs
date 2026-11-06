@@ -231,6 +231,10 @@ impl CacheConstruction {
 }
 
 impl super::Gemma4CudaModel {
+    pub(crate) fn has_unsettled_failure(&self) -> bool {
+        self.failure.is_some() || self.cache_retirement.is_some()
+    }
+
     pub(super) fn allocate_caches(&mut self) -> Result<Vec<Option<DeviceCache>>, Gemma4Error> {
         if self.failure.is_some() {
             return Err(Gemma4Error::new(

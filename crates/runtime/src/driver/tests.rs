@@ -108,7 +108,12 @@ impl GenerationExecutor for Model {
             return Ok(Admission::Deferred(wait));
         }
         if input.tokens[0] == 99 {
-            return Err(ExecutionError::new("request-local rejection"));
+            return Ok(Admission::Rejected(ExecutionError::new(
+                "request-local rejection",
+            )));
+        }
+        if input.tokens[0] == 100 {
+            return Err(ExecutionError::new("uncertain admission construction"));
         }
         self.states.insert(sequence, input.tokens[0]);
         self.control.admitted.fetch_add(1, Ordering::SeqCst);
@@ -555,6 +560,28 @@ fn request_rejection_and_owner_fault_have_distinct_scope() {
     }
     assert!(matches!(handle.try_reserve(), Err(DriverError::Owner(_))));
     owner.shutdown().unwrap();
+}
+
+#[test]
+fn fatal_admission_closes_the_driver_before_preparation_and_retains_cleanup() {
+    let (control, mut owner, handle) = fixture();
+    control.fail_sync.store(true, Ordering::SeqCst);
+    let mut stream = run(handle.stream(input(100, 1))).unwrap();
+    assert!(matches!(
+        run(stream.next()),
+        Some(Err(DriverError::Owner(_)))
+    ));
+    assert!(run(stream.next()).is_none());
+    assert!(matches!(handle.try_reserve(), Err(DriverError::Owner(_))));
+    assert_eq!(control.attempts.load(Ordering::SeqCst), 1);
+    assert_eq!(control.admitted.load(Ordering::SeqCst), 0);
+    assert_eq!(control.preparations.load(Ordering::SeqCst), 0);
+    assert_eq!(control.polls.load(Ordering::SeqCst), 0);
+    assert!(owner.shutdown().is_err());
+    assert!(!control.dropped.load(Ordering::SeqCst));
+    control.fail_sync.store(false, Ordering::SeqCst);
+    owner.shutdown().unwrap();
+    assert!(control.dropped.load(Ordering::SeqCst));
 }
 
 #[test]

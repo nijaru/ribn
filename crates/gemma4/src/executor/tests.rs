@@ -19,6 +19,8 @@ enum Completion {
     Unwind,
 }
 struct Probe {
+    creations: AtomicUsize,
+    fail_creation_at: AtomicUsize,
     calls: AtomicUsize,
     advance_calls: AtomicUsize,
     head_calls: AtomicUsize,
@@ -34,6 +36,8 @@ struct Probe {
 impl Default for Probe {
     fn default() -> Self {
         Self {
+            creations: AtomicUsize::new(0),
+            fail_creation_at: AtomicUsize::new(1),
             calls: AtomicUsize::new(0),
             advance_calls: AtomicUsize::new(0),
             head_calls: AtomicUsize::new(0),
@@ -122,7 +126,10 @@ fn counted(probe: Arc<Probe>, failure: Option<Mode>) -> Gemma4Executor<CountedDe
         host.config().clone(),
         Backend {
             create: Box::new(move || {
-                if failure == Some(Mode::AdmissionFailure) {
+                let call = probe.creations.fetch_add(1, Ordering::SeqCst) + 1;
+                if failure == Some(Mode::AdmissionFailure)
+                    && call == probe.fail_creation_at.load(Ordering::SeqCst)
+                {
                     let completed = matches!(*probe.completion.lock().unwrap(), Completion::Ready);
                     let mut partial = probe.partial.lock().unwrap();
                     if partial.is_none() {
@@ -131,18 +138,21 @@ fn counted(probe: Arc<Probe>, failure: Option<Mode>) -> Gemma4Executor<CountedDe
                     if completed {
                         *partial = None;
                     }
-                    return Err(Gemma4Error::new(
-                        "test creation",
-                        "injected failure after partial allocation",
-                    ));
+                    let error = ExecutionError::new("injected failure after partial allocation");
+                    return Err(if completed {
+                        AdmissionFailure::Rejected(error)
+                    } else {
+                        AdmissionFailure::Failed(error)
+                    });
                 }
-                let inner = Gemma4CpuDecoder::shared(host.clone())?;
+                let inner = Gemma4CpuDecoder::shared(host.clone())
+                    .map_err(|error| AdmissionFailure::Failed(execution(&error)))?;
                 let lease = probe.pool.reserve(32).unwrap();
                 probe.live.fetch_add(1, Ordering::SeqCst);
                 Ok(CountedDecoder {
                     inner,
                     probe: probe.clone(),
-                    failure,
+                    failure: failure.filter(|mode| *mode != Mode::AdmissionFailure),
                     lease: Some(lease),
                 })
             }),
@@ -176,6 +186,7 @@ enum Mode {
     DropFailure,
     DropUnwind,
     AdmissionFailure,
+    DuplicateAdmission,
     ReleaseUnwind,
 }
 
@@ -207,7 +218,18 @@ impl GenerationExecutor for Boundary {
         sequence: SequenceId,
         input: &TokenRequest,
     ) -> Result<Admission, ExecutionError> {
-        self.inner.admit(request, sequence, input)
+        let admitted = self.inner.admit(request, sequence, input)?;
+        if self.mode == Mode::DuplicateAdmission
+            && self.inner.execution.as_ref().unwrap().states.len() == MAX_SEQUENCES
+        {
+            let duplicate = self.inner.admit(request, sequence, input);
+            assert!(
+                duplicate.is_err(),
+                "a duplicate identity is never a clean capacity refusal"
+            );
+            return duplicate;
+        }
+        Ok(admitted)
     }
     fn prepare(&mut self, batch: &[BatchItem]) -> Result<BatchPreparation, ExecutionError> {
         assert_eq!(batch.len(), 2);
@@ -349,6 +371,25 @@ fn engine(probe: Arc<Probe>, mode: Mode) -> Engine {
             .unwrap();
     }
     engine
+}
+
+#[test]
+fn duplicate_identity_is_fatal_even_at_full_sequence_capacity() {
+    let probe = Arc::new(Probe {
+        pool: BytePool::new(128).shared(),
+        ..Probe::default()
+    });
+    let mut engine = engine(probe.clone(), Mode::DuplicateAdmission);
+    for token in [1, 2] {
+        engine
+            .enqueue(TokenRequest::new(vec![token], GenerationOptions::default()))
+            .unwrap();
+    }
+    assert!(engine.step().is_err());
+    assert_eq!(probe.creations.load(Ordering::SeqCst), MAX_SEQUENCES);
+    assert_eq!(probe.calls.load(Ordering::SeqCst), 0);
+    engine.shutdown().unwrap();
+    assert_eq!(probe.pool.available(), 128);
 }
 
 #[test]

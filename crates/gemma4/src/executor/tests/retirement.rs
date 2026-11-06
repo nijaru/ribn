@@ -104,15 +104,34 @@ fn partial_sequence_close_is_retryable_without_double_refund() {
 }
 
 #[test]
-fn model_completion_is_owned_even_without_an_admitted_decoder() {
+fn failed_admission_faults_the_owner_and_retains_partial_construction() {
     let probe = Arc::new(Probe::default());
     *probe.completion.lock().unwrap() = Completion::Waiting;
     let mut engine =
         Engine::with_defaults(counted(probe.clone(), Some(Mode::AdmissionFailure))).unwrap();
-    engine
-        .enqueue(TokenRequest::new(vec![1], GenerationOptions::default()))
-        .unwrap();
-    engine.step().unwrap();
+    for token in [1, 2] {
+        engine
+            .enqueue(TokenRequest::new(vec![token], GenerationOptions::default()))
+            .unwrap();
+    }
+    assert!(
+        engine.step().is_err(),
+        "uncertain construction is owner-fatal"
+    );
+    assert!(engine.step().is_err(), "failed admission cannot resume");
+    let mut failed = 0;
+    while let Some(event) = engine.pop_event() {
+        match event {
+            Event::Finished {
+                reason: ribn::FinishReason::Failed(_),
+                ..
+            } => failed += 1,
+            event => panic!("unexpected event after fatal admission: {event:?}"),
+        }
+    }
+    assert_eq!(failed, 2);
+    assert_eq!(probe.creations.load(Ordering::SeqCst), 1);
+    assert_eq!(probe.calls.load(Ordering::SeqCst), 0);
     assert_eq!(probe.live.load(Ordering::SeqCst), 0);
     assert_eq!(
         probe.pool.available(),
@@ -127,6 +146,84 @@ fn model_completion_is_owned_even_without_an_admitted_decoder() {
     assert_eq!(probe.pool.available(), 64);
     drop(engine);
     assert!(probe.model.lock().unwrap().upgrade().is_none());
+}
+
+#[test]
+fn fatal_construction_retains_existing_peers_until_retryable_retirement() {
+    let probe = Arc::new(Probe::default());
+    probe.fail_creation_at.store(2, Ordering::SeqCst);
+    *probe.completion.lock().unwrap() = Completion::Waiting;
+    let mut engine =
+        Engine::with_defaults(counted(probe.clone(), Some(Mode::AdmissionFailure))).unwrap();
+    for token in [1, 2, 3] {
+        engine
+            .enqueue(TokenRequest::new(vec![token], GenerationOptions::default()))
+            .unwrap();
+    }
+    assert!(engine.step().is_err());
+    assert_eq!(probe.creations.load(Ordering::SeqCst), 2);
+    assert_eq!(probe.calls.load(Ordering::SeqCst), 0);
+    assert_eq!(probe.live.load(Ordering::SeqCst), 1);
+    assert_eq!(probe.pool.available(), 0);
+    assert!(engine.shutdown().is_err());
+    assert!(engine.shutdown().is_err());
+    assert_eq!(probe.close_calls.load(Ordering::SeqCst), 0);
+    assert_eq!(probe.pool.available(), 0);
+    *probe.completion.lock().unwrap() = Completion::Ready;
+    engine.shutdown().unwrap();
+    engine.shutdown().unwrap();
+    assert_eq!(probe.close_calls.load(Ordering::SeqCst), 1);
+    assert_eq!(probe.pool.available(), 64);
+    assert_eq!(probe.live.load(Ordering::SeqCst), 0);
+}
+
+#[test]
+fn clean_construction_refusal_and_invalid_input_leave_a_peer_usable() {
+    let probe = Arc::new(Probe::default());
+    let mut engine =
+        Engine::with_defaults(counted(probe.clone(), Some(Mode::AdmissionFailure))).unwrap();
+    let mut requests = Vec::new();
+    for token in [u32::MAX, 1, 2] {
+        requests.push(
+            engine
+                .enqueue(TokenRequest::new(
+                    vec![token],
+                    GenerationOptions {
+                        max_output_tokens: 1,
+                        ..GenerationOptions::default()
+                    },
+                ))
+                .unwrap(),
+        );
+    }
+    for _ in 0..8 {
+        engine.step().unwrap();
+        if engine.status().requests == 0 {
+            break;
+        }
+    }
+    assert_eq!(engine.status().requests, 0);
+    let mut finished = Vec::new();
+    while let Some(event) = engine.pop_event() {
+        if let Event::Finished {
+            request, reason, ..
+        } = event
+        {
+            finished.push((request, reason));
+        }
+    }
+    for request in &requests[..2] {
+        assert!(
+            finished.iter().any(
+                |(id, reason)| id == request && matches!(reason, ribn::FinishReason::Failed(_))
+            )
+        );
+    }
+    assert!(finished.contains(&(requests[2], ribn::FinishReason::Length)));
+    assert_eq!(probe.creations.load(Ordering::SeqCst), 2);
+    assert_eq!(probe.calls.load(Ordering::SeqCst), 1);
+    assert_eq!(probe.pool.available(), 64);
+    engine.shutdown().unwrap();
 }
 
 #[test]

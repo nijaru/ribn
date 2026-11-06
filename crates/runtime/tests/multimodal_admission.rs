@@ -233,9 +233,9 @@ impl GenerationExecutor for EncoderModel {
             .iter()
             .any(|item| item.compute > control.step_budget && !control.published.contains(&item.id))
         {
-            return Err(ExecutionError::new(
+            return Ok(Admission::Rejected(ExecutionError::new(
                 "encoder item is larger than the step budget",
-            ));
+            )));
         }
         if control.gate_admission
             && let Some(first) = items.first()

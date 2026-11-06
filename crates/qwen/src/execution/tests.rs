@@ -534,29 +534,31 @@ fn failed_hybrid_reservation_does_not_publish_its_own_readiness() {
         )
         .unwrap(),
     ));
-    let mut model = model_with_requirements(
-        control,
-        ribn_foundation::BytePool::new(192).shared(),
-        requirements,
-    );
-    let first = model
-        .0
-        .manager
-        .allocate_kv(
-            KvStateSpec::with_pages(1, 1, 2, FIXTURE_PAGE_TOKENS, 4, DataType::F16).unwrap(),
-        )
-        .unwrap();
-    let wait = model.0.manager.capacity_wait();
-    assert!(model.0.reserve_continuation(6).unwrap().is_none());
+    let pool = ribn_foundation::BytePool::new(192).shared();
+    let occupied = pool.reserve(128).unwrap();
+    let model = model_with_requirements(control, Arc::clone(&pool), requirements);
+    let mut engine = engine_with_model(model);
+    engine.enqueue(request(vec![1, 2, 3])).unwrap();
+    let wait = pool.capacity_wait();
+    engine.step().unwrap();
+    assert_eq!(engine.status().active_sequences, 0);
     assert!(
         !wait.changed(),
         "failed bundle must not manufacture a release"
     );
-    assert_eq!(model.0.manager.used_bytes(), 128);
-    model.0.manager.release(first.handle()).unwrap();
+    assert_eq!(pool.granted(), 128);
+    drop(occupied);
     assert!(wait.changed());
-    let (state, _) = model.0.reserve_continuation(6).unwrap().unwrap();
-    model.0.manager.release_set(&state).unwrap();
+    let events = drive(&mut engine);
+    assert!(events.iter().any(|event| matches!(
+        event,
+        Event::Finished {
+            reason: FinishReason::Length,
+            ..
+        }
+    )));
+    assert_eq!(pool.granted(), 0);
+    engine.shutdown().unwrap();
 }
 
 #[test]

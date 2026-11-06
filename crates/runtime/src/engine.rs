@@ -354,8 +354,9 @@ impl Engine {
             });
         }
         self.reactivate_parked();
-        self.admit_waiters();
+        let admission = self.admit_waiters();
         self.flush_terminals()?;
+        admission?;
         loop {
             self.build_batch();
             if self.batch.is_empty() {
@@ -451,7 +452,7 @@ impl Engine {
         }
     }
 
-    fn admit_waiters(&mut self) {
+    fn admit_waiters(&mut self) -> Result<(), EngineError> {
         for _ in 0..self.waiting.len() {
             if self.active >= self.config.max_active_requests {
                 break;
@@ -492,9 +493,16 @@ impl Engine {
                         .resource_wait = Some(wait);
                     self.waiting.push_back(index);
                 }
-                Err(error) => self.terminate(index, FinishReason::Failed(error)),
+                Ok(Admission::Rejected(error)) => {
+                    self.terminate(index, FinishReason::Failed(error));
+                }
+                Err(error) => {
+                    self.fault_all(&error);
+                    return Err(EngineError::Faulted(error));
+                }
             }
         }
+        Ok(())
     }
 
     fn terminate(&mut self, index: usize, reason: FinishReason) {

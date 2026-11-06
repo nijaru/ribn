@@ -18,8 +18,8 @@ mod batch;
 #[cfg(test)]
 mod tests;
 
-use backend::Backend;
 pub use backend::GemmaDecode;
+use backend::{AdmissionFailure, Backend};
 
 const MAX_SEQUENCES: usize = 4;
 
@@ -127,6 +127,74 @@ impl<D: GemmaDecode> Gemma4Executor<D> {
             }),
         })
     }
+    fn admit_sequence(
+        &mut self,
+        sequence: SequenceId,
+        request: &TokenRequest,
+    ) -> Result<(), AdmissionFailure> {
+        let owner = self.execution.as_mut().expect("executor owns execution");
+        if owner.phase != Phase::Idle {
+            return Err(AdmissionFailure::Failed(ExecutionError::new(
+                "Gemma execution is busy, faulted or closed",
+            )));
+        }
+        if owner.states.contains_key(&sequence) {
+            return Err(AdmissionFailure::Failed(ExecutionError::new(
+                "sequence is already admitted",
+            )));
+        }
+        if request.options.sampling.temperature != 0.0 {
+            return Err(AdmissionFailure::Rejected(ExecutionError::new(
+                "Gemma executor currently supports greedy sampling only",
+            )));
+        }
+        let prompt = u32::try_from(request.tokens.len()).map_err(|_| {
+            AdmissionFailure::Rejected(ExecutionError::new("prompt length exceeds u32"))
+        })?;
+        let output = request.options.max_output_tokens;
+        if prompt == 0 || output == 0 {
+            return Err(AdmissionFailure::Rejected(ExecutionError::new(
+                "prompt and output budget must be positive",
+            )));
+        }
+        let total = u64::from(prompt) + u64::from(output);
+        if total > u64::from(self.info.limits.context_tokens) {
+            return Err(AdmissionFailure::Rejected(ExecutionError::new(
+                "prompt and output exceed the context bound",
+            )));
+        }
+        if owner.states.len() >= self.info.limits.max_sequences {
+            return Err(AdmissionFailure::Rejected(ExecutionError::new(
+                "sequence capacity is exhausted",
+            )));
+        }
+        self.config
+            .validate_text_tokens(&request.tokens)
+            .map_err(|error| AdmissionFailure::Rejected(execution(&error)))?;
+        // Construction may retain partial storage or unwind. Only a clean
+        // refusal or a complete continuation permits this owner to resume.
+        owner.phase = Phase::Failed;
+        let decoder = match (owner.backend.create)() {
+            Ok(decoder) => decoder,
+            Err(AdmissionFailure::Rejected(error)) => {
+                owner.phase = Phase::Idle;
+                return Err(AdmissionFailure::Rejected(error));
+            }
+            Err(error) => return Err(error),
+        };
+        owner.states.insert(
+            sequence,
+            SequenceState {
+                decoder,
+                prompt: request.tokens.clone(),
+                cursor: 0,
+                input: None,
+                remaining: output,
+            },
+        );
+        owner.phase = Phase::Idle;
+        Ok(())
+    }
 }
 
 fn execution(error: &Gemma4Error) -> ExecutionError {
@@ -144,52 +212,17 @@ impl<D: GemmaDecode> GenerationExecutor for Gemma4Executor<D> {
         sequence: SequenceId,
         request: &TokenRequest,
     ) -> Result<Admission, ExecutionError> {
-        let owner = self.execution.as_mut().expect("executor owns execution");
-        if owner.phase != Phase::Idle {
-            return Err(ExecutionError::new(
-                "Gemma execution is busy, faulted or closed",
-            ));
+        match self.admit_sequence(sequence, request) {
+            Ok(()) => Ok(Admission::Ready),
+            Err(AdmissionFailure::Rejected(error)) => Ok(Admission::Rejected(error)),
+            Err(AdmissionFailure::Failed(error)) => {
+                self.execution
+                    .as_mut()
+                    .expect("executor owns execution")
+                    .phase = Phase::Failed;
+                Err(error)
+            }
         }
-        if request.options.sampling.temperature != 0.0 {
-            return Err(ExecutionError::new(
-                "Gemma executor currently supports greedy sampling only",
-            ));
-        }
-        let prompt = u32::try_from(request.tokens.len())
-            .map_err(|_| ExecutionError::new("prompt length exceeds u32"))?;
-        let output = request.options.max_output_tokens;
-        if prompt == 0 || output == 0 {
-            return Err(ExecutionError::new(
-                "prompt and output budget must be positive",
-            ));
-        }
-        let total = u64::from(prompt) + u64::from(output);
-        if total > u64::from(self.info.limits.context_tokens) {
-            return Err(ExecutionError::new(
-                "prompt and output exceed the context bound",
-            ));
-        }
-        if owner.states.len() >= self.info.limits.max_sequences {
-            return Err(ExecutionError::new("sequence capacity is exhausted"));
-        }
-        if owner.states.contains_key(&sequence) {
-            return Err(ExecutionError::new("sequence is already admitted"));
-        }
-        self.config
-            .validate_text_tokens(&request.tokens)
-            .map_err(|error| execution(&error))?;
-        let decoder = (owner.backend.create)().map_err(|error| execution(&error))?;
-        owner.states.insert(
-            sequence,
-            SequenceState {
-                decoder,
-                prompt: request.tokens.clone(),
-                cursor: 0,
-                input: None,
-                remaining: output,
-            },
-        );
-        Ok(Admission::Ready)
     }
 
     fn prepare(&mut self, batch: &[BatchItem]) -> Result<BatchPreparation, ExecutionError> {

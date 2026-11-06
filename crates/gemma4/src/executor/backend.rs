@@ -1,7 +1,8 @@
 //! Concrete decoder operations and model-wide completion ownership.
-use super::Gemma4Executor;
+use super::{Gemma4Executor, execution};
 use crate::cpu::Gemma4CpuDecoder;
 use crate::{Gemma4CpuWeights, Gemma4Error};
+use ribn::ExecutionError;
 use std::sync::Arc;
 
 /// Sequence-level decoder operations; execution failure does not permit replay.
@@ -32,10 +33,15 @@ pub trait GemmaDecode: Send {
     fn close(&mut self) -> Result<(), Gemma4Error>;
 }
 
+pub(super) enum AdmissionFailure {
+    Rejected(ExecutionError),
+    Failed(ExecutionError),
+}
+
 /// Creation and completion capture the same concrete model. Completion cannot
 /// depend on finding an admitted decoder: construction may have failed earlier.
 pub(super) struct Backend<D> {
-    pub(super) create: Box<dyn FnMut() -> Result<D, Gemma4Error> + Send>,
+    pub(super) create: Box<dyn FnMut() -> Result<D, AdmissionFailure> + Send>,
     pub(super) settle: Box<dyn FnMut() -> Result<(), Gemma4Error> + Send>,
 }
 
@@ -69,7 +75,10 @@ impl Gemma4Executor<Gemma4CpuDecoder> {
             config.max_position_embeddings(),
             config,
             Backend {
-                create: Box::new(move || Gemma4CpuDecoder::shared(weights.clone())),
+                create: Box::new(move || {
+                    Gemma4CpuDecoder::shared(weights.clone())
+                        .map_err(|error| AdmissionFailure::Failed(execution(&error)))
+                }),
                 // No model-wide device work exists on this backend.
                 settle: Box::new(|| Ok(())),
             },
@@ -118,7 +127,18 @@ impl Gemma4Executor<crate::Gemma4CudaDecoder> {
             capacity,
             config,
             Backend {
-                create: Box::new(move || crate::Gemma4CudaDecoder::shared(&model)),
+                create: Box::new(move || {
+                    crate::Gemma4CudaDecoder::shared(&model).map_err(|error| {
+                        // The model owns partial construction even when no decoder
+                        // exists. Inspect that authority, not the formatted error.
+                        match model.lock() {
+                            Ok(owner) if !owner.has_unsettled_failure() => {
+                                AdmissionFailure::Rejected(execution(&error))
+                            }
+                            _ => AdmissionFailure::Failed(execution(&error)),
+                        }
+                    })
+                }),
                 settle: Box::new(move || {
                     completion
                         .lock()
@@ -167,7 +187,10 @@ impl Gemma4Executor<crate::Gemma4MetalDecoder> {
             config.max_position_embeddings(),
             config,
             Backend {
-                create: Box::new(move || crate::Gemma4MetalDecoder::shared(model.clone())),
+                create: Box::new(move || {
+                    crate::Gemma4MetalDecoder::shared(model.clone())
+                        .map_err(|error| AdmissionFailure::Failed(execution(&error)))
+                }),
                 // Retain the SAME model even if no decoder was constructed. An
                 // uncertain Graph submission cannot release its access envelope.
                 settle: Box::new(move || completion.retire_failure()),

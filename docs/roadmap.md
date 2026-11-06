@@ -88,8 +88,12 @@ the common AR scheduler or the CPU oracle.
    constructor behind the existing `Engine`, model processor and
    owned `TextModel`. Preserve CPU/Metal loading and existing
    run/serve behavior; do not add a frontend scheduler.
-4. Leave `crates/runtime/src/executor.rs` and `engine.rs`
-   unchanged for depth one. A physical lane may reorder work,
+4. Preserve the depth-one scheduling and completion model in
+   `crates/runtime/src/executor.rs` and `engine.rs`. Keep the
+   repaired admission failure boundary: clean refusal is `Rejected`,
+   while uncertain partial construction faults the execution owner
+   and retains its retirement envelope. This is not a scheduler rewrite.
+   A physical lane may reorder work,
    but the current `poll` contract returns completions in
    originally submitted row order. Any later depth-two extension
    needs its own qualified runtime/resource change.

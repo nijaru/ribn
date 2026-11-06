@@ -499,7 +499,9 @@ mod tests {
             request: &TokenRequest,
         ) -> Result<Admission, ExecutionError> {
             if request.tokens[0] == u32::MAX {
-                return Err(ExecutionError::new("invalid fixture token"));
+                return Ok(Admission::Rejected(ExecutionError::new(
+                    "invalid fixture token",
+                )));
             }
             self.first_tokens.insert(sequence, request.tokens[0]);
             Ok(Admission::Ready)

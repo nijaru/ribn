@@ -106,13 +106,17 @@ impl GenerationExecutor for Decoder {
         sequence: SequenceId,
         _: &TokenRequest,
     ) -> Result<Admission, ExecutionError> {
-        let state = self
+        let Some(state) = self
             .shared
             .lock()
             .expect("shared conditioning")
             .prepared
             .remove(&request_id)
-            .ok_or_else(|| ExecutionError::new("missing prepared encoder state"))?;
+        else {
+            return Ok(Admission::Rejected(ExecutionError::new(
+                "missing prepared encoder state",
+            )));
+        };
         let pointer = state.as_ptr() as usize;
         self.shared
             .lock()
