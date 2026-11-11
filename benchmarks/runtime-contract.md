@@ -2163,10 +2163,31 @@ idle after the campaigns. The earlier `20261111T173657Z-initial-pairs` failure w
 control-test input-history error before the candidate loaded; expected winners and
 production mathematics were not changed to repair it.
 
-These gates do not establish the service's full 4K selection scope, frozen-128 QA,
-automatic loading, throughput, SLO goodput, memory peaks or broad quality equivalence.
-Real driver failure/retry is qualified in the native private domain; failed model-wide
-drain is not directly device-injected. Preserve that composed-evidence limit.
+The additional service-boundary gate uses the actual **4096-position capacity,
+20 GiB pool and `1 << 20` scratch ceiling**. Synthetic prompts of 4094 and 4093
+tokens repeat the pinned 513-token pattern. A fresh serial control supplies complete
+prefill and two common-history continuation rows before unloading; the candidate's
+prefill bits match exactly. Both reordered paired steps produce complete finite rows
+and match the control's winners, reaching positions **4096 and 4095**, respectively.
+Neither position advances on submission. Attempts beyond each request-reachable
+capacity reject in either pair order without changing positions or charges; both
+prefill overruns reject, and explicit release/close returns the pool to zero.
+These derived long contexts are not independent publisher predictions or labeled QA.
+
+Receipt `20261111T185714Z-service-context-boundary` passes the new ignored
+`paired_decode_reaches_the_service_context_boundary_without_overrunning_either_member`
+integration case. Receipt `20261111T185926Z-service-context-sanitizers` runs that entire
+control/candidate case under **memcheck and initcheck, both with zero errors** and
+actual pipeline exits **0/0**. Each ran exactly one test; source snapshots, executable
+SHA-256, logs and an empty GPU-after record are retained. The later comment-only
+clarification changes no tested computation. The integration command above now runs
+both the archived-history/Engine case and this service-boundary case.
+
+These gates cover the service's 4K access boundary, not unrestricted hardware/model
+selection, frozen-128 QA, automatic loading, throughput, SLO goodput, memory peaks or
+broad quality equivalence. Real driver failure/retry is qualified in the native private
+domain; failed model-wide drain is not directly device-injected. Preserve that
+composed-evidence limit.
 
 ### State-only prefill Metal fallback (2026-10-30)
 

@@ -135,9 +135,13 @@ enqueue ownership. Common-history archived winners, unchanged prefill bits, M2
 projection bounds and full-model memcheck/initcheck pass. Two-pair offers also
 acknowledge workspace reuse before whole-offer commitment. This meets the first
 physical-sharing proof, not loader promotion or competitive serving acceptance.
-The ordinary loader remains serial. Before cutover, close the intended selection
-scope (including the service's maximum context), run the frozen-128 no-per-item-loss
-screen against a fresh native control, then measure private mixed-arrival serving.
+The same gate now also passes the service's 4K boundary: unchanged full prefill
+rows, reordered paired continuation to positions 4096/4095, request-reachable overrun
+rejection and complete retirement. Full-case memcheck/initcheck report zero errors.
+Those long synthetic histories use a fresh qualified native control, not publisher
+labels. The ordinary loader remains serial. Before cutover, bound automatic selection
+to qualified hardware/model geometry, run the frozen-128 no-per-item-loss screen
+against a fresh native control, then measure private mixed-arrival serving.
 Full-model failed-driver-drain remains composed native/owner evidence rather than a
 directly injected model-wide fault. Preserve that scope distinction; do not expose the
 qualified serial model's raw stream to force adoption or fault injection.

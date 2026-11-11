@@ -1,4 +1,4 @@
-//! Real model-wide execution over independent archived common histories.
+//! Real model-wide execution over archived histories and the service context boundary.
 #![cfg(feature = "cuda")]
 use cudarc::driver::CudaContext;
 use engine_gemma4::{
@@ -256,5 +256,127 @@ fn full_model_pairs_preserve_archived_winners_unequal_histories_and_reordered_me
         );
     }
     exercise_runtime(model, &cases[0]);
+    assert_eq!(pool.granted(), 0);
+}
+
+#[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "serialized service-boundary control, candidate, rejection and teardown gate"
+)]
+#[ignore = "real 15 GB package, two near-4K histories; release-only serialized device gate"]
+fn paired_decode_reaches_the_service_context_boundary_without_overrunning_either_member() {
+    let _device = identities::DEVICE.lock().unwrap();
+    let archived = cases();
+    let pattern = &archived
+        .iter()
+        .find(|case| case.name == "window_513")
+        .unwrap()
+        .prompt;
+    // Synthetic long contexts extend access/position qualification, not the
+    // publisher's archived predictions or the labeled generation quality screen.
+    let capacity = 4096;
+    let scratch = 1 << 20; // Actual ordinary CUDA service configuration.
+    let prompts = [capacity - 2, capacity - 3].map(|length| {
+        pattern
+            .iter()
+            .copied()
+            .cycle()
+            .take(length)
+            .collect::<Vec<_>>()
+    });
+    let inputs = [562, 126_641]; // Explicit common history, not autonomous rollout.
+    let package = LocalModelPackage::open(environment("RIBN_GEMMA_PACKAGE")).unwrap();
+    let source = Gemma4Source::open(&package).unwrap();
+    let width = source.config().vocab_size();
+    let context = CudaContext::new(0).unwrap();
+    let pool = BytePool::new(20_u64 << 30).shared();
+    let controls: Vec<Vec<Vec<u16>>> = {
+        let stream = context.new_stream().unwrap();
+        let model = Arc::new(Mutex::new(
+            Gemma4CudaModel::load(&source, stream, &pool, capacity, scratch).unwrap(),
+        ));
+        prompts
+            .iter()
+            .map(|prompt| {
+                let mut decoder = Gemma4CudaDecoder::shared(&model).unwrap();
+                let mut rows = vec![decoder.prefill(prompt).unwrap()];
+                for token in inputs {
+                    rows.push(decoder.decode(token).unwrap());
+                }
+                for row in &rows {
+                    finite(row, width);
+                }
+                decoder.close().unwrap();
+                rows
+            })
+            .collect()
+    };
+    assert_eq!(pool.granted(), 0, "control unload before candidate load");
+    let mut model = Gemma4CudaModelWide::load(&source, &context, &pool, capacity, scratch).unwrap();
+    let model_grant = pool.granted();
+    let ids = issued_ids::<2>();
+    for (member, prompt) in prompts.iter().enumerate() {
+        assert!(matches!(
+            model
+                .admit(ids[member], prompt.len() + inputs.len())
+                .unwrap(),
+            Admission::Ready
+        ));
+        assert_eq!(
+            model.prefill(ids[member], prompt, true).unwrap().unwrap(),
+            controls[member][0]
+        );
+    }
+    for (step, token) in inputs.into_iter().enumerate() {
+        let order = if step == 0 { [1, 0] } else { [0, 1] };
+        model
+            .start_pair(order.map(|member| ids[member]), [token; 2])
+            .unwrap();
+        assert_eq!(
+            ids.map(|id| model.position(id).unwrap()),
+            prompts.each_ref().map(|prompt| prompt.len() + step)
+        );
+        let rows = loop {
+            if let Some(rows) = model.poll_pair().unwrap() {
+                break rows;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        };
+        for (lane, row) in rows.iter().enumerate() {
+            let member = order[lane];
+            finite(row, width);
+            println!(
+                "service boundary member={member} position={} winner={:?} control={:?}",
+                model.position(ids[member]).unwrap(),
+                argmax(row),
+                argmax(&controls[member][step + 1])
+            );
+            assert_eq!(
+                argmax(row),
+                argmax(&controls[member][step + 1]),
+                "common-history service boundary member {member}, step {step}"
+            );
+        }
+    }
+    let positions = ids.map(|id| model.position(id).unwrap());
+    assert_eq!(positions, [capacity, capacity - 1]);
+    let charged = pool.granted();
+    // Exhausted reaches reject in either order without advancing either member.
+    for order in [[0, 1], [1, 0]] {
+        assert!(
+            model
+                .start_pair(order.map(|member| ids[member]), [36_501; 2])
+                .is_err()
+        );
+        assert_eq!(ids.map(|id| model.position(id).unwrap()), positions);
+        assert_eq!(pool.granted(), charged);
+    }
+    for id in ids {
+        assert!(model.prefill(id, &[36_501], false).is_err());
+        model.release(id).unwrap();
+    }
+    assert_eq!(pool.granted(), model_grant);
+    model.close().unwrap();
     assert_eq!(pool.granted(), 0);
 }
