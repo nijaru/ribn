@@ -1,7 +1,6 @@
 //! Completion-owned device copies into incrementally initialized cache rows.
 use super::{
-    Access, CudaBf16ComputeError, CudaBf16Error, CudaBf16Matrix, MatrixState, Pending, Retirement,
-    drain, error,
+    Access, CudaBf16ComputeError, CudaBf16Error, CudaBf16Matrix, Dispatch, MatrixState, error,
 };
 use cudarc::driver::result;
 use std::{ops::Range, sync::Arc};
@@ -24,14 +23,23 @@ impl CudaBf16Matrix {
         source: &Self,
         source_rows: Range<usize>,
     ) -> Result<(), CudaBf16ComputeError> {
-        self.check_open()?;
-        source.check_open()?;
+        self.copy_rows(start_row, source, source_rows, Dispatch::Blocking)
+    }
+    pub(super) fn copy_rows(
+        &mut self,
+        start_row: usize,
+        source: &Self,
+        source_rows: Range<usize>,
+        dispatch: Dispatch<'_>,
+    ) -> Result<(), CudaBf16ComputeError> {
+        dispatch.matrix(self)?;
+        dispatch.matrix(source)?;
         let copy = self.shape.validate_copy_rows(
             source.shape,
             source_rows,
-            source.ready_rows(),
+            dispatch.rows(source),
             start_row,
-            self.ready_rows(),
+            dispatch.rows(self),
         )?;
         let stream = &source.allocation.transport().stream;
         if !Arc::ptr_eq(stream, &self.allocation.transport().stream) {
@@ -59,13 +67,10 @@ impl CudaBf16Matrix {
             .context()
             .bind_to_thread()
             .map_err(|e| error("BF16 copy bind", e))?;
-        let mut pending = Pending::new(
-            Access::Copy {
-                source: Arc::clone(&source.allocation),
-                _destination: Arc::clone(&self.allocation),
-            },
-            drain,
-        );
+        let pending = dispatch.retain(Access::Copy {
+            source: Arc::clone(&source.allocation),
+            _destination: Arc::clone(&self.allocation),
+        })?;
         self.state = MatrixState::Poisoned;
         // SAFETY: validated disjoint, live same-stream allocations, matching row
         // widths and in-bounds byte ranges. Exclusive destination access prevents
@@ -73,13 +78,7 @@ impl CudaBf16Matrix {
         // context before enqueue, including failure or unwind, until proven drain.
         let enqueue = unsafe { result::memcpy_dtod_async(dst, src, bytes, stream.cu_stream()) }
             .map_err(|e| error("BF16 copy enqueue", e));
-        if let Err(cause) = enqueue.and_then(|()| pending.retire()) {
-            return Err(CudaBf16ComputeError {
-                cause,
-                retirement: Some(Retirement::Execution(pending)),
-            });
-        }
-        self.state = MatrixState::Ready(copy.initialized);
+        self.state = pending.finish(enqueue)?.matrix(copy.initialized);
         Ok(())
     }
 }

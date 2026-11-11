@@ -164,6 +164,16 @@ product, tanh-GELU and the final soft cap, matching the archived stage encodings
 exactly where the operation is exact and within the host audit's bounds for GELU/soft
 cap. A three-kernel causal grouped-query attention component matches the archived stock
 operands bit-for-bit for local and sliding layers, including decode-against-history.
+NVIDIA also provides an explicit ordered regime in `bf16_compute/commands.rs`:
+`CudaBf16Stream` privately owns stream authority and creates associated typed resources;
+`CudaBf16Commands` retains a bounded dependent operation chain without per-operation
+host waits. Same-transaction initialized rows are usable internally, but terminal-event
+query does not publish output. Explicit retirement acknowledges completion and releases
+all accesses; failed cleanup remains retryable without reviving failed results.
+The [component gate](../benchmarks/runtime-contract.md#native-bf16-command-stream-foundation-2026-11-11)
+covers independent unequal histories, not a complete model-wide Gemma forward.
+The current loader does not select this regime.
+
 A host-orchestrated CUDA decoder now binds the components, keeps KV owner caches
 device-resident and reproduces the archived greedy chat tokens through the engine, the
 text facade and `ribn run-gemma` (CUDA or Metal). Completion-owned device copies append

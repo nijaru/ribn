@@ -17,8 +17,9 @@ mod bf16_weights;
 mod cuda_allocation;
 #[cfg(feature = "cuda")]
 pub use bf16_compute::{
-    AttentionGeometry, AttentionSpan, CudaBf16Attention, CudaBf16ComputeError, CudaBf16Elementwise,
-    CudaBf16Gemm, CudaBf16Matrix, CudaBf16RmsNorm, CudaBf16RotaryApply, CudaBf16RotaryFactors,
+    AttentionGeometry, AttentionSpan, CudaBf16Attention, CudaBf16Commands, CudaBf16ComputeError,
+    CudaBf16Elementwise, CudaBf16Gemm, CudaBf16Matrix, CudaBf16RmsNorm, CudaBf16RotaryApply,
+    CudaBf16RotaryFactors, CudaBf16Stream, CudaBf16Submission,
 };
 #[cfg(feature = "cuda")]
 pub use bf16_weights::{CudaBf16Error, CudaBf16Weights};

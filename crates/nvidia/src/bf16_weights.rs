@@ -104,6 +104,14 @@ pub(crate) mod cuda {
             self.storage.access(slot)
         }
 
+        pub(crate) fn access_when(
+            &self,
+            slot: usize,
+            permitted: impl FnOnce(&Arc<Allocation<CudaTransport>>) -> bool,
+        ) -> Result<(Arc<Allocation<CudaTransport>>, Range<u64>), CudaBf16Error> {
+            self.storage.access_when(slot, permitted)
+        }
+
         /// Requested CUDA allocation size, including each slot's trailing padding.
         #[must_use]
         pub fn allocated_bytes(&self) -> u64 {

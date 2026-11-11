@@ -4,8 +4,8 @@
 //! and walk visible keys in ascending order. This is a correctness-first
 //! component, not a flash-attention or fused-prefill implementation.
 use super::{
-    Access, CudaBf16ComputeError, CudaBf16Error, CudaBf16Matrix, Operation, Pending, Retirement,
-    drain, error,
+    Access, CudaBf16ComputeError, CudaBf16Error, CudaBf16Matrix, Dispatch, Operation, ProgramState,
+    error,
 };
 use cudarc::{
     driver::{CudaFunction, CudaStream, LaunchConfig, PushKernelArg},
@@ -49,7 +49,7 @@ pub struct AttentionGeometry {
 pub struct CudaBf16Attention {
     kernels: Option<Arc<AttentionKernels>>,
     scratch: CudaBf16Matrix,
-    poisoned: bool,
+    state: ProgramState,
 }
 
 impl CudaBf16Attention {
@@ -94,7 +94,7 @@ impl CudaBf16Attention {
         Ok(Self {
             kernels: Some(Arc::new(kernels)),
             scratch,
-            poisoned: false,
+            state: ProgramState::Ready,
         })
     }
 
@@ -112,10 +112,6 @@ impl CudaBf16Attention {
     /// # Errors
     /// Rejects invalid geometry/spans, mismatched or unready buffers, insufficient
     /// scratch, foreign streams and failed enqueue/completion.
-    #[expect(
-        clippy::too_many_lines,
-        reason = "one validation-and-launch sequence whose checks must stay together"
-    )]
     pub fn attend_into(
         &mut self,
         query: &CudaBf16Matrix,
@@ -125,18 +121,41 @@ impl CudaBf16Attention {
         span: AttentionSpan,
         output: &mut CudaBf16Matrix,
     ) -> Result<(), CudaBf16ComputeError> {
+        self.attend(
+            query,
+            keys,
+            values,
+            geometry,
+            span,
+            output,
+            Dispatch::Blocking,
+        )
+    }
+    #[expect(
+        clippy::too_many_lines,
+        clippy::too_many_arguments,
+        reason = "one attention validation/launch with explicit operands and completion owner"
+    )]
+    pub(super) fn attend(
+        &mut self,
+        query: &CudaBf16Matrix,
+        keys: &CudaBf16Matrix,
+        values: &CudaBf16Matrix,
+        geometry: AttentionGeometry,
+        span: AttentionSpan,
+        output: &mut CudaBf16Matrix,
+        dispatch: Dispatch<'_>,
+    ) -> Result<(), CudaBf16ComputeError> {
         let kernels = self.kernels.as_ref().ok_or(CudaBf16Error::Closed)?;
-        if self.poisoned {
-            return Err(CudaBf16Error::Poisoned.into());
-        }
-        query.check_open()?;
-        keys.check_open()?;
-        values.check_open()?;
-        self.scratch.check_open()?;
-        output.check_open()?;
-        if !query.ready()
-            || span.key_sequence > keys.ready_rows()
-            || span.key_sequence > values.ready_rows()
+        dispatch.program(&self.state)?;
+        dispatch.matrix(query)?;
+        dispatch.matrix(keys)?;
+        dispatch.matrix(values)?;
+        dispatch.matrix(&self.scratch)?;
+        dispatch.matrix(output)?;
+        if !dispatch.ready(query)
+            || span.key_sequence > dispatch.rows(keys)
+            || span.key_sequence > dispatch.rows(values)
         {
             return Err(CudaBf16Error::NotReady.into());
         }
@@ -240,20 +259,17 @@ impl CudaBf16Attention {
         let scratch_pointer = self.scratch.allocation.pointer()?;
         let output_pointer = output.allocation.pointer()?;
 
-        let pending = Pending::new(
-            Access::Attention {
-                operation: Operation::Attention {
-                    program: Arc::clone(kernels),
-                },
-                _query: Arc::clone(&query.allocation),
-                _keys: Arc::clone(&keys.allocation),
-                _values: Arc::clone(&values.allocation),
-                _scratch: Arc::clone(&self.scratch.allocation),
-                _output: Arc::clone(&output.allocation),
+        let pending = dispatch.retain(Access::Attention {
+            operation: Operation::Attention {
+                program: Arc::clone(kernels),
             },
-            drain,
-        );
-        self.poisoned = true;
+            _query: Arc::clone(&query.allocation),
+            _keys: Arc::clone(&keys.allocation),
+            _values: Arc::clone(&values.allocation),
+            _scratch: Arc::clone(&self.scratch.allocation),
+            _output: Arc::clone(&output.allocation),
+        })?;
+        self.state = ProgramState::Poisoned;
         output.state = super::MatrixState::Poisoned;
 
         let enqueue = (|| -> Result<(), CudaBf16Error> {
@@ -311,15 +327,9 @@ impl CudaBf16Attention {
             Ok(())
         })();
 
-        let mut pending = pending;
-        if let Err(cause) = enqueue.and_then(|()| pending.retire()) {
-            return Err(CudaBf16ComputeError {
-                cause,
-                retirement: Some(Retirement::Execution(pending)),
-            });
-        }
-        output.state = super::MatrixState::Ready(output.shape.rows);
-        self.poisoned = false;
+        let acknowledgement = pending.finish(enqueue)?;
+        output.state = acknowledgement.matrix(output.shape.rows);
+        self.state = acknowledgement.program();
         Ok(())
     }
 

@@ -2038,6 +2038,58 @@ failure. It does not qualify model-wide multi-request weight work. The separate
 [frozen endpoint QA](gemma4-cuda-baseline.md#frozen-corpus-http-qa-2026-11-11)
 records actual HTTP task results and clean native shutdown, not competitive acceptance.
 
+### Native BF16 command-stream foundation (2026-11-11)
+
+On the same idle 4090, driver 620.70.06, Toolkit 13.3.73, cuBLAS 13.6.0.2,
+Rust 1.98.0 and unchanged cudarc 0.19.9, four release integration cases and one
+private driver-failure case pass. This is a component gate, not a model-wide Gemma
+forward, automatic selection or throughput result.
+
+The positive case compares a 19-operation ordered chain with the existing blocking
+path: shared two-row projections, RMS/rotary, independent KV prefixes of one and three,
+member-specific append/gather/attention/scatter, elementwise operations and readout.
+Shapes, finiteness, exact blocking-path bits, initialized prefixes, inaccessible tails,
+pending access exclusion, publication only after explicit retirement and zero final
+pool charges pass. The other integration cases cover late validation after enqueue,
+permanent poisoning, closed source/destination rejection and foreign raw-stream
+operands rejected even during capture. A compile-fail rustdoc rejects caller-owned
+raw streams as command constructors.
+
+The private failure case submits ordinary work, then injects a captured terminal
+**event**, not captured commands. A real non-`NOT_READY` query error and failed drain
+retain actual allocations after their original owners drop. Ending capture permits
+cleanup retry and full refund, but never republishes failed results. No public stream
+escape or production test hook is added.
+
+```sh
+cargo test -p engine-nvidia --features cuda --locked --release \
+  --test cuda_bf16_commands -- --ignored --test-threads=1 --nocapture
+cargo test -p engine-nvidia --features cuda --locked --release --lib \
+  terminal_driver_error_and_failed_drain_retain_the_submission_until_retry \
+  -- --ignored --test-threads=1 --nocapture
+```
+
+Both commands exit **0**. Latest source snapshots, logs and pipeline exit codes are at
+`desktop:~/github/nijaru/ribn/benchmarks/results/qualification/cuda-bf16-commands/20261111T165202Z-validation-fixes/`.
+The positive graph also passes Compute Sanitizer **memcheck and initcheck with zero
+errors**, with binary hash and logs in sibling `20261111T164554Z-private-domain/`.
+That sanitizer run precedes only the closed/failed-state validation-order corrections;
+the unchanged positive graph passes again on the final source. The GPU is idle afterward.
+
+Independent review found and actual failing-before tests reproduced two earlier bugs:
+captured commands could be published without replay, and `poll` drained/published
+instead of merely querying. The opaque stream domain eliminates caller capture
+authority; query now retains guards and leaves data unpublished even when true.
+Sibling `20261111T163253Z-review-counterexamples/` retains those failures.
+Sibling `20261111T164731Z-closed-and-poisoned-regressions/` retains failing-before
+closed-operand and permanent-poison classification regressions; both pass after fixes.
+
+The blocking-dispatch regression in sibling `20261111T162012Z-regression/` passes
+15 existing native primitive cases and all six Gemma decoder/executor/pressure cases
+listed above. Subsequent opaque-domain and queued-state changes do not alter that
+blocking path. No full-model ordered execution, new HTTP quality comparison, concurrent
+submission qualification, running-kernel fault recovery or competitive gain is claimed.
+
 ### State-only prefill Metal fallback (2026-10-30)
 
 The required state-only operation added at `448a3a0` omits the CPU readout, but

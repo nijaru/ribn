@@ -119,6 +119,17 @@ retirement and failed execution-drain retry. Uncertain partial-construction clea
 before any decoder exists remains host-injected, not device-qualified. None of these
 prerequisites establishes multi-request GPU weight work.
 
+The [native command-stream prerequisite](../benchmarks/runtime-contract.md#native-bf16-command-stream-foundation-2026-11-11)
+now passes its component device gate: a privately owned, uncapturable stream domain,
+bounded dependent BF16 operations, nonblocking event query and explicit retirement.
+Its two-row graph shares projections while preserving unequal member KV histories;
+memcheck/initcheck report zero errors. Existing blocking primitives and Gemma gates
+also pass after the dispatch refactor. This is **not** the model-wide exit: no new
+Gemma physical owner, complete multi-sequence forward or loader selection exists yet.
+Construct that owner and its resources through the opaque domain; do not expose the
+qualified serial model's raw stream to force adoption. Full-model numerical, lifecycle,
+quality and mixed-arrival serving qualification remain required.
+
 Host acceptance: whole-offer prevalidation, exact range/cursor
 and row mapping, state-only intermediate prefill, fallback,
 cancellation, partial enqueue, failed drain and retryable release.

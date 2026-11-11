@@ -1,7 +1,7 @@
 //! Grouped BF16 RMS on the same completion-owned storage as linear execution.
 use super::{
-    Access, CudaBf16ComputeError, CudaBf16Error, CudaBf16Matrix, CudaBf16Weights, MatrixState,
-    Operation, Pending, Retirement, drain, error,
+    Access, CudaBf16ComputeError, CudaBf16Error, CudaBf16Matrix, CudaBf16Weights, Dispatch,
+    MatrixState, Operation, ProgramState, error,
 };
 use cudarc::{
     driver::{CudaFunction, CudaStream, LaunchConfig, PushKernelArg},
@@ -21,7 +21,7 @@ pub(super) struct RmsKernels {
 /// driver/context overhead are not application byte-pool allocations.
 pub struct CudaBf16RmsNorm {
     kernels: Option<Arc<RmsKernels>>,
-    poisoned: bool,
+    state: ProgramState,
 }
 impl CudaBf16RmsNorm {
     /// Compile and load the kernel on one stable associated stream.
@@ -42,7 +42,7 @@ impl CudaBf16RmsNorm {
             .map_err(|e| error("BF16 RMS function", e))?;
         Ok(Self {
             kernels: Some(Arc::new(RmsKernels { stream, function })),
-            poisoned: false,
+            state: ProgramState::Ready,
         })
     }
 
@@ -61,13 +61,22 @@ impl CudaBf16RmsNorm {
         input: &mut CudaBf16Matrix,
         output: &mut CudaBf16Matrix,
     ) -> Result<(), CudaBf16ComputeError> {
+        self.normalize(scale, width, epsilon, input, output, Dispatch::Blocking)
+    }
+    pub(super) fn normalize(
+        &mut self,
+        scale: Option<(&mut CudaBf16Weights, usize)>,
+        width: usize,
+        epsilon: f32,
+        input: &mut CudaBf16Matrix,
+        output: &mut CudaBf16Matrix,
+        dispatch: Dispatch<'_>,
+    ) -> Result<(), CudaBf16ComputeError> {
         let kernels = self.kernels.as_ref().ok_or(CudaBf16Error::Closed)?;
-        if self.poisoned {
-            return Err(CudaBf16Error::Poisoned.into());
-        }
-        input.check_open()?;
-        output.check_open()?;
-        if !input.ready() {
+        dispatch.program(&self.state)?;
+        dispatch.matrix(input)?;
+        dispatch.matrix(output)?;
+        if !dispatch.ready(input) {
             return Err(CudaBf16Error::NotReady.into());
         }
         let groups = input.shape.validate_rms(output.shape, width, epsilon)?;
@@ -76,7 +85,7 @@ impl CudaBf16RmsNorm {
             if spec.dtype() != DataType::BF16 || spec.dimensions() != [width as u64] {
                 return Err(CudaBf16Error::Invalid("RMS scale must be BF16 [width]").into());
             }
-            let (allocation, range) = weights.access(slot)?;
+            let (allocation, range) = dispatch.weights(weights, slot)?;
             if range.end.checked_sub(range.start) != Some(width as u64 * 2)
                 || range.end > allocation.allocated_bytes()
                 || !Arc::ptr_eq(&kernels.stream, &allocation.transport().stream)
@@ -100,18 +109,15 @@ impl CudaBf16RmsNorm {
         let y = output.allocation.pointer()?;
         let width =
             u32::try_from(width).map_err(|_| CudaBf16Error::Invalid("RMS width exceeds u32"))?;
-        let mut pending = Pending::new(
-            Access::Matrices {
-                operation: Operation::Rms {
-                    program: Arc::clone(kernels),
-                    _scale: weights,
-                },
-                _input: Arc::clone(&input.allocation),
-                _output: Arc::clone(&output.allocation),
+        let pending = dispatch.retain(Access::Matrices {
+            operation: Operation::Rms {
+                program: Arc::clone(kernels),
+                _scale: weights,
             },
-            drain,
-        );
-        self.poisoned = true;
+            _input: Arc::clone(&input.allocation),
+            _output: Arc::clone(&output.allocation),
+        })?;
+        self.state = ProgramState::Poisoned;
         output.state = MatrixState::Poisoned;
         let mut launch = kernels.stream.launch_builder(&kernels.function);
         launch
@@ -132,14 +138,9 @@ impl CudaBf16RmsNorm {
         }
         .map(|_| ())
         .map_err(|e| error("BF16 RMS enqueue", e));
-        if let Err(cause) = enqueue.and_then(|()| pending.retire()) {
-            return Err(CudaBf16ComputeError {
-                cause,
-                retirement: Some(Retirement::Execution(pending)),
-            });
-        }
-        output.state = MatrixState::Ready(output.shape.rows);
-        self.poisoned = false;
+        let acknowledgement = pending.finish(enqueue)?;
+        output.state = acknowledgement.matrix(output.shape.rows);
+        self.state = acknowledgement.program();
         Ok(())
     }
 

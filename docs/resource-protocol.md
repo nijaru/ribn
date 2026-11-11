@@ -1142,6 +1142,42 @@ That component gate is not whole-model parity or a performance claim. Real model
 execution still requires independently justified numerical acceptance and mixed-KV
 lifetime qualification.
 
+### Native BF16 ordered transactions
+
+The optional ordered regime reuses the blocking primitives' validation, arithmetic
+and launches. `CudaBf16Stream` creates a private nonblocking stream and typed resource
+factories; it exposes neither a raw stream nor capture/replay authority. Commands cannot
+adopt caller-controlled streams. A capture-status check alone is insufficient: capture
+may begin after the check, and a later drain does not prove captured work executed.
+
+`CudaBf16Commands` reserves a positive, checked operation bound, allocation-reference
+metadata and one terminal event before enqueue. The transaction owns every transitive
+allocation, weight, kernel/module, workspace, stream/context and charge through settlement.
+Allocation access permits only the root plus the exact references retained by this
+transaction, on its associated stream; it does not relax general storage exclusivity.
+Host metadata and driver/event storage are outside the device byte pool.
+
+A queued producer may supply its initialized rows to later operations in the same
+transaction. That is not external readiness: staging, mutation, close and foreign
+transactions remain excluded while access guards are held. Closed/failed state is checked
+before accessing transport resources; permanently failed output is poisoned, not pending.
+A validation failure after earlier enqueue faults the whole transaction and retains
+the earlier accesses. Error or caught unwind cannot revive its results.
+
+Submission records the terminal event without waiting. `CudaBf16Submission::poll`
+only queries that event: only `CUDA_ERROR_NOT_READY` means pending, other driver errors
+fault the transaction, and even success does not release guards or publish output.
+Explicit `retire` drains the stream, releases guards and publishes initialized rows
+only for execution that never failed. It may wait for later stream work; a depth-one
+model owner acknowledges before enqueueing its next transaction. Failed drain retains
+the same owner for retry; successful cleanup after failure never restores validity.
+Dropping unacknowledged work faults readiness and drains or quarantines the complete
+envelope. A domain-level synchronize alone is not acknowledgement.
+
+This is a native component prerequisite, not a model-wide executor, overlap protocol
+or automatic backend selection. Existing blocking APIs and qualified Gemma fallback
+remain unchanged. See the [component receipt](../benchmarks/runtime-contract.md#native-bf16-command-stream-foundation-2026-11-11).
+
 ### Native BF16 cache-row copies
 
 A same-stream device copy may overwrite or extend a matrix's contiguous initialized row

@@ -13,6 +13,13 @@ use std::{error::Error, fmt, io::Cursor, sync::Arc};
 #[path = "blas.rs"]
 mod blas;
 use blas::{Blas, error};
+#[path = "commands.rs"]
+mod commands;
+pub use commands::{CudaBf16Commands, CudaBf16Submission};
+use commands::{Dispatch, ProgramState, Progress};
+#[path = "stream.rs"]
+mod stream;
+pub use stream::CudaBf16Stream;
 #[path = "attention.rs"]
 mod attention;
 #[path = "copy.rs"]
@@ -34,10 +41,13 @@ pub use factors::CudaBf16RotaryFactors;
 pub(super) type DeviceAllocation = Arc<Allocation<CudaTransport>>;
 static ALPHA: f32 = 1.0;
 static BETA: f32 = 0.0;
-#[derive(Clone, Copy, PartialEq, Eq)]
 enum MatrixState {
     Empty,
     Ready(usize),
+    Ordered {
+        rows: usize,
+        progress: Arc<Progress>,
+    },
     Poisoned,
     Closed,
 }
@@ -95,17 +105,25 @@ impl CudaBf16Matrix {
     }
 
     fn ready_rows(&self) -> usize {
-        match self.state {
-            MatrixState::Ready(rows) => rows,
+        match &self.state {
+            MatrixState::Ready(rows) => *rows,
+            MatrixState::Ordered { rows, progress } if progress.complete() => *rows,
             _ => 0,
         }
     }
 
     fn check_open(&self) -> Result<(), CudaBf16Error> {
-        match self.state {
+        match &self.state {
             MatrixState::Closed => Err(CudaBf16Error::Closed),
             MatrixState::Poisoned => Err(CudaBf16Error::Poisoned),
-            MatrixState::Empty | MatrixState::Ready(_) => {
+            MatrixState::Ordered { progress, .. } if !progress.complete() => {
+                if progress.recording() {
+                    Err(CudaBf16Error::InUse)
+                } else {
+                    Err(CudaBf16Error::Poisoned)
+                }
+            }
+            MatrixState::Empty | MatrixState::Ready(_) | MatrixState::Ordered { .. } => {
                 if Arc::strong_count(&self.allocation) != 1 {
                     return Err(CudaBf16Error::InUse);
                 }
@@ -164,7 +182,7 @@ impl CudaBf16Matrix {
     /// # Errors
     /// Rejects retained accesses, failed drains, or uncertain allocation release.
     pub fn close(&mut self) -> Result<(), CudaBf16Error> {
-        if self.state == MatrixState::Closed {
+        if matches!(self.state, MatrixState::Closed) {
             return Ok(());
         }
         let allocation = Arc::get_mut(&mut self.allocation).ok_or(CudaBf16Error::InUse)?;
@@ -251,6 +269,82 @@ impl Access {
         }
     }
 }
+impl Access {
+    fn visit_allocations(&self, mut visit: impl FnMut(&DeviceAllocation)) {
+        let mut operation = |operation: &Operation| match operation {
+            Operation::Blas {
+                _weights: weights, ..
+            } => visit(weights),
+            Operation::Rms { _scale: scale, .. } => {
+                if let Some(scale) = scale {
+                    visit(scale);
+                }
+            }
+            Operation::Rotary {
+                _cos: cos,
+                _sin: sin,
+                ..
+            } => {
+                visit(cos);
+                visit(sin);
+            }
+            Operation::Elementwise { .. } | Operation::Attention { .. } => {}
+        };
+        match self {
+            Self::Copy {
+                source,
+                _destination: destination,
+            } => {
+                visit(source);
+                visit(destination);
+            }
+            Self::Matrices {
+                operation: op,
+                _input: input,
+                _output: output,
+            } => {
+                operation(op);
+                visit(input);
+                visit(output);
+            }
+            Self::Elementwise {
+                operation: op,
+                _inputs: inputs,
+                _output: output,
+            } => {
+                operation(op);
+                for input in inputs {
+                    visit(input);
+                }
+                visit(output);
+            }
+            Self::Attention {
+                operation: op,
+                _query: query,
+                _keys: keys,
+                _values: values,
+                _scratch: scratch,
+                _output: output,
+            } => {
+                operation(op);
+                for allocation in [query, keys, values, scratch, output] {
+                    visit(allocation);
+                }
+            }
+            Self::Factors {
+                _inverse_frequencies: inverse_frequencies,
+                _positions: positions,
+                _cosine: cosine,
+                _sine: sine,
+                ..
+            } => {
+                for allocation in [inverse_frequencies, positions, cosine, sine] {
+                    visit(allocation);
+                }
+            }
+        }
+    }
+}
 fn drain(access: &Access) -> Result<(), CudaBf16Error> {
     access
         .stream()
@@ -260,6 +354,7 @@ fn drain(access: &Access) -> Result<(), CudaBf16Error> {
 enum Retirement {
     Preparation(Box<Blas>),
     Execution(Pending<Access>),
+    Commands(Pending<commands::Resources>),
 }
 
 /// A validation/library error plus any ownership needed after possible enqueue.
@@ -286,6 +381,7 @@ impl CudaBf16ComputeError {
         match self.retirement.as_mut() {
             Some(Retirement::Preparation(owner)) => owner.close()?,
             Some(Retirement::Execution(pending)) => pending.retire()?,
+            Some(Retirement::Commands(pending)) => pending.retire()?,
             None => {}
         }
         self.retirement = None;
@@ -325,7 +421,7 @@ impl Error for CudaBf16ComputeError {
 /// or whole-model inference, nor a performance-selected algorithm promise.
 pub struct CudaBf16Gemm {
     blas: Arc<Blas>,
-    poisoned: bool,
+    state: ProgramState,
     closed: bool,
 }
 impl CudaBf16Gemm {
@@ -348,7 +444,7 @@ impl CudaBf16Gemm {
         }
         Ok(Self {
             blas: Arc::from(owner),
-            poisoned: false,
+            state: ProgramState::Ready,
             closed: false,
         })
     }
@@ -365,15 +461,23 @@ impl CudaBf16Gemm {
         input: &mut CudaBf16Matrix,
         output: &mut CudaBf16Matrix,
     ) -> Result<(), CudaBf16ComputeError> {
+        self.linear(weights, slot, input, output, Dispatch::Blocking)
+    }
+    fn linear(
+        &mut self,
+        weights: &mut CudaBf16Weights,
+        slot: usize,
+        input: &mut CudaBf16Matrix,
+        output: &mut CudaBf16Matrix,
+        dispatch: Dispatch<'_>,
+    ) -> Result<(), CudaBf16ComputeError> {
         if self.closed {
             return Err(CudaBf16Error::Closed.into());
         }
-        if self.poisoned {
-            return Err(CudaBf16Error::Poisoned.into());
-        }
-        input.check_open()?;
-        output.check_open()?;
-        if !input.ready() {
+        dispatch.program(&self.state)?;
+        dispatch.matrix(input)?;
+        dispatch.matrix(output)?;
+        if !dispatch.ready(input) {
             return Err(CudaBf16Error::NotReady.into());
         }
         let spec = weights.spec(slot).ok_or(CudaBf16Error::InvalidSlot(slot))?;
@@ -381,7 +485,7 @@ impl CudaBf16Gemm {
         let expected_weight_bytes = spec
             .byte_size()
             .ok_or(CudaBf16Error::Invalid("weight byte overflow"))?;
-        let (allocation, range) = weights.access(slot)?;
+        let (allocation, range) = dispatch.weights(weights, slot)?;
         if range.end.checked_sub(range.start) != Some(expected_weight_bytes)
             || range.end > allocation.allocated_bytes()
         {
@@ -407,25 +511,22 @@ impl CudaBf16Gemm {
         let c = usize::try_from(output.allocation.pointer()?)
             .map_err(|_| CudaBf16Error::Invalid("output pointer exceeds host width"))?;
         let handle = self.blas.handle()?;
-        self.poisoned = true;
+        self.state = ProgramState::Poisoned;
         stream
             .context()
             .bind_to_thread()
             .map_err(|e| error("BF16 linear bind", e))?;
-        let mut pending = Pending::new(
-            Access::Matrices {
-                operation: Operation::Blas {
-                    program: Arc::clone(&self.blas),
-                    _weights: allocation,
-                },
-                _input: Arc::clone(&input.allocation),
-                _output: Arc::clone(&output.allocation),
+        let pending = dispatch.retain(Access::Matrices {
+            operation: Operation::Blas {
+                program: Arc::clone(&self.blas),
+                _weights: allocation,
             },
-            drain,
-        );
+            _input: Arc::clone(&input.allocation),
+            _output: Arc::clone(&output.allocation),
+        })?;
         // Poison BEFORE FFI, including unwinding. Only acknowledged completion
         // publishes output or permits another use of this executor.
-        self.poisoned = true;
+        self.state = ProgramState::Poisoned;
         output.state = MatrixState::Poisoned;
         // SAFETY: validated live, disjoint allocation ranges and exact dimensions;
         // row-major operands are transposed through column-major cuBLAS. Static
@@ -455,14 +556,9 @@ impl CudaBf16Gemm {
             )
         }
         .map_err(|e| error("BF16 linear enqueue", e));
-        if let Err(cause) = enqueue.and_then(|()| pending.retire()) {
-            return Err(CudaBf16ComputeError {
-                cause,
-                retirement: Some(Retirement::Execution(pending)),
-            });
-        }
-        output.state = MatrixState::Ready(output.shape.rows);
-        self.poisoned = false;
+        let acknowledgement = pending.finish(enqueue)?;
+        output.state = acknowledgement.matrix(output.shape.rows);
+        self.state = acknowledgement.program();
         Ok(())
     }
     /// Retire the handle and workspace. Retained failed accesses must settle first.
@@ -473,7 +569,7 @@ impl CudaBf16Gemm {
             return Ok(());
         }
         let blas = Arc::get_mut(&mut self.blas).ok_or(CudaBf16Error::InUse)?;
-        self.poisoned = true;
+        self.state = ProgramState::Poisoned;
         blas.close()?;
         self.closed = true;
         Ok(())

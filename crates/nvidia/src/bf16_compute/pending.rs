@@ -17,6 +17,16 @@ impl<T> Pending<T> {
         }
     }
 
+    #[cfg(feature = "cuda")]
+    pub(super) fn resources(&self) -> Option<&T> {
+        self.resources.as_deref()
+    }
+
+    #[cfg(feature = "cuda")]
+    pub(super) fn resources_mut(&mut self) -> Option<&mut T> {
+        self.resources.as_deref_mut()
+    }
+
     pub(super) fn retire(&mut self) -> Result<(), CudaBf16Error> {
         if let Some(resources) = self.resources.as_deref() {
             (self.drain)(resources)?;

@@ -110,6 +110,14 @@ impl<T: Transport> Storage<T> {
     }
 
     pub(crate) fn access(&self, slot: usize) -> Result<(Arc<Allocation<T>>, Range<u64>)> {
+        self.access_when(slot, |allocation| Arc::strong_count(allocation) == 1)
+    }
+
+    pub(crate) fn access_when(
+        &self,
+        slot: usize,
+        permitted: impl FnOnce(&Arc<Allocation<T>>) -> bool,
+    ) -> Result<(Arc<Allocation<T>>, Range<u64>)> {
         self.check_open()?;
         if !self.ready() {
             return Err(CudaBf16Error::NotReady);
@@ -118,9 +126,9 @@ impl<T: Transport> Storage<T> {
             .tensor_range(slot)
             .ok_or(CudaBf16Error::InvalidSlot(slot))?;
         let allocation = self.allocation.as_ref().expect("open owner has allocation");
-        // Retained operation/error ownership forbids another synchronous use, not
-        // only mutation or retirement. No concurrent-reader contract is selected.
-        if Arc::strong_count(allocation) != 1 {
+        // Ordinary access remains exclusive. An ordered command owner may permit
+        // only the exact references it already retains on the associated stream.
+        if !permitted(allocation) {
             return Err(CudaBf16Error::InUse);
         }
         allocation.pointer()?;

@@ -1,8 +1,8 @@
 //! Elementwise BF16 layer math on the same completion-owned storage as linear,
 //! RMS and rotary execution. Model ordering stays in the model crate.
 use super::{
-    Access, CudaBf16ComputeError, CudaBf16Error, CudaBf16Matrix, Operation, Pending, Retirement,
-    drain, error,
+    Access, CudaBf16ComputeError, CudaBf16Error, CudaBf16Matrix, Dispatch, Operation, ProgramState,
+    commands::Guard, error,
 };
 use cudarc::{
     driver::{CudaFunction, CudaStream, LaunchConfig, PushKernelArg},
@@ -28,7 +28,7 @@ pub(super) struct ElementwiseKernels {
 /// allocation or workspace is used.
 pub struct CudaBf16Elementwise {
     kernels: Option<Arc<ElementwiseKernels>>,
-    poisoned: bool,
+    state: ProgramState,
 }
 
 impl CudaBf16Elementwise {
@@ -63,7 +63,7 @@ impl CudaBf16Elementwise {
                 softcap: load("bf16_softcap")?,
                 ple_combine: load("bf16_ple_combine")?,
             })),
-            poisoned: false,
+            state: ProgramState::Ready,
         })
     }
 
@@ -76,7 +76,7 @@ impl CudaBf16Elementwise {
         right: &CudaBf16Matrix,
         output: &mut CudaBf16Matrix,
     ) -> Result<(), CudaBf16ComputeError> {
-        self.binary_into(Binary::Add, left, right, output)
+        self.binary_into(Binary::Add, left, right, output, Dispatch::Blocking)
     }
 
     /// BF16 `left * right` with one final rounding.
@@ -88,7 +88,7 @@ impl CudaBf16Elementwise {
         right: &CudaBf16Matrix,
         output: &mut CudaBf16Matrix,
     ) -> Result<(), CudaBf16ComputeError> {
-        self.binary_into(Binary::Multiply, left, right, output)
+        self.binary_into(Binary::Multiply, left, right, output, Dispatch::Blocking)
     }
 
     /// Gemma per-layer embedding combine: BF16 add, then BF16 multiply by
@@ -101,7 +101,13 @@ impl CudaBf16Elementwise {
         token: &CudaBf16Matrix,
         output: &mut CudaBf16Matrix,
     ) -> Result<(), CudaBf16ComputeError> {
-        self.binary_into(Binary::PleCombine, context, token, output)
+        self.binary_into(
+            Binary::PleCombine,
+            context,
+            token,
+            output,
+            Dispatch::Blocking,
+        )
     }
 
     /// BF16 `input * factor` with one final rounding.
@@ -113,10 +119,7 @@ impl CudaBf16Elementwise {
         factor: f32,
         output: &mut CudaBf16Matrix,
     ) -> Result<(), CudaBf16ComputeError> {
-        if !factor.is_finite() {
-            return Err(CudaBf16Error::Invalid("elementwise scale factor must be finite").into());
-        }
-        self.scalar_into(Scalar::Scale(factor), input, output)
+        self.scalar_into(Scalar::Scale(factor), input, output, Dispatch::Blocking)
     }
 
     /// Gemma tanh-approximated GELU in FP32, then one BF16 rounding.
@@ -127,7 +130,7 @@ impl CudaBf16Elementwise {
         input: &CudaBf16Matrix,
         output: &mut CudaBf16Matrix,
     ) -> Result<(), CudaBf16ComputeError> {
-        self.unary_into(Unary::Gelu, input, output)
+        self.unary_into(Unary::Gelu, input, output, Dispatch::Blocking)
     }
 
     /// Final logit soft cap with the deliberate per-step BF16 rounding policy:
@@ -140,29 +143,23 @@ impl CudaBf16Elementwise {
         cap: f32,
         output: &mut CudaBf16Matrix,
     ) -> Result<(), CudaBf16ComputeError> {
-        if !cap.is_finite() || cap <= 0.0 {
-            return Err(
-                CudaBf16Error::Invalid("elementwise soft cap must be finite and positive").into(),
-            );
-        }
-        self.scalar_into(Scalar::Softcap(cap), input, output)
+        self.scalar_into(Scalar::Softcap(cap), input, output, Dispatch::Blocking)
     }
 
-    fn binary_into(
+    pub(super) fn binary_into(
         &mut self,
         operation: Binary,
         left: &CudaBf16Matrix,
         right: &CudaBf16Matrix,
         output: &mut CudaBf16Matrix,
+        dispatch: Dispatch<'_>,
     ) -> Result<(), CudaBf16ComputeError> {
         let kernels = self.kernels.as_ref().ok_or(CudaBf16Error::Closed)?;
-        if self.poisoned {
-            return Err(CudaBf16Error::Poisoned.into());
-        }
-        left.check_open()?;
-        right.check_open()?;
-        output.check_open()?;
-        if !left.ready() || !right.ready() {
+        dispatch.program(&self.state)?;
+        dispatch.matrix(left)?;
+        dispatch.matrix(right)?;
+        dispatch.matrix(output)?;
+        if !dispatch.ready(left) || !dispatch.ready(right) {
             return Err(CudaBf16Error::NotReady.into());
         }
         if left.shape != right.shape {
@@ -187,17 +184,14 @@ impl CudaBf16Elementwise {
             Binary::Multiply => &kernels.multiply,
             Binary::PleCombine => &kernels.ple_combine,
         };
-        let pending = Pending::new(
-            Access::Elementwise {
-                operation: Operation::Elementwise {
-                    program: Arc::clone(kernels),
-                },
-                _inputs: vec![Arc::clone(&left.allocation), Arc::clone(&right.allocation)],
-                _output: Arc::clone(&output.allocation),
+        let pending = dispatch.retain(Access::Elementwise {
+            operation: Operation::Elementwise {
+                program: Arc::clone(kernels),
             },
-            drain,
-        );
-        self.poisoned = true;
+            _inputs: vec![Arc::clone(&left.allocation), Arc::clone(&right.allocation)],
+            _output: Arc::clone(&output.allocation),
+        })?;
+        self.state = ProgramState::Poisoned;
         output.state = super::MatrixState::Poisoned;
         let mut launch = kernels.stream.launch_builder(function);
         launch.arg(&x).arg(&z).arg(&y).arg(&count);
@@ -210,19 +204,18 @@ impl CudaBf16Elementwise {
         self.finish(pending, enqueue, output)
     }
 
-    fn unary_into(
+    pub(super) fn unary_into(
         &mut self,
         operation: Unary,
         input: &CudaBf16Matrix,
         output: &mut CudaBf16Matrix,
+        dispatch: Dispatch<'_>,
     ) -> Result<(), CudaBf16ComputeError> {
         let kernels = self.kernels.as_ref().ok_or(CudaBf16Error::Closed)?;
-        if self.poisoned {
-            return Err(CudaBf16Error::Poisoned.into());
-        }
-        input.check_open()?;
-        output.check_open()?;
-        if !input.ready() {
+        dispatch.program(&self.state)?;
+        dispatch.matrix(input)?;
+        dispatch.matrix(output)?;
+        if !dispatch.ready(input) {
             return Err(CudaBf16Error::NotReady.into());
         }
         let count = input.shape.validate_elementwise(output.shape)?;
@@ -238,17 +231,14 @@ impl CudaBf16Elementwise {
         let function = match operation {
             Unary::Gelu => &kernels.gelu,
         };
-        let pending = Pending::new(
-            Access::Elementwise {
-                operation: Operation::Elementwise {
-                    program: Arc::clone(kernels),
-                },
-                _inputs: vec![Arc::clone(&input.allocation)],
-                _output: Arc::clone(&output.allocation),
+        let pending = dispatch.retain(Access::Elementwise {
+            operation: Operation::Elementwise {
+                program: Arc::clone(kernels),
             },
-            drain,
-        );
-        self.poisoned = true;
+            _inputs: vec![Arc::clone(&input.allocation)],
+            _output: Arc::clone(&output.allocation),
+        })?;
+        self.state = ProgramState::Poisoned;
         output.state = super::MatrixState::Poisoned;
         let mut launch = kernels.stream.launch_builder(function);
         launch.arg(&x).arg(&y).arg(&count);
@@ -259,19 +249,32 @@ impl CudaBf16Elementwise {
         self.finish(pending, enqueue, output)
     }
 
-    fn scalar_into(
+    pub(super) fn scalar_into(
         &mut self,
         operation: Scalar,
         input: &CudaBf16Matrix,
         output: &mut CudaBf16Matrix,
+        dispatch: Dispatch<'_>,
     ) -> Result<(), CudaBf16ComputeError> {
-        let kernels = self.kernels.as_ref().ok_or(CudaBf16Error::Closed)?;
-        if self.poisoned {
-            return Err(CudaBf16Error::Poisoned.into());
+        match operation {
+            Scalar::Scale(factor) if !factor.is_finite() => {
+                return Err(
+                    CudaBf16Error::Invalid("elementwise scale factor must be finite").into(),
+                );
+            }
+            Scalar::Softcap(cap) if !cap.is_finite() || cap <= 0.0 => {
+                return Err(CudaBf16Error::Invalid(
+                    "elementwise soft cap must be finite and positive",
+                )
+                .into());
+            }
+            _ => {}
         }
-        input.check_open()?;
-        output.check_open()?;
-        if !input.ready() {
+        let kernels = self.kernels.as_ref().ok_or(CudaBf16Error::Closed)?;
+        dispatch.program(&self.state)?;
+        dispatch.matrix(input)?;
+        dispatch.matrix(output)?;
+        if !dispatch.ready(input) {
             return Err(CudaBf16Error::NotReady.into());
         }
         let count = input.shape.validate_elementwise(output.shape)?;
@@ -288,17 +291,14 @@ impl CudaBf16Elementwise {
             Scalar::Scale(factor) => (&kernels.scale, factor),
             Scalar::Softcap(cap) => (&kernels.softcap, cap),
         };
-        let pending = Pending::new(
-            Access::Elementwise {
-                operation: Operation::Elementwise {
-                    program: Arc::clone(kernels),
-                },
-                _inputs: vec![Arc::clone(&input.allocation)],
-                _output: Arc::clone(&output.allocation),
+        let pending = dispatch.retain(Access::Elementwise {
+            operation: Operation::Elementwise {
+                program: Arc::clone(kernels),
             },
-            drain,
-        );
-        self.poisoned = true;
+            _inputs: vec![Arc::clone(&input.allocation)],
+            _output: Arc::clone(&output.allocation),
+        })?;
+        self.state = ProgramState::Poisoned;
         output.state = super::MatrixState::Poisoned;
         let mut launch = kernels.stream.launch_builder(function);
         launch.arg(&x).arg(&parameter).arg(&y).arg(&count);
@@ -312,18 +312,13 @@ impl CudaBf16Elementwise {
 
     fn finish(
         &mut self,
-        mut pending: Pending<Access>,
+        pending: Guard<'_>,
         enqueue: Result<(), CudaBf16Error>,
         output: &mut CudaBf16Matrix,
     ) -> Result<(), CudaBf16ComputeError> {
-        if let Err(cause) = enqueue.and_then(|()| pending.retire()) {
-            return Err(CudaBf16ComputeError {
-                cause,
-                retirement: Some(Retirement::Execution(pending)),
-            });
-        }
-        output.state = super::MatrixState::Ready(output.shape.rows);
-        self.poisoned = false;
+        let acknowledgement = pending.finish(enqueue)?;
+        output.state = acknowledgement.matrix(output.shape.rows);
+        self.state = acknowledgement.program();
         Ok(())
     }
 
@@ -345,19 +340,19 @@ impl CudaBf16Elementwise {
 }
 
 #[derive(Clone, Copy)]
-enum Binary {
+pub(super) enum Binary {
     Add,
     Multiply,
     PleCombine,
 }
 
 #[derive(Clone, Copy)]
-enum Unary {
+pub(super) enum Unary {
     Gelu,
 }
 
 #[derive(Clone, Copy)]
-enum Scalar {
+pub(super) enum Scalar {
     Scale(f32),
     Softcap(f32),
 }

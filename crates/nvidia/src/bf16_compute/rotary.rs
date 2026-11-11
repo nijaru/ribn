@@ -1,7 +1,7 @@
 //! Apply prepared BF16 rotary factors; frequency/position preparation is separate.
 use super::{
-    Access, CudaBf16ComputeError, CudaBf16Error, CudaBf16Matrix, MatrixState, Operation, Pending,
-    Retirement, drain, error,
+    Access, CudaBf16ComputeError, CudaBf16Error, CudaBf16Matrix, Dispatch, MatrixState, Operation,
+    ProgramState, error,
 };
 use cudarc::{
     driver::{CudaFunction, CudaStream, LaunchConfig, PushKernelArg},
@@ -20,7 +20,7 @@ pub(super) struct RotaryKernels {
 /// No device storage is allocated per call; code/context overhead is driver-owned.
 pub struct CudaBf16RotaryApply {
     kernels: Option<Arc<RotaryKernels>>,
-    poisoned: bool,
+    state: ProgramState,
 }
 impl CudaBf16RotaryApply {
     /// Compile/load on one stable stream, shared by all operands.
@@ -41,7 +41,7 @@ impl CudaBf16RotaryApply {
             .map_err(|e| error("BF16 rotary function", e))?;
         Ok(Self {
             kernels: Some(Arc::new(RotaryKernels { stream, function })),
-            poisoned: false,
+            state: ProgramState::Ready,
         })
     }
 
@@ -60,17 +60,25 @@ impl CudaBf16RotaryApply {
         input: &mut CudaBf16Matrix,
         output: &mut CudaBf16Matrix,
     ) -> Result<(), CudaBf16ComputeError> {
+        self.apply(cos, sin, input, output, Dispatch::Blocking)
+    }
+    pub(super) fn apply(
+        &mut self,
+        cos: &mut CudaBf16Matrix,
+        sin: &mut CudaBf16Matrix,
+        input: &mut CudaBf16Matrix,
+        output: &mut CudaBf16Matrix,
+        dispatch: Dispatch<'_>,
+    ) -> Result<(), CudaBf16ComputeError> {
         let kernels = self.kernels.as_ref().ok_or(CudaBf16Error::Closed)?;
-        if self.poisoned {
-            return Err(CudaBf16Error::Poisoned.into());
-        }
+        dispatch.program(&self.state)?;
         for matrix in [&*input, &*output, &*cos, &*sin] {
-            matrix.check_open()?;
+            dispatch.matrix(matrix)?;
             if !Arc::ptr_eq(&kernels.stream, &matrix.allocation.transport().stream) {
                 return Err(CudaBf16Error::Invalid("rotary requires one associated stream").into());
             }
         }
-        if !input.ready() || !cos.ready() || !sin.ready() {
+        if !dispatch.ready(input) || !dispatch.ready(cos) || !dispatch.ready(sin) {
             return Err(CudaBf16Error::NotReady.into());
         }
         let blocks = input
@@ -85,19 +93,16 @@ impl CudaBf16RotaryApply {
         let width = u32::try_from(cos.shape.cols)
             .map_err(|_| CudaBf16Error::Invalid("rotary width exceeds u32"))?;
         let pairs = input.shape.rows as u64 * (input.shape.cols as u64 / 2);
-        let mut pending = Pending::new(
-            Access::Matrices {
-                operation: Operation::Rotary {
-                    program: Arc::clone(kernels),
-                    _cos: Arc::clone(&cos.allocation),
-                    _sin: Arc::clone(&sin.allocation),
-                },
-                _input: Arc::clone(&input.allocation),
-                _output: Arc::clone(&output.allocation),
+        let pending = dispatch.retain(Access::Matrices {
+            operation: Operation::Rotary {
+                program: Arc::clone(kernels),
+                _cos: Arc::clone(&cos.allocation),
+                _sin: Arc::clone(&sin.allocation),
             },
-            drain,
-        );
-        self.poisoned = true;
+            _input: Arc::clone(&input.allocation),
+            _output: Arc::clone(&output.allocation),
+        })?;
+        self.state = ProgramState::Poisoned;
         output.state = MatrixState::Poisoned;
         let mut launch = kernels.stream.launch_builder(&kernels.function);
         launch
@@ -120,14 +125,9 @@ impl CudaBf16RotaryApply {
         }
         .map(|_| ())
         .map_err(|e| error("BF16 rotary enqueue", e));
-        if let Err(cause) = enqueue.and_then(|()| pending.retire()) {
-            return Err(CudaBf16ComputeError {
-                cause,
-                retirement: Some(Retirement::Execution(pending)),
-            });
-        }
-        output.state = MatrixState::Ready(output.shape.rows);
-        self.poisoned = false;
+        let acknowledgement = pending.finish(enqueue)?;
+        output.state = acknowledgement.matrix(output.shape.rows);
+        self.state = acknowledgement.program();
         Ok(())
     }
 

@@ -6,8 +6,9 @@ mod pending;
 mod cuda;
 #[cfg(feature = "cuda")]
 pub use cuda::{
-    AttentionGeometry, AttentionSpan, CudaBf16Attention, CudaBf16ComputeError, CudaBf16Elementwise,
-    CudaBf16Gemm, CudaBf16Matrix, CudaBf16RmsNorm, CudaBf16RotaryApply, CudaBf16RotaryFactors,
+    AttentionGeometry, AttentionSpan, CudaBf16Attention, CudaBf16Commands, CudaBf16ComputeError,
+    CudaBf16Elementwise, CudaBf16Gemm, CudaBf16Matrix, CudaBf16RmsNorm, CudaBf16RotaryApply,
+    CudaBf16RotaryFactors, CudaBf16Stream, CudaBf16Submission,
 };
 
 use crate::cuda_allocation::CudaBf16Error;
