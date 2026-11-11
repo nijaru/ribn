@@ -3123,3 +3123,39 @@ The 128-question lexical screen does not qualify broad quality-equivalent servin
 sampling or a full-distribution error budget. The host-lookup change affects public
 CUDA loading and retention only; neither it nor the passed prerequisites promotes M4,
 changes precision policy or revises a prior full-model verdict.
+
+### Model-wide HTTP QA (2026-11-11)
+
+**The new two-member model-wide candidate passes the finite-corpus screen against a
+fresh qualified native control.** This is not the rejected per-decoder M4 population.
+It permits a private performance experiment, not automatic loading or broad quality
+acceptance. Ordinary text/CLI/HTTP loading still selects serial CUDA.
+
+Four fresh actual HTTP cohorts—control/candidate at c1/c4—each complete **128/128**
+audited requests, with no retries or replacements. They use the same pinned package,
+RTX 4090, toolchain, sealed trace and policies as the
+[frozen-corpus HTTP QA](#frozen-corpus-http-qa-2026-11-11): greedy decoding, EOS
+`[1,106,50]`, cap 64, no warmup, four HTTP request slots and eight connections.
+The candidate changes only the CUDA constructor to `Gemma4CudaModelWide` followed by
+`Gemma4CudaExecutor`; processor, Engine, TextOwner and server remain ordinary paths.
+Both archived binaries use source `5eecf04`; the constructor patch and binary hashes
+are retained separately rather than identifying the dirty candidate by base commit alone.
+
+All four cohorts have **67/128 exact matches**, mean token-F1
+`30712501351/39434320640` (**77.88266883402812%**), 26,421 prompt tokens, 1,227
+completion tokens and 127 stop / one length terminal. Full answers, core usage,
+terminal reasons and per-item scores are identical across all four cohorts. Both
+fresh controls also match their historical native cohorts. All six directional
+comparisons complete with exit **0**, no losses and no gains; all native servers
+retire cleanly and no GPU process remains after collection.
+
+Receipt: `desktop:~/github/nijaru/ribn/benchmarks/results/qualification/gemma4-modelwide-http-qa/20261111T195731Z/`.
+It retains `supervise.py`, `protocol.json`, prepared trace/seals, four manifests,
+actual AIPerf exports/audits, six comparison reports and collection/cleanup records.
+Binaries and exact source/build evidence are in
+`gemma4-modelwide/20261111T190306Z-http-binaries/` under the same qualification root.
+The [model-wide device gate](runtime-contract.md#model-wide-gemma-cuda-device-gate-2026-11-11)
+separately establishes physical sharing, ownership and 4K access checks; HTTP exports
+alone attest none of those. The earlier two lexical losses against SGLang remain:
+this pass does not establish incumbent quality parity, sampling equivalence,
+throughput, SLO goodput, fairness or physical memory peaks.

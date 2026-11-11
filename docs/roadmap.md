@@ -139,9 +139,13 @@ The same gate now also passes the service's 4K boundary: unchanged full prefill
 rows, reordered paired continuation to positions 4096/4095, request-reachable overrun
 rejection and complete retirement. Full-case memcheck/initcheck report zero errors.
 Those long synthetic histories use a fresh qualified native control, not publisher
-labels. The ordinary loader remains serial. Before cutover, bound automatic selection
-to qualified hardware/model geometry, run the frozen-128 no-per-item-loss screen
-against a fresh native control, then measure private mixed-arrival serving.
+labels. The subsequent [fresh HTTP QA screen](../benchmarks/gemma4-cuda-baseline.md#model-wide-http-qa-2026-11-11)
+passes all 128 questions at c1/c4 for both native control and model-wide candidate:
+full answers, usage and per-item EM/F1 are unchanged. This permits only private
+performance measurement; the earlier native lexical gap against SGLang remains.
+The ordinary loader stays serial. Before cutover, bound automatic selection to
+qualified hardware/model geometry and establish repeatable mixed-arrival serving
+benefit with latency and residency evidence.
 Full-model failed-driver-drain remains composed native/owner evidence rather than a
 directly injected model-wide fault. Preserve that scope distinction; do not expose the
 qualified serial model's raw stream to force adoption or fault injection.
