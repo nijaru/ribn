@@ -329,8 +329,10 @@ many more architectures. An external tool may compile/export offline, but
 the prepared program must be executable by the Rust-owned backend without
 a Python request scheduler, unaccounted device allocations, independently
 mutable continuation state or bypassed cancellation and retirement.
-Pin compiler, kernels, model/processor, executable snapshot, dynamic-shape
-limits, numerical policy, state layout and completion dependencies.
+Pin compiler/exporter revisions, transitive native runtime ABIs, kernels,
+model/processor, executable snapshot, dynamic-shape limits, numerical policy,
+state layout and completion dependencies. Qualify persistent-state mutation and
+alias ordering under replay; a matching package format is not a correctness proof.
 Unsupported serving shapes must reject or take a qualified fallback,
 not silently compile in a request's fast path.
 
@@ -488,6 +490,29 @@ Flare at [`5f37bd1`](https://github.com/NVIDIA/flare-local-inference/tree/5f37bd
 is a research prototype with Python preparation and Rust serving. This review checked
 selected source paths and design contracts, not a build, GPU qualification or benchmark.
 Its local-serving mission is not Ribn's product boundary.
+
+**2026-11-11 update:** the repository is now
+[NVIDIA Hyperflare](https://github.com/NVIDIA/hyperflare-inference/tree/cbf21a12d118217b8ad4e6bfa565562a90addeec).
+The earlier pinned mechanisms below remain useful, but subsequent source changes expose
+additional external-preparation gates; this update is not a build or device qualification.
+
+- [Persistent-copy ordering fix, November 5](https://github.com/NVIDIA/hyperflare-inference/commit/fa0eadaded4fbc18fbf58b4e505e752651043252):
+  complete copies into persistent storage could be deferred past opaque consumers,
+  producing wrong speculative outputs. Exported packages needed regeneration despite
+  an unchanged format. Test state transitions and alias/mutation ordering, not only
+  loadability or greedy output with speculation disabled.
+- [Export lifetime separation, November 10](https://github.com/NVIDIA/hyperflare-inference/commit/b455be5e5f36e7dfde207e316bbd77e7164a024f):
+  recorded metadata can outlive capture templates/executables while retaining pools and
+  kernel owners. Treat compiler/capture machinery and replay backing as separate lifetimes;
+  retain every replay dependency through terminal completion and failed drain.
+- [Native dependency ABI repair, November 10](https://github.com/NVIDIA/hyperflare-inference/commit/e774a468cee4ade64393ba9d856788aaef974ed7):
+  preparation emitted a proxy ABI newer than the runtime supported. Validate transitive
+  native ABI compatibility before loading; format/schema checks alone are insufficient.
+  This does not justify adding distributed transport to Ribn.
+
+No SM89 program or full Gemma handoff was qualified in this review. These findings
+strengthen the existing native-versus-external comparison, not a decision to adopt its
+runtime, allocator, hardware scope or serving policy.
 
 - **Preparation boundary:** [forward compilation](https://github.com/NVIDIA/flare-local-inference/blob/5f37bd14062334f7687d168d58ea00567b9aa7fe/ignition/preparation/compilation.py#L280-L327) reuses PyTorch while exposing storage mutations and preserving selected ATen rounding boundaries. [Native execution](https://github.com/NVIDIA/flare-local-inference/blob/5f37bd14062334f7687d168d58ea00567b9aa7fe/helios/src/execution/transport.rs#L504-L655) submits captured graphs without a Python request loop. This motivates comparing model-integration and launch costs at Ribn's existing model/backend seam; compilation does not remove numerical qualification.
 - **Scratch lifecycle:** [tuning](https://github.com/NVIDIA/flare-local-inference/blob/5f37bd14062334f7687d168d58ea00567b9aa7fe/ignition/preparation/tuning.py#L170-L233) reserves the legal candidate envelope, then [trims, refreshes bindings and freezes](https://github.com/NVIDIA/flare-local-inference/blob/5f37bd14062334f7687d168d58ea00567b9aa7fe/ignition/preparation/tuning.py#L317-L335) selected storage. Borrowed benchmark state is restored and synchronized before capture; failed restoration retains owners. Serial plans reuse scratch; simultaneous branches require disjoint regions. The principle transfers without adopting its allocator or package format.

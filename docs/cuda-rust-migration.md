@@ -35,6 +35,28 @@ can continue on its qualified backend. Migration success and competitive inferen
 separate claims; test both. This ordering changes priority, not numerical tolerances,
 resource-lifetime contracts or the requirement for one coherent execution/resource owner.
 
+## Upstream recheck (2026-11-11)
+
+The measured September candidate remains deferred. NVIDIA now develops the candidates
+together in [cuda-rust](https://github.com/NVIDIA/cuda-rust):
+[cuda-oxide 0.4.0](https://github.com/NVIDIA/cuda-rust/releases/tag/cuda-oxide/v0.4.0)
+was released November 11; [cuTile Rust 0.5.0](https://github.com/NVIDIA/cuda-rust/releases/tag/cutile-rs/v0.5.0)
+remains the November 5 release. This source/release review is not a Ribn build or device result.
+
+Oxide's `#[tile_export]`, static `.tilelib` and on-demand linkage connect Tile kernels
+to SIMT **device functions**; they are not a model-wide prepared-program ABI. Static
+tile libraries use CUDA 13.5 preview tooling. CuTeDSL 4.7 alignment, the
+`cutlass-primitives` rename and Blackwell examples do not establish SM89 compatibility
+or a win for Ribn's projection/GDN shapes. Integer `redux.sync` lowering on SM80+ and
+loop/codegen changes are reasons to inspect a newly pinned operation-specific candidate,
+not evidence that the measured floating-point or packed-projection regressions are fixed.
+
+When device access returns, select a concrete operation whose new lowering could address
+its measured loss, inspect the generated code and repeat the unchanged-algorithm numerical
+and representative timing comparison. Recheck the selected release's compiler/toolkit and
+SM requirements then. Do not update production dependencies/toolkits, widen automatic
+selection or start a whole-backend port from release claims alone.
+
 ## Runtime integration update (2026-09-11)
 
 The model-neutral `ribn::GenerationExecutor` boundary now has a host-tested runtime
