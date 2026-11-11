@@ -176,7 +176,10 @@ Qualify packed/ragged GEMMs and attention, vendor kernels, fusion and graph
 capture end-to-end with actual goodput, TTFT/ITL, fallback frequency,
 physical memory and independently justified numerical/quality acceptance.
 Graphs own stable addresses, per-replay input metadata and retirement
-fences. Launch count alone does not establish improvement.
+fences. Qualification must delay cache/feature loads and shared-metadata consumers
+rather than relying on copies usually winning a race. Replay must preserve the eager
+path's dependencies; an early metadata-read fence is not whole-model completion.
+Launch count alone does not establish improvement.
 
 ### One owner, bounded overlap
 
@@ -391,6 +394,12 @@ new sessions on newly started replicas rather than needlessly relocating warm
 sessions. Compare random, load-only, fixed-affinity and combined routing instead
 of assuming a fixed scoring formula wins.
 
+If phase-specific pools later earn their cost, keep cache validity independent of a
+worker's temporary prefill/decode role. Compare colocated execution and phase splits
+with independently tuned batch/pool sizes on matched workloads and a stated resource
+budget. Include transfer, switching, stranded capacity and recomputation costs; neither
+P/D nor an additional attention/FFN boundary is an unconditional architectural goal.
+
 Affinity depends on cache topology: locally resident reuse may avoid prefill, while a
 shared accessible cache can reduce that advantage. Include retrieval/transfer cost and
 queue imbalance rather than assuming every cache hit requires a particular replica.
@@ -448,6 +457,11 @@ universal execution API. The [roadmap](roadmap.md) defines the next delivery gat
 - [vLLM V1 architecture](https://docs.vllm.ai/en/latest/design/arch_overview/): separates logical scheduling from model runner execution.
 - [TensorRT-LLM overlap](https://github.com/NVIDIA/TensorRT-LLM/blob/main/docs/source/features/overlap-scheduler.md): device work-ahead needs explicit state and lifetime dependencies.
 - [HiState (2026-10-30)](https://arxiv.org/abs/2610.41508): checkpoint storage versus per-reuse restoration; evaluate on real hybrid traffic later.
+- [Evolving Infra, 2026-11-09 v1](https://arxiv.org/abs/2611.12304v1): agent context liveness and changing workload composition can defeat recency-only eviction and static phase splits. Its experiments use up to 256 GB300 GPUs; they motivate trace cases, not transferable Ribn gains or an immediate distributed cache.
+- [Should You Split Decode?, 2026-11-05 v1](https://arxiv.org/abs/2611.08299v1): a calibrated modeling study, not a newly qualified engine, finds no robust general SLO-goodput-per-kW advantage for attention/FFN disaggregation under its assumptions. Keep boundaries and placement conditional on workload and provisioning costs.
+- [SGLang replay/load fix, merged 2026-10-17](https://github.com/sgl-project/sglang/commit/ae28306a74fc9ba56daab9ccb06dcf45659f58af) and [shared-read fence, merged 2026-10-20](https://github.com/sgl-project/sglang/commit/bf145750a65245802dd21f3b850a604635181532): graph replay can bypass eager load waits; early metadata reuse needs a proven last reader, not an assumed layer boundary. These are source counterexamples, not Ribn qualification.
+- [TensorRT-LLM retained-snapshot sizing, merged 2026-10-27](https://github.com/NVIDIA/TensorRT-LLM/commit/ab95e84be21fb8e8ded7cd5879cc543b937737cb): live sequence capacity alone can omit retained recurrent checkpoints. Account for physical copies and restore transients when sizing hybrid storage.
+- [vLLM encoder disaggregation, 2026-11-11](https://vllm-project.github.io/2026/11/11/encoder-disaggregation-epd.html): metadata-only handoff binds embedding layout without repeating media preprocessing, and encoder completion is independent of token sampling. This informs a local VLM handoff first; release and development-head support differ.
 
 DeepInfer, vLLM, SGLang and NVIDIA engines are complementary first-class design resources.
 Choose source paths by the mechanism being investigated, not by matching the project's

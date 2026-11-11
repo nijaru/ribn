@@ -160,12 +160,22 @@ agent runtime or prefix cache; with reuse disabled it establishes the no-cache b
 
 ### Agent-session workload qualification
 
+Status: acceptance methodology, not an implemented closed-loop runner. The current
+`endpoint.py` fixed-schedule path supports finite single-turn text traces only;
+precomputed timestamps and growing prompts do not establish causal session progress
+or completed-job metrics.
+
 Keep open-loop arrivals for saturation/fairness and add independent **closed-loop**
 replays for agent progress. A sequential session's next request follows the prior
 terminal response plus the recorded tool/user delay; preserve planned arrivals
 rather than hiding generator lag. Include concurrent sibling/subagent branches,
 cache-unfriendly prompt edits or compaction, cancellation, restart and failures.
 Shared session identity does not imply equal prompts or serialized requests.
+Pair long-idle exact-prefix returns with recently accessed histories replaced by
+compaction, and retain active versus finished branch structure where available.
+Add shifts in the mix of prefill-heavy and decode-heavy work rather than measuring
+only a stationary blend. Compare policies on the same recorded cases; these patterns
+must not be selected after observing which policy wins.
 
 Use at least two cohorts: long, growing-context coding (state capacity and
 tool-delay retention) and shared-system-prompt workflows (cross-session reuse).

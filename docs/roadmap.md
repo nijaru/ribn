@@ -32,7 +32,10 @@ establishes a clean competitive ranking.
    and terminal semantics. Match the admission envelope, artifact and
    quality policy; measure TTFT, ITL, E2E, SLO goodput, fairness, pressure,
    physical memory and recovery. Repair benchmark accounting rather
-   than ranking only successful request subsets.
+   than ranking only successful request subsets. Use the current single-turn
+   runner for this first baseline; causal closed-loop agent replay and
+   job-level metrics need separate client qualification, not an engine
+   orchestrator or a new prerequisite for the first comparison.
 2. **Model-wide Gemma CUDA execution.** Replace optimized per-sequence
    `GemmaDecode` dispatch with a shared model/backend prepared batch.
    Bind stable sequence incarnations, physical lane membership, exact
@@ -64,7 +67,10 @@ establishes a clean competitive ranking.
    prefix reuse remains a separate workload-dependent experiment.
 6. **Broader architecture/hardware.** Complete Gemma VLM's failed
    full-checkpoint numerical and feature-handoff gates, then test
-   a different architecture and backend. Track support velocity
+   a different architecture and backend. Bind encoder features to processor/model/input
+   identity and exact prompt layout, with bounded structural metadata and producer
+   completion independent of sampled tokens. Gate mismatched grids/lengths/placeholders,
+   delayed production and cancellation before consumer access. Track support velocity
    and ongoing maintenance, not just model registry entries.
 
 ### First implementation cutover
@@ -112,6 +118,13 @@ cancellation, partial enqueue, failed drain and retryable release.
 weight work, correct independent KV histories, full-row numerical
 checks, access sanitizers, memory grants and complete retirement.
 Then measure actual text/HTTP mixed-arrival SLO goodput.
+
+For later capture/replay or restore variants, deliberately delay the final cache/feature
+load and late metadata reads. Compare common-history outputs with the qualified eager
+path, and test cancellation/failed drain while dependencies remain pending. A passing
+host bookkeeping test or an undelayed replay is not device-ordering evidence; an early
+shared-read fence must not release model state. Keep this gate with the variant rather
+than making graph capture a prerequisite for depth-one model-wide batching.
 
 ### Decision milestones
 
@@ -286,7 +299,10 @@ Deliver storage/progress separately from cache policy:
    and selected sparse recurrent checkpoints. Require model-specific retained KV coverage
    and every hybrid component at the restore boundary; copy private recurrence and replay
    a suffix ending at the prompt's logits-producing token. Gate exact hits, partial tails,
-   missing components, cancellation during restore and uncertain retirement. Compare reuse
+   missing components, cancellation during restore and uncertain retirement. Size backing
+   for live state plus all retained checkpoint copies and restore/copy peaks; test
+   coincident boundaries, multiple retained turns and a budget that fits live sequences
+   but not their checkpoints. Free checkpoint slots do not refund resident backing. Compare reuse
    off/on with equal grants, quality and traffic, including copy/retention peaks and replay
    cost. Enable only where repeated net TTFT/goodput or capacity benefit justifies retention;
    a nonbeneficial policy remains disabled rather than manufacturing a favorable workload.

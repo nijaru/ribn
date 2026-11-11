@@ -266,7 +266,12 @@ not authorize host-buffer reclamation while a device copy can still access it.
    consumer waits on that dependency before reading. [Cross-runtime device
    ownership](#cross-runtime-device-ownership) already owns the reuse, cancellation and
    quarantine rules; preparation adds only the lease and dependency that make them
-   checkable.
+   checkable. Before a model-coupled multimodal handoff, also bind the feature
+   representation to its processor/model snapshot, input identity and model-local prompt
+   layout: placeholder ranges, feature lengths and required grids/timestamps. Validate
+   layout and retained-byte bounds before consumption; enough metadata may avoid repeating
+   media preprocessing, but does not establish producer completion. Encoder-only work
+   establishes completion through its own dependency, never by waiting for sampled tokens.
 
 ### Non-AR application lifecycle
 
@@ -409,6 +414,10 @@ partial-construction retirement must qualify before sharing it with the encoder.
    duplicated to share storage: storage shared between sequences is owned once (by the
    cache or another owner) and handed out as a reference, so the charge is counted once
    and reference counting does not duplicate accounting.
+   When sizing hybrid backing, include live recurrence, retained checkpoint occupancy,
+   private writable restoration and copy transients. Coincident logical boundaries share
+   a charge only when they actually share storage; separately materialized copies need
+   separate capacity. Arena backing remains charged once even when checkpoint slots empty.
 4. **A sequence's continuation is a bundle with per-component validity.** A prefix is
    reusable only when every component the model requires at that boundary is present and
    valid — for a hybrid model, KV without the matching recurrent checkpoint is not a
@@ -518,8 +527,14 @@ An immutable executable snapshot owns weights, kernels/graphs and
 numerical policy. Every submitted physical batch separately owns
 mutable token/position/PLE staging, live continuation references,
 page/descriptor versions, workspace, output slots, device events and
-byte charges. A replay cannot overwrite staging still visible to an
-older device submission. No release acknowledgement may refund
+byte charges. Captured/replayed variants must explicitly order cache/feature restores
+and metadata producers before every captured consumer. Host or per-layer waits used by
+the eager path are not evidence that replay waits: encode the dependency on device,
+wait for the complete load before replay, or retain a qualified eager fallback.
+A shared-table read-complete fence may permit later metadata writes only after the last
+actual read; it does not establish whole-model completion or authorize cache release.
+A replay cannot overwrite staging still visible to an older device submission.
+No release acknowledgement may refund
 backing before it is safely reusable, including asynchronous frees.
 
 Native and externally compiled, Rust-invocable programs obey the same
