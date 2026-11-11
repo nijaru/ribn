@@ -2187,7 +2187,10 @@ These gates cover the service's 4K access boundary, not unrestricted hardware/mo
 selection, frozen-128 QA, automatic loading, throughput, SLO goodput, memory peaks or
 broad quality equivalence. Real driver failure/retry is qualified in the native private
 domain; failed model-wide drain is not directly device-injected. Preserve that
-composed-evidence limit.
+composed-evidence limit. The subsequent
+[private mixed-arrival screen](gemma4-cuda-baseline.md#model-wide-mixed-arrival-screen-2026-11-11)
+is closed on an EOS matched-work mismatch; these passing device gates do not override
+that population's no-promotion result.
 
 ### State-only prefill Metal fallback (2026-10-30)
 

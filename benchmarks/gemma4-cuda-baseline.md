@@ -3159,3 +3159,100 @@ separately establishes physical sharing, ownership and 4K access checks; HTTP ex
 alone attest none of those. The earlier two lexical losses against SGLang remain:
 this pass does not establish incumbent quality parity, sampling equivalence,
 throughput, SLO goodput, fairness or physical memory peaks.
+
+### Model-wide mixed-arrival screen (2026-11-11)
+
+**Keep automatic loading serial. This fixed performance population is closed.**
+One matched pair completes; the second candidate's mixed8 cohort produces a different
+valid EOS outcome, so collection stops before its control or the third pair. There
+is no three-pair median or completed performance qualification. Do not extend,
+replace or retime this population, or waive its matched-work rule after the result.
+
+This private Rust runner uses the ordinary Engine, Driver, GemmaProcessor and
+TextOwner, with the actual default four preprocessing workers / eight-request batch
+window. It compares the current serial backend with the new model-wide owner—not
+the old per-decoder M4 implementation. Source is `5eecf04`; the archived executable
+SHA-256 is `0a364527b32998004ba3816065c669426c8420f79be13cf9a487f8acb7289864`.
+A fresh model and one TextOwner span warmup, c1, c4, mixed8 and resident4 per process.
+Each profile counts thread launch through stream EOF, client joins and exact
+continuation-grant return to the loaded-model baseline. Final owner shutdown is a
+separate gate, not part of this denominator. These are **not HTTP timings** and are
+not comparable to the old shutdown-inclusive M4 rates.
+
+The frozen 128 questions retain their order, cap 64 and EOS policy. Mixed8 uses
+initial delays `[0,10,30,60,0,20,80,140]` ms and per-caller think delays
+`[0,5,15,30,0,10,25,50]` ms after full drain: closed-loop arrivals, not an identical
+open-loop replay. Resident4 admits four synthetic token-ID prompts of lengths
+4092–4095 with caps 4/3/2/1; this tests maximum configured request reach, not labeled
+QA, physical OOM or eviction. The immutable protocol selects three orders:
+control/candidate, candidate/control, control/candidate; 900 s per model, 7200 s for
+the campaign, a 12 GiB host-memory floor and 10 GiB owned-RSS ceiling.
+
+The **first complete matched pair only** reports:
+
+| Profile | Control / candidate elapsed (s) | Token-rate ratio | p95 first / last content ratio | Joint deadline passes, control / candidate |
+| --- | ---: | ---: | ---: | ---: |
+| c1 | 64.625 / 63.757 | 1.013619 | 1.036027 / 1.021152 | 128 / 128 |
+| c4 | 64.830 / 59.104 | 1.096880 | 0.922485 / 0.940667 | 30 / 55 |
+| mixed8 | 64.838 / 58.329 | 1.111581 | 0.882940 / 0.887465 | 3 / 4 |
+
+Rates count actual EOS-inclusive output consumption; each QA profile in this pair
+consumes 1,227 tokens. Latencies use nearest-rank p95 over nonempty content, retaining
+empty-content counts. Joint first-content ≤1 s / last-content ≤5 s are diagnostic
+objectives, **not product SLOs**. These single-pair gains do not establish the frozen
+three-pair ≥5% c4/mixed8 gain, c1 non-regression, tail or no-deadline-loss gates.
+
+All three actual model processes complete **392/392** requests each, including all
+five profiles, without forced cleanup, deadline expiry or outstanding pool charges.
+The nine complete QA cohorts retain **67/128 EM** and mean F1
+`30712501351/39434320640`, with **no per-item score loss**. The sole changed answer is
+question `5725be0f271a42140099d118`, second candidate / mixed8:
+`Climate fluctuations during the last 34 million years` instead of that phrase plus
+` have allowed savanna regions to expand into the tropics.` Both are already-frozen
+gold aliases, each EM/F1 = 1. Consumption falls from 21 to 11 tokens, so matched
+outputs/work fail despite unchanged quality scores. The other three planned model
+processes remain unrun. The earlier native lexical gap against SGLang is unchanged.
+
+An initial auditor error mistook Serde's Unix `OsString` byte-array representation
+for a JSON string. It was corrected against Serde's implementation and the exact
+launched path; the completed control was re-audited, **not rerun**. Original receipts,
+the reader adjudication and 25 CPU contract tests remain retained. The later EOS
+mismatch is a separate, genuine stop. Current package bytes and 156 prefrozen DSO
+identities are verified; actual maps observe 13 DSOs per model. Owned-group absence,
+independent watchdog completion and pool zero pass for all three models. Observed
+RSS/HWM samples reach about 7.57 GiB; samples are not physical memory peaks or host
+isolation evidence. Host lookup storage remains outside the device BytePool.
+
+A separate common-history diagnostic isolates arithmetic-path sensitivity, not a
+performance retry. The unchanged scalar path is bit-exact with native control;
+fully paired row-0/row-1 trajectories also match each other bit-for-bit. Exhausting
+all **1,024** ten-step scalar/M2 masks on the same 182-token prompt and common
+continuation gives token 735 in **942** target rows and EOS 106 in **82**. With only
+zero-based decode step 3 paired (mask 8), the final scores for 735 and 106 both become
+**27.75**, selecting lower-ID EOS; control scores are **27.875 / 27.625**. All full
+rows are finite, positions advance only at acknowledgement, every mask refunds its
+caches and final close returns the pool to zero. The actual timed dispatch mask was
+not traced; this reproduces the decision class, not its exact physical schedule.
+No observed error becomes a tolerance or a broad quality-equivalence claim.
+
+Receipts under `desktop:~/github/nijaru/ribn/benchmarks/results/qualification/`:
+
+- `gemma4-modelwide-text-performance/20261111T201143Z/`: immutable protocol, exact
+  runner/source, inputs, three complete raw model outputs, original interruption,
+  reader adjudication, one paired report and `closure.json`. No final median exists.
+- `gemma4-modelwide/20261111T211022Z-qa-common-history-diagnostic/`: native and four
+  fixed common-history modes, complete rows, source/binary identity and clean close.
+- `gemma4-modelwide/20261111T211858Z-qa-mixed-mask-diagnostic/`: all 1,024 masks,
+  source/binary identity, full target rows and zero-pool/GPU-after evidence. The
+  1,035 raw arrays are retained in a SHA-verified **318 MiB** `rows.tar.zst`; every
+  member was verified before removing its uncompressed copy. Both diagnostics pass
+  actual release execution and focused CUDA Clippy; they are not new sanitizer runs.
+
+All task-created worktrees and private Rust build outputs are removed. Qualified
+serial and 8/16-row prefill remain unchanged. Before another automatic-selection
+attempt, resolve arithmetic-path stability and matched-work qualification; do not
+turn this stopped population into a pass by changing its rule. An eventual selector
+also needs the exact qualified model topology/rotary/vocabulary scope, not merely
+matching projection dimensions or a scratch-selected prefill lane. No external
+engine is timed on this new Rust-facade population; no SOTA or SGLang performance
+parity follows from its internal diagnostic gain.

@@ -143,9 +143,19 @@ labels. The subsequent [fresh HTTP QA screen](../benchmarks/gemma4-cuda-baseline
 passes all 128 questions at c1/c4 for both native control and model-wide candidate:
 full answers, usage and per-item EM/F1 are unchanged. This permits only private
 performance measurement; the earlier native lexical gap against SGLang remains.
-The ordinary loader stays serial. Before cutover, bound automatic selection to
-qualified hardware/model geometry and establish repeatable mixed-arrival serving
-benefit with latency and residency evidence.
+The subsequent [private mixed-arrival screen](../benchmarks/gemma4-cuda-baseline.md#model-wide-mixed-arrival-screen-2026-11-11)
+is closed after one matched pair and the second candidate: one mixed8 answer chooses
+a shorter approved gold alias, leaving EM/F1 unchanged but failing the frozen
+same-output/work condition. The other three model processes are unrun; no paired
+median or qualified performance result is available. Do not extend or relax that population.
+Controlled common-history scalar/M2 mixtures reproduce the continuation/EOS BF16
+score tie, with bit-exact scalar control and complete retirement. This is arithmetic-
+path sensitivity, not an observed score loss; the timed dispatch mask was not traced.
+The ordinary loader stays serial. Before another cutover attempt, resolve the
+arithmetic-path stability and matched-work qualification decision, then establish
+repeatable mixed-arrival benefit with latency and residency evidence. A future
+selector must bind the exact qualified topology, rotary and vocabulary scope as
+well as device, projection geometry and prepared context—not scratch-lane selection.
 Full-model failed-driver-drain remains composed native/owner evidence rather than a
 directly injected model-wide fault. Preserve that scope distinction; do not expose the
 qualified serial model's raw stream to force adoption or fault injection.
