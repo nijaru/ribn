@@ -1,94 +1,58 @@
-//! Whole-offer validation and execution over a bounded, owned Gemma batch.
+//! Serial reference execution over model-local, whole-offer bound rows.
 use super::{Execution, GemmaDecode, execution};
-use crate::argmax;
-use ribn::{BatchItem, ExecutionError, GenerationLimits, StepCompletion, StepKind};
+use crate::{
+    argmax,
+    generation::{RowInput, bind_batch},
+};
+use ribn::{BatchItem, ExecutionError, GenerationLimits, StepCompletion};
 
 impl<D: GemmaDecode> Execution<D> {
-    pub(super) fn validate(
-        &self,
+    pub(super) fn bind(
+        &mut self,
         items: &[BatchItem],
         limits: GenerationLimits,
     ) -> Result<(), ExecutionError> {
-        let tokens = items
-            .iter()
-            .try_fold(0_u32, |sum, item| sum.checked_add(item.token_budget));
-        if items.is_empty()
-            || items.len() > limits.max_sequences
-            || tokens.is_none_or(|n| n > limits.max_batch_tokens)
-        {
-            return Err(ExecutionError::new("Gemma batch exceeds prepared limits"));
-        }
-        for (index, item) in items.iter().enumerate() {
-            if items[..index]
-                .iter()
-                .any(|old| old.sequence == item.sequence)
-            {
-                return Err(ExecutionError::new("duplicate Gemma sequence in batch"));
-            }
+        bind_batch(
+            items,
+            limits,
+            |sequence| self.states.get(&sequence).map(|state| &state.logical),
+            &mut self.rows,
+        )?;
+        // Logical binding is independent of physical storage. The serial oracle
+        // additionally proves each decoder agrees before any row can execute.
+        for row in &self.rows {
             let state = self
                 .states
-                .get(&item.sequence)
-                .ok_or_else(|| ExecutionError::new("submitted sequence is not admitted"))?;
-            let end = item
-                .prefix
-                .checked_add(item.token_budget)
-                .ok_or_else(|| ExecutionError::new("Gemma prefix overflow"))?;
-            if item.token_budget == 0
-                || item.prefix != state.cursor
-                || state.decoder.position() != state.cursor as usize
-                || end > limits.context_tokens
-                || state.remaining == 0
-            {
+                .get(&row.work().sequence)
+                .expect("bound sequence");
+            if state.decoder.position() != state.logical.cursor as usize {
+                self.rows.clear();
                 return Err(ExecutionError::new(
-                    "work disagrees with continuation or capacity",
+                    "decoder disagrees with logical continuation",
                 ));
-            }
-            match item.kind {
-                StepKind::Prefill => {
-                    if end as usize > state.prompt.len()
-                        || item.output_budget != u32::from(end as usize == state.prompt.len())
-                    {
-                        return Err(ExecutionError::new("prefill boundary/output mismatch"));
-                    }
-                }
-                StepKind::Decode => {
-                    if item.token_budget != 1
-                        || item.output_budget != 1
-                        || (item.prefix as usize) < state.prompt.len()
-                        || state.input.is_none()
-                    {
-                        return Err(ExecutionError::new("invalid ordinary decode row"));
-                    }
-                }
             }
         }
         Ok(())
     }
 
     pub(super) fn execute(&mut self) -> Result<Vec<StepCompletion>, ExecutionError> {
-        let mut rows = Vec::with_capacity(self.items.len());
-        for item in &self.items {
-            let state = self
-                .states
-                .get_mut(&item.sequence)
-                .expect("validated sequence");
-            let prefix = item.prefix + item.token_budget;
-            let logits = match item.kind {
-                StepKind::Prefill => {
-                    let tokens = &state.prompt[item.prefix as usize..prefix as usize];
+        let mut rows = Vec::with_capacity(self.rows.len());
+        for row in &self.rows {
+            let item = row.work();
+            let state = self.states.get_mut(&item.sequence).expect("bound sequence");
+            let logits = match row.input() {
+                RowInput::Prefill(range) => {
+                    let tokens = &state.logical.prompt[range.clone()];
                     if item.output_budget == 0 {
                         state.decoder.advance_prefill(tokens).map(|()| None)
                     } else {
                         state.decoder.prefill(tokens).map(Some)
                     }
                 }
-                StepKind::Decode => state
-                    .decoder
-                    .decode(state.input.expect("validated decode input"))
-                    .map(Some),
+                RowInput::Decode(token) => state.decoder.decode(*token).map(Some),
             }
             .map_err(|error| execution(&error))?;
-            if state.decoder.position() != prefix as usize {
+            if state.decoder.position() != row.end() as usize {
                 return Err(ExecutionError::new(
                     "decoder did not complete the accepted range",
                 ));
@@ -101,7 +65,7 @@ impl<D: GemmaDecode> Execution<D> {
             };
             rows.push(StepCompletion {
                 sequence: item.sequence,
-                prefix,
+                prefix: row.end(),
                 tokens,
             });
         }

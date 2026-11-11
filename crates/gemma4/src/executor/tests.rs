@@ -4,7 +4,7 @@ use crate::{Gemma4CpuDecoder, Gemma4CpuWeights, weight_fixtures as weights};
 use ribn::{Engine, Event, GenerationOptions, RequestId, StepKind};
 use ribn_foundation::{BytePool, PoolLease};
 use std::sync::{
-    Mutex, Weak,
+    Arc, Mutex, Weak,
     atomic::{AtomicBool, AtomicUsize, Ordering},
 };
 
@@ -177,6 +177,7 @@ enum Corruption {
     FinalOutput,
     DecodeBeforePrompt,
     AggregateInputs,
+    PhysicalPosition,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Mode {
@@ -254,9 +255,28 @@ impl GenerationExecutor for Boundary {
                 second.token_budget = 2;
                 second.output_budget = 1;
             }
+            Mode::Corrupt(Corruption::PhysicalPosition) => {
+                // Make the later real decoder inconsistent before preparation,
+                // independently of logical row validation.
+                self.inner
+                    .execution
+                    .as_mut()
+                    .unwrap()
+                    .states
+                    .get_mut(&second.sequence)
+                    .unwrap()
+                    .decoder
+                    .inner
+                    .advance_prefill(&[1])
+                    .unwrap();
+            }
             _ => {}
         }
-        self.inner.prepare(&self.offered)
+        let result = self.inner.prepare(&self.offered);
+        if result.is_err() {
+            assert!(self.inner.execution.as_ref().unwrap().rows.is_empty());
+        }
+        result
     }
     fn abandon_preparation(&mut self) -> Result<(), ExecutionError> {
         self.inner.abandon_preparation()
@@ -284,7 +304,9 @@ impl GenerationExecutor for Boundary {
             // decoder progress: the earlier CPU decoder did execute successfully.
             let states = &self.inner.execution.as_ref().unwrap().states;
             assert!(states.values().all(|state| {
-                state.cursor == 0 && state.input.is_none() && state.remaining == 2
+                state.logical.cursor == 0
+                    && state.logical.input.is_none()
+                    && state.logical.remaining == 2
             }));
             let first = self.offered[0];
             let second = self.offered[1];
@@ -402,6 +424,7 @@ fn malformed_later_rows_cannot_execute_an_earlier_continuation() {
         Corruption::FinalOutput,
         Corruption::DecodeBeforePrompt,
         Corruption::AggregateInputs,
+        Corruption::PhysicalPosition,
     ] {
         let probe = Arc::new(Probe::default());
         let mut engine = engine(probe.clone(), Mode::Corrupt(corruption));

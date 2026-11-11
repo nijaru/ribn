@@ -262,8 +262,13 @@ The archived 18-token chat row reproduces all four greedy tokens on
 the M3 Max, and again through the token runtime's engine and the text facade with the
 real Gemma tokenizer and chat assets. `Gemma4Executor` preflights the whole offered batch,
 retains one exact preparation/submission and checks its completion identity. It shares
-loaded weights across sequences and commits logical cursor/input/output state only after
-all synchronous rows succeed. Failed continuation cannot resume, but teardown can succeed:
+loaded weights across sequences. `gemma4/src/generation.rs` owns decoder-independent
+logical sequence metadata and whole-offer input binding. Prepared rows retain original
+work identity and exact prompt ranges or decode tokens; failed binding publishes no rows.
+The serial executor separately checks physical decoder positions before execution and
+commits logical cursor/input/output state only after all synchronous rows succeed.
+`text/src/gemma_load.rs` assembles any `GenerationExecutor`; its current CUDA/Metal
+constructors still select the existing serial executor, not a model-wide GPU path. Failed continuation cannot resume, but teardown can succeed:
 paired model creation/completion ownership and explicit sequence close establish when
 resources may be destroyed. CPU calls need no device drain; Metal settles the same shared
 model owner even if decoder construction failed, and CUDA settles its associated stream

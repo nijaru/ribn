@@ -34,6 +34,7 @@ mod weight_fixtures;
 pub use config::{AttentionKind, Gemma4Config, LayerGeometry, Rope};
 pub use continuation::{AttentionSpan, KvOwnerStep, KvStep, RetainedSpan};
 mod executor;
+mod generation;
 pub use cpu::{
     AttentionConfig, CpuParameter, Gemma4CpuDecoder, Gemma4CpuWeights, add, apply_rotary, argmax,
     attention, attention_with_weights, bf16, factors, gelu_tanh, inverse_frequencies, linear,

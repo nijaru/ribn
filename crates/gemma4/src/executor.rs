@@ -5,13 +5,13 @@
 //! work. Weights are shared across sequences and each admitted sequence owns its
 //! cache and position. Unretired failures keep the complete execution owner.
 
+use crate::generation::{BoundRow, LogicalSequence};
 use crate::{Gemma4Config, Gemma4Error};
 use ribn::{
     Admission, BatchItem, BatchPreparation, ExecutionError, ExecutorInfo, GenerationExecutor,
     GenerationLimits, SequenceId, StepCompletion, SubmissionId, TokenRequest,
 };
 use std::collections::HashMap;
-use std::sync::Arc;
 
 mod backend;
 mod batch;
@@ -25,10 +25,7 @@ const MAX_SEQUENCES: usize = 4;
 
 struct SequenceState<D> {
     decoder: D,
-    prompt: Arc<[u32]>,
-    cursor: u32,
-    input: Option<u32>,
-    remaining: u32,
+    logical: LogicalSequence,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -45,7 +42,7 @@ enum Phase {
 struct Execution<D> {
     backend: Backend<D>,
     states: HashMap<SequenceId, SequenceState<D>>,
-    items: Vec<BatchItem>,
+    rows: Vec<BoundRow>,
     phase: Phase,
     next: u64,
 }
@@ -82,7 +79,7 @@ impl<D: GemmaDecode> Execution<D> {
         }
         self.phase = Phase::Retiring;
         (self.backend.settle)()?;
-        self.items.clear();
+        self.rows.clear();
         for state in self.states.values_mut() {
             state.decoder.close()?;
         }
@@ -121,7 +118,7 @@ impl<D: GemmaDecode> Gemma4Executor<D> {
             execution: Some(Execution {
                 backend,
                 states: HashMap::new(),
-                items: Vec::with_capacity(MAX_SEQUENCES),
+                rows: Vec::with_capacity(MAX_SEQUENCES),
                 phase: Phase::Idle,
                 next: 0,
             }),
@@ -143,34 +140,13 @@ impl<D: GemmaDecode> Gemma4Executor<D> {
                 "sequence is already admitted",
             )));
         }
-        if request.options.sampling.temperature != 0.0 {
-            return Err(AdmissionFailure::Rejected(ExecutionError::new(
-                "Gemma executor currently supports greedy sampling only",
-            )));
-        }
-        let prompt = u32::try_from(request.tokens.len()).map_err(|_| {
-            AdmissionFailure::Rejected(ExecutionError::new("prompt length exceeds u32"))
-        })?;
-        let output = request.options.max_output_tokens;
-        if prompt == 0 || output == 0 {
-            return Err(AdmissionFailure::Rejected(ExecutionError::new(
-                "prompt and output budget must be positive",
-            )));
-        }
-        let total = u64::from(prompt) + u64::from(output);
-        if total > u64::from(self.info.limits.context_tokens) {
-            return Err(AdmissionFailure::Rejected(ExecutionError::new(
-                "prompt and output exceed the context bound",
-            )));
-        }
         if owner.states.len() >= self.info.limits.max_sequences {
             return Err(AdmissionFailure::Rejected(ExecutionError::new(
                 "sequence capacity is exhausted",
             )));
         }
-        self.config
-            .validate_text_tokens(&request.tokens)
-            .map_err(|error| AdmissionFailure::Rejected(execution(&error)))?;
+        let logical = LogicalSequence::new(&self.config, self.info.limits.context_tokens, request)
+            .map_err(AdmissionFailure::Rejected)?;
         // Construction may retain partial storage or unwind. Only a clean
         // refusal or a complete continuation permits this owner to resume.
         owner.phase = Phase::Failed;
@@ -182,16 +158,9 @@ impl<D: GemmaDecode> Gemma4Executor<D> {
             }
             Err(error) => return Err(error),
         };
-        owner.states.insert(
-            sequence,
-            SequenceState {
-                decoder,
-                prompt: request.tokens.clone(),
-                cursor: 0,
-                input: None,
-                remaining: output,
-            },
-        );
+        owner
+            .states
+            .insert(sequence, SequenceState { decoder, logical });
         owner.phase = Phase::Idle;
         Ok(())
     }
@@ -232,8 +201,7 @@ impl<D: GemmaDecode> GenerationExecutor for Gemma4Executor<D> {
                 "Gemma execution is busy, faulted or closed",
             ));
         }
-        owner.validate(batch, self.info.limits)?;
-        owner.items.extend_from_slice(batch);
+        owner.bind(batch, self.info.limits)?;
         owner.phase = Phase::Prepared;
         Ok(BatchPreparation::Ready)
     }
@@ -242,7 +210,7 @@ impl<D: GemmaDecode> GenerationExecutor for Gemma4Executor<D> {
         let owner = self.execution.as_mut().expect("executor owns execution");
         match owner.phase {
             Phase::Prepared => {
-                owner.items.clear();
+                owner.rows.clear();
                 owner.phase = Phase::Idle;
             }
             Phase::Idle | Phase::Closed => {}
@@ -257,7 +225,13 @@ impl<D: GemmaDecode> GenerationExecutor for Gemma4Executor<D> {
 
     fn submit(&mut self, batch: &[BatchItem]) -> Result<SubmissionId, ExecutionError> {
         let owner = self.execution.as_mut().expect("executor owns execution");
-        if owner.phase != Phase::Prepared || owner.items != batch {
+        if owner.phase != Phase::Prepared
+            || !owner
+                .rows
+                .iter()
+                .map(BoundRow::work)
+                .eq(batch.iter().copied())
+        {
             return Err(ExecutionError::new(
                 "submission differs from its preparation",
             ));
@@ -285,13 +259,11 @@ impl<D: GemmaDecode> GenerationExecutor for Gemma4Executor<D> {
                 .states
                 .get_mut(&row.sequence)
                 .expect("validated sequence");
-            state.cursor = row.prefix;
-            if let Some(&token) = row.tokens.first() {
-                state.input = Some(token);
-                state.remaining -= 1;
-            }
+            state
+                .logical
+                .commit(row.prefix, row.tokens.first().copied());
         }
-        owner.items.clear();
+        owner.rows.clear();
         owner.phase = Phase::Idle;
         Ok(Some(rows))
     }
@@ -299,7 +271,7 @@ impl<D: GemmaDecode> GenerationExecutor for Gemma4Executor<D> {
     fn release(&mut self, sequence: SequenceId) -> Result<(), ExecutionError> {
         let owner = self.execution.as_mut().expect("executor owns execution");
         if matches!(owner.phase, Phase::Failed | Phase::Retiring)
-            || owner.items.iter().any(|item| item.sequence == sequence)
+            || owner.rows.iter().any(|row| row.work().sequence == sequence)
         {
             return Err(ExecutionError::new(
                 "cannot release prepared, submitted or failed state",

@@ -2,8 +2,8 @@
 
 use crate::{GemmaProcessor, ProcessorLimits, TextConfig, TextError, TextOwner};
 use engine_gemma4::{Gemma4Executor, Gemma4Source};
-use ribn::Engine;
 use ribn::driver::{Driver, DriverConfig};
+use ribn::{Engine, GenerationExecutor};
 use ribn_hf::LocalModelPackage;
 use std::sync::Arc;
 
@@ -83,11 +83,11 @@ impl TextOwner {
 
 fn assemble<E>(
     package: &LocalModelPackage,
-    executor: Gemma4Executor<E>,
+    executor: E,
     model_bytes: u64,
 ) -> Result<(TextOwner, GemmaLoadReport), TextError>
 where
-    E: engine_gemma4::GemmaDecode + 'static,
+    E: GenerationExecutor + 'static,
 {
     let engine = Engine::with_defaults(executor).map_err(TextError::Engine)?;
     let driver = DriverConfig::for_engine(&engine);

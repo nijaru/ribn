@@ -98,6 +98,13 @@ the common AR scheduler or the CPU oracle.
    originally submitted row order. Any later depth-two extension
    needs its own qualified runtime/resource change.
 
+Host prerequisites now separate decoder-independent logical metadata and accepted-row
+binding in `gemma4/src/generation.rs` from serial physical execution. The ordinary Gemma
+loader accepts `GenerationExecutor`, without changing backend selection. Admission
+regressions cover clean refusal, fatal partial construction, stopped later admission and
+retained peer/storage charges through failed drain and successful retry. These are not
+multi-request GPU execution or CUDA failed-allocation qualification.
+
 Host acceptance: whole-offer prevalidation, exact range/cursor
 and row mapping, state-only intermediate prefill, fallback,
 cancellation, partial enqueue, failed drain and retryable release.
