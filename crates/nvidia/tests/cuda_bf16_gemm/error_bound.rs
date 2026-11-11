@@ -76,8 +76,9 @@ fn model_projection_shapes_satisfy_an_independent_accumulation_bound() {
     // The tied vocabulary head alone occupies 1.25 GiB. This is a component
     // gate, not automatic selection of batched vocabulary/model decode.
     let pool = BytePool::new(2 * 1024 * 1024 * 1024).shared();
-    // Preserve the qualified prefill rows and add the independent decode scope.
-    // The newly tested vocabulary head needs only the new one/four-row gate.
+    // Preserve prefill rows and cover the two-member shared-projection lane.
+    // Model-wide decode still selects one row for the vocabulary head; retain
+    // its existing one/four-row component scope, not a new two-row head.
     for (k, n) in [
         (2560, 10752),
         (2560, 2048),
@@ -114,7 +115,7 @@ fn model_projection_shapes_satisfy_an_independent_accumulation_bound() {
         let rows: &[usize] = if n == 262_144 {
             &[1, 4]
         } else {
-            &[1, 4, 8, 16]
+            &[1, 2, 4, 8, 16]
         };
         for &m in rows {
             let input_bits: Vec<u16> = (0..m)

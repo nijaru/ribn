@@ -174,6 +174,26 @@ The [component gate](../benchmarks/runtime-contract.md#native-bf16-command-strea
 covers independent unequal histories, not a complete model-wide Gemma forward.
 The current loader does not select this regime.
 
+`cuda/decoder/modelwide.rs` now provides a separate experimental physical owner,
+`Gemma4CudaModelWide`. It owns one weight inventory, the opaque stream, mutable
+sequence caches/positions, scalar and qualified prefill workspaces, packed workspace,
+partial construction and pending/failed command envelopes. `modelwide/packed.rs`
+shares two-row projections, FFN and PLE work across all 42 layers; each member appends
+to and attends against its own KV history. The vocabulary head remains one row per
+member. PLE readback and factor/context staging still precede the queued stack;
+full logits still return to host. This is not a fully device-resident pipeline.
+
+`modelwide/executor.rs` implements `Gemma4CudaExecutor` over that owner and the same
+pure logical binder as the serial executor. It pairs compatible ordinary-decode rows
+inside offers of up to four, acknowledges each pair before workspace reuse, and uses
+qualified single-request fallback for other rows. Results retain original offer slots;
+no logical cursor/input/output budget commits until every row validates. Cancellation
+outside the submitted offer can retire a cache logically without waiting or refunding
+its backing before acknowledgement. Recording failures, partial loads and failed
+retirement retain actual resources under retryable owners or whole-owner quarantine.
+The [device gate](../benchmarks/runtime-contract.md#model-wide-gemma-cuda-device-gate-2026-11-11)
+covers the first model-wide implementation, not automatic selection or serving gains.
+
 A host-orchestrated CUDA decoder now binds the components, keeps KV owner caches
 device-resident and reproduces the archived greedy chat tokens through the engine, the
 text facade and `ribn run-gemma` (CUDA or Metal). Completion-owned device copies append

@@ -428,6 +428,20 @@ impl CudaBf16Commands {
         })
     }
 
+    /// Abandon queued results and explicitly drain their accesses without submission.
+    /// A model-level validation failure can retain this owner and retry cleanup.
+    /// Successful cleanup never publishes abandoned outputs.
+    /// # Errors
+    /// Failed drain retains the complete access set for another attempt.
+    pub fn retire(&mut self) -> Result<(), CudaBf16Error> {
+        self.progress.fail();
+        if let Some(pending) = self.pending.as_mut() {
+            pending.retire()?;
+            self.pending = None;
+        }
+        Ok(())
+    }
+
     /// Record the sole terminal event after all commands. Does not wait for it.
     /// # Errors
     /// Empty/faulted transactions or event-record failures retain their whole envelope.
@@ -744,6 +758,144 @@ mod tests {
             submitted.poll().is_err(),
             "cleanup must not revive failed execution"
         );
+    }
+
+    #[test]
+    #[ignore = "requires CUDA; serialize device qualification"]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one real enqueue/failed drain/retry lifecycle, including capture cleanup before assertions"
+    )]
+    fn recording_failed_drain_retains_actual_resources_until_retry_without_publication() {
+        use super::super::Operation;
+        use cudarc::driver::CudaContext;
+        use engine_core::{DataType, WeightTensorSpec};
+        use ribn_foundation::BytePool;
+        use std::io::Cursor;
+
+        let context = CudaContext::new(0).unwrap();
+        let domain = CudaBf16Stream::new(&context).unwrap();
+        let pool = BytePool::new(1024 * 1024).shared();
+        let spec = WeightTensorSpec::new("scale", vec![4], DataType::BF16).unwrap();
+        let mut weights = domain.weights(vec![spec], &pool, 8).unwrap();
+        weights
+            .upload(0, &mut Cursor::new([0x80, 0x3f].repeat(4)))
+            .unwrap();
+        let mut rms = domain.rms_norm().unwrap();
+        let mut input = domain.matrix(2, 4, &pool, 16).unwrap();
+        input.upload(&[0x80, 0x3f].repeat(8)).unwrap();
+        let mut output = domain.matrix(2, 4, &pool, 16).unwrap();
+        output.upload(&[0x00, 0x40].repeat(8)).unwrap();
+        let output_charge = output.allocated_bytes();
+        let input_owner = Arc::downgrade(&input.allocation);
+        let output_owner = Arc::downgrade(&output.allocation);
+        let mut commands = CudaBf16Commands::new(&domain, 1).unwrap();
+        commands
+            .normalize_into(
+                &mut rms,
+                Some((&mut weights, 0)),
+                4,
+                1e-6,
+                &mut input,
+                &mut output,
+            )
+            .unwrap();
+        // Observe the actual retained compiled program and scale allocation, not
+        // dummy owners or a synthetic pool charge. Weak refs cannot extend them.
+        let resources = commands.pending.as_ref().unwrap().resources().unwrap();
+        let Access::Matrices {
+            operation:
+                Operation::Rms {
+                    program,
+                    _scale: Some(scale),
+                },
+            ..
+        } = &resources.accesses[0]
+        else {
+            panic!("weighted RMS must retain its compiled program and scale");
+        };
+        let program_owner = Arc::downgrade(program);
+        let scale_owner = Arc::downgrade(scale);
+        let grant = pool.granted();
+        assert!(grant > output_charge);
+        assert!(!output.ready());
+
+        // Private fault injection begins ONLY after real computation enqueues.
+        // Nothing is enqueued during capture: no computation is captured/replayed,
+        // no terminal event is replaced and opaque public authority is unchanged.
+        domain
+            .stream
+            .begin_capture(sys::CUstreamCaptureMode::CU_STREAM_CAPTURE_MODE_THREAD_LOCAL)
+            .unwrap();
+        let drain = commands.retire();
+        let ended = domain.stream.end_capture(
+            sys::CUgraphInstantiate_flags::CUDA_GRAPH_INSTANTIATE_FLAG_AUTO_FREE_ON_LAUNCH,
+        );
+        // Synchronizing a captured stream may invalidate capture. cudarc returns
+        // None for a null graph, or owns graph/exec destruction for Some(graph).
+        let capture_ended = matches!(
+            ended,
+            Ok(_)
+                | Err(result::DriverError(
+                    sys::cudaError_enum::CUDA_ERROR_STREAM_CAPTURE_INVALIDATED
+                ))
+        );
+        drop(ended);
+        let rejected = commands.copy_rows(&mut output, 0, &input, 0..2);
+        drop(input);
+        drop(weights);
+        drop(rms);
+        let retained = pool.granted();
+        let owners_retained = input_owner.strong_count() > 0
+            && scale_owner.strong_count() > 0
+            && program_owner.strong_count() > 0;
+        let invalid_before_retry = matches!(output.read_chunk(0, 2), Err(CudaBf16Error::Poisoned));
+        let retry = commands.retire();
+        // End capture, destroy any empty graph and retry before assertions, as in
+        // the terminal-event fault test above; a failure must not strand capture.
+        assert!(matches!(
+            drain,
+            Err(CudaBf16Error::Transport {
+                operation: "BF16 command retirement",
+                ..
+            })
+        ));
+        assert!(capture_ended);
+        let rejected = rejected.unwrap_err();
+        assert!(matches!(rejected.cause(), CudaBf16Error::Poisoned));
+        assert!(
+            !rejected.retirement_pending(),
+            "retry owner stays in commands"
+        );
+        assert_eq!(retained, grant, "failed drain cannot refund dropped owners");
+        assert!(owners_retained);
+        assert!(invalid_before_retry);
+        retry.unwrap();
+        assert!(commands.pending.is_none());
+        assert_eq!(input_owner.strong_count(), 0);
+        assert_eq!(scale_owner.strong_count(), 0);
+        assert_eq!(program_owner.strong_count(), 0);
+        assert_eq!(pool.granted(), output_charge);
+        commands.retire().unwrap();
+        assert_eq!(pool.granted(), output_charge);
+        assert!(!output.ready());
+        assert!(matches!(
+            output.read_chunk(0, 2),
+            Err(CudaBf16Error::Poisoned)
+        ));
+        assert!(matches!(
+            output.upload(&[0x80, 0x3f].repeat(8)),
+            Err(CudaBf16Error::Poisoned)
+        ));
+        let failure = commands
+            .submit()
+            .err()
+            .expect("cleanup cannot revive recording");
+        assert!(matches!(failure.cause(), CudaBf16Error::Poisoned));
+        assert!(!failure.retirement_pending());
+        drop(output);
+        assert_eq!(output_owner.strong_count(), 0);
+        assert_eq!(pool.granted(), 0);
     }
 
     #[test]

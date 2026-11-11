@@ -1,7 +1,9 @@
 //! Model normalization semantics over backend-owned BF16 storage/completion.
 use super::Gemma4CudaWeights;
 use crate::{LayerParameter, ParameterId};
-use engine_nvidia::{CudaBf16ComputeError, CudaBf16Error, CudaBf16Matrix, CudaBf16RmsNorm};
+use engine_nvidia::{
+    CudaBf16Commands, CudaBf16ComputeError, CudaBf16Error, CudaBf16Matrix, CudaBf16RmsNorm,
+};
 
 impl Gemma4CudaWeights {
     /// Apply one active learned RMS scale directly, with this model's epsilon.
@@ -17,6 +19,40 @@ impl Gemma4CudaWeights {
         input: &mut CudaBf16Matrix,
         output: &mut CudaBf16Matrix,
     ) -> Result<(), CudaBf16ComputeError> {
+        let (width, slot) = self.rms_binding(parameter, input.shape().1)?;
+        execution.normalize_into(
+            Some((&mut self.storage, slot)),
+            width,
+            self.config.rms_norm_eps(),
+            input,
+            output,
+        )
+    }
+
+    pub(super) fn rms_norm_queued(
+        &mut self,
+        parameter: ParameterId,
+        commands: &mut CudaBf16Commands,
+        execution: &mut CudaBf16RmsNorm,
+        input: &mut CudaBf16Matrix,
+        output: &mut CudaBf16Matrix,
+    ) -> Result<(), CudaBf16ComputeError> {
+        let (width, slot) = self.rms_binding(parameter, input.shape().1)?;
+        commands.normalize_into(
+            execution,
+            Some((&mut self.storage, slot)),
+            width,
+            self.config.rms_norm_eps(),
+            input,
+            output,
+        )
+    }
+
+    fn rms_binding(
+        &self,
+        parameter: ParameterId,
+        input_columns: usize,
+    ) -> Result<(usize, usize), CudaBf16ComputeError> {
         let hidden = self.config.hidden_size();
         let (width, columns) = match parameter {
             ParameterId::PleNorm => (self.config.ple_dim(), self.config.packed_ple_dim()),
@@ -46,19 +82,13 @@ impl Gemma4CudaWeights {
             }
             _ => return Err(CudaBf16Error::Invalid("parameter is not an RMS scale").into()),
         };
-        if input.shape().1 != columns {
+        if input_columns != columns {
             return Err(CudaBf16Error::Invalid("RMS input does not match model geometry").into());
         }
         let slot = self
             .parameter_slot(parameter)
             .ok_or(CudaBf16Error::Invalid("RMS scale has no active allocation"))?;
-        execution.normalize_into(
-            Some((&mut self.storage, slot)),
-            width,
-            self.config.rms_norm_eps(),
-            input,
-            output,
-        )
+        Ok((width, slot))
     }
 
     /// Normalize fresh V projections without a learned scale, once at their KV
@@ -72,22 +102,40 @@ impl Gemma4CudaWeights {
         input: &mut CudaBf16Matrix,
         output: &mut CudaBf16Matrix,
     ) -> Result<(), CudaBf16ComputeError> {
+        let width = self.value_width(layer, input.shape().1)?;
+        execution.normalize_into(None, width, self.config.rms_norm_eps(), input, output)
+    }
+
+    pub(super) fn value_norm_queued(
+        &mut self,
+        layer: usize,
+        commands: &mut CudaBf16Commands,
+        execution: &mut CudaBf16RmsNorm,
+        input: &mut CudaBf16Matrix,
+        output: &mut CudaBf16Matrix,
+    ) -> Result<(), CudaBf16ComputeError> {
+        let width = self.value_width(layer, input.shape().1)?;
+        commands.normalize_into(
+            execution,
+            None,
+            width,
+            self.config.rms_norm_eps(),
+            input,
+            output,
+        )
+    }
+
+    fn value_width(&self, layer: usize, columns: usize) -> Result<usize, CudaBf16ComputeError> {
         let geometry = self
             .config
             .layers()
             .get(layer)
             .ok_or(CudaBf16Error::Invalid("V RMS layer outside decoder"))?;
         if geometry.kv_owner != layer
-            || input.shape().1 != self.config.num_key_value_heads() * geometry.head_dim
+            || columns != self.config.num_key_value_heads() * geometry.head_dim
         {
             return Err(CudaBf16Error::Invalid("V RMS requires an owner projection").into());
         }
-        execution.normalize_into(
-            None,
-            geometry.head_dim,
-            self.config.rms_norm_eps(),
-            input,
-            output,
-        )
+        Ok(geometry.head_dim)
     }
 }

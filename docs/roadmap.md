@@ -11,7 +11,9 @@ open implementation choices and acceptance gates. All v0 interfaces may change.
 physical execution while retaining the Rust AR serving authority.**
 The [model-wide design](inference-engine-design.md#model-wide-physical-execution-selected-2026-11-05)
 and [physical resource protocol](resource-protocol.md#model-wide-physical-preparation-and-result-mapping)
-are now the implementation contracts, not achieved functionality.
+are the implementation contracts. The experimental Gemma CUDA owner now passes its
+first model-wide device gate; ordinary loading and serving still use the qualified
+serial path, and competitive acceptance remains open.
 
 The source confirms Gemma's `executor/batch.rs` executes each offered
 sequence with a synchronous decoder call. Its CUDA sixteen/eight-row
@@ -124,11 +126,21 @@ now passes its component device gate: a privately owned, uncapturable stream dom
 bounded dependent BF16 operations, nonblocking event query and explicit retirement.
 Its two-row graph shares projections while preserving unequal member KV histories;
 memcheck/initcheck report zero errors. Existing blocking primitives and Gemma gates
-also pass after the dispatch refactor. This is **not** the model-wide exit: no new
-Gemma physical owner, complete multi-sequence forward or loader selection exists yet.
-Construct that owner and its resources through the opaque domain; do not expose the
-qualified serial model's raw stream to force adoption. Full-model numerical, lifecycle,
-quality and mixed-arrival serving qualification remain required.
+also pass after the dispatch refactor. The subsequent
+[model-wide device gate](../benchmarks/runtime-contract.md#model-wide-gemma-cuda-device-gate-2026-11-11)
+now establishes actual two-sequence shared projections through all 42 layers, with a
+separate physical owner and `GenerationExecutor`, independent KV/window routing,
+whole-offer commitment, deferred cancellation retirement and partial construction/
+enqueue ownership. Common-history archived winners, unchanged prefill bits, M2
+projection bounds and full-model memcheck/initcheck pass. Two-pair offers also
+acknowledge workspace reuse before whole-offer commitment. This meets the first
+physical-sharing proof, not loader promotion or competitive serving acceptance.
+The ordinary loader remains serial. Before cutover, close the intended selection
+scope (including the service's maximum context), run the frozen-128 no-per-item-loss
+screen against a fresh native control, then measure private mixed-arrival serving.
+Full-model failed-driver-drain remains composed native/owner evidence rather than a
+directly injected model-wide fault. Preserve that scope distinction; do not expose the
+qualified serial model's raw stream to force adoption or fault injection.
 
 Host acceptance: whole-offer prevalidation, exact range/cursor
 and row mapping, state-only intermediate prefill, fallback,

@@ -29,8 +29,10 @@ const WEIGHT_STAGING: usize = 1024 * 1024;
 const GEMM_WORKSPACE: usize = 8 * 1024 * 1024;
 
 mod buffers;
+mod modelwide;
 mod preparation;
 use buffers::{Buffers, CacheConstruction, DeviceCache, GeometryBuffers};
+pub use modelwide::{Gemma4CudaExecutor, Gemma4CudaModelWide, Gemma4CudaModelWideLoadError};
 use preparation::PREFILL_LANES;
 
 struct Executors {

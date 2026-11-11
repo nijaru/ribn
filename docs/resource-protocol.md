@@ -120,7 +120,10 @@ Do not stall healthy requests merely because another request is waiting.
 
 ### Model-wide physical preparation and result mapping
 
-Status: selected target, **not implemented** for Gemma GPU execution.
+Status: experimental depth-one Gemma CUDA implementation, not ordinary-loader
+selection. The [model-wide device gate](../benchmarks/runtime-contract.md#model-wide-gemma-cuda-device-gate-2026-11-11)
+covers two-member shared projections and whole-offer ownership; serving promotion
+and wider qualification remain pending.
 The AR runtime keeps ordinary `BatchItem` offers and
 `GenerationExecutor`. The model/backend binds every accepted row to
 a stable sequence identity/incarnation, committed prefix, exact positive
@@ -144,6 +147,17 @@ progress. A partially enqueued failure retains every referenced
 submission, sequence owner and physical charge and faults the execution
 owner. Measure offered, accepted, physically batched, fallback, enqueued
 and completed work separately.
+
+For the depth-one Gemma candidate, one offer may contain multiple two-member
+ordinary-decode lanes plus qualified single-request fallback work. Acknowledge each
+lane before reusing mutable workspace; retain every result until the entire offer
+validates, then commit in original offer order. A cancelled sequence outside the
+submitted offer may be logically released while a lane is pending. Mark its existing
+physical cache owner retired without waiting or refunding bytes; reclaim it only
+after lane acknowledgement or explicit shutdown. The retained population stays
+within the prepared sequence bound. Submitted members cannot be released before
+whole-offer completion. A failed acknowledgement or cache retirement faults the
+owner and retains all uncertain resources, including those retired caches.
 
 ## Output ownership and boundedness
 
@@ -1232,8 +1246,10 @@ this scope does not establish sampling fidelity, task quality or SLO goodput.
 
 ### Reordered cross-sequence CUDA decode
 
-Status: accepted **advancement contract**, not implemented qualification. The original
-four-sequence prototype still fails its frozen bit-equality gate. A new experiment may
+Status: accepted **advancement contract**. The new two-member model-wide candidate
+passes component, own-produced-KV and common-history device gates, but its frozen QA
+and serving advancement remain pending. The original four-sequence prototype still
+fails its frozen bit-equality gate. A new experiment may
 qualify reordered decode without scalar-logit bit equality; it must not relabel that
 old result. The [frozen Gemma gate](../benchmarks/gemma4-cuda-baseline.md#reordered-four-sequence-decode-advancement-contract-2026-10-29)
 owns the concrete cohort and pass criteria.

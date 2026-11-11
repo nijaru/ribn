@@ -2087,8 +2087,86 @@ closed-operand and permanent-poison classification regressions; both pass after 
 The blocking-dispatch regression in sibling `20261111T162012Z-regression/` passes
 15 existing native primitive cases and all six Gemma decoder/executor/pressure cases
 listed above. Subsequent opaque-domain and queued-state changes do not alter that
-blocking path. No full-model ordered execution, new HTTP quality comparison, concurrent
-submission qualification, running-kernel fault recovery or competitive gain is claimed.
+blocking path. This component receipt does not establish full-model ordered execution,
+new HTTP quality, concurrent submissions, running-kernel fault recovery or competitive
+gain. The subsequent model-wide gate below has its own evidence and limits.
+
+### Model-wide Gemma CUDA device gate (2026-11-11)
+
+The explicit `Gemma4CudaModelWide` / `Gemma4CudaExecutor` candidate now performs
+shared two-row projections, FFN and PLE operations through all 42 layers on the same
+idle RTX 4090 and unchanged package/toolchain listed above. Each member owns its KV
+history and position; attention and the vocabulary head remain per member. PLE has
+an initial host readback and contexts/factors are staged before the dependent stack.
+The ordinary text/CLI/HTTP loader **still selects serial CUDA**.
+
+The real-package gates pass:
+
+- Three archived histories (18, 511 and 513 tokens) retain all 12 independent winners.
+  Paired decode uses common archived `input_ids`, including forced token 562 after
+  the window prompts, not a previous winner. Both unequal-history pair cohorts
+  reverse member order. Qualified prefill full rows match the serial control exactly.
+  Paired-logit changes (maximum absolute differences 0.28125–0.625) are diagnostic,
+  not an accumulated error tolerance or distributional-equivalence claim.
+- All changed non-head projection geometries include M2 in the independent FP32
+  accumulation/BF16-rounding certificate. Its oracle/bound is unchanged; the head
+  retains its existing M1/M4 component scope and is selected only at M1 here.
+- Test-owned device copies capture each KV owner's actual produced K/V before
+  workspace reuse. Appends equal the correct producer row bit-for-bit, every prior
+  prefix is preserved, initialized/capacity bounds hold, and sliding-window attention
+  equals the same visible suffix with identical arithmetic. All 42 layers execute
+  the actual private production layer helper, with one final acknowledgement.
+- The real adapter handles state-only/final prefill, nonadjacent pair members, scalar
+  remainder and original-order completion. A four-row offer acknowledges pair one
+  before starting pair two, without logical commitment or member release in between.
+  Three concurrent ordinary Engine requests reproduce the four archived greedy chat
+  tokens using their own generated histories and finish with exact usage.
+- Cancelling an unrelated sequence while a pair is pending retains exactly its cache
+  charge until acknowledgement. A malformed later row starts no earlier row. A late
+  missing head binding after positive GPU work retains the recording stack; an
+  earlier successful fallback in that offer does not commit logical progress.
+- A weight-only pool rejects the next GEMM workspace before any sequence exists.
+  The owning load error retains the actual uploaded inventory until explicit,
+  idempotent retirement. Closing successful or failed owners refunds all grants.
+  Recording-command abandonment and a private real failed-drain/retry case also pass;
+  the latter checks actual allocations and compiled-program retention, never revival.
+
+Reproduce with pinned `RIBN_GEMMA_PACKAGE` / `RIBN_GEMMA_REFERENCE` as above, one model
+process at a time:
+
+```sh
+cargo test -p engine-gemma4 --features cuda --locked --release --lib \
+  cuda::decoder::modelwide:: -- --ignored --test-threads=1 --nocapture
+cargo test -p engine-gemma4 --features cuda --locked --release \
+  --test cuda_modelwide -- --ignored --test-threads=1 --nocapture
+cargo test -p engine-nvidia --features cuda --locked --release \
+  --test cuda_bf16_gemm model_projection_shapes_satisfy_an_independent_accumulation_bound \
+  -- --ignored --test-threads=1 --nocapture
+cargo test -p engine-nvidia --features cuda --locked --release --lib \
+  commands::tests -- --ignored --test-threads=1 --nocapture
+```
+
+Receipts under `desktop:~/github/nijaru/ribn/benchmarks/results/qualification/gemma4-modelwide/`:
+`20261111T180041Z-component-and-fallback` (five native integration cases, M2 certificate,
+all six existing Gemma gates and the initial model-wide gate),
+`20261111T182300Z-runtime-and-state` (five real-owner cases and public model/Engine gate),
+`20261111T183442Z-two-pair-acknowledgement` (expanded four-row/whole-offer case).
+All executed tests and their pipeline stages exit **0**. The first receipt's initial
+private-unit selector matched zero tests; `retirement-unit-corrected-filter.log`
+records the corrected selector and both actual driver-failure cases passing.
+
+The public full-model/Engine gate also passes Compute Sanitizer **memcheck and
+initcheck with zero errors**, receipt `20261111T182503Z-sanitizers`. Source snapshots,
+binary path, logs and actual exit codes are retained; the later two-pair test expansion
+and shared four-sequence constant do not change the sanitized computation. GPUs are
+idle after the campaigns. The earlier `20261111T173657Z-initial-pairs` failure was a
+control-test input-history error before the candidate loaded; expected winners and
+production mathematics were not changed to repair it.
+
+These gates do not establish the service's full 4K selection scope, frozen-128 QA,
+automatic loading, throughput, SLO goodput, memory peaks or broad quality equivalence.
+Real driver failure/retry is qualified in the native private domain; failed model-wide
+drain is not directly device-injected. Preserve that composed-evidence limit.
 
 ### State-only prefill Metal fallback (2026-10-30)
 

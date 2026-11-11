@@ -411,6 +411,65 @@ fn dependent_commands_match_blocking_bits_and_preserve_member_histories() {
 
 #[test]
 #[ignore = "requires CUDA; serialize device qualification"]
+fn recording_retirement_abandons_outputs_and_releases_dropped_projection_owners() {
+    let context = CudaContext::new(0).unwrap();
+    let stream = CudaBf16Stream::new(&context).unwrap();
+    let pool = BytePool::new(2 * 1024 * 1024).shared();
+    let spec = WeightTensorSpec::new("projection", vec![16, 16], DataType::BF16).unwrap();
+    let mut weights = stream.weights(vec![spec], &pool, 512).unwrap();
+    weights.upload(0, &mut Cursor::new(bytes(16, 1))).unwrap();
+    let mut gemm = stream.gemm(&pool, 1 << 20).unwrap();
+    let mut input = matrix(&stream, &pool, 2);
+    input.upload(&bytes(2, 2)).unwrap();
+    let mut output = matrix(&stream, &pool, 2);
+    output.upload(&bytes(2, 3)).unwrap();
+    let output_charge = output.allocated_bytes();
+    let mut commands = CudaBf16Commands::new(&stream, 1).unwrap();
+    commands
+        .linear_into(&mut gemm, &mut weights, 0, &mut input, &mut output)
+        .unwrap();
+    assert!(!output.ready());
+    assert!(matches!(output.read_chunk(0, 2), Err(CudaBf16Error::InUse)));
+    assert!(matches!(input.close(), Err(CudaBf16Error::InUse)));
+    assert!(matches!(weights.close(), Err(CudaBf16Error::InUse)));
+    assert!(matches!(gemm.close(), Err(CudaBf16Error::InUse)));
+    let grant = pool.granted();
+    assert!(grant > output_charge);
+    drop(input);
+    drop(weights);
+    drop(gemm);
+    assert_eq!(pool.granted(), grant, "recording retains the actual owners");
+
+    // No submit or terminal event record: the model abandons positive work.
+    commands.retire().unwrap();
+    assert_eq!(
+        pool.granted(),
+        output_charge,
+        "drain releases operand, weight and cuBLAS-program workspace charges"
+    );
+    commands.retire().unwrap();
+    assert_eq!(pool.granted(), output_charge, "retirement is idempotent");
+    assert!(!output.ready());
+    assert!(matches!(
+        output.read_chunk(0, 2),
+        Err(CudaBf16Error::Poisoned)
+    ));
+    assert!(matches!(
+        output.upload(&bytes(2, 4)),
+        Err(CudaBf16Error::Poisoned)
+    ));
+    let failure = commands
+        .submit()
+        .err()
+        .expect("retired recording cannot submit");
+    assert!(matches!(failure.cause(), CudaBf16Error::Poisoned));
+    assert!(!failure.retirement_pending());
+    output.close().unwrap();
+    assert_eq!(pool.granted(), 0);
+}
+
+#[test]
+#[ignore = "requires CUDA; serialize device qualification"]
 fn later_validation_failure_retains_prior_accesses_and_never_publishes() {
     let context = CudaContext::new(0).unwrap();
     let stream = CudaBf16Stream::new(&context).unwrap();

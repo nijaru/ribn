@@ -1,8 +1,26 @@
 use super::Gemma4CudaWeights;
 use crate::ParameterId;
-use engine_nvidia::{CudaBf16ComputeError, CudaBf16Error, CudaBf16Gemm, CudaBf16Matrix};
+use engine_nvidia::{
+    CudaBf16Commands, CudaBf16ComputeError, CudaBf16Error, CudaBf16Gemm, CudaBf16Matrix,
+};
 
 impl Gemma4CudaWeights {
+    pub(super) fn linear_queued(
+        &mut self,
+        parameter: ParameterId,
+        commands: &mut CudaBf16Commands,
+        execution: &mut CudaBf16Gemm,
+        input: &mut CudaBf16Matrix,
+        output: &mut CudaBf16Matrix,
+    ) -> Result<(), CudaBf16ComputeError> {
+        let slot = self
+            .parameter_slot(parameter)
+            .ok_or(CudaBf16Error::Invalid(
+                "logical projection has no active allocation",
+            ))?;
+        commands.linear_into(execution, &mut self.storage, slot, input, output)
+    }
+
     /// Bind one active logical projection to native BF16 linear execution.
     /// `TokenEmbedding` is the raw tied output head, not a scaled embedding lookup.
     /// Norms, activation functions, `RoPE` and layer ordering remain model semantics;

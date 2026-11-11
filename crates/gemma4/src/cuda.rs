@@ -5,12 +5,15 @@ mod host;
 mod linear;
 mod norm;
 
-pub use decoder::{Gemma4CudaDecoder, Gemma4CudaModel};
+pub use decoder::{
+    Gemma4CudaDecoder, Gemma4CudaExecutor, Gemma4CudaModel, Gemma4CudaModelWide,
+    Gemma4CudaModelWideLoadError,
+};
 
 use crate::{Gemma4Config, Gemma4Error, Gemma4Source, ParameterId};
 use cudarc::driver::CudaStream;
 use engine_core::{DataType, WeightTensorSpec};
-use engine_nvidia::{CudaBf16Error, CudaBf16Weights};
+use engine_nvidia::{CudaBf16Error, CudaBf16Stream, CudaBf16Weights};
 use ribn_foundation::{AllocationId, BytePool};
 use std::{collections::BTreeMap, error::Error, fmt, sync::Arc};
 
@@ -118,6 +121,30 @@ impl Gemma4CudaWeights {
         pool: &Arc<BytePool>,
         staging_bytes: usize,
     ) -> Result<Self, Gemma4CudaLoadError> {
+        Self::load_with(source, |specs| {
+            CudaBf16Weights::allocate(specs, stream, pool, staging_bytes)
+        })
+    }
+
+    /// Materialize the same preflighted inventory in a private ordered domain.
+    /// No caller-owned raw stream is adopted or exposed.
+    /// # Errors
+    /// Retains partial uploads for explicit retirement, as [`Self::load`].
+    /// # Panics
+    /// Only if NVIDIA violates its complete-upload publication invariant.
+    pub fn load_on(
+        source: &Gemma4Source,
+        stream: &CudaBf16Stream,
+        pool: &Arc<BytePool>,
+        staging_bytes: usize,
+    ) -> Result<Self, Gemma4CudaLoadError> {
+        Self::load_with(source, |specs| stream.weights(specs, pool, staging_bytes))
+    }
+
+    fn load_with(
+        source: &Gemma4Source,
+        allocate: impl FnOnce(Vec<WeightTensorSpec>) -> Result<CudaBf16Weights, CudaBf16Error>,
+    ) -> Result<Self, Gemma4CudaLoadError> {
         let mut slots = BTreeMap::new();
         let mut specs = Vec::with_capacity(source.parameters().len());
         for (&id, parameter) in source.parameters() {
@@ -142,10 +169,8 @@ impl Gemma4CudaWeights {
             specs.push(descriptor);
         }
         let config = source.config().clone();
-        let mut storage = Box::new(
-            CudaBf16Weights::allocate(specs, stream, pool, staging_bytes)
-                .map_err(|e| Gemma4CudaLoadError::backend(e, None))?,
-        );
+        let mut storage =
+            Box::new(allocate(specs).map_err(|e| Gemma4CudaLoadError::backend(e, None))?);
         for (slot, parameter) in source.parameters().values().enumerate() {
             if let Err(error) = storage.upload(slot, &mut parameter.reader()) {
                 return Err(Gemma4CudaLoadError::backend(error, Some(storage)));

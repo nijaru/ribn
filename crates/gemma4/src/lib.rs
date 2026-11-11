@@ -7,11 +7,15 @@
 
 #[cfg(feature = "cuda")]
 mod cuda;
+#[cfg(all(test, feature = "cuda"))]
+#[path = "../tests/support/modelwide_ids.rs"]
+mod cuda_test_support;
 #[cfg(all(feature = "metal", target_os = "macos"))]
 mod metal;
 #[cfg(feature = "cuda")]
 pub use cuda::{
-    Gemma4CudaDecoder, Gemma4CudaError, Gemma4CudaLoadError, Gemma4CudaModel, Gemma4CudaWeights,
+    Gemma4CudaDecoder, Gemma4CudaError, Gemma4CudaExecutor, Gemma4CudaLoadError, Gemma4CudaModel,
+    Gemma4CudaModelWide, Gemma4CudaModelWideLoadError, Gemma4CudaWeights,
 };
 #[cfg(all(feature = "metal", target_os = "macos"))]
 pub use metal::{
