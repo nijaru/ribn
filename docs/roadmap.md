@@ -35,7 +35,11 @@ establishes a clean competitive ranking.
    than ranking only successful request subsets. Use the current single-turn
    runner for this first baseline; causal closed-loop agent replay and
    job-level metrics need separate client qualification, not an engine
-   orchestrator or a new prerequisite for the first comparison.
+   orchestrator or a new prerequisite for the first comparison. The
+   [2026-11-11 frozen HTTP QA](../benchmarks/gemma4-cuda-baseline.md#frozen-corpus-http-qa-2026-11-11)
+   completes 128/128 at c1/c4 for both engines, but retains two native lexical
+   losses against SGLang. This is not matched-quality competitive acceptance;
+   preserve those cases and the fixed scoring policy for the model-wide path.
 2. **Model-wide Gemma CUDA execution.** Replace optimized per-sequence
    `GemmaDecode` dispatch with a shared model/backend prepared batch.
    Bind stable sequence incarnations, physical lane membership, exact
@@ -108,8 +112,12 @@ Host prerequisites now separate decoder-independent logical metadata and accepte
 binding in `gemma4/src/generation.rs` from serial physical execution. The ordinary Gemma
 loader accepts `GenerationExecutor`, without changing backend selection. Admission
 regressions cover clean refusal, fatal partial construction, stopped later admission and
-retained peer/storage charges through failed drain and successful retry. These are not
-multi-request GPU execution or CUDA failed-allocation qualification.
+retained peer/storage charges through failed drain and successful retry. The
+[2026-11-11 CUDA recheck](../benchmarks/runtime-contract.md#current-source-cuda-resource-recheck-2026-11-11)
+passes six existing decoder/executor/pressure cases, including real partial-cache
+retirement and failed execution-drain retry. Uncertain partial-construction cleanup
+before any decoder exists remains host-injected, not device-qualified. None of these
+prerequisites establishes multi-request GPU weight work.
 
 Host acceptance: whole-offer prevalidation, exact range/cursor
 and row mapping, state-only intermediate prefill, fallback,

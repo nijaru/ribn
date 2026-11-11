@@ -48,6 +48,11 @@ def validate_payload(raw, manifest):
         and payload.get("min_new_tokens", 0) == 0,
         "request bypasses EOS",
     )
+    require(
+        payload.get("stop") in (None, [])
+        and payload.get("stop_token_ids") in (None, []),
+        "request adds custom generation stops",
+    )
     options = payload.get("stream_options")
     require(
         isinstance(options, dict) and options.get("include_usage") is True,

@@ -1693,6 +1693,77 @@ execution-provenance or population-quality acceptance. Host tests cover compensa
 aggregate scores, F1-only losses, incomplete/invalid records, EOS shrinking, capped
 answers, corpus mutation and non-overwrite behavior.
 
+### Frozen-corpus HTTP QA (2026-11-11)
+
+The current native HTTP path completes the frozen corpus at c1/c4, but **does not pass
+no-per-question-loss against the pinned SGLang incumbent**. This is new endpoint task
+evidence, not promotion of M4, a throughput comparison or broad quality equivalence.
+
+Four fresh model processes ran serially on the RTX 4090, driver **620.70.06**, Toolkit
+13.3.73 and Rust 1.98.0. Native source is `653d026`, with no execution changes for this
+collection. All nine package files match the pinned E4B revision above. The existing
+SGLang 0.5.22 environment passes its pinned source/package checks; no dependencies
+were updated. AIPerf remains 0.13.0. Current Rust raw/chat processing passes **256**
+cases over all 128 questions, and the installed SGLang tokenizer's actual default
+and explicit raw encodings match every frozen ID list and publisher-rendered prompt.
+These preflights are separate from what HTTP exports can attest.
+
+Each engine ran c1 and c4 on the identical zero-offset trace, greedy with EOS enabled,
+cap 64 and no client warmup. Native has four HTTP request slots/eight connections;
+SGLang has four running/twelve queued slots, 4096 total tokens and radix caching
+disabled. Client concurrency never exceeds four, so this does **not** match or test
+their overload admission policies. Whole text, finish/usage and `[DONE]` are audited;
+one capped answer per cohort remains scored whole, rather than treated as a completed
+answer or removed. Each cohort reports **26421 prompt tokens**.
+
+| Engine (both c1 and c4) | Valid terminals | Stop / length | Actual output tokens | Whole-answer EM | Mean token F1 |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Ribn | 128/128 | 127 / 1 | 1227 | 67/128 (52.34375%) | 77.882669% |
+| SGLang | 128/128 | 127 / 1 | 1224 | 69/128 (53.90625%) | 78.333390% |
+
+Within each engine, c1/c4 text and task scores are identical on every question. Across
+engines, 126 answers match and these two differ, identically at both concurrency levels:
+
+- `5730005db2c2fd1400568704`: Ribn returns `the profession of journalism` (EM false,
+  F1 1/2); SGLang returns the human alias `journalism` (EM true, F1 1).
+- `56f82454a6d7ea1400e173fd`: Ribn returns `and whether he stood by their contents.`
+  (EM false, F1 12/13); SGLang returns `whether he stood by their contents.`
+  (EM true, F1 1).
+
+The incumbent-to-native comparisons are complete failures, exit **1**, with those
+same two losses and no compensating gains. Native-to-incumbent comparisons have two
+gains and no losses; direction matters. Preserve the differences without trimming
+answers, changing aliases or fitting a non-inferiority margin. The canonical evaluator
+above independently agrees on all **1732 answer/alias pairs** across the four runs;
+maximum float-versus-exact-rational F1 rounding difference is 1.11e-16. This evaluator
+rounding check is not a model-numerical tolerance.
+
+Collection retained an initial offline-tokenizer configuration failure and an interrupted
+port precheck after native c1. Neither replaces a completed question. SGLang initially
+failed before requests because NVCC rejected default GCC 16; selecting supported GCC
+15 then exposed a host RTL-reload compiler crash. An offline same-RoPE-source compile
+passed with host-only `-Xcompiler=-O1` via `NVCC_APPEND_FLAGS`; device `-O3`, kernel
+mathematics and dependencies were unchanged. The two completed SGLang cohorts use that
+recorded compiler setting. No unsupported-compiler bypass or eager fallback was used.
+Completed cohorts were not rerun; remaining runs stayed within the original 1800-second
+budget. Both native processes exit zero after owner shutdown. Every model process is
+followed by an idle compute-process query before the next launch.
+
+The adapter/scorer is documented in the [endpoint runner](README.md#frozen-gemma-endpoint-qa).
+It preserves malformed/partial observations separately from strict acceptance, hashes
+source inputs/exports/tools and leaves failures unscored, not zero-scored. The older
+executor scorer's token-ID and physical-width requirements remain unchanged. Raw exports,
+protocols, compiler failures/workaround, processor/source checks, server logs, all scores
+and evaluator cross-checks remain under
+`desktop:~/github/nijaru/ribn/benchmarks/results/qualification/gemma4-endpoint-qa/20261111T1510Z/`;
+the initial client setup failure remains in sibling `20261111T1500Z/`.
+
+No current aggregate timing, mapped-library-set, physical peak, mixed-arrival SLO,
+pressure or fairness comparison is claimed. The finite lexical screen does not qualify
+sampling, full-distribution agreement or population quality; the historic serving ratios
+remain diagnostics. Use the losses as fixed baseline cases for model-wide execution,
+not a reason to weaken the acceptance policy or restart rejected kernel populations.
+
 ### Executor QA and default text selection results (2026-10-29)
 
 **The frozen QA screen passes; the first, sequential-caller Engine/text scope selects

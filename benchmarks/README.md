@@ -414,6 +414,8 @@ Validation reconciles the effective client configuration, record identities,
 profiling/warmup counts and usage totals. `attempted_requests` counts issued profiling
 records, including failures; it is not a ledger of every planned arrival. A successful stream must have a finish
 reason, coherent integer usage and `[DONE]`, without late errors or extra data.
+Request-level custom stop strings/token IDs reject rather than silently changing the
+manifest's EOS-only generation policy; absent, null or empty stop lists add no override.
 Cleanly truncated streams can pass AIPerf itself, so ordinary summaries and HTTP
 trace metadata alone are insufficient. Failed requests remain in issued-work
 accounting; warmup errors are separate and invalidate the audit. Missing exports,
@@ -517,6 +519,43 @@ See the pinned [metrics definitions](https://docs.nvidia.com/aiperf/v0.13.0/refe
 **Raw exports contain prompts and responses.** Use public/synthetic data, keep
 artifacts outside version control, and do not enable private-content collection
 merely to obtain a benchmark.
+
+### Frozen Gemma endpoint QA
+
+`gemma4_endpoint_quality.py` adapts the existing
+[frozen 128-question corpus](gemma4-cuda-baseline.md#independent-generated-qa-screen)
+to this runner; it does not generate load or change the kernel scorer. Preparation
+checks the dataset, selected IDs/aliases, frozen token-ID digest and separately sealed
+publisher-rendered strings. It emits a zero-offset, concurrency-limited single-turn
+trace with cap 64, not a representative arrival schedule.
+
+```sh
+python3 benchmarks/gemma4_endpoint_quality.py prepare \
+  --dataset /path/dev-v1.1.json --cases /path/cases.json \
+  --output benchmarks/results/qa-inputs
+# Put the emitted schedule.jsonl beside each manifest. Use fixed_schedule,
+# request_count=128, output_tokens_mean=64, warmup_requests=0, greedy/EOS,
+# and the pinned BF16 package/tokenizer policy. Collect with endpoint.py above.
+python3 benchmarks/gemma4_endpoint_quality.py compare \
+  --dataset /path/dev-v1.1.json --cases /path/cases.json \
+  --baseline /path/incumbent/run --candidate /path/ribn/run \
+  --output benchmarks/results/qa-comparison
+```
+
+Comparison reaudits the native exports and exact frozen trace, reconstructs whole
+answers without stripping/extraction, checks prompt-token counts and scores human
+aliases with exact-rational token F1. Every request remains in the report, including
+partial text, observed terminal/error/usage frames and invalid streams. Any failed or
+invalid item makes the screen incomplete; no zero substitution or survivor mean is
+reported. A complete candidate passes only with no per-question EM or F1 loss against
+the baseline; gains elsewhere cannot compensate. A completed loss exits one and
+retains its complete failure report. Both actions require a new output directory.
+
+Exports attest neither server input IDs nor generated IDs/physical widths. Preserve
+independent processor, package, server and retirement evidence; do not fabricate
+those fields to feed the stricter executor scorer. See the
+[HTTP QA receipt](gemma4-cuda-baseline.md#frozen-corpus-http-qa-2026-11-11)
+for the measured scope and remaining quality gap.
 
 ### Host verification
 

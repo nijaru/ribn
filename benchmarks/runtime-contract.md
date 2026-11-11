@@ -2010,6 +2010,34 @@ CARGO_BUILD_JOBS=2 RIBN_GEMMA_PACKAGE=<package> RIBN_GEMMA_REFERENCE=<reference.
 These functional/ownership checks do not establish physical peak memory, arbitrary CUDA
 fault recovery, sampling quality or competitive serving acceptance.
 
+### Current-source CUDA resource recheck (2026-11-11)
+
+At `653d026`, all **six** current release cases in `cuda_decoder`, `executor_cuda`
+and `cuda_pressure` pass, serialized on the idle RTX 4090. Driver is 620.70.06,
+Toolkit 13.3.73, native cuBLAS 13.6.0.2 and Rust 1.98.0; cudarc stays 0.19.9.
+All nine package files match the pinned E4B manifest. The archived BF16 reference is
+unchanged. The cases cover scalar/qualified prefill and sliding-window histories,
+partial-cache pool refusal with actual allocation retirement, clean request-local
+pressure rejection with healthy-peer progress, in-flight cancellation/capacity reuse,
+actual runtime generation and retained charges through failed drain/successful retry.
+
+```sh
+PATH=/usr/local/cuda/bin:$PATH LD_LIBRARY_PATH=/usr/local/cuda/lib64 \
+  CARGO_BUILD_JOBS=2 RIBN_GEMMA_PACKAGE=<package> RIBN_GEMMA_REFERENCE=<reference.json> \
+  cargo test -p engine-gemma4 --features cuda --locked --release \
+  --test cuda_decoder --test executor_cuda --test cuda_pressure \
+  -- --ignored --test-threads=1 --nocapture
+```
+
+Exit code is **0**. Logs, package verification and environment remain under
+`desktop:~/github/nijaru/ribn/benchmarks/results/qualification/gemma4-current-runtime/20261111T144426Z-653d026/`.
+The GPU is idle afterward. This rechecks the existing resource paths after admission
+and logical-binding changes; it does not inject a failed drain during partial cache
+construction before any decoder exists, driver OOM, uncertain free or running-kernel
+failure. It does not qualify model-wide multi-request weight work. The separate
+[frozen endpoint QA](gemma4-cuda-baseline.md#frozen-corpus-http-qa-2026-11-11)
+records actual HTTP task results and clean native shutdown, not competitive acceptance.
+
 ### State-only prefill Metal fallback (2026-10-30)
 
 The required state-only operation added at `448a3a0` omits the CPU readout, but
