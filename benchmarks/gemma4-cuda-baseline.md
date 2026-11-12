@@ -3390,3 +3390,57 @@ An earlier preparation scope, `20261112T162500Z-submit-deferred`, is retained as
 No model process, stage or timing was collected. It was not rerun in place. The new
 scope includes those paths and passes the real manifest/seal preflight before launch;
 no model retry or timing reuse enters the six-process result.
+
+##### Existing tail costs and initial-offer diagnostic
+
+Two separate diagnostics investigate the remaining work without reopening either
+serving population. Neither qualifies a new variant or changes ordinary loading.
+
+`gemma4-modelwide/20261112T171759Z-existing-prefill-tail-cost` measures the existing
+sixteen/eight-row/scalar decoder on question 0's real common 192-token prefix.
+Tails of 7/8/15/16 tokens run in six fixed alternating orders, 24 calls total.
+The 208-token case includes the archived first generated token after the 207-token
+prompt. Each timed `prefill()` includes completion, one vocabulary head/readback
+and CPU softcap; prefix preparation, reset, load and export are excluded.
+
+| Real tail tokens | Median existing-path call, ms |
+| ---: | ---: |
+| 7 | 124.947 |
+| 8 | 23.048 |
+| 15 | 145.074 |
+| 16 | 23.749 |
+
+These are **different amounts of real work**, not an equal-work speedup or serving
+comparison. They expose the scalar-tail cost: seven scalar steps and eight-plus-seven
+steps cost much more than the available eight-/sixteen-row calls. All full rows are
+finite, fixed-history repetitions match bitwise, the 207/208-token winners match the
+archived continuation and final pool usage is zero. All samples, including the
+160.783 ms first seven-token call, remain retained. No kernel or selection changes
+are made for this diagnostic.
+
+`gemma4-modelwide/20261112T174543Z-initial-offers-host-diagnostic` runs **one** fresh
+candidate through all five unchanged workloads with private host-only instrumentation.
+A preallocated 32,768-event/ten-second collector records **639 events**, ending at
+question 5's full EOF without drops. Export follows shutdown/Drop/pool zero. The
+process, watchdog, pinned package/DSOs and post-run raw EOF/usage/quality-floor checks
+pass. This intrusive trace captures the **fast** phenotype: question 5's first-content
+latency is **979.356 ms**. It is not rerun to obtain a slow sample.
+
+The first-output offer contains question 0's range 176→192, question 4's final five
+tokens, question 5's final three and question 2's next sixteen. Question 5's row is
+ready at **981.347 ms**; whole-offer settlement occurs at **999.932 ms**, then Driver
+publication at **999.934 ms**. Thus the post-settlement publication gap in this
+capture is **2.242 µs**, not a demonstrated additional publication obstruction.
+
+The next offer pairs questions 4/5 for decode, then executes question 0's final
+fifteen-token tail and question 2's next sixteen. Question 5's second row is ready
+at **1,025.796 ms**, but whole-offer settlement waits until **1,188.956 ms**; the two
+fallback calls take approximately **143.945 ms** and **19.020 ms**. These are host
+call observations, not GPU kernel timings. They locate substantial required
+whole-offer waiting in this run. They do not replay or prove the cause of the slow
+qualification pair 0. Partial commitment would violate the failure/ownership contract.
+
+The next experiment is genuine ragged prefill widths through the existing native
+operators, not padding, forced ordering or a weaker latency objective. Every newly
+selected width still needs arithmetic, access, resource and full-model qualification
+before changing selection; the closed serving verdict remains negative.

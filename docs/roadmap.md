@@ -168,9 +168,14 @@ regression and existing ownership/failure cases pass. Its new source-specific
 six-process comparison also closes **negative**, with unchanged criteria: quality,
 integrity and all median rate/p95 gates pass, but mixed8 joint counts are
 4 → 3, 4 → 4 and 3 → 4. The prior drain-tail question passes in every new pair;
-one initial-burst question misses first content in pair 0 only. Trace initial
-admission and offer execution before choosing another correction. Do not retry
-this population, weaken the objective or enable ordinary wide loading.
+one initial-burst question misses first content in pair 0 only. A separate single
+host trace captures the fast phenotype with prompt post-settlement publication;
+its next output waits for an expensive fifteen-token fallback in the same offer.
+An existing-path common-history diagnostic confirms the large scalar-tail cost.
+Investigate genuine ragged prefill widths through existing native operators next,
+qualifying every newly selected width before changing selection. Do not retry
+these populations, weaken whole-offer commitment or the latency objective, or
+enable ordinary wide loading.
 The model-local `matches_qualification_scope` query now checks normalized topology,
 rotary and vocabulary scope, device, projection geometry and prepared context,
 independently of scratch-selected lanes. Host near-miss tests protect that boundary
