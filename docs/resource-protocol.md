@@ -120,10 +120,12 @@ Do not stall healthy requests merely because another request is waiting.
 
 ### Model-wide physical preparation and result mapping
 
-Status: experimental depth-one Gemma CUDA implementation, not ordinary-loader
-selection. The [model-wide device gate](../benchmarks/runtime-contract.md#model-wide-gemma-cuda-device-gate-2026-11-11)
-covers two-member shared projections and whole-offer ownership; serving promotion
-and wider qualification remain pending.
+Status: depth-one Gemma CUDA implementation, selected by the ordinary loader only
+within its qualified RTX 4090/E4B/prepared-4K scope. The [model-wide device gate](../benchmarks/runtime-contract.md#model-wide-gemma-cuda-device-gate-2026-11-11)
+covers two-member shared projections and whole-offer ownership; the subsequent
+[exact-row qualification](../benchmarks/runtime-contract.md#genuine-ragged-prefill-qualification-2026-11-12)
+and [fresh serving gate](../benchmarks/gemma4-cuda-baseline.md#genuine-ragged-prefill-serving-qualification-2026-11-12)
+pass. Wider hardware/model and competitive qualification remain open.
 The AR runtime keeps ordinary `BatchItem` offers and
 `GenerationExecutor`. The model/backend binds every accepted row to
 a stable sequence identity/incarnation, committed prefix, exact positive

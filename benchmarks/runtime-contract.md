@@ -2098,7 +2098,9 @@ shared two-row projections, FFN and PLE operations through all 42 layers on the 
 idle RTX 4090 and unchanged package/toolchain listed above. Each member owns its KV
 history and position; attention and the vocabulary head remain per member. PLE has
 an initial host readback and contexts/factors are staged before the dependent stack.
-The ordinary text/CLI/HTTP loader **still selects serial CUDA**.
+At this first device gate, ordinary text/CLI/HTTP loading still selected serial
+CUDA. The later ragged-prefill and fresh serving qualification below establishes
+scoped ordinary selection.
 
 The real-package gates pass:
 
@@ -2198,14 +2200,17 @@ six-process population, `20261112T162959Z-submit-deferred`, keeps the same crite
 and also closes negative: all median rate/p95 gates pass, but mixed8 joint counts
 are 4 → 3, 4 → 4 and 3 → 4. Its raw-stage re-audit matches the saved summary;
 all six model processes retire cleanly to pool zero. The remaining initial-burst
-miss, rather than the previous drain-tail question, blocks ordinary loading.
+miss, rather than the previous drain-tail question, blocked ordinary loading for
+that source. The later genuine ragged-prefill population below qualifies a separate
+cutover; this negative population remains closed.
 
 The host-only `Gemma4CudaModelWide::matches_qualification_scope` query checks the
 normalized execution configuration, actual device name and positive prepared reach
 up to 4096; the package's advertised context is not the prepared reach. Scratch
 controls workspace/prefill lanes, not this boundary. A match does not select an
-executor or establish quality for arbitrary checkpoint weights. The ordinary loader
-still chooses serial execution.
+executor or establish quality for arbitrary checkpoint weights. After the later
+ragged and fresh serving gates below, the ordinary loader uses this query before
+construction and retains serial execution outside the qualified scope.
 
 The captured-real-operand gate now passes on the same pinned package and RTX 4090,
 receipt `20261112T153555Z-real-m2-operands`. After archived chat18/window513 prefills,
@@ -2242,8 +2247,8 @@ and the named test scopes at `20261112T155606Z`, `20261112T155646Z` and
 process retirement; the earlier failing assertion is retained, not replaced.
 
 The public-loader lifecycle test also passes a **private prospective wide-selection
-patch**, receipt `20261112T160403Z-ordinary-loader-submit-deferred`. Main loading
-still remains serial pending serving acceptance. The test verifies the actual pinned
+patch**, receipt `20261112T160403Z-ordinary-loader-submit-deferred`. At that gate,
+main loading remained serial pending serving acceptance. The test verifies the actual pinned
 configuration/device match the model-wide scope, then calls
 `TextOwner::load_gemma_cuda`, rather than assembling an executor manually. It abandons
 a positive-progress stream, drains four concurrent archived requests, rejects an
@@ -2261,6 +2266,97 @@ cargo test -p ribn-text --features cuda --locked --release \
 
 The test checks the public path's observable behavior; it does not independently
 attest physical M2 routing, grant peaks or failed-driver-drain recovery.
+
+#### Genuine ragged prefill qualification (2026-11-12)
+
+The private model-wide candidate now prepares and executes exact prefill widths
+**2 through 16**, without padding. Scalar execution and the separate packed-M2
+workspace remain. The serving control retains its qualified **8/16/scalar** path;
+the all-width legacy decoder used for same-partition numerical reference is not
+that serving control. No kernels, arithmetic modes, streams, inference scheduling
+or whole-offer commitment rules changed.
+
+On the pinned E4B BF16 package and RTX 4090, all newly selected widths pass:
+
+- Seven native component gates: 181 GEMM cases with 1,621 row checks under the
+  unchanged independent per-output bound; 90 attention cases with 810 scalar-row
+  bit comparisons through 4K; copy payload/untouched-row checks; independent RMS,
+  eager-rounded rotary, rotary-factor and elementwise references.
+- Captured real prefill operands: **165 matrices**, all 15 widths by 11 actual
+  non-head projection geometries, covering 1,485 real rows. Each width verifies
+  the complete 344-projection order through all 42 layers, including the scalar
+  head. Device resources and captures retire before independent scalar-f64 dot
+  checking. The previously qualified bound, finiteness and range/lattice checks
+  remain unchanged; no tolerance is fitted.
+- Real continuation/resource gates: every exact width advances its own real
+  history, preserves charges and retires; constrained admission refunds a real
+  partial allocation. A load budget one byte below the complete working set
+  refuses the final packed-M2 logits allocation, after every prefill workspace,
+  and the owning failure retires to zero.
+- A normal all-width 4K boundary gate, `20261112T203843Z-ragged-boundary-pidfd`:
+  full prefill rows match fresh same-partition controls; reordered paired
+  continuation reaches positions 4096/4095, both overruns reject without advance,
+  and all roots retire. All 90 full output rows pass independent shape, finiteness,
+  population and archived continuation-winner checks.
+- **16 access requirements:** each of the seven components and the short
+  whole-model resource/all-width case passes both memcheck and initcheck with
+  zero errors. These complement the earlier full-4K sanitizers; they are not a
+  new full-4K sanitizer run for every width.
+
+The complete charged model working set is **14,999,847,712 bytes**, an increase
+of **50,425,344 bytes (48.1 MiB)** over the fixed-width owner. Independent buffer
+layouts reconcile it as `111 × 391680 + 13 × 534528`. With one 4K continuation,
+the charge is 15,234,728,736 bytes; close/drop returns it to zero. These are
+allocator charges, not physical GPU or process-memory peaks.
+
+The committed regression
+`prefill::all_prefill_widths_preserve_charges_progress_and_late_construction_retirement`
+passes through the final main-source CUDA implementation, receipt
+`20261112T225914Z-permanent-prefill-regression`: exactly one release test, 9.30 s,
+exit zero, nine retained map frames with actual CUDA/cuBLAS and qualified bounded
+pidfd-family retirement. It independently reconciles the working set, executes real widths 2–16,
+and checks partial-admission rollback plus late owning-construction retirement.
+Actual release ELF SHA-256:
+`d034f1059d33d3e202372688a68b5f7d8c000ede5f89dfae621b53a6975dd5c4`.
+Reproduce with the pinned package/reference and idle device:
+
+```sh
+cargo test -p engine-gemma4 --features cuda --locked --release --test cuda_modelwide \
+  prefill::all_prefill_widths_preserve_charges_progress_and_late_construction_retirement \
+  -- --exact --ignored --test-threads=1 --nocapture
+```
+
+Historical supervision failures remain negative. The original common-history
+Rust test passed, but its controller failed; a separate re-audit establishes only
+the 360 full numerical rows, continuation checks and bounded observed completion,
+not original supervisor success or historical process-family absence. Two later
+sanitizer invocations were interrupted after Rust success but before their final
+error summaries. Complete runs under corrected observation code satisfy those
+access requirements; the interrupted scopes are not reclassified.
+
+New supervision uses retained kernel pidfds, verified parentage and a subreaper,
+not numeric process-group signalling. Process existence, memory-counter availability
+and executable/maps availability are separate observations: exit may remove the
+latter while a pidfd remains unready. Genuine Linux before/after regressions cover
+traced zombie workers and non-atomic image/MM disappearance; absent counters never
+become a fabricated zero measurement. Sampled stale charges are explicit. Completion
+still requires dead held pidfds and kernel `ECHILD` proof. This bounded single-fault
+ownership evidence is not host-crash containment, physical-peak or exclusive-host
+qualification.
+
+The final prospective ordinary-loader lifecycle also passes, receipt
+`20261112T220140Z-ordinary-loader-wide-ragged-pidfd`: positive-progress abandonment,
+four fresh concurrent callers, impossible-envelope rejection, later healthy work,
+full EOF and idempotent shutdown through `TextOwner::load_gemma_cuda`. The subsequent
+[fresh six-process serving gate](gemma4-cuda-baseline.md#genuine-ragged-prefill-serving-qualification-2026-11-12)
+passes and permits scoped ordinary selection. Neither it nor these device positives
+overturns either closed negative serving population.
+
+The original ten component/real-operand/resource/common-history scopes are retained
+in archive `403b32571cac0be06e3d9832c3d3d5a6ea798570ad9f8c37597276ce71941583`.
+The additional boundary/access source/ELF/controller archive contains 20 scopes,
+including all three failed/incomplete attempts, and nine actual release test ELFs.
+Its SHA-256 is `a8b1f42791a78e0e3a48cb7467dccef249d2dfa24c0fcf4d86c94fd47a37371d`.
 
 ### State-only prefill Metal fallback (2026-10-30)
 

@@ -1,8 +1,10 @@
-//! Fixed-lane preparation and the model-wide qualification configuration boundary.
+//! Exact-row preparation and the model-wide qualification configuration boundary.
 use crate::{AttentionKind, Gemma4Config, Gemma4Error, LayerGeometry, Rope};
 use engine_nvidia::CudaBf16RotaryFactors;
 
-pub(super) const PREFILL_LANES: [usize; 2] = [8, 16];
+pub(super) const SERIAL_PREFILL_LANES: [usize; 2] = [8, 16];
+pub(super) const MODEL_WIDE_PREFILL_LANES: [usize; 15] =
+    [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16];
 
 pub(super) struct Preparation {
     pub rows: usize,
@@ -14,6 +16,7 @@ pub(super) fn prepare(
     max_positions: usize,
     scratch_ceiling: usize,
     device: &str,
+    supported_rows: &[usize],
 ) -> Result<Preparation, Gemma4Error> {
     if max_positions > config.max_position_embeddings() {
         return Err(invalid("cache capacity exceeds the model context"));
@@ -26,6 +29,7 @@ pub(super) fn prepare(
         max_positions,
         scratch_ceiling,
         qualified,
+        supported_rows,
     )
 }
 
@@ -97,6 +101,7 @@ fn plan(
     max_positions: usize,
     scratch_ceiling: usize,
     qualified: bool,
+    supported_rows: &[usize],
 ) -> Result<Preparation, Gemma4Error> {
     if heads == 0
         || max_positions == 0
@@ -113,8 +118,9 @@ fn plan(
             "attention scratch cannot cover the declared cache reach",
         ));
     }
-    let rows = PREFILL_LANES
-        .into_iter()
+    let rows = supported_rows
+        .iter()
+        .copied()
         .rev()
         .find(|&rows| {
             qualified
@@ -169,8 +175,18 @@ mod tests {
                 &config, device, 4096
             ));
         }
-        for (scratch, rows) in [(32_768, 1), (262_144, 8), (524_288, 16)] {
-            let prepared = prepare(&config, 4096, scratch, "NVIDIA GeForce RTX 4090").unwrap();
+        for (lanes, scratch, rows) in [
+            (SERIAL_PREFILL_LANES.as_slice(), 32_768, 1),
+            (SERIAL_PREFILL_LANES.as_slice(), 229_376, 1),
+            (SERIAL_PREFILL_LANES.as_slice(), 262_144, 8),
+            (SERIAL_PREFILL_LANES.as_slice(), 524_288, 16),
+            (MODEL_WIDE_PREFILL_LANES.as_slice(), 32_768, 1),
+            (MODEL_WIDE_PREFILL_LANES.as_slice(), 229_376, 7),
+            (MODEL_WIDE_PREFILL_LANES.as_slice(), 262_144, 8),
+            (MODEL_WIDE_PREFILL_LANES.as_slice(), 524_288, 16),
+        ] {
+            let prepared =
+                prepare(&config, 4096, scratch, "NVIDIA GeForce RTX 4090", lanes).unwrap();
             assert_eq!(prepared.rows, rows);
             assert!(in_scope(&config, 4096));
         }
@@ -215,9 +231,15 @@ mod tests {
             let config = Gemma4Config::from_json(&json).unwrap();
             assert!(!in_scope(&config, 4096), "{pointer}");
             assert_eq!(
-                prepare(&config, 4096, 1 << 20, "NVIDIA GeForce RTX 4090")
-                    .unwrap()
-                    .rows,
+                prepare(
+                    &config,
+                    4096,
+                    1 << 20,
+                    "NVIDIA GeForce RTX 4090",
+                    &SERIAL_PREFILL_LANES,
+                )
+                .unwrap()
+                .rows,
                 16,
                 "the existing prefill qualification scope must not change: {pointer}"
             );
@@ -233,9 +255,15 @@ mod tests {
             "same widths, different attention order"
         );
         assert_eq!(
-            prepare(&config, 4096, 1 << 20, "NVIDIA GeForce RTX 4090")
-                .unwrap()
-                .rows,
+            prepare(
+                &config,
+                4096,
+                1 << 20,
+                "NVIDIA GeForce RTX 4090",
+                &SERIAL_PREFILL_LANES,
+            )
+            .unwrap()
+            .rows,
             16
         );
     }
@@ -267,27 +295,74 @@ mod tests {
     }
 
     #[test]
-    fn scratch_covers_the_whole_reach_before_selecting_a_fixed_lane() {
-        for (positions, ceiling, qualified, expected) in [
-            (32, 256, true, 1),
-            (32, 2047, true, 1),
-            (32, 2048, true, 8),
-            (32, 2048, false, 1),
-            (32, 4095, true, 8),
-            (32, 4096, true, 16),
-            (32, 4096, false, 1),
-            (15, 1920, true, 8),
-            (16, 2048, true, 16),
-            (7, 448, true, 1),
-            (8, 512, true, 8),
-            (4096, 262_144, true, 8),
-            (4096, 524_288, true, 16),
-            (4097, 262_208, true, 1),
+    fn modelwide_exact_widths_preserve_serial_selection_at_scratch_and_reach_boundaries() {
+        for rows in 2..=16 {
+            let serial_rows = if rows == 16 {
+                16
+            } else if rows >= 8 {
+                8
+            } else {
+                1
+            };
+            let serial_below = if rows > 8 { 8 } else { 1 };
+            for positions in [rows, 513, 4096] {
+                let scalar = 8 * positions;
+                let ceiling = scalar * rows;
+                for (lanes, expected, expected_below) in [
+                    (MODEL_WIDE_PREFILL_LANES.as_slice(), rows, rows - 1),
+                    (SERIAL_PREFILL_LANES.as_slice(), serial_rows, serial_below),
+                ] {
+                    let exact = plan(8, positions, ceiling, true, lanes).unwrap();
+                    assert_eq!(exact.rows, expected);
+                    assert_eq!(exact.scratch_entries, scalar * expected);
+                    let below = plan(8, positions, ceiling - 1, true, lanes).unwrap();
+                    assert_eq!(below.rows, expected_below);
+                    assert_eq!(below.scratch_entries, scalar * expected_below);
+                    assert_eq!(plan(8, positions, ceiling, false, lanes).unwrap().rows, 1);
+                }
+            }
+            assert_eq!(
+                plan(8, rows - 1, 1 << 20, true, &MODEL_WIDE_PREFILL_LANES)
+                    .unwrap()
+                    .rows,
+                rows - 1
+            );
+            assert_eq!(
+                plan(8, rows - 1, 1 << 20, true, &SERIAL_PREFILL_LANES)
+                    .unwrap()
+                    .rows,
+                serial_below
+            );
+        }
+    }
+
+    #[test]
+    fn scratch_covers_the_whole_reach_before_selecting_a_variant_prefill_width() {
+        for (positions, ceiling, qualified, serial, modelwide) in [
+            (32, 256, true, 1, 1),
+            (32, 2047, true, 1, 7),
+            (32, 2048, true, 8, 8),
+            (32, 2048, false, 1, 1),
+            (32, 4095, true, 8, 15),
+            (32, 4096, true, 16, 16),
+            (32, 4096, false, 1, 1),
+            (15, 1920, true, 8, 15),
+            (16, 2048, true, 16, 16),
+            (7, 448, true, 1, 7),
+            (8, 512, true, 8, 8),
+            (4096, 262_144, true, 8, 8),
+            (4096, 524_288, true, 16, 16),
+            (4097, 262_208, true, 1, 1),
         ] {
-            let p = plan(8, positions, ceiling, qualified).unwrap();
-            assert_eq!(p.rows, expected);
-            assert_eq!(p.scratch_entries, positions * 8 * expected);
-            assert!(p.scratch_entries <= ceiling);
+            for (lanes, expected) in [
+                (SERIAL_PREFILL_LANES.as_slice(), serial),
+                (MODEL_WIDE_PREFILL_LANES.as_slice(), modelwide),
+            ] {
+                let p = plan(8, positions, ceiling, qualified, lanes).unwrap();
+                assert_eq!(p.rows, expected);
+                assert_eq!(p.scratch_entries, positions * 8 * expected);
+                assert!(p.scratch_entries <= ceiling);
+            }
         }
         for (heads, positions, ceiling) in [
             (8, 32, 255),
@@ -300,7 +375,12 @@ mod tests {
                 usize::MAX,
             ),
         ] {
-            assert!(plan(heads, positions, ceiling, true).is_err());
+            for lanes in [
+                SERIAL_PREFILL_LANES.as_slice(),
+                MODEL_WIDE_PREFILL_LANES.as_slice(),
+            ] {
+                assert!(plan(heads, positions, ceiling, true, lanes).is_err());
+            }
         }
     }
 }

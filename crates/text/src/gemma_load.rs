@@ -53,6 +53,8 @@ impl TextOwner {
     ///
     /// The device cache is bounded to 4K positions and a 20 GiB shared pool;
     /// longer requests reject at admission. This is the experimental greedy path.
+    /// Model-wide execution is selected only within its measured device and
+    /// configuration scope; other configurations retain serial execution.
     ///
     /// # Errors
     /// Rejects invalid package assets, CUDA device preparation, weight upload or
@@ -65,8 +67,28 @@ impl TextOwner {
         let source = Gemma4Source::open(&package).map_err(TextError::processor)?;
         let model_bytes = u64::try_from(source.encoded_bytes()).map_err(TextError::processor)?;
         let context = cudarc::driver::CudaContext::new(0).map_err(TextError::processor)?;
-        let stream = context.new_stream().map_err(TextError::processor)?;
+        let device = context.name().map_err(TextError::processor)?;
         let pool = ribn_foundation::BytePool::new(CUDA_POOL_BYTES).shared();
+        if engine_gemma4::Gemma4CudaModelWide::matches_qualification_scope(
+            source.config(),
+            &device,
+            CUDA_MAX_POSITIONS,
+        ) {
+            // Selection precedes construction. A selected backend's owning load
+            // error must propagate, not trigger a second serial weight upload.
+            let model = engine_gemma4::Gemma4CudaModelWide::load(
+                &source,
+                &context,
+                &pool,
+                CUDA_MAX_POSITIONS,
+                CUDA_SCRATCH_ENTRIES,
+            )
+            .map_err(TextError::processor)?;
+            let executor =
+                engine_gemma4::Gemma4CudaExecutor::new(model).map_err(TextError::processor)?;
+            return assemble(&package, executor, model_bytes);
+        }
+        let stream = context.new_stream().map_err(TextError::processor)?;
         let model = engine_gemma4::Gemma4CudaModel::load(
             &source,
             stream,

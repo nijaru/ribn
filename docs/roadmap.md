@@ -11,11 +11,12 @@ open implementation choices and acceptance gates. All v0 interfaces may change.
 physical execution while retaining the Rust AR serving authority.**
 The [model-wide design](inference-engine-design.md#model-wide-physical-execution-selected-2026-11-05)
 and [physical resource protocol](resource-protocol.md#model-wide-physical-preparation-and-result-mapping)
-are the implementation contracts. The experimental Gemma CUDA owner now passes its
-first model-wide device gate; ordinary loading and serving still use the qualified
-serial path, and competitive acceptance remains open.
+are the implementation contracts. The depth-one Gemma CUDA owner now passes its
+model-wide device, exact-row and fresh six-process serving gates. Ordinary CUDA
+loading selects it within the qualified RTX 4090/E4B/prepared-4K scope; other
+configurations retain serial execution. Competitive acceptance remains open.
 
-The source confirms Gemma's `executor/batch.rs` executes each offered
+The serial fallback in Gemma's `executor/batch.rs` executes each offered
 sequence with a synchronous decoder call. Its CUDA sixteen/eight-row
 prefill groups tokens from *one* request and still reads PLE to host,
 uploads contexts each layer and reads full logits to host. The promoted
@@ -112,8 +113,9 @@ the common AR scheduler or the CPU oracle.
 
 Host prerequisites now separate decoder-independent logical metadata and accepted-row
 binding in `gemma4/src/generation.rs` from serial physical execution. The ordinary Gemma
-loader accepts `GenerationExecutor`, without changing backend selection. Admission
-regressions cover clean refusal, fatal partial construction, stopped later admission and
+loader accepts `GenerationExecutor`; the initial refactor did not change backend
+selection. Admission regressions cover clean refusal, fatal partial construction,
+stopped later admission and
 retained peer/storage charges through failed drain and successful retry. The
 [2026-11-11 CUDA recheck](../benchmarks/runtime-contract.md#current-source-cuda-resource-recheck-2026-11-11)
 passes six existing decoder/executor/pressure cases, including real partial-cache
@@ -151,7 +153,8 @@ median or qualified performance result is available. Do not extend or relax that
 Controlled common-history scalar/M2 mixtures reproduce the continuation/EOS BF16
 score tie, with bit-exact scalar control and complete retirement. This is arithmetic-
 path sensitivity, not an observed score loss; the timed dispatch mask was not traced.
-The ordinary loader stays serial. The [owning numerical contract](inference-engine-design.md#qualification-and-current-evidence)
+At that stopped population, ordinary loading remained serial. The
+[owning numerical contract](inference-engine-design.md#qualification-and-current-evidence)
 already makes batch invariance optional, not a compulsory fast path. Do not invent
 that requirement to repair the stopped benchmark. A separate prospective serving
 comparison may accept different EOS outcomes only with unchanged per-question EM/F1
@@ -172,20 +175,31 @@ one initial-burst question misses first content in pair 0 only. A separate singl
 host trace captures the fast phenotype with prompt post-settlement publication;
 its next output waits for an expensive fifteen-token fallback in the same offer.
 An existing-path common-history diagnostic confirms the large scalar-tail cost.
-Investigate genuine ragged prefill widths through existing native operators next,
-qualifying every newly selected width before changing selection. Do not retry
-these populations, weaken whole-offer commitment or the latency objective, or
-enable ordinary wide loading.
+The [genuine ragged-prefill prerequisite](../benchmarks/runtime-contract.md#genuine-ragged-prefill-qualification-2026-11-12)
+now passes for exact model-wide widths 2–16: independent native and captured-real
+numerical checks, all-width continuation/4K boundaries, resource retirement and all
+16 memcheck/initcheck requirements. The prospective ordinary-loader lifecycle also
+passes. Preserve serial 8/16/scalar as the serving control; its all-width numerical
+reference sampler is not a new control. The separate [fresh six-process serving
+qualification](../benchmarks/gemma4-cuda-baseline.md#genuine-ragged-prefill-serving-qualification-2026-11-12)
+now passes the original per-item quality, actual-work rate, p95 and every-pair joint
+latency gates. Ordinary loading selects model-wide execution within the qualified
+RTX 4090/E4B/prepared-4K scope, retaining serial execution outside it. Earlier closed
+negative populations remain negative; no criterion or whole-offer guarantee changed.
+The next competitive gate is matched external-baseline mixed-arrival serving evidence,
+not a claim that this internal cutover establishes vLLM/SGLang parity.
 The model-local `matches_qualification_scope` query now checks normalized topology,
 rotary and vocabulary scope, device, projection geometry and prepared context,
 independently of scratch-selected lanes. Host near-miss tests protect that boundary
-without narrowing existing prefill selection. The ordinary loader does not use the
-query yet. The [captured-real-M2 arithmetic and public-entry-point gates](../benchmarks/runtime-contract.md#model-wide-gemma-cuda-device-gate-2026-11-11)
+without narrowing existing serial prefill selection. The ordinary loader uses the
+query before construction; selected owning load failures propagate without a serial
+retry or second weight upload. The [captured-real-M2 arithmetic and public-entry-point gates](../benchmarks/runtime-contract.md#model-wide-gemma-cuda-device-gate-2026-11-11)
 now pass on device: 11 actual non-head geometries satisfy the preregistered per-output
 bound and range checks; the ordinary loader lifecycle passes a private prospective
-wide-selection patch with deferred submission. Neither enables automatic loading
-while serving acceptance remains failed. Full-model failed-driver-drain remains composed native/owner evidence rather than a
-directly injected model-wide fault. Preserve that scope distinction; do not expose the
+wide-selection patch with deferred submission. Those earlier prerequisites alone did
+not enable automatic loading; the later ragged and fresh serving gates establish the
+scoped cutover above. Full-model failed-driver-drain remains composed native/owner
+evidence rather than a directly injected model-wide fault. Preserve that scope distinction; do not expose the
 qualified serial model's raw stream to force adoption or fault injection.
 
 Host acceptance: whole-offer prevalidation, exact range/cursor

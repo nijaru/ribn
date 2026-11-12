@@ -67,6 +67,9 @@ fn cases() -> Vec<Case> {
 mod identities;
 use identities::issued_ids;
 
+#[path = "cuda_modelwide/prefill.rs"]
+mod prefill;
+
 fn exercise_runtime(model: Gemma4CudaModelWide, case: &Case) {
     assert_eq!(case.name, "chat");
     let mut engine = Engine::with_defaults(Gemma4CudaExecutor::new(model).unwrap()).unwrap();

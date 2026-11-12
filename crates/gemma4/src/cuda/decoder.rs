@@ -33,7 +33,7 @@ mod modelwide;
 mod preparation;
 use buffers::{Buffers, CacheConstruction, DeviceCache, GeometryBuffers};
 pub use modelwide::{Gemma4CudaExecutor, Gemma4CudaModelWide, Gemma4CudaModelWideLoadError};
-use preparation::PREFILL_LANES;
+use preparation::SERIAL_PREFILL_LANES;
 
 struct Executors {
     gemm: CudaBf16Gemm,
@@ -84,7 +84,13 @@ impl Gemma4CudaModel {
             .context()
             .name()
             .map_err(|error| Gemma4Error::new("CUDA decoder preparation", error.to_string()))?;
-        let prepared = preparation::prepare(config, max_positions, scratch_entries, &device)?;
+        let prepared = preparation::prepare(
+            config,
+            max_positions,
+            scratch_entries,
+            &device,
+            &SERIAL_PREFILL_LANES,
+        )?;
         let host = HostLookups::load(source)?;
         let cuda = match Gemma4CudaWeights::load(source, Arc::clone(&stream), pool, WEIGHT_STAGING)
         {
@@ -110,8 +116,8 @@ impl Gemma4CudaModel {
                 .map_err(|e| backend(&e))?,
         };
         let buffers = Buffers::new(config, 1, &stream, pool)?;
-        let mut prefill = Vec::with_capacity(PREFILL_LANES.len());
-        for rows in PREFILL_LANES {
+        let mut prefill = Vec::with_capacity(SERIAL_PREFILL_LANES.len());
+        for rows in SERIAL_PREFILL_LANES {
             if rows <= prepared.rows {
                 prefill.push(Buffers::new(config, rows, &stream, pool)?);
             }

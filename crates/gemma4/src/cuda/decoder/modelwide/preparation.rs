@@ -1,5 +1,5 @@
 //! Retained construction of the model-wide owner's complete physical working set.
-use super::super::buffers::BufferConstruction;
+use super::super::{buffers::BufferConstruction, preparation::MODEL_WIDE_PREFILL_LANES};
 use super::{
     super::{
         Arc, Buffers, BytePool, CudaBf16Attention, CudaBf16ComputeError, CudaBf16Elementwise,
@@ -98,7 +98,9 @@ impl Preparation {
         let metadata = |error: std::collections::TryReserveError| {
             Gemma4Error::new("CUDA preparation metadata", error.to_string())
         };
-        buffers.try_reserve_exact(4).map_err(metadata)?;
+        buffers
+            .try_reserve_exact(working_set_rows(rows).count())
+            .map_err(metadata)?;
         factors.try_reserve_exact(count).map_err(metadata)?;
         extra.try_reserve_exact(extra_count).map_err(metadata)?;
         layers.try_reserve_exact(count).map_err(metadata)?;
@@ -165,10 +167,7 @@ impl Preparation {
         self.rotary = Some(self.capture(self.stream.rotary())?);
         self.elementwise = Some(self.capture(self.stream.elementwise())?);
         self.attention = Some(self.capture(self.stream.attention(&self.pool, self.scratch))?);
-        for rows in [1, 8, 16, 2] {
-            if rows > 2 && rows > self.rows {
-                continue;
-            }
+        for rows in working_set_rows(self.rows) {
             let buffers = self
                 .unfinished
                 .build(&self.host.config, rows, |rows, cols, staging| {
@@ -338,6 +337,35 @@ impl Prepared {
     }
 }
 
+// Scalar first and packed decode last are consumed separately by finish().
+// Every intervening exact-width prefill workspace has its own charged roots.
+fn working_set_rows(prefill_rows: usize) -> impl Iterator<Item = usize> {
+    std::iter::once(1)
+        .chain(
+            MODEL_WIDE_PREFILL_LANES
+                .into_iter()
+                .filter(move |&rows| rows <= prefill_rows),
+        )
+        .chain(std::iter::once(2))
+}
+
 fn storage(error: &CudaBf16Error) -> Gemma4Error {
     Gemma4Error::new("CUDA physical preparation", error.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::working_set_rows;
+
+    #[test]
+    fn construction_reserves_scalar_all_prefill_widths_and_separate_packed_decode() {
+        for maximum in 1..=16 {
+            let rows: Vec<_> = working_set_rows(maximum).collect();
+            let mut expected = vec![1];
+            expected.extend(2..=maximum);
+            expected.push(2);
+            assert_eq!(rows, expected);
+            assert_eq!(rows.len(), maximum + 1);
+        }
+    }
 }

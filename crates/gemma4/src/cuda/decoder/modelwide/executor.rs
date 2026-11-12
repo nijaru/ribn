@@ -32,9 +32,9 @@ struct Execution {
     next: u64,
 }
 
-/// Experimental model-wide CUDA implementation of the ordinary AR contract.
-/// This owns one physical model, not a factory of per-request decoders. The
-/// ordinary text loader retains its qualified serial backend until promotion.
+/// Model-wide CUDA implementation of the ordinary AR contract.
+/// This owns one physical model, not a factory of per-request decoders. Ordinary
+/// CUDA loading uses it only within the physical model's qualified selection scope.
 pub struct Gemma4CudaExecutor {
     info: ExecutorInfo,
     execution: Option<ManuallyDrop<Box<Execution>>>,

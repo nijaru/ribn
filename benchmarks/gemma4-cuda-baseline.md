@@ -3440,7 +3440,67 @@ call observations, not GPU kernel timings. They locate substantial required
 whole-offer waiting in this run. They do not replay or prove the cause of the slow
 qualification pair 0. Partial commitment would violate the failure/ownership contract.
 
-The next experiment is genuine ragged prefill widths through the existing native
-operators, not padding, forced ordering or a weaker latency objective. Every newly
-selected width still needs arithmetic, access, resource and full-model qualification
-before changing selection; the closed serving verdict remains negative.
+These diagnostics motivated genuine ragged prefill through the existing native
+operators, not padding, forced ordering or a weaker latency objective. Their closed
+serving verdict remains negative; the separate qualification below uses new source
+and six fresh processes.
+
+#### Genuine ragged-prefill serving qualification (2026-11-12)
+
+**Pass**, scope `20261112T222207Z-wide-ragged`. The candidate adds exact model-wide
+prefill widths 2–16; the control retains serial 8/16/scalar. No kernel, arithmetic
+mode, stream, inference scheduler or whole-offer commitment change enters this
+comparison. The [numerical, resource, access and public-loader prerequisites](runtime-contract.md#genuine-ragged-prefill-qualification-2026-11-12)
+pass before this fresh population. The ordinary CUDA loader now selects model-wide
+execution only within the qualified device/configuration/prepared-context scope;
+other configurations retain serial execution.
+
+Protocol SHA-256:
+`4a61738000c06b01becbc4ad65dd39346795ef09f596be8538c615d2db1643c3`.
+Actual release/CUDA runner ELF:
+`fa89c350bca5f9d0b83128b2dc7372fbf30be898f6929a8814ad0e107ac5155e`.
+The pinned package, toolkit, 128 questions, original aliases/scorer, native quality
+floor, arrivals, caps, denominator and thresholds are unchanged. Orders remain
+**C/W, W/C, C/W**: six fresh 392-request model processes, 2,352 requests total,
+with no old timing/control reuse or replacement. Raw six-stage re-audit reproduces
+the saved pairs and summary exactly.
+
+Each QA profile completes all 128 requests and consumes 26,421 prompt tokens.
+Control consumes **1,227** EOS-inclusive output tokens; candidate consumes **1,219**.
+One answer uses the shorter valid “£1 of capital” wording instead of the control's
+longer sentence. Every item/profile meets both fresh-control and native-floor EM
+**and exact Fraction F1**; no loss is offset by another gain. Both have EM **67/128**;
+mean F1 is `30712501351/39434320640` for control and
+`15405263503/19717160320` for candidate. TPS uses each role's actual EOS-inclusive
+work, not the control token count. Warmup and four-resident diagnostics match exactly.
+
+| Profile | Median paired TPS ratio | RPS ratio | p95 first ratio | p95 last ratio |
+| --- | ---: | ---: | ---: | ---: |
+| c1 | 1.125501 | 1.132888 | 0.843528 | 0.891092 |
+| c4 | 1.235508 | 1.243617 | 0.845969 | 0.809570 |
+| mixed8 | 1.240835 | 1.248978 | 0.796851 | 0.794060 |
+
+All median rate and p95 gates pass. Joint first-content ≤1 s **and** last-content
+≤5 s counts also pass in **every** pair, not just in aggregate:
+
+| Profile | Pair 0 control → candidate | Pair 1 | Pair 2 |
+| --- | ---: | ---: | ---: |
+| c1 | 128 → 128 | 128 → 128 | 128 → 128 |
+| c4 | 32 → 76 | 31 → 74 | 32 → 73 |
+| mixed8 | 3 → 6 | 3 → 6 | 4 → 6 |
+
+Loaded allocator charges are **14,946,887,968 bytes** for serial and
+**14,999,847,712 bytes** for candidate: 52,959,744 additional bytes (50.5 MiB).
+Every profile returns to its loaded baseline; shutdown twice, Drop and final pool
+zero pass for all six models. Each has a qualified pidfd-owned completion within
+900 seconds; the independent 7,200-second campaign owner completes in 1,324.358 s
+with the complete family absent. Sampled RSS/HWM and MemAvailable stay within the
+original bounds. GPU diagnostics are pre/post only, identically for both roles;
+they establish no ongoing GPU-memory peak or exclusive-host claim.
+
+The complete source/ELF/controller/raw-stage archive is retained as SHA-256
+`d56335d7045b2628d73e4ff81ff3df70ab844cb63c20c5162c3e035799c691cf`.
+
+This qualifies scoped ordinary Rust `TextOwner` selection, not HTTP timing,
+arbitrary weights, batch-invariant outputs, broad hardware support or competitive
+parity with vLLM/SGLang. It does not overturn either earlier negative population.

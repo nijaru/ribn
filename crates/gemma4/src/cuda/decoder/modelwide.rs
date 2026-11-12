@@ -1,4 +1,4 @@
-//! Experimental depth-one physical owner, separate from per-sequence decoders.
+//! Depth-one model-wide physical owner, separate from per-sequence decoders.
 use super::{
     Arc, BytePool, CudaBf16ComputeError, CudaBf16Error, DeviceCache, Gemma4Config, Gemma4Error,
     Gemma4Source, HostLookups, backend, buffers, project_logits, run_rows,
@@ -40,10 +40,10 @@ struct Physical {
     phase: Phase,
 }
 
-/// Candidate model-wide CUDA execution. Shared weights, cache ownership and batch
-/// workspace live here, not in a collection of per-request decoder handles.
-/// The ordinary text loader still selects the qualified serial implementation.
-/// This explicit candidate requires full-model qualification before selection.
+/// Model-wide CUDA execution. Shared weights, cache ownership and batch workspace
+/// live here, not in a collection of per-request decoder handles. The ordinary CUDA
+/// text loader limits automatic selection to the qualified device, normalized
+/// configuration and prepared context; other configurations retain serial execution.
 pub struct Gemma4CudaModelWide {
     physical: Option<ManuallyDrop<Box<Physical>>>,
 }
@@ -79,8 +79,14 @@ impl Gemma4CudaModelWide {
                 e.to_string(),
             ))
         })?;
-        let plan = super::preparation::prepare(source.config(), capacity, scratch_entries, &device)
-            .map_err(Gemma4CudaModelWideLoadError::plain)?;
+        let plan = super::preparation::prepare(
+            source.config(),
+            capacity,
+            scratch_entries,
+            &device,
+            &super::preparation::MODEL_WIDE_PREFILL_LANES,
+        )
+        .map_err(Gemma4CudaModelWideLoadError::plain)?;
         let host = HostLookups::load(source).map_err(Gemma4CudaModelWideLoadError::plain)?;
         let stream = CudaBf16Stream::new(context)
             .map_err(|e| Gemma4CudaModelWideLoadError::plain(model_error(&e)))?;
