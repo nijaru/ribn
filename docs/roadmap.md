@@ -151,11 +151,15 @@ median or qualified performance result is available. Do not extend or relax that
 Controlled common-history scalar/M2 mixtures reproduce the continuation/EOS BF16
 score tie, with bit-exact scalar control and complete retirement. This is arithmetic-
 path sensitivity, not an observed score loss; the timed dispatch mask was not traced.
-The ordinary loader stays serial. Before another cutover attempt, resolve the
-arithmetic-path stability and matched-work qualification decision, then establish
-repeatable mixed-arrival benefit with latency and residency evidence. A future
-selector must bind the exact qualified topology, rotary and vocabulary scope as
-well as device, projection geometry and prepared context—not scratch-lane selection.
+The ordinary loader stays serial. The [owning numerical contract](inference-engine-design.md#qualification-and-current-evidence)
+already makes batch invariance optional, not a compulsory fast path. Do not invent
+that requirement to repair the stopped benchmark. A separate prospective serving
+comparison may accept different EOS outcomes only with unchanged per-question EM/F1
+floors, explicit actual-work accounting and repeated token/request-rate, latency and
+residency evidence; it cannot turn the closed same-output population into a pass.
+A future selector must bind the exact qualified topology, rotary and vocabulary
+scope as well as device, projection geometry and prepared context—not scratch-lane
+selection.
 Full-model failed-driver-drain remains composed native/owner evidence rather than a
 directly injected model-wide fault. Preserve that scope distinction; do not expose the
 qualified serial model's raw stream to force adoption or fault injection.

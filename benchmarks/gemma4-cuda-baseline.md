@@ -3249,10 +3249,25 @@ Receipts under `desktop:~/github/nijaru/ribn/benchmarks/results/qualification/`:
   actual release execution and focused CUDA Clippy; they are not new sanitizer runs.
 
 All task-created worktrees and private Rust build outputs are removed. Qualified
-serial and 8/16-row prefill remain unchanged. Before another automatic-selection
-attempt, resolve arithmetic-path stability and matched-work qualification; do not
-turn this stopped population into a pass by changing its rule. An eventual selector
-also needs the exact qualified model topology/rotary/vocabulary scope, not merely
-matching projection dimensions or a scratch-selected prefill lane. No external
-engine is timed on this new Rust-facade population; no SOTA or SGLang performance
-parity follows from its internal diagnostic gain.
+serial and 8/16-row prefill remain unchanged. The
+[owning contract](../docs/inference-engine-design.md#qualification-and-current-evidence)
+does **not** promise batch-invariant ordinary serving. That optional guarantee must
+not become a compulsory kernel requirement merely because this benchmark demanded
+identical outputs. The same-output population remains closed and unqualified.
+
+The next serving comparison must be separately preregistered: matched offered
+requests, frozen inputs/caps/EOS and arrival policy, but actual variable output work.
+Keep the existing numerical gates and require no per-question EM or token-F1 loss
+against both a fresh paired control and the frozen native quality floor. Approved
+aliases remain exactly the original dataset's; gains cannot offset losses. Report
+every changed output, actual EOS-inclusive token count, request rate, token rate,
+joint-objective goodput and latency. Do not describe different output work as an
+arithmetic-preserving kernel speedup, reuse old timings as new pairs or waive any
+ownership/completeness gate. Retain exact paired outcomes for unlabeled residency
+and archived warmup diagnostics. This measures quality-preserving serving, not an
+optional reproducibility guarantee or retrospective completion of this experiment.
+
+An eventual selector also needs the exact qualified model topology/rotary/vocabulary
+scope, not merely matching projection dimensions or a scratch-selected prefill lane.
+No external engine is timed on this Rust-facade population; no SOTA or SGLang
+performance parity follows from its internal diagnostic gain.
