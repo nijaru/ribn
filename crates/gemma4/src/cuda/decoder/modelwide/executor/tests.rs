@@ -155,6 +155,8 @@ fn mixed_offers_defer_cancelled_cache_refunds_and_never_commit_a_later_failed_of
     ];
     executor.prepare(&mixed).unwrap();
     let submission = executor.submit(&mixed).unwrap();
+    assert!(owner(&executor).active.is_none());
+    assert!(executor.poll(submission).unwrap().is_none());
     assert_eq!(
         owner(&executor).active,
         Some([0, 2]),
@@ -216,7 +218,8 @@ fn mixed_offers_defer_cancelled_cache_refunds_and_never_commit_a_later_failed_of
             .is_some()
     );
     let charged = pool.granted();
-    assert!(executor.submit(&failing).is_err());
+    let failing_submission = executor.submit(&failing).unwrap();
+    assert!(executor.poll(failing_submission).is_err());
     let execution = owner(&executor);
     assert!(execution.phase == Phase::Failed);
     assert_eq!(
@@ -279,6 +282,8 @@ fn two_pairs_commit_together_and_later_malformed_rows_never_advance() {
     let offered = [ids[3], ids[0], ids[2], ids[1]].map(|id| row(id, StepKind::Decode, 18, 1, 1));
     executor.prepare(&offered).unwrap();
     let submission = executor.submit(&offered).unwrap();
+    assert!(owner(&executor).active.is_none());
+    assert!(executor.poll(submission).unwrap().is_none());
     assert_eq!(owner(&executor).active, Some([0, 1]));
     let deadline = Instant::now() + Duration::from_secs(120);
     while owner(&executor).active != Some([2, 3]) {
@@ -329,4 +334,57 @@ fn two_pairs_commit_together_and_later_malformed_rows_never_advance() {
     assert!(owner(&executor).phase == Phase::Failed);
     executor.synchronize().unwrap();
     assert_eq!(pool.granted(), 0);
+}
+
+#[test]
+#[ignore = "real 15 GB CUDA model; release-only serialized device gate"]
+fn submission_defers_physical_work_and_unpolled_shutdown_releases_it() {
+    let _device = crate::cuda_test_support::DEVICE.lock().unwrap();
+    let (mut executor, pool) = loaded();
+    let [(request, sequence)] = issued::<1>();
+    assert!(matches!(
+        executor
+            .admit(
+                request,
+                sequence,
+                &TokenRequest::new(
+                    chat(),
+                    GenerationOptions {
+                        max_output_tokens: 4,
+                        ..GenerationOptions::default()
+                    }
+                )
+            )
+            .unwrap(),
+        Admission::Ready
+    ));
+    let initial = [row(sequence, StepKind::Prefill, 0, 16, 0)];
+    executor.prepare(&initial).unwrap();
+    let charged = pool.granted();
+    let submission = executor.submit(&initial).unwrap();
+    assert_eq!(
+        owner(&executor).model.position(sequence),
+        Some(0),
+        "submission must not execute the next offer before earlier output is delivered"
+    );
+    assert_eq!(owner(&executor).states[&sequence].cursor, 0);
+    assert_eq!(pool.granted(), charged);
+    assert!(executor.release(sequence).is_err());
+    assert!(executor.abandon_preparation().is_err());
+    let rows = completed(&mut executor, submission);
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].prefix, 16);
+    assert!(rows[0].tokens.is_empty());
+    assert_eq!(owner(&executor).model.position(sequence), Some(16));
+    assert_eq!(owner(&executor).states[&sequence].cursor, 16);
+
+    let tail = [row(sequence, StepKind::Prefill, 16, 2, 1)];
+    executor.prepare(&tail).unwrap();
+    let unpolled = executor.submit(&tail).unwrap();
+    assert_eq!(owner(&executor).model.position(sequence), Some(16));
+    assert_eq!(owner(&executor).states[&sequence].cursor, 16);
+    executor.synchronize().unwrap();
+    executor.synchronize().unwrap();
+    assert_eq!(pool.granted(), 0);
+    assert!(executor.poll(unpolled).is_err());
 }

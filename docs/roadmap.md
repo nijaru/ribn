@@ -157,13 +157,24 @@ that requirement to repair the stopped benchmark. A separate prospective serving
 comparison may accept different EOS outcomes only with unchanged per-question EM/F1
 floors, explicit actual-work accounting and repeated token/request-rate, latency and
 residency evidence; it cannot turn the closed same-output population into a pass.
+That separate [six-process serving screen](../benchmarks/gemma4-cuda-baseline.md#quality-preserving-model-wide-serving-screen-2026-11-12)
+is now complete and **negative**: all quality/integrity checks and median rate/p95
+gates pass, but mixed8 joint diagnostic deadline counts fall from 4/3/3 to 2/2/2.
+Keep it closed. The repeatable drain-tail cohort differs under closed-loop feedback;
+these observations do not establish decode-priority starvation. The executor now
+moves blocking physical advancement out of submission and into polling, avoiding
+next-offer work in the previous offer's delivery path. The failing-before GPU
+regression and existing ownership/failure cases pass, but the correction needs a new
+source-specific serving comparison with unchanged acceptance criteria.
 The model-local `matches_qualification_scope` query now checks normalized topology,
 rotary and vocabulary scope, device, projection geometry and prepared context,
 independently of scratch-selected lanes. Host near-miss tests protect that boundary
 without narrowing existing prefill selection. The ordinary loader does not use the
-query yet. Its new [public-entry-point lifecycle gate](../benchmarks/runtime-contract.md#model-wide-gemma-cuda-device-gate-2026-11-11)
-is compiled but remains device-unrun; neither prerequisite enables automatic loading.
-Full-model failed-driver-drain remains composed native/owner evidence rather than a
+query yet. The [captured-real-M2 arithmetic and public-entry-point gates](../benchmarks/runtime-contract.md#model-wide-gemma-cuda-device-gate-2026-11-11)
+now pass on device: 11 actual non-head geometries satisfy the preregistered per-output
+bound and range checks; the ordinary loader lifecycle passes a private prospective
+wide-selection patch with deferred submission. Neither enables automatic loading
+while serving acceptance remains failed. Full-model failed-driver-drain remains composed native/owner evidence rather than a
 directly injected model-wide fault. Preserve that scope distinction; do not expose the
 qualified serial model's raw stream to force adoption or fault injection.
 

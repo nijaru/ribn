@@ -148,8 +148,11 @@ submission, sequence owner and physical charge and faults the execution
 owner. Measure offered, accepted, physically batched, fallback, enqueued
 and completed work separately.
 
-For the depth-one Gemma candidate, one offer may contain multiple two-member
-ordinary-decode lanes plus qualified single-request fallback work. Acknowledge each
+For the depth-one Gemma candidate, submission retains the prepared offer without
+advancing physical work; polling starts and advances its lanes. This keeps the next
+offer's blocking fallback out of the delivery path for already settled output.
+One offer may contain multiple two-member ordinary-decode lanes plus qualified
+single-request fallback work. Acknowledge each
 lane before reusing mutable workspace; retain every result until the entire offer
 validates, then commit in original offer order. A cancelled sequence outside the
 submitted offer may be logically released while a lane is pending. Mark its existing

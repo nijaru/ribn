@@ -290,10 +290,10 @@ impl GenerationExecutor for Gemma4CudaExecutor {
                 "CUDA submission differs from preparation",
             ));
         }
-        owner.phase = Phase::Failed;
         owner.next = owner.next.wrapping_add(1);
         let id = SubmissionId::new(owner.next);
-        owner.advance()?;
+        // Engine may submit the next offer before Driver delivers settled output.
+        // Keep blocking fallback work in poll, not in that publication path.
         owner.phase = Phase::Submitted(id);
         Ok(id)
     }

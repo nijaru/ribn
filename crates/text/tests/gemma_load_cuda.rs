@@ -41,6 +41,21 @@ fn archived_chat() -> (Vec<u32>, Vec<u32>) {
     (prompt, expected)
 }
 
+fn qualified_package() -> PathBuf {
+    let path = environment("RIBN_GEMMA_PACKAGE");
+    let package = ribn_hf::LocalModelPackage::open(path.clone()).unwrap();
+    let source = engine_gemma4::Gemma4Source::open(&package).unwrap();
+    let context = cudarc::driver::CudaContext::new(0).unwrap();
+    assert!(
+        engine_gemma4::Gemma4CudaModelWide::matches_qualification_scope(
+            source.config(),
+            &context.name().unwrap(),
+            4096
+        )
+    );
+    path
+}
+
 #[test]
 #[expect(
     clippy::assertions_on_constants,
@@ -50,7 +65,7 @@ fn archived_chat() -> (Vec<u32>, Vec<u32>) {
 fn ordinary_cuda_loader_preserves_concurrent_delivery_and_recovers_after_abandonment() {
     assert!(!cfg!(debug_assertions), "device gate requires --release");
     let (prompt, expected) = archived_chat();
-    let (mut owner, report) = TextOwner::load_gemma_cuda(environment("RIBN_GEMMA_PACKAGE"))
+    let (mut owner, report) = TextOwner::load_gemma_cuda(qualified_package())
         .expect("actual ordinary loader, not manually assembled executor");
     assert_eq!(report.model_bytes, 14_926_026_836);
     let model = owner.model().clone();

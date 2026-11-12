@@ -2190,7 +2190,10 @@ domain; failed model-wide drain is not directly device-injected. Preserve that
 composed-evidence limit. The subsequent
 [private mixed-arrival screen](gemma4-cuda-baseline.md#model-wide-mixed-arrival-screen-2026-11-11)
 is closed on an EOS matched-work mismatch; these passing device gates do not override
-that population's no-promotion result.
+that population's no-promotion result. The separate
+[quality-preserving serving screen](gemma4-cuda-baseline.md#quality-preserving-model-wide-serving-screen-2026-11-12)
+also closes without promotion: quality and integrity pass, but mixed8 loses joint
+latency-objective passes in every pair.
 
 The host-only `Gemma4CudaModelWide::matches_qualification_scope` query checks the
 normalized execution configuration, actual device name and positive prepared reach
@@ -2199,12 +2202,52 @@ controls workspace/prefill lanes, not this boundary. A match does not select an
 executor or establish quality for arbitrary checkpoint weights. The ordinary loader
 still chooses serial execution.
 
-A separate public-loader lifecycle test is now compiled, **not device-qualified**.
-It calls `TextOwner::load_gemma_cuda` rather than assembling an executor manually,
-abandons a positive-progress stream, drains four concurrent archived requests,
-rejects an impossible 4K envelope, completes healthy subsequent work and checks
-idempotent shutdown and post-shutdown refusal. Before loader cutover, run this test
-against the selected implementation under the same serialized, bounded supervision:
+The captured-real-operand gate now passes on the same pinned package and RTX 4090,
+receipt `20261112T153555Z-real-m2-operands`. After archived chat18/window513 prefills,
+one common forced `[562,562]` paired step executes all 42 layers. The first parameter
+per distinct active non-head M2 geometry is selected before execution: **11 actual
+geometries, both rows each**, not the synthetic certificate's 12 non-head shapes.
+Test-owned copies retain each actual GEMM input and output before workspace reuse;
+queued copies share its opaque command transaction, with acknowledgement before
+host reads. The model and captures retire to pool zero before CPU reference work.
+
+Every coefficient and output column is checked against an independent scalar f64
+dot product. The preregistered per-element bound combines conservative FP32
+accumulation error, a full BF16 relative ULP and outward f64-reference error; no
+observed-error tolerance is fitted. Finiteness, normal nonzero operands, the
+normal-or-zero product/partial-sum quantum lattice and FP32/BF16 overflow envelopes
+also pass. Native cuBLAS already disallows reduced-precision reduction; this gate
+changes no arithmetic mode. Raw A/C tensors, per-output reports, selected-weight
+hashes before/after, call order, embedded source snapshots and the release test ELF
+are retained. Replay needs the immutable source package, not duplicated weights.
+Pre/post hashes are not an atomic-snapshot claim. This finite captured scope does
+not prove arbitrary checkpoint quality, answer distributions or batch invariance.
+
+The executor now defers physical advancement from `submit()` to `poll()`. This
+prevents the next offer's blocking fallback from delaying delivery of already
+settled output, without changing whole-offer commitment or resource ownership.
+The new `submission_defers_physical_work_and_unpolled_shutdown_releases_it` device
+regression fails before the change (physical prefix 16 instead of 0 after submission)
+and passes afterward. The mixed-offer/deferred-cancel/late-head-failure and two-pair
+acknowledgement tests also pass after migrating physical-start assertions and the
+late execution error to polling. Positive work, retained charges and no early logical
+commitment remain checked. Receipts are `20261112T155354Z-submit-before-regression`
+and the named test scopes at `20261112T155606Z`, `20261112T155646Z` and
+`20261112T155723Z`. Each passing case runs exactly one release test with clean owned
+process retirement; the earlier failing assertion is retained, not replaced.
+
+The public-loader lifecycle test also passes a **private prospective wide-selection
+patch**, receipt `20261112T160403Z-ordinary-loader-submit-deferred`. Main loading
+still remains serial pending serving acceptance. The test verifies the actual pinned
+configuration/device match the model-wide scope, then calls
+`TextOwner::load_gemma_cuda`, rather than assembling an executor manually. It abandons
+a positive-progress stream, drains four concurrent archived requests, rejects an
+impossible 4K envelope, completes healthy subsequent work and checks idempotent
+shutdown and post-shutdown refusal. The private branch selects before construction;
+selected wide errors propagate rather than retrying serial. Release/CUDA source and
+ELF identities, actual CUDA/cuBLAS maps, clean watchdog/exit, package/DSO hashes and
+GPU-empty completion are retained under the same bounded supervision. Reproduce
+against the intended selected implementation:
 
 ```sh
 cargo test -p ribn-text --features cuda --locked --release \

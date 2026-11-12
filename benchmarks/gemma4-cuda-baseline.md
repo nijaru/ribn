@@ -3248,15 +3248,14 @@ Receipts under `desktop:~/github/nijaru/ribn/benchmarks/results/qualification/`:
   member was verified before removing its uncompressed copy. Both diagnostics pass
   actual release execution and focused CUDA Clippy; they are not new sanitizer runs.
 
-All task-created worktrees and private Rust build outputs are removed. Qualified
-serial and 8/16-row prefill remain unchanged. The
+Qualified serial and 8/16-row prefill remain unchanged. The
 [owning contract](../docs/inference-engine-design.md#qualification-and-current-evidence)
 does **not** promise batch-invariant ordinary serving. That optional guarantee must
 not become a compulsory kernel requirement merely because this benchmark demanded
 identical outputs. The same-output population remains closed and unqualified.
 
-The next serving comparison must be separately preregistered: matched offered
-requests, frozen inputs/caps/EOS and arrival policy, but actual variable output work.
+The separate quality-preserving comparison reported below preregisters matched
+offered requests, frozen inputs/caps/EOS and arrival policy, but actual variable output work.
 Keep the existing numerical gates and require no per-question EM or token-F1 loss
 against both a fresh paired control and the frozen native quality floor. Approved
 aliases remain exactly the original dataset's; gains cannot offset losses. Report
@@ -3271,3 +3270,64 @@ An eventual selector also needs the exact qualified model topology/rotary/vocabu
 scope, not merely matching projection dimensions or a scratch-selected prefill lane.
 No external engine is timed on this Rust-facade population; no SOTA or SGLang
 performance parity follows from its internal diagnostic gain.
+
+### Quality-preserving model-wide serving screen (2026-11-12)
+
+**Closed: quality and integrity pass, but the mixed8 joint-latency gate fails.**
+Ordinary loading remains serial. This is a separate prospective population, not a
+retry or retrospective pass of the same-output experiment above.
+
+Receipt: `desktop:~/github/nijaru/ribn/benchmarks/results/qualification/gemma4-modelwide-serving-performance/20261112T073855Z/`.
+Protocol SHA-256: `e2739e5d488f673557b808acdd3342d9cbf4aa1a6ed0f7f96e5b9a1c7ea5585c`.
+It retains the same qualified executable, offered requests, inputs, caps, EOS policy,
+closed-loop initial/think delays, five profiles and timing denominator described
+above. Three fresh pairs run in the frozen orders control/candidate,
+candidate/control and control/candidate. No old timing, retry or replacement enters
+this population. All six model processes complete **392/392** requests.
+
+The prospective quality gate permits valid different EOS outcomes only when each
+question's EM **and** token-F1 meet both its fresh paired control and the frozen
+native HTTP floor, independently in c1/c4/mixed8. Original aliases and scoring stay
+unchanged; gains cannot offset losses. Synthetic warmup/resident4 outcomes still
+require exact paired IDs, text, reasons and usage. All these gates pass. In fact,
+all nine QA comparisons retain identical full outputs and work: **1,227 consumed
+completion tokens per profile**, 67/128 EM and the same exact F1 fraction above.
+
+Median candidate/control ratios across the three fixed pairs are:
+
+| Profile | Actual token and request rates | p95 first / last content latency | Joint passes, control → candidate, by pair |
+| --- | ---: | ---: | --- |
+| c1 | 1.007127 | 1.044504 / 1.024916 | 128 → 128 in every pair |
+| c4 | 1.090381 | 0.964195 / 0.947546 | 29/30/31 → 54/54/52 |
+| mixed8 | 1.105542 | 0.886836 / 0.906805 | **4/3/3 → 2/2/2** |
+
+All median rate and p95 gates pass: c1 rates must be at least 0.95, c4/mixed8 rates
+at least 1.05, and first/last p95 ratios at most 1.05. The separate requirement that
+each candidate pair/profile lose no joint first-content ≤1 s / last-content ≤5 s
+passes **fails in all three mixed8 pairs**. These remain diagnostic objectives,
+not product SLOs. Faster aggregate completion and better p95 do not waive this loss.
+
+Question `57308cf88ab72b1400f9c577` (index 122, caller 2's final request) explains
+one lost pass in every pair. Its candidate first-content latency is 1.078–1.084 s,
+versus 0.468–0.547 s for control; last-content latency passes. Index 5 adds a
+near-threshold loss in pair 0. The candidate reaches a different drain-tail cohort
+under the same closed-loop arrival policy, with other prefill/decode work still
+live. Four active rows fit within the 128-token offer budget, so these observations
+do not establish decode-priority prefill starvation or active-slot saturation.
+
+Source inspection also finds that candidate `submit()` executes potentially blocking
+fallback work before the Driver can deliver an already completed preceding offer;
+serial `submit()` only records ownership. The subsequent deferred-submission
+[device regression](runtime-contract.md#model-wide-gemma-cuda-device-gate-2026-11-11)
+removes that extra publication-path work. Its contribution to this population's
+latency loss was not traced, and a new source-specific serving comparison is required;
+these completed timings cannot qualify the correction.
+
+All six processes exit 0, with clean independent watchdogs, no forced cleanup,
+no remaining owned members and final pool zero. Re-auditing all six raw stages
+reproduces the saved negative summary exactly. The nine package files and 156
+qualified DSO byte hashes still match after host downtime. Raw outputs, changed-work
+tables, per-item scores, clocks, maps, source/binary identities and cleanup receipts
+are retained. Samples do not establish physical memory peaks or host exclusivity.
+Neither this negative screen nor its throughput gains establish automatic loading,
+HTTP performance, SOTA, SGLang parity or batch-invariant numerical behavior.
