@@ -1,5 +1,5 @@
-//! Fixed-lane qualification and whole-reach attention workspace preparation.
-use crate::{AttentionKind, Gemma4Config, Gemma4Error};
+//! Fixed-lane preparation and the model-wide qualification configuration boundary.
+use crate::{AttentionKind, Gemma4Config, Gemma4Error, LayerGeometry, Rope};
 use engine_nvidia::CudaBf16RotaryFactors;
 
 pub(super) const PREFILL_LANES: [usize; 2] = [8, 16];
@@ -20,7 +20,17 @@ pub(super) fn prepare(
     }
     // Promotion is scoped to the measured device and E4B projection geometries.
     // Other packages/devices retain the existing one-row execution path.
-    let qualified = device == "NVIDIA GeForce RTX 4090"
+    let qualified = qualified_device_and_projections(config, device);
+    plan(
+        config.num_attention_heads(),
+        max_positions,
+        scratch_ceiling,
+        qualified,
+    )
+}
+
+fn qualified_device_and_projections(config: &Gemma4Config, device: &str) -> bool {
+    device == "NVIDIA GeForce RTX 4090"
         && config.hidden_size() == 2560
         && config.intermediate_size() == 10240
         && config.ple_dim() == 256
@@ -33,13 +43,53 @@ pub(super) fn prepare(
                 (layer.kind, layer.head_dim),
                 (AttentionKind::Sliding, 256) | (AttentionKind::Full, 512)
             )
-        });
-    plan(
-        config.num_attention_heads(),
-        max_positions,
-        scratch_ceiling,
-        qualified,
-    )
+        })
+}
+
+pub(super) fn modelwide_scope(config: &Gemma4Config, device: &str, capacity: usize) -> bool {
+    qualified_device_and_projections(config, device)
+        && (1..=4096).contains(&capacity)
+        && capacity <= config.max_position_embeddings()
+        && config.vocab == 262_144
+        && config.ple_vocab == 262_144
+        && config.packed_ple == 10_752
+        && config.bos == 2
+        && config.pad == 0
+        && config.media_token_ids() == &[258_880, 258_881, 258_884]
+        && config.epsilon.to_bits() == 1e-6_f32.to_bits()
+        && config.softcap.to_bits() == 30.0_f32.to_bits()
+        && config.layers().iter().enumerate().all(|(index, layer)| {
+            let full = index % 6 == 5;
+            // The 18 shared-tail layers reuse the last local/global owners in
+            // the first 24 layers. Match interpreted semantics, not JSON names.
+            let kv_owner = if index < 24 {
+                index
+            } else if full {
+                23
+            } else {
+                22
+            };
+            *layer
+                == LayerGeometry {
+                    kind: if full {
+                        AttentionKind::Full
+                    } else {
+                        AttentionKind::Sliding
+                    },
+                    head_dim: if full { 512 } else { 256 },
+                    kv_owner,
+                    kv_last_consumer: match kv_owner {
+                        22 => 40,
+                        23 => 41,
+                        _ => kv_owner,
+                    },
+                    rope: if full {
+                        Rope::Proportional { theta: 1_000_000.0 }
+                    } else {
+                        Rope::Default { theta: 10_000.0 }
+                    },
+                }
+        })
 }
 
 fn plan(
@@ -88,6 +138,133 @@ fn invalid(detail: &str) -> Gemma4Error {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn pinned_json() -> serde_json::Value {
+        serde_json::from_str(include_str!(
+            "../../../../../benchmarks/gemma4-reference/config.json"
+        ))
+        .unwrap()
+    }
+
+    fn in_scope(config: &Gemma4Config, capacity: usize) -> bool {
+        crate::Gemma4CudaModelWide::matches_qualification_scope(
+            config,
+            "NVIDIA GeForce RTX 4090",
+            capacity,
+        )
+    }
+
+    #[test]
+    fn modelwide_scope_uses_prepared_reach_not_advertised_context_or_scratch_lane() {
+        let config = Gemma4Config::from_json(&pinned_json()).unwrap();
+        assert_eq!(config.max_position_embeddings(), 131_072);
+        for capacity in [1, 18, 513, 4096] {
+            assert!(in_scope(&config, capacity));
+        }
+        for capacity in [0, 4097, usize::MAX] {
+            assert!(!in_scope(&config, capacity));
+        }
+        for device in ["NVIDIA H100 80GB HBM3", "RTX 4090", ""] {
+            assert!(!crate::Gemma4CudaModelWide::matches_qualification_scope(
+                &config, device, 4096
+            ));
+        }
+        for (scratch, rows) in [(32_768, 1), (262_144, 8), (524_288, 16)] {
+            let prepared = prepare(&config, 4096, scratch, "NVIDIA GeForce RTX 4090").unwrap();
+            assert_eq!(prepared.rows, rows);
+            assert!(in_scope(&config, 4096));
+        }
+        let mut json = pinned_json();
+        json["text_config"]["max_position_embeddings"] = 64.into();
+        let small = Gemma4Config::from_json(&json).unwrap();
+        assert!(in_scope(&small, 64));
+        assert!(!in_scope(&small, 65));
+    }
+
+    #[test]
+    fn modelwide_scope_rejects_semantic_near_misses_without_tightening_prefill() {
+        for (pointer, value) in [
+            ("/text_config/vocab_size", serde_json::json!(262_143)),
+            (
+                "/text_config/vocab_size_per_layer_input",
+                serde_json::json!(262_145),
+            ),
+            ("/text_config/bos_token_id", serde_json::json!(3)),
+            ("/text_config/pad_token_id", serde_json::json!(1)),
+            ("/image_token_id", serde_json::json!(258_879)),
+            ("/audio_token_id", serde_json::json!(258_878)),
+            ("/video_token_id", serde_json::json!(258_877)),
+            ("/text_config/rms_norm_eps", serde_json::json!(1e-5)),
+            (
+                "/text_config/final_logit_softcapping",
+                serde_json::json!(20.0),
+            ),
+            ("/text_config/num_kv_shared_layers", serde_json::json!(16)),
+            ("/text_config/num_kv_shared_layers", serde_json::json!(20)),
+            (
+                "/text_config/rope_parameters/sliding_attention/rope_theta",
+                serde_json::json!(20_000.0),
+            ),
+            (
+                "/text_config/rope_parameters/full_attention/rope_theta",
+                serde_json::json!(2_000_000.0),
+            ),
+        ] {
+            let mut json = pinned_json();
+            *json.pointer_mut(pointer).unwrap() = value;
+            let config = Gemma4Config::from_json(&json).unwrap();
+            assert!(!in_scope(&config, 4096), "{pointer}");
+            assert_eq!(
+                prepare(&config, 4096, 1 << 20, "NVIDIA GeForce RTX 4090")
+                    .unwrap()
+                    .rows,
+                16,
+                "the existing prefill qualification scope must not change: {pointer}"
+            );
+        }
+        let mut json = pinned_json();
+        json["text_config"]["layer_types"]
+            .as_array_mut()
+            .unwrap()
+            .swap(4, 5);
+        let config = Gemma4Config::from_json(&json).unwrap();
+        assert!(
+            !in_scope(&config, 4096),
+            "same widths, different attention order"
+        );
+        assert_eq!(
+            prepare(&config, 4096, 1 << 20, "NVIDIA GeForce RTX 4090")
+                .unwrap()
+                .rows,
+            16
+        );
+    }
+
+    #[test]
+    fn modelwide_scope_rejects_projection_geometry_changes() {
+        for (field, value) in [
+            ("hidden_size", 2568),
+            ("intermediate_size", 10248),
+            ("hidden_size_per_layer_input", 128),
+            ("num_attention_heads", 16),
+            ("num_key_value_heads", 4),
+            ("sliding_window", 1024),
+            ("head_dim", 128),
+            ("global_head_dim", 256),
+        ] {
+            let mut json = pinned_json();
+            json["text_config"][field] = value.into();
+            let config = Gemma4Config::from_json(&json).unwrap();
+            assert!(!in_scope(&config, 4096), "{field}");
+        }
+        let mut json = pinned_json();
+        json["text_config"]["num_hidden_layers"] = 36.into();
+        json["text_config"]["layer_types"]
+            .as_array_mut()
+            .unwrap()
+            .truncate(36);
+        assert!(!in_scope(&Gemma4Config::from_json(&json).unwrap(), 4096));
+    }
 
     #[test]
     fn scratch_covers_the_whole_reach_before_selecting_a_fixed_lane() {

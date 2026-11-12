@@ -157,9 +157,12 @@ that requirement to repair the stopped benchmark. A separate prospective serving
 comparison may accept different EOS outcomes only with unchanged per-question EM/F1
 floors, explicit actual-work accounting and repeated token/request-rate, latency and
 residency evidence; it cannot turn the closed same-output population into a pass.
-A future selector must bind the exact qualified topology, rotary and vocabulary
-scope as well as device, projection geometry and prepared context—not scratch-lane
-selection.
+The model-local `matches_qualification_scope` query now checks normalized topology,
+rotary and vocabulary scope, device, projection geometry and prepared context,
+independently of scratch-selected lanes. Host near-miss tests protect that boundary
+without narrowing existing prefill selection. The ordinary loader does not use the
+query yet. Its new [public-entry-point lifecycle gate](../benchmarks/runtime-contract.md#model-wide-gemma-cuda-device-gate-2026-11-11)
+is compiled but remains device-unrun; neither prerequisite enables automatic loading.
 Full-model failed-driver-drain remains composed native/owner evidence rather than a
 directly injected model-wide fault. Preserve that scope distinction; do not expose the
 qualified serial model's raw stream to force adoption or fault injection.

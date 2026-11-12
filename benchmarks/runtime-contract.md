@@ -2192,6 +2192,28 @@ composed-evidence limit. The subsequent
 is closed on an EOS matched-work mismatch; these passing device gates do not override
 that population's no-promotion result.
 
+The host-only `Gemma4CudaModelWide::matches_qualification_scope` query checks the
+normalized execution configuration, actual device name and positive prepared reach
+up to 4096; the package's advertised context is not the prepared reach. Scratch
+controls workspace/prefill lanes, not this boundary. A match does not select an
+executor or establish quality for arbitrary checkpoint weights. The ordinary loader
+still chooses serial execution.
+
+A separate public-loader lifecycle test is now compiled, **not device-qualified**.
+It calls `TextOwner::load_gemma_cuda` rather than assembling an executor manually,
+abandons a positive-progress stream, drains four concurrent archived requests,
+rejects an impossible 4K envelope, completes healthy subsequent work and checks
+idempotent shutdown and post-shutdown refusal. Before loader cutover, run this test
+against the selected implementation under the same serialized, bounded supervision:
+
+```sh
+cargo test -p ribn-text --features cuda --locked --release \
+  --test gemma_load_cuda -- --ignored --test-threads=1 --nocapture
+```
+
+The test checks the public path's observable behavior; it does not independently
+attest physical M2 routing, grant peaks or failed-driver-drain recovery.
+
 ### State-only prefill Metal fallback (2026-10-30)
 
 The required state-only operation added at `448a3a0` omits the CPU readout, but

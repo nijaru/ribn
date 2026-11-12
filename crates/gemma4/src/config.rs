@@ -131,7 +131,7 @@ impl Gemma4Config {
     /// Rejects out-of-vocabulary IDs and unsupported media placeholders.
     pub fn validate_text_tokens(&self, tokens: &[u32]) -> Result<(), Gemma4Error> {
         for &token in tokens {
-            if self.media.contains(&token) {
+            if self.media_token_ids().contains(&token) {
                 return Err(Gemma4Error::new(
                     "text input",
                     "media placeholders require the multimodal processor",
@@ -145,6 +145,10 @@ impl Gemma4Config {
             }
         }
         Ok(())
+    }
+
+    pub(crate) const fn media_token_ids(&self) -> &[u32; 3] {
+        &self.media
     }
 
     #[must_use]

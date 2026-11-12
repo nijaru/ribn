@@ -48,6 +48,21 @@ pub struct Gemma4CudaModelWide {
     physical: Option<ManuallyDrop<Box<Physical>>>,
 }
 impl Gemma4CudaModelWide {
+    /// Match the device, normalized configuration and prepared context used by
+    /// model-wide qualification, independently of scratch-selected prefill lanes.
+    ///
+    /// This pure query neither loads resources nor enables automatic selection.
+    /// A match is not a quality guarantee for arbitrary checkpoint weights; the
+    /// recorded full-model evidence remains scoped to its pinned artifact.
+    #[must_use]
+    pub fn matches_qualification_scope(
+        config: &Gemma4Config,
+        device: &str,
+        capacity: usize,
+    ) -> bool {
+        super::preparation::modelwide_scope(config, device, capacity)
+    }
+
     /// Prepare native resources on a private, uncapturable stream domain.
     /// # Errors
     /// Returns an owning diagnostic for failed partial physical construction.
