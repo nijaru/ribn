@@ -2193,7 +2193,12 @@ is closed on an EOS matched-work mismatch; these passing device gates do not ove
 that population's no-promotion result. The separate
 [quality-preserving serving screen](gemma4-cuda-baseline.md#quality-preserving-model-wide-serving-screen-2026-11-12)
 also closes without promotion: quality and integrity pass, but mixed8 loses joint
-latency-objective passes in every pair.
+latency-objective passes in every pair. The subsequent corrected-submission
+six-process population, `20261112T162959Z-submit-deferred`, keeps the same criteria
+and also closes negative: all median rate/p95 gates pass, but mixed8 joint counts
+are 4 → 3, 4 → 4 and 3 → 4. Its raw-stage re-audit matches the saved summary;
+all six model processes retire cleanly to pool zero. The remaining initial-burst
+miss, rather than the previous drain-tail question, blocks ordinary loading.
 
 The host-only `Gemma4CudaModelWide::matches_qualification_scope` query checks the
 normalized execution configuration, actual device name and positive prepared reach

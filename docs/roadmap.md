@@ -164,8 +164,13 @@ Keep it closed. The repeatable drain-tail cohort differs under closed-loop feedb
 these observations do not establish decode-priority starvation. The executor now
 moves blocking physical advancement out of submission and into polling, avoiding
 next-offer work in the previous offer's delivery path. The failing-before GPU
-regression and existing ownership/failure cases pass, but the correction needs a new
-source-specific serving comparison with unchanged acceptance criteria.
+regression and existing ownership/failure cases pass. Its new source-specific
+six-process comparison also closes **negative**, with unchanged criteria: quality,
+integrity and all median rate/p95 gates pass, but mixed8 joint counts are
+4 → 3, 4 → 4 and 3 → 4. The prior drain-tail question passes in every new pair;
+one initial-burst question misses first content in pair 0 only. Trace initial
+admission and offer execution before choosing another correction. Do not retry
+this population, weaken the objective or enable ordinary wide loading.
 The model-local `matches_qualification_scope` query now checks normalized topology,
 rotary and vocabulary scope, device, projection geometry and prepared context,
 independently of scratch-selected lanes. Host near-miss tests protect that boundary

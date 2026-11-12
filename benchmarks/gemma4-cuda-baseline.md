@@ -3320,8 +3320,8 @@ fallback work before the Driver can deliver an already completed preceding offer
 serial `submit()` only records ownership. The subsequent deferred-submission
 [device regression](runtime-contract.md#model-wide-gemma-cuda-device-gate-2026-11-11)
 removes that extra publication-path work. Its contribution to this population's
-latency loss was not traced, and a new source-specific serving comparison is required;
-these completed timings cannot qualify the correction.
+latency loss was not traced; these completed timings cannot qualify the correction.
+The source-specific comparison below tests it with unchanged acceptance criteria.
 
 All six processes exit 0, with clean independent watchdogs, no forced cleanup,
 no remaining owned members and final pool zero. Re-auditing all six raw stages
@@ -3331,3 +3331,62 @@ tables, per-item scores, clocks, maps, source/binary identities and cleanup rece
 are retained. Samples do not establish physical memory peaks or host exclusivity.
 Neither this negative screen nor its throughput gains establish automatic loading,
 HTTP performance, SOTA, SGLang parity or batch-invariant numerical behavior.
+
+#### Deferred-submission serving comparison (2026-11-12)
+
+**Closed: quality and integrity pass; one mixed8 pair still loses a joint deadline
+pass. Ordinary loading remains serial.** This new population uses the deferred-
+submission correction delivered at `63ff5ae`, not the previous executable or timings.
+The private source also includes the prospective scope-selected ordinary-loader
+branch qualified by the public-entry-point test; that branch is not enabled on main.
+The timing runner still constructs the control and candidate explicitly through the
+same Engine/Driver/processor/TextOwner path.
+
+Receipt: `desktop:~/github/nijaru/ribn/benchmarks/results/qualification/gemma4-modelwide-serving-performance/20261112T162959Z-submit-deferred/`.
+Protocol SHA-256: `2184c3c06a800968308681b5ce8f6be7a71c8c9ad8d44e6f1b2c6194415bd6e0`.
+Release CUDA executable SHA-256: `717ccef2afa9b2bfa96cea2e4e777f98769cc9263828b3e8654b8597bffb065b`.
+The source archive is base `28bd038` plus the retained exact patch and unchanged
+runner sources; its production executor matches `63ff5ae`. Source/build receipts,
+parent-sealed rules and tool identities are retained with the executable.
+
+All acceptance rules, quality floors, scorer aliases, inputs, caps, EOS handling,
+closed-loop arrival policy, five profiles and timing denominator remain unchanged.
+All six fresh processes run in the same three fixed pair orders and complete
+**392/392** requests each. All nine paired QA comparisons again have identical full
+outputs and work: **1,227 consumed completion tokens per profile**, 67/128 EM and
+unchanged token-F1, with no per-item loss against either fresh control or the frozen
+native floor. Warmup/resident4 diagnostics match exactly.
+
+| Profile | Median actual token and request rate ratio | Median p95 first / last content ratio | Joint passes, control → candidate, by pair |
+| --- | ---: | ---: | --- |
+| c1 | 1.008950 | 0.998002 / 0.999060 | 128 → 128 in every pair |
+| c4 | 1.095077 | 0.964955 / 0.956704 | 30 → 47, 30 → 46, 30 → 45 |
+| mixed8 | 1.106679 | 0.923800 / 0.897752 | **4 → 3**, 4 → 4, 3 → 4 |
+
+All median rate/p95 gates pass. The requirement of no joint deadline-count loss in
+**each** pair/profile still fails in pair 0; neither the other pairs nor aggregate
+speedups offset it. The previous index-122 drain-tail question passes the joint
+objective in every new role/pair. The remaining loss is index 5
+(`56f852fba6d7ea1400e17571`, initial caller 5, 147 prompt tokens, eight consumed output
+tokens): first content takes **1,143.049 ms** versus **989.402 ms** in pair 0. Last
+content meets five seconds in both roles. Candidate first-content latency for this
+same question is **980.525/980.168 ms** in the other pairs, versus control
+**988.395/900.436 ms**. This variation needs a focused initial-admission/offer trace;
+it does not establish an intrinsic slowdown for that question or license a retry.
+The submission regression proves removal of publication-path work, not attribution
+of every timing difference across these closed-loop populations.
+
+Each process exits 0 before its absolute deadline, with a clean independent watchdog,
+no forced cleanup, no remaining owned members and final pool zero. Actual CUDA and
+cuBLAS mappings are checked; nine package and 156 DSO byte hashes still match the
+previous qualified environment. Re-auditing all six raw stages reproduces the saved
+negative summary exactly. The bounded supervisor waits for watchdog readiness before
+activating each executable, prevents activation after parent loss and independently
+rejects completion observed after the deadline. Its 22 native-Linux CPU tests, four
+bootstrap tests, seven original ownership tests and 53 unchanged auditor tests pass.
+
+An earlier preparation scope, `20261112T162500Z-submit-deferred`, is retained as a
+**pre-model preflight failure**: the parent tool manifest omitted the workload paths.
+No model process, stage or timing was collected. It was not rerun in place. The new
+scope includes those paths and passes the real manifest/seal preflight before launch;
+no model retry or timing reuse enters the six-process result.
