@@ -192,7 +192,12 @@ def fixture(directory, slos=False):
         "aiperf_version": "0.13.0",
         "is_complete": True,
         "was_cancelled": False,
+        "start_time": "2026-01-01T00:00:00",
+        "end_time": "2026-01-01T00:00:04",
         "request_count": {"avg": 2, "unit": "requests"},
+        "total_osl": {"avg": 4, "unit": "tokens"},
+        "request_throughput": {"avg": 0.5, "unit": "requests/sec"},
+        "output_token_throughput": {"avg": 1.0, "unit": "tokens/sec"},
         **{
             f"total_usage_{key}": {"avg": value * 2, "unit": "tokens"}
             for key, value in usage.items()
@@ -208,6 +213,7 @@ def fixture(directory, slos=False):
             row["metrics"]["good_request_count"] = {"value": 1, "unit": "requests"}
         summary["good_request_count"] = {"avg": 2, "unit": "requests"}
         summary["good_request_fraction"] = {"avg": 1.0, "unit": "ratio"}
+        summary["goodput"] = {"avg": 0.5, "unit": "requests/sec"}
     return ordinary, raw, summary
 
 

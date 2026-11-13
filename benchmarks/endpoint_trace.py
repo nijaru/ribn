@@ -3,8 +3,8 @@
 import hashlib
 import json
 import re
-from datetime import datetime
 
+from aiperf_clock import TIMESTAMP_UNCERTAINTY_NS, exported_epoch_ns
 from aiperf_stream import validate_payload
 from endpoint_config import count, require
 
@@ -69,24 +69,8 @@ def reported_phase_clock(raw, rows, start_time, client_timezone):
     require(client_timezone in (None, "UTC"), "unsupported recorded client timezone")
     if client_timezone is None:
         return None
-    require(
-        isinstance(start_time, str)
-        and re.fullmatch(
-            r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]{1,6})?",
-            start_time,
-        ),
-        "missing/invalid UTC phase start_time",
-    )
-    elapsed = datetime.fromisoformat(start_time) - datetime(1970, 1, 1)
-    epoch_ns = (elapsed.days * 86400 + elapsed.seconds) * 1_000_000_000
-    epoch_ns += elapsed.microseconds * 1000
-    require(
-        0 <= epoch_ns < (1 << 32) * 1_000_000_000, "phase epoch outside supported range"
-    )
-    # v0.13 converts integer ns to float seconds, then a microsecond datetime.
-    # Below 2**32 seconds, integer/float rounding plus datetime rounding is <2us.
-    # This interval does NOT bound distinct worker/controller clock anchors.
-    uncertainty = 2000
+    epoch_ns = exported_epoch_ns(start_time, "start_time")
+    uncertainty = TIMESTAMP_UNCERTAINTY_NS
     low, high = epoch_ns - uncertainty, epoch_ns + uncertainty
     offsets = {}
     for record in raw.values():

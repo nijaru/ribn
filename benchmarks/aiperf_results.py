@@ -1,11 +1,13 @@
-"""Offline protocol, usage, prompt-cohort and selected clock audit of AIPerf v0.13."""
+"""Offline protocol, usage, prompt-cohort and selected clock/rate audit of AIPerf v0.13."""
 
 import hashlib
 import json
 from collections import Counter
+from fractions import Fraction
 from itertools import pairwise
 from statistics import median
 
+from aiperf_clock import TIMESTAMP_UNCERTAINTY_NS, exported_epoch_ns
 from aiperf_stream import completion_stream, timestamp, validate_clocks
 from endpoint_config import (
     AIPERF_VERSION,
@@ -126,6 +128,57 @@ def audit_slo_summary(summary, outcomes, failures, attempted):
         "undefined_requests": counts["undefined"],
         "failed_requests": len(failures),
         "attempted_fraction": fraction,
+    }
+
+
+def audit_aggregate_rates(summary, successful, completion_tokens, attainment, timezone):
+    """Reconcile rates after the caller validates single-phase config and all counts."""
+    require(timezone in (None, "UTC"), "unsupported recorded client timezone")
+    if timezone is None:
+        return None
+    start = exported_epoch_ns(summary.get("start_time"), "start_time")
+    end = exported_epoch_ns(summary.get("end_time"), "end_time")
+    low = end - start - 2 * TIMESTAMP_UNCERTAINTY_NS
+    high = end - start + 2 * TIMESTAMP_UNCERTAINTY_NS
+    require(low > 0, "phase duration too short/reversed for serialization-bound rate audit")
+    require(
+        metric(summary, "total_osl", "avg") == completion_tokens,
+        "aggregate OSL/usage mismatch",
+    )
+    numerators = {
+        "request_throughput": (successful, "requests/sec"),
+        "output_token_throughput": (completion_tokens, "tokens/sec"),
+        "goodput": (None, "requests/sec"),
+    }
+    if attainment and attainment["good_requests"] + attainment["violated_requests"]:
+        numerators["goodput"] = (attainment["good_requests"], "requests/sec")
+
+    # Native N / (D * (1 / 1e9)) has two possible numerator roundings (N's
+    # binary64 conversion and final division), three denominator roundings
+    # (D's conversion, the seconds factor and multiplication). Compare exact
+    # rational envelopes, not rounded bounds or an empirical tolerance.
+    u = Fraction(1, 1 << 53)
+    round_low = (1 - u) ** 2 / (1 + u) ** 3
+    round_high = (1 + u) ** 2 / (1 - u) ** 3
+    rates = {}
+    for name, (numerator, unit) in numerators.items():
+        if numerator is None:
+            require(name not in summary, f"{name} must be absent without defined SLOs")
+            rates[name] = None
+            continue
+        value = metric(summary, name, "avg", unit)
+        if numerator == 0:
+            require(value == 0, f"aggregate rate mismatch: {name}")
+        else:
+            lower = Fraction(numerator * 1_000_000_000, high) * round_low
+            upper = Fraction(numerator * 1_000_000_000, low) * round_high
+            require(lower <= Fraction(value) <= upper, f"aggregate rate mismatch: {name}")
+        rates[name] = value
+    return {
+        "duration_ns_bounds": [low, high],
+        "timestamp_serialization_uncertainty_ns": TIMESTAMP_UNCERTAINTY_NS,
+        "rates_per_second": rates,
+        "source": "client/profile_export_aiperf.json:start_time,end_time",
     }
 
 
@@ -313,6 +366,7 @@ def validate(directory):
         "aggregate request counts differ",
     )
     slo_attainment = None
+    aggregate_rate_audit = None
     if not invalid:
         require(native_success == successful, "aggregate success count differs")
         for field, value in totals.items():
@@ -324,6 +378,14 @@ def validate(directory):
         if slos and not warmup_errors and successful:
             slo_attainment = audit_slo_summary(
                 summary, slo_outcomes, failures, expected
+            )
+        if not warmup_errors and successful:
+            aggregate_rate_audit = audit_aggregate_rates(
+                summary,
+                successful,
+                totals["completion_tokens"],
+                slo_attainment,
+                provenance.get("client_timezone"),
             )
     return {
         "protocol_valid": not invalid and not warmup_errors and successful > 0,
@@ -348,8 +410,9 @@ def validate(directory):
         **totals,
         "slo": slos,
         "slo_attainment": slo_attainment,
+        "aggregate_rate_audit": aggregate_rate_audit,
         "metrics_source": "client/profile_export_aiperf.json",
         "performance_metrics_audited": False,
         "readiness": "Automatic probes disabled; endpoint must already be ready. Zero warmup does not prove cold state.",
-        "limitations": "Protocol/usage, prompt multiset, specified raw-clock/usage-ratio and configured joint SLO count/fraction audit only; not observed token intervals, aggregate rates/percentiles, planned arrivals, HTTP EOF, numerical, GPU or physical-memory qualification.",
+        "limitations": "Protocol/usage, prompt multiset, specified raw-clock/usage-ratio, UTC single-phase aggregate request/output-token/goodput rates and configured joint SLO count/fraction audit only; not observed token intervals, aggregate percentiles, planned arrivals, HTTP EOF, numerical, GPU or physical-memory qualification.",
     }

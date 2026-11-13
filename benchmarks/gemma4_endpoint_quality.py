@@ -297,6 +297,7 @@ def main():
                 "gemma4_decode_quality.py",
                 "aiperf_results.py",
                 "aiperf_stream.py",
+                "aiperf_clock.py",
                 "endpoint_config.py",
                 "endpoint_trace.py",
                 "gemma4_reference.py",

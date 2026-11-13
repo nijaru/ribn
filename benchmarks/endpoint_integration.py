@@ -6,6 +6,7 @@ Run with the AIPerf environment's Python; not part of the dependency-free unit s
 import hashlib
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -13,6 +14,7 @@ import threading
 import time
 import unittest
 from contextlib import contextmanager
+from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -141,6 +143,7 @@ class RealClientTests(unittest.TestCase):
         warmup=1,
         slos=None,
         client_exit=0,
+        copy_to=None,
     ):
         if slos is None:
             slos = {"ttft_ms": 1000, "itl_ms": 1000, "last_content_ms": 10000}
@@ -211,6 +214,8 @@ class RealClientTests(unittest.TestCase):
                 # Readiness probes are disabled: only declared issued attempts.
                 self.assertEqual(server.requests, requests + warmup)
                 client = output / "client"
+                if copy_to is not None:
+                    shutil.copytree(output, copy_to)
                 ordinary = [
                     json.loads(line)
                     for line in (client / "profile_export.jsonl").read_text().splitlines()
@@ -257,6 +262,7 @@ class RealClientTests(unittest.TestCase):
                     "prompt_lengths": server.prompt_lengths[warmup:],
                     "records": ordinary,
                     "raw": raw,
+                    "summary": json.loads((client / "profile_export_aiperf.json").read_text()),
                     "wire_events": server.wire_events,
                 }
 
@@ -382,6 +388,21 @@ class RealClientTests(unittest.TestCase):
         captured = self.exercise("timing", warmup=0)
         self.assertTrue(captured["audit"]["protocol_valid"])
         self.assertEqual(captured["audit"]["completion_tokens"], 10)
+        summary = captured["summary"]
+        phase_seconds = (
+            datetime.fromisoformat(summary["end_time"])
+            - datetime.fromisoformat(summary["start_time"])
+        ).total_seconds()
+        content_seconds = summary["benchmark_duration"]["avg"]
+        self.assertGreater(phase_seconds, content_seconds)
+        for tag, numerator in (
+            ("request_throughput", 2), ("output_token_throughput", 10), ("goodput", 2)
+        ):
+            value = summary[tag]["avg"]
+            self.assertLess(value, numerator / content_seconds)
+            self.assertEqual(
+                captured["audit"]["aggregate_rate_audit"]["rates_per_second"][tag], value
+            )
         ordinary = {r["metadata"]["x_request_id"]: r for r in captured["records"]}
         for raw in captured["raw"]:
             key = raw["metadata"]["x_request_id"]
@@ -415,6 +436,29 @@ class RealClientTests(unittest.TestCase):
             self.assertEqual(len(metrics["inter_chunk_latency"]["value"]), 1)
             self.assertLess(last, responses[3]["perf_ns"])
             self.assertLess(responses[3]["perf_ns"], responses[-1]["perf_ns"])
+
+    def test_corrupted_native_scalar_rates_fail_the_offline_cli(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            output = Path(tmp) / "run"
+            self.exercise("timing", warmup=0, copy_to=output)
+            path = output / "client/profile_export_aiperf.json"
+            original = path.read_bytes()
+            for tag in ("request_throughput", "output_token_throughput", "goodput"):
+                with self.subTest(metric=tag):
+                    summary = json.loads(original)
+                    summary[tag]["avg"] *= 2
+                    path.write_text(json.dumps(summary))
+                    result = subprocess.run(
+                        [sys.executable, str(ROOT / "endpoint.py"), "validate", str(output)],
+                        capture_output=True,
+                        text=True,
+                        check=False,
+                        timeout=15,
+                    )
+                    self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+                    report = json.loads((output / "validation.json").read_text())
+                    self.assertFalse(report["protocol_valid"])
+                    self.assertIn(f"aggregate rate mismatch: {tag}", report["error"])
 
     def test_rate_ceiling_does_not_establish_nominal_offered_load(self):
         captured = self.exercise("timing", rate=20, warmup=0)

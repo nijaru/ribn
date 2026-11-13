@@ -435,7 +435,8 @@ aggregate. Do not suppress EOS, force nonempty output or drop these attempts to
 work around the pinned client's limitation.
 
 `protocol_valid` validates protocol/accounting and the per-request clocks below.
-`audited_request_timing_metrics` lists the reconciled native metrics; general
+`audited_request_timing_metrics` lists the reconciled per-request metrics;
+`aggregate_rate_audit` covers the selected phase rates below. General
 `performance_metrics_audited` remains false. This is not numerical acceptance, a
 matched comparison, a SOTA result or proof of physical-memory bounds. Server usage remains a server
 assertion; normalized raw SSE exports are not byte-exact wire captures. Readiness
@@ -511,16 +512,35 @@ profiling outcomes, and returns no attainment audit without configured SLOs or
 when protocol/metric validation fails. These are issued-request attainment counts,
 not planned-arrival or product SLO acceptance.
 
-For finite-phase throughput, divide actual successful request/token totals by the
-aggregate `end_time - start_time`, including drain—not `benchmark_duration`, which
-ends at content. Aggregate rates (including SLO goodput) and percentiles remain
-unaudited; a study must cross-check those separately. `performance_metrics_audited`
-stays false. The per-request ITL arithmetic audit does not establish its aggregate
-tails or the first chunk's real token count.
+For the single profiling phase, `aggregate_rate_audit` reconciles native
+`request_throughput`, `output_token_throughput` and configured `goodput` against
+validated success, terminal completion-token and SLO-pass counts. `total_osl` must
+also equal the validated completion-token sum. The denominator is the profiling
+lifecycle's `end_time - start_time`, including idle time, failed attempts and drain—not
+`benchmark_duration`, which ends at content. These are successful-request/work rates,
+not attempted-arrival rates or all consumed work when the client reports errors.
+Undefined SLO metrics leave native goodput absent (reported as null), not zero;
+defined outcomes that all violate their SLOs produce an audited zero.
+
+The audit requires recorded UTC timestamps and bounds each exported timestamp's
+integer-nanosecond → binary64-seconds → microsecond-datetime serialization error by
+2 µs, below epoch 2³² seconds. `duration_ns_bounds` combines both endpoints; rates
+must fit the resulting interval with an analytically bounded binary64 arithmetic
+envelope, not a fitted percentage tolerance. A nonpositive lower duration bound,
+missing fields, wrong units or inconsistent counts/rates rejects the audit. Older
+artifacts without a recorded timezone retain `aggregate_rate_audit: null`; the
+validator does not infer that timezone from its current environment.
+
+This checks selected scalar arithmetic against the client's reported phase clock,
+not that clock's physical accuracy, monotonic alignment or lifecycle fidelity.
+Aggregate percentiles, timeslice/per-user rates and load-generator capacity remain
+unaudited; `performance_metrics_audited` stays false. The per-request ITL arithmetic
+audit does not establish its aggregate tails or the first chunk's real token count.
 
 Zero warmup omits AIPerf's positive-only warmup option; it does not establish cold execution.
 The [client timing/Metal gate](runtime-contract.md#gemma-endpoint-client-qualification-2026-10-21)
-checks these bounded semantics, not aggregate metric accuracy or load-generator capacity.
+records the earlier per-request qualification, not this additional scalar-rate audit
+or load-generator capacity.
 See the pinned [metrics definitions](https://docs.nvidia.com/aiperf/v0.13.0/reference/ai-perf-metrics-reference).
 
 **Raw exports contain prompts and responses.** Use public/synthetic data, keep
@@ -599,8 +619,11 @@ attainment counts and the all-attempt fraction. EOS-only fixtures check the pinn
 client's all-error exit and mixed-population denominator; the quality tests retain
 the empty answer and terminal usage without inventing a score or survivor mean.
 A concurrency-capped rate case checks actual start intervals against raw timestamps.
-These checks do not establish device qualification, aggregate rate/percentile
-accuracy or load-generator capacity.
+Delayed terminal frames also distinguish phase-rate denominators from the shorter
+content window. Corrupted copies of native exports check that the offline CLI rejects
+doubled request throughput, output-token throughput and goodput. These checks qualify
+the selected scalar arithmetic, not aggregate
+percentiles, device behavior or load-generator capacity.
 
 ## Timestamped text replay
 
