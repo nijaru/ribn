@@ -49,9 +49,14 @@ class EndpointFixture(BaseHTTPRequestHandler):
             },
             {"object": "text_completion", "choices": [], "usage": usage},
         ]
-        if self.server.mode == "single-token":
+        if (
+            self.server.mode in ("single-token", "empty-eos")
+            or (self.server.mode == "mixed-empty-eos" and self.server.requests == 2)
+        ):
             usage.update(completion_tokens=1, total_tokens=prompt_tokens + 1)
-            messages[0]["choices"][0]["text"] = "hello"
+            messages[0]["choices"][0]["text"] = (
+                "hello" if self.server.mode == "single-token" else ""
+            )
         if self.server.mode == "mlx-usage":
             messages[-1]["object"] = "chat.completion"
         if self.server.mode == "timing":
@@ -135,6 +140,7 @@ class RealClientTests(unittest.TestCase):
         requests=2,
         warmup=1,
         slos=None,
+        client_exit=0,
     ):
         if slos is None:
             slos = {"ttft_ms": 1000, "itl_ms": 1000, "last_content_ms": 10000}
@@ -183,20 +189,43 @@ class RealClientTests(unittest.TestCase):
                 )
                 log = (output / "client.log").read_text()
                 self.assertEqual(
-                    (output / "client-exit-code").read_text().strip(), "0", log
+                    (output / "client-exit-code").read_text().strip(),
+                    str(client_exit),
+                    log,
                 )
                 self.assertEqual(
                     result.returncode,
                     0
-                    if mode
-                    in ("valid", "mlx-usage", "overload", "timing", "single-token")
+                    if client_exit == 0
+                    and mode in (
+                        "valid",
+                        "mlx-usage",
+                        "overload",
+                        "timing",
+                        "single-token",
+                        "mixed-empty-eos",
+                    )
                     else 1,
                     result.stdout + result.stderr + log[-3000:],
                 )
-                report = json.loads((output / "validation.json").read_text())
                 # Readiness probes are disabled: only declared issued attempts.
                 self.assertEqual(server.requests, requests + warmup)
                 client = output / "client"
+                ordinary = [
+                    json.loads(line)
+                    for line in (client / "profile_export.jsonl").read_text().splitlines()
+                ]
+                if client_exit:
+                    # The pinned client's all-error exit has no aggregate/raw
+                    # export to audit. Preserve the failure, not a success subset.
+                    self.assertFalse((output / "validation.json").exists())
+                    self.assertFalse((client / "profile_export_aiperf.json").exists())
+                    self.assertFalse((client / "profile_export_raw.jsonl").exists())
+                    return {
+                        "records": ordinary,
+                        "prompt_lengths": server.prompt_lengths[warmup:],
+                    }
+                report = json.loads((output / "validation.json").read_text())
                 raw = [
                     json.loads(line)
                     for line in (client / "profile_export_raw.jsonl")
@@ -226,12 +255,7 @@ class RealClientTests(unittest.TestCase):
                 return {
                     "audit": report,
                     "prompt_lengths": server.prompt_lengths[warmup:],
-                    "records": [
-                        json.loads(line)
-                        for line in (client / "profile_export.jsonl")
-                        .read_text()
-                        .splitlines()
-                    ],
+                    "records": ordinary,
                     "raw": raw,
                     "wire_events": server.wire_events,
                 }
@@ -247,6 +271,57 @@ class RealClientTests(unittest.TestCase):
                     self.assertFalse(report["protocol_valid"])
                     self.assertEqual(len(report["invalid_requests"]), 2)
                     self.assertEqual(len(report["warmup_errors"]), 1)
+
+    def test_empty_eos_is_a_pinned_client_limitation_not_a_content_slo_pass(self):
+        captured = self.exercise("empty-eos", warmup=0, client_exit=1)
+        self.assertEqual(len(captured["records"]), 2)
+        for record in captured["records"]:
+            self.assertEqual(record["trace_data"]["response_status_code"], 200)
+            self.assertEqual(record["error"]["type"], "InvalidInferenceResultError")
+            self.assertIn("No responses with actual content", record["error"]["message"])
+            for name in (
+                "time_to_first_token",
+                "request_latency",
+                "inter_token_latency",
+                "good_request_count",
+                "output_sequence_length",
+                "usage_completion_tokens",
+            ):
+                self.assertNotIn(name, record["metrics"])
+
+    def test_mixed_empty_eos_remains_in_the_attempted_slo_denominator(self):
+        captured = self.exercise(
+            "mixed-empty-eos",
+            warmup=0,
+            slos={"ttft_ms": 1000, "last_content_ms": 10000},
+        )
+        report = captured["audit"]
+        self.assertTrue(report["protocol_valid"])
+        self.assertEqual(report["attempted_requests"], 2)
+        self.assertEqual(report["successful_requests"], 1)
+        self.assertEqual(report["failed_requests"], 1)
+        self.assertEqual(report["slo_attainment"]["good_requests"], 1)
+        self.assertEqual(report["slo_attainment"]["failed_requests"], 1)
+        self.assertEqual(report["slo_attainment"]["attempted_fraction"], 0.5)
+        # Native successful-only totals exclude the empty response's one EOS.
+        # They cannot stand for all completed output work (2 + 1 tokens).
+        self.assertEqual(report["completion_tokens"], 2)
+        failed = [r for r in captured["raw"] if r.get("error")]
+        self.assertEqual(len(failed), 1)
+        self.assertEqual(failed[0]["status"], 200)
+        self.assertEqual(failed[0]["error"]["type"], "InvalidInferenceResultError")
+        data = [
+            packet["value"]
+            for response in failed[0]["responses"]
+            for packet in response["packets"]
+            if packet["name"] == "data"
+        ]
+        finish, usage = map(json.loads, data[:-1])
+        self.assertEqual(
+            finish["choices"], [{"index": 0, "text": "", "finish_reason": "stop"}]
+        )
+        self.assertEqual(usage["usage"]["completion_tokens"], 1)
+        self.assertEqual(data[-1], "[DONE]")
 
     def test_single_token_response_has_no_itl_metric(self):
         captured = self.exercise("single-token", warmup=0)

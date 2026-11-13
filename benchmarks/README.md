@@ -424,8 +424,15 @@ The audit also accepts MLX-LM 0.32.2's `chat.completion` label on an empty-choic
 usage-only frame after the completion finish. This is a vendor wire-format
 exception, not support for chat content on this endpoint; usage and terminal-order
 checks still apply.
-AIPerf treats replies without visible content, including immediate EOS, as errors;
-the audit preserves that classification rather than silently changing it.
+AIPerf 0.13.0 treats replies without visible content, including immediate EOS, as
+`InvalidInferenceResultError`; the audit preserves that client classification.
+An EOS-only reply with `stop` and one consumed token is a valid engine outcome,
+not evidence of a server fault. In a mixed population it stays in the attempted-SLO
+denominator, but native successful-usage totals omit its consumed EOS. Do not rank
+those totals as all completed output work, or treat `protocol_valid` as complete
+quality acceptance. An all-error population exits nonzero without an auditable
+aggregate. Do not suppress EOS, force nonempty output or drop these attempts to
+work around the pinned client's limitation.
 
 `protocol_valid` validates protocol/accounting and the per-request clocks below.
 `audited_request_timing_metrics` lists the reconciled native metrics; general
@@ -588,9 +595,12 @@ Delayed empty/terminal frames check content versus DONE clocks and the usage-bas
 ITL divisor rather than visible chunk count or output cap. A single-token response
 checks ITL absence and undefined SLO attainment; without an ITL requirement, its
 other latency SLOs remain measurable. Joint SLO rejection and partial overload check
-attainment counts and the all-attempt fraction. A concurrency-capped rate case checks
-actual start intervals against raw timestamps. These checks do not establish device
-qualification, aggregate rate/percentile accuracy or load-generator capacity.
+attainment counts and the all-attempt fraction. EOS-only fixtures check the pinned
+client's all-error exit and mixed-population denominator; the quality tests retain
+the empty answer and terminal usage without inventing a score or survivor mean.
+A concurrency-capped rate case checks actual start intervals against raw timestamps.
+These checks do not establish device qualification, aggregate rate/percentile
+accuracy or load-generator capacity.
 
 ## Timestamped text replay
 

@@ -128,15 +128,41 @@ class EndpointQualityTests(unittest.TestCase):
             self.assertEqual(row["text"], "hello world\nExplanation")
 
     def test_failed_or_invalid_answer_cannot_become_a_zero_or_survivor_mean(self):
-        for mode in ("transport", "late-error", "prompt-count", "truncated"):
+        for mode in ("transport", "empty-eos", "late-error", "prompt-count", "truncated"):
             with self.subTest(mode=mode), tempfile.TemporaryDirectory() as tmp:
                 d = Path(tmp)
                 cases, ordinary, raw, summary = endpoint_fixture(d)
-                if mode == "transport":
-                    ordinary[0]["error"] = {"type": "http", "message": "overloaded"}
-                    raw[0].update(
-                        status=429, responses=[], error={"message": "raw failure"}
-                    )
+                if mode in ("transport", "empty-eos"):
+                    if mode == "transport":
+                        ordinary[0]["error"] = {"type": "http", "message": "overloaded"}
+                        raw[0].update(
+                            status=429, responses=[], error={"message": "raw failure"}
+                        )
+                    else:
+                        # Native AIPerf 0.13 rejects an otherwise complete EOS-only
+                        # reply. Retain its actual answer/usage, not a zero score.
+                        error = {"type": "InvalidInferenceResultError"}
+                        ordinary[0].update(error=error, metrics={})
+                        raw[0]["error"] = error
+                        raw[0]["responses"][0] = message(
+                            {
+                                "object": "text_completion",
+                                "choices": [
+                                    {"index": 0, "text": "", "finish_reason": "stop"}
+                                ],
+                            }
+                        )
+                        raw[0]["responses"][1] = message(
+                            {
+                                "object": "text_completion",
+                                "choices": [],
+                                "usage": {
+                                    "prompt_tokens": 16,
+                                    "completion_tokens": 1,
+                                    "total_tokens": 17,
+                                },
+                            }
+                        )
                     summary["request_count"]["avg"] = 1
                     summary["error_request_count"] = {"avg": 1, "unit": "requests"}
                     for field in ("prompt_tokens", "completion_tokens", "total_tokens"):
@@ -161,6 +187,14 @@ class EndpointQualityTests(unittest.TestCase):
                     self.assertEqual(observed["finish_reasons"], ["stop"])
                     self.assertEqual(
                         observed["usage_frames"][0]["completion_tokens"], 2
+                    )
+                if mode == "empty-eos":
+                    self.assertEqual(observed["text"], "")
+                    self.assertEqual(observed["finish_reasons"], ["stop"])
+                    self.assertEqual(observed["usage_frames"][0]["completion_tokens"], 1)
+                    self.assertEqual(
+                        result["rows"][0]["raw_error"]["type"],
+                        "InvalidInferenceResultError",
                     )
                 if mode == "late-error":
                     self.assertEqual(observed["errors"], [{"message": "fault"}])
