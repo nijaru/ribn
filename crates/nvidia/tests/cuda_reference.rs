@@ -6899,10 +6899,9 @@ fn serves_chunked_prefill_matching_the_serial_path() {
     }
 }
 
-/// The sampled-final optimization rests on one property: the chunk's last row
-/// is bit-identical to the residual the serial final step produces, so the
-/// unchanged output head selects the same token. This gate checks that property
-/// directly instead of inferring it from token equality.
+/// Exact-width prefill must preserve every residual and the state needed to
+/// continue. Exercise the candidate short widths after a populated prefix,
+/// rather than inferring parity from the final sampled token alone.
 #[test]
 #[ignore = "requires the pinned Qwen GGUF and a CUDA device"]
 #[allow(
@@ -6919,7 +6918,16 @@ fn sampled_final_chunk_row_matches_serial_hidden_bits() {
     const GGUF: &str = "/home/nick/models/qwen38-27b/Qwen3.8-27B-UD-Q4_K_M.gguf";
     const EPS: f32 = 1.0e-6;
     const MEMBERS: usize = 8;
-    const TOKENS: [u32; MEMBERS] = [12_675, 1017, 760, 6511, 314, 9338, 369, 42];
+    const PREFIX: u32 = 64;
+    const FIXTURE: &str = include_str!("../../qwen/tests/fixtures/qwen38-code-fill4096-257.tokens");
+    let tokens: Vec<u32> = FIXTURE
+        .lines()
+        .skip(1)
+        .flat_map(str::split_whitespace)
+        .take(PREFIX as usize + MEMBERS + 1)
+        .map(|id| id.parse().expect("fixture token ID"))
+        .collect();
+    let (prefix, suffix) = tokens.split_at(PREFIX as usize);
 
     let provider = QwenGguf::open(GGUF).expect("open pinned Qwen GGUF");
     let context = CudaContext::new(0).expect("CUDA context");
@@ -6933,7 +6941,7 @@ fn sampled_final_chunk_row_matches_serial_hidden_bits() {
             },
         )
         .collect::<Vec<_>>();
-    let kv_spec = KvStateSpec::new(16, 4, 256, 32, DataType::F16).expect("KV spec");
+    let kv_spec = KvStateSpec::new(16, 4, 256, 96, DataType::F16).expect("KV spec");
     let recurrent_spec = RecurrentStateSpec::new(
         48,
         RecurrentMatrixShape::new(48, 128, 128).expect("matrix shape"),
@@ -6958,70 +6966,93 @@ fn sampled_final_chunk_row_matches_serial_hidden_bits() {
         EPS,
     )
     .expect("serial executor");
-    let mut serial_state = fresh_state();
-    for (position, &token) in TOKENS.iter().enumerate() {
-        let position = u32::try_from(position).expect("position fits u32");
+    let mut prefix_lane =
+        CudaQwen35BatchDecode::from_decode(&serial, MEMBERS).expect("prefix lane");
+    let mut with_prefix = || {
+        let mut state = fresh_state();
+        let mut position = 0;
+        let (chunks, tail) = prefix.as_chunks::<MEMBERS>();
+        assert!(tail.is_empty());
+        for rows in chunks {
+            prefix_lane
+                .prefill_chunk(&mut state, rows, position)
+                .expect("shared prefix");
+            position += u32::try_from(MEMBERS).expect("width fits u32");
+            state.advance_to(position).expect("advance prefix");
+        }
+        state
+    };
+
+    let assert_bits = |actual: &[f32], expected: &[f32], width, row| {
+        assert_eq!(actual.len(), expected.len());
+        assert!(
+            actual
+                .iter()
+                .zip(expected)
+                .all(|(a, b)| a.is_finite() && b.is_finite() && a.to_bits() == b.to_bits()),
+            "non-finite or different residual at width {width}, row {row}"
+        );
+    };
+    for width in 2..=MEMBERS {
+        let mut lane = CudaQwen35BatchDecode::from_decode(&serial, width).expect("tail lane");
+        assert!(!lane.can_sample_final_chunk());
+        lane.set_sampled_final_chunk(true);
+        assert!(lane.can_sample_final_chunk());
+
+        let mut oracle_state = with_prefix();
+        let mut lane_state = with_prefix();
+        lane.prefill_chunk(&mut lane_state, &suffix[..width], PREFIX)
+            .expect("exact-width tail");
+        for (row, &token) in suffix[..width].iter().enumerate() {
+            let position = PREFIX + u32::try_from(row).expect("row fits u32");
+            let selected = if row + 1 == width {
+                Some(
+                    serial
+                        .decode_step(&mut oracle_state, token, position)
+                        .expect("serial final step"),
+                )
+            } else {
+                serial
+                    .prefill_step(&mut oracle_state, token, position)
+                    .expect("serial tail row");
+                None
+            };
+            oracle_state
+                .advance_to(position + 1)
+                .expect("advance oracle");
+            assert_bits(
+                &lane.copy_hidden_member(row).expect("tail residual"),
+                &serial.copy_hidden().expect("serial residual"),
+                width,
+                row,
+            );
+            if let Some(expected) = selected {
+                assert_eq!(
+                    serial
+                        .sample_prefill_chunk_row(&lane, row)
+                        .expect("sample tail"),
+                    expected,
+                    "sampled token at width {width}"
+                );
+            }
+        }
+
+        let end = PREFIX + u32::try_from(width).expect("width fits u32");
+        lane_state.advance_to(end).expect("advance tail");
         serial
-            .prefill_step(&mut serial_state, token, position)
-            .expect("serial prefill");
-        serial_state.advance_to(position + 1).expect("advance");
-    }
-    let expected = serial.copy_hidden().expect("serial hidden");
-
-    let mut lane_executor =
-        CudaQwen35Decode::new(&context, stream.clone(), staged, layer_kinds, EPS)
-            .expect("lane executor");
-    let mut lane = CudaQwen35BatchDecode::from_decode(&lane_executor, MEMBERS).expect("chunk lane");
-    assert!(
-        !lane.can_sample_final_chunk(),
-        "sampled final chunks must stay opt-in"
-    );
-    lane.set_sampled_final_chunk(true);
-    assert!(lane.can_sample_final_chunk());
-    let mut lane_state = fresh_state();
-    lane.prefill_chunk(&mut lane_state, &TOKENS, 0)
-        .expect("full-model prefill chunk");
-    lane_state
-        .advance_to(u32::try_from(MEMBERS).expect("fits u32"))
-        .expect("chunk advance");
-
-    let actual = lane
-        .copy_hidden_member(MEMBERS - 1)
-        .expect("last chunk row");
-    assert_eq!(actual.len(), expected.len());
-    for (index, (actual, expected)) in actual.iter().zip(&expected).enumerate() {
-        assert_eq!(
-            actual.to_bits(),
-            expected.to_bits(),
-            "chunk row {index} is not bit-identical to the serial final residual"
+            .prefill_step(&mut oracle_state, suffix[width], end)
+            .expect("serial continuation");
+        let expected = serial.copy_hidden().expect("serial continuation residual");
+        serial
+            .prefill_step(&mut lane_state, suffix[width], end)
+            .expect("tail continuation");
+        assert_bits(
+            &serial.copy_hidden().expect("tail continuation residual"),
+            &expected,
+            width,
+            width,
         );
     }
-
-    // The batch-1 output head must therefore select the token the serial path
-    // would have selected after consuming the same final token.
-    let sampled = lane_executor
-        .sample_prefill_chunk_row(&lane, MEMBERS - 1)
-        .expect("sample the chunk row");
-    let mut serial_final = fresh_state();
-    for (position, &token) in TOKENS[..MEMBERS - 1].iter().enumerate() {
-        let position = u32::try_from(position).expect("position fits u32");
-        serial
-            .prefill_step(&mut serial_final, token, position)
-            .expect("serial prefix");
-        serial_final.advance_to(position + 1).expect("advance");
-    }
-    let final_token = TOKENS[MEMBERS - 1];
-    let serial_selected = serial
-        .decode_step(
-            &mut serial_final,
-            final_token,
-            u32::try_from(MEMBERS - 1).expect("fits u32"),
-        )
-        .expect("serial final step");
-    assert_eq!(
-        sampled, serial_selected,
-        "sampling the chunk row selected a different token than the serial step"
-    );
 }
 
 /// Request cancellation is covered through the AR runtime. This gate preserves

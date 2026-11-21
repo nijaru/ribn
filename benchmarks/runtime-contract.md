@@ -1505,6 +1505,20 @@ Raw workload, control, trace, and report are under `desktop`'s
 The 277 MiB `.nsys-rep` is retained so the kernel summary and SQLite export can
 be regenerated.
 
+**Exact-width numerical prerequisite.** The existing
+`sampled_final_chunk_row_matches_serial_hidden_bits` CUDA gate now exercises fixed
+lanes at every width 2–8 after the same 64-token batched prefix, with the retained
+Warp/no-chunk-scan path. On the pinned RTX 4090/GGUF all tail rows were finite and
+bit-identical to scalar-width prefill, the final sampled tokens matched, and one
+common-history continuation residual per width remained bit-identical. It ran in
+31.06 seconds. Raw result and source patch are retained in
+`desktop`'s `benchmarks/results/qualification/qwen-prefill-width-gate-20261121T234741Z`.
+This qualifies existing fixed-width lane arithmetic on this fixture, not a
+production tail-selection change. Next test exact short ranges with reusable
+scratch and measure the same prompts against the scalar remainder, including
+workspace cost. A full scratch allocation per width needs its own justification;
+this test does not change automatic selection.
+
 ### Current-source equal-artifact endpoint diagnostic (2026-11-04)
 
 One fixed 32-request episode per engine establishes issued-request latency, usage
