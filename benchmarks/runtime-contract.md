@@ -1472,6 +1472,17 @@ histories at the first output differences before treating either path as a quali
 baseline. The result does not establish whether tails, launch overhead or projection
 cost dominate the current endpoint.
 
+A short native probe at the same revision on the RTX 4090 measured 438 ms TTFT
+for 64 repeated fixture tokens (eight eight-token chunks) and 632 ms for 71
+(eight chunks and seven scalar steps). Both printed successful dispatch reports;
+model preparation took 20.80 and 20.68 seconds, excluded from the TTFTs. The
+72-token runs did not report a measurement before the whole-process deadlines;
+one deadline was shorter than observed preparation alone. The comparison and
+Nsight trace are incomplete, not evidence of a width-72 execution failure or a
+quantified tail saving. Next, load once and use a serial native workload with
+repeated exact lengths, separating setup and inference deadlines. Logs are in
+`desktop`'s `benchmarks/results/qualification/qwen-short-prefill-20261121T233311Z`.
+
 ### Current-source equal-artifact endpoint diagnostic (2026-11-04)
 
 One fixed 32-request episode per engine establishes issued-request latency, usage
