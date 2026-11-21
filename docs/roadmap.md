@@ -43,23 +43,14 @@ establishes a clean competitive ranking.
    completes 128/128 at c1/c4 for both engines, but retains two native lexical
    losses against SGLang. This is not matched-quality competitive acceptance;
    preserve those cases and the fixed scoring policy for the model-wide path.
-2. **Model-wide Gemma CUDA execution.** Replace optimized per-sequence
-   `GemmaDecode` dispatch with a shared model/backend prepared batch.
-   Bind stable sequence incarnations, physical lane membership, exact
-   prefixes, caches, accepted ranges and full resource grants.
-   Start depth one; retain CPU/qualified CUDA reference fallbacks.
-   Gate malformed later rows, mixed reaches, row reorder, state routing,
-   cancellation, partial enqueue and failure retirement.
-   **Exit:** at least two sequences actually share physical GPU
-   weight/model work. A renamed serial loop does not pass.
-3. **Competitive packed device execution.** Qualify multi-request
+2. **Competitive packed device execution.** Qualify multi-request
    decode/prefill and compatible attention/state lanes. Measure
    physical rows/tokens, fallback rates, GPU work, transfers, host
    gaps, memory and actual HTTP goodput. Then choose indexed-row
    device PLE, sampled-token readout, capture or fusion from measured
    losses, not the launch count. Do not repeat unchanged negative
    M4, descriptors, PLE-only, attention and FFN graph candidates.
-4. **Native versus externally prepared executor, concurrently.**
+3. **Native versus externally prepared executor, concurrently.**
    Test a pinned Gemma model and at least two contexts/shapes through
    a truly Rust-invocable prepared program; compare full numerical/
    task results, mixed-request goodput, cold compile/load, memory,
@@ -67,12 +58,12 @@ establishes a clean competitive ranking.
    Stock PyTorch is a reference, not the native production candidate.
    Choose the superior qualified method without prematurely building
    a universal IR/compiler.
-5. **Capacity and safe overlap.** Close deferred-free accounting,
+4. **Capacity and safe overlap.** Close deferred-free accounting,
    qualify physical resident grants, recomputation progress and
    stalled-output recovery, then overlap independent submissions
    with immutable per-submission storage and real fences. Exact hybrid
    prefix reuse remains a separate workload-dependent experiment.
-6. **Broader architecture/hardware.** Complete Gemma VLM's failed
+5. **Broader architecture/hardware.** Complete Gemma VLM's failed
    full-checkpoint numerical and feature-handoff gates, then test
    a different architecture and backend. Bind encoder features to processor/model/input
    identity and exact prompt layout, with bounded structural metadata and producer
@@ -80,142 +71,28 @@ establishes a clean competitive ranking.
    delayed production and cancellation before consumer access. Track support velocity
    and ongoing maintenance, not just model registry entries.
 
-### First implementation cutover
+### Model-wide CUDA cutover (complete for the qualified scope)
 
-Keep the change under the optimized Gemma CUDA backend; do not rewrite
-the common AR scheduler or the CPU oracle.
+Ordinary loading selects the depth-one model-wide executor only for the qualified
+RTX 4090/E4B/prepared-4K scope. The model-local scope check is independent of the
+selected scratch lanes. Outside that scope, keep serial execution; a failure after
+selecting the owning loader propagates without a second upload or serial retry.
 
-1. In `crates/gemma4/src/executor.rs` and `executor/backend.rs`,
-   retain synchronous `Gemma4Executor<D: GemmaDecode>` as CPU/scalar
-   reference and fallback. Add a distinct model-wide CUDA executor
-   implementing the existing `GenerationExecutor`; it owns shared
-   weights, sequence physical state and prepared submissions. Share
-   pure validation, not a per-request forward interface.
-2. In `crates/gemma4/src/cuda/decoder.rs` and `decoder/buffers.rs`,
-   move mutable cache handles and positions under the model-wide
-   owner and separate them from submission workspace. Stage packed
-   rows with original sequence mapping. Initially prove actual
-   multi-sequence matrix work with correct per-member KV/attention;
-   keep the qualified 8/16-token single-request and scalar fallbacks.
-3. In `crates/text/src/gemma_load.rs`, change only the CUDA
-   constructor behind the existing `Engine`, model processor and
-   owned `TextModel`. Preserve CPU/Metal loading and existing
-   run/serve behavior; do not add a frontend scheduler.
-4. Preserve the depth-one scheduling and completion model in
-   `crates/runtime/src/executor.rs` and `engine.rs`. Keep the
-   repaired admission failure boundary: clean refusal is `Rejected`,
-   while uncertain partial construction faults the execution owner
-   and retains its retirement envelope. This is not a scheduler rewrite.
-   A physical lane may reorder work,
-   but the current `poll` contract returns completions in
-   originally submitted row order. Any later depth-two extension
-   needs its own qualified runtime/resource change.
+The [device gate](../benchmarks/runtime-contract.md#model-wide-gemma-cuda-device-gate-2026-11-11)
+proves cross-request weight sharing, separate KV/window routing and whole-offer
+ownership, including reordered continuation at the 4K boundary. The
+[ragged prefill gate](../benchmarks/runtime-contract.md#genuine-ragged-prefill-qualification-2026-11-12)
+qualifies widths 2–16. Only the
+[fresh six-process serving gate](../benchmarks/gemma4-cuda-baseline.md#genuine-ragged-prefill-serving-qualification-2026-11-12)
+supports promotion; previous negative populations stay closed. Keep the serial
+8/16/scalar serving control distinct from the all-width numerical reference.
+Full-model failed-driver-drain remains composed native/owner evidence, not a directly
+injected model-wide fault. Internal promotion does not establish external parity.
 
-Host prerequisites now separate decoder-independent logical metadata and accepted-row
-binding in `gemma4/src/generation.rs` from serial physical execution. The ordinary Gemma
-loader accepts `GenerationExecutor`; the initial refactor did not change backend
-selection. Admission regressions cover clean refusal, fatal partial construction,
-stopped later admission and
-retained peer/storage charges through failed drain and successful retry. The
-[2026-11-11 CUDA recheck](../benchmarks/runtime-contract.md#current-source-cuda-resource-recheck-2026-11-11)
-passes six existing decoder/executor/pressure cases, including real partial-cache
-retirement and failed execution-drain retry. Uncertain partial-construction cleanup
-before any decoder exists remains host-injected, not device-qualified. None of these
-prerequisites establishes multi-request GPU weight work.
-
-The [native command-stream prerequisite](../benchmarks/runtime-contract.md#native-bf16-command-stream-foundation-2026-11-11)
-now passes its component device gate: a privately owned, uncapturable stream domain,
-bounded dependent BF16 operations, nonblocking event query and explicit retirement.
-Its two-row graph shares projections while preserving unequal member KV histories;
-memcheck/initcheck report zero errors. Existing blocking primitives and Gemma gates
-also pass after the dispatch refactor. The subsequent
-[model-wide device gate](../benchmarks/runtime-contract.md#model-wide-gemma-cuda-device-gate-2026-11-11)
-now establishes actual two-sequence shared projections through all 42 layers, with a
-separate physical owner and `GenerationExecutor`, independent KV/window routing,
-whole-offer commitment, deferred cancellation retirement and partial construction/
-enqueue ownership. Common-history archived winners, unchanged prefill bits, M2
-projection bounds and full-model memcheck/initcheck pass. Two-pair offers also
-acknowledge workspace reuse before whole-offer commitment. This meets the first
-physical-sharing proof, not loader promotion or competitive serving acceptance.
-The same gate now also passes the service's 4K boundary: unchanged full prefill
-rows, reordered paired continuation to positions 4096/4095, request-reachable overrun
-rejection and complete retirement. Full-case memcheck/initcheck report zero errors.
-Those long synthetic histories use a fresh qualified native control, not publisher
-labels. The subsequent [fresh HTTP QA screen](../benchmarks/gemma4-cuda-baseline.md#model-wide-http-qa-2026-11-11)
-passes all 128 questions at c1/c4 for both native control and model-wide candidate:
-full answers, usage and per-item EM/F1 are unchanged. This permits only private
-performance measurement; the earlier native lexical gap against SGLang remains.
-The subsequent [private mixed-arrival screen](../benchmarks/gemma4-cuda-baseline.md#model-wide-mixed-arrival-screen-2026-11-11)
-is closed after one matched pair and the second candidate: one mixed8 answer chooses
-a shorter approved gold alias, leaving EM/F1 unchanged but failing the frozen
-same-output/work condition. The other three model processes are unrun; no paired
-median or qualified performance result is available. Do not extend or relax that population.
-Controlled common-history scalar/M2 mixtures reproduce the continuation/EOS BF16
-score tie, with bit-exact scalar control and complete retirement. This is arithmetic-
-path sensitivity, not an observed score loss; the timed dispatch mask was not traced.
-At that stopped population, ordinary loading remained serial. The
-[owning numerical contract](inference-engine-design.md#qualification-and-current-evidence)
-already makes batch invariance optional, not a compulsory fast path. Do not invent
-that requirement to repair the stopped benchmark. A separate prospective serving
-comparison may accept different EOS outcomes only with unchanged per-question EM/F1
-floors, explicit actual-work accounting and repeated token/request-rate, latency and
-residency evidence; it cannot turn the closed same-output population into a pass.
-That separate [six-process serving screen](../benchmarks/gemma4-cuda-baseline.md#quality-preserving-model-wide-serving-screen-2026-11-12)
-is now complete and **negative**: all quality/integrity checks and median rate/p95
-gates pass, but mixed8 joint diagnostic deadline counts fall from 4/3/3 to 2/2/2.
-Keep it closed. The repeatable drain-tail cohort differs under closed-loop feedback;
-these observations do not establish decode-priority starvation. The executor now
-moves blocking physical advancement out of submission and into polling, avoiding
-next-offer work in the previous offer's delivery path. The failing-before GPU
-regression and existing ownership/failure cases pass. Its new source-specific
-six-process comparison also closes **negative**, with unchanged criteria: quality,
-integrity and all median rate/p95 gates pass, but mixed8 joint counts are
-4 → 3, 4 → 4 and 3 → 4. The prior drain-tail question passes in every new pair;
-one initial-burst question misses first content in pair 0 only. A separate single
-host trace captures the fast phenotype with prompt post-settlement publication;
-its next output waits for an expensive fifteen-token fallback in the same offer.
-An existing-path common-history diagnostic confirms the large scalar-tail cost.
-The [genuine ragged-prefill prerequisite](../benchmarks/runtime-contract.md#genuine-ragged-prefill-qualification-2026-11-12)
-now passes for exact model-wide widths 2–16: independent native and captured-real
-numerical checks, all-width continuation/4K boundaries, resource retirement and all
-16 memcheck/initcheck requirements. The prospective ordinary-loader lifecycle also
-passes. Preserve serial 8/16/scalar as the serving control; its all-width numerical
-reference sampler is not a new control. The separate [fresh six-process serving
-qualification](../benchmarks/gemma4-cuda-baseline.md#genuine-ragged-prefill-serving-qualification-2026-11-12)
-now passes the original per-item quality, actual-work rate, p95 and every-pair joint
-latency gates. Ordinary loading selects model-wide execution within the qualified
-RTX 4090/E4B/prepared-4K scope, retaining serial execution outside it. Earlier closed
-negative populations remain negative; no criterion or whole-offer guarantee changed.
-The next competitive gate is matched external-baseline mixed-arrival serving evidence,
-not a claim that this internal cutover establishes vLLM/SGLang parity.
-The model-local `matches_qualification_scope` query now checks normalized topology,
-rotary and vocabulary scope, device, projection geometry and prepared context,
-independently of scratch-selected lanes. Host near-miss tests protect that boundary
-without narrowing existing serial prefill selection. The ordinary loader uses the
-query before construction; selected owning load failures propagate without a serial
-retry or second weight upload. The [captured-real-M2 arithmetic and public-entry-point gates](../benchmarks/runtime-contract.md#model-wide-gemma-cuda-device-gate-2026-11-11)
-now pass on device: 11 actual non-head geometries satisfy the preregistered per-output
-bound and range checks; the ordinary loader lifecycle passes a private prospective
-wide-selection patch with deferred submission. Those earlier prerequisites alone did
-not enable automatic loading; the later ragged and fresh serving gates establish the
-scoped cutover above. Full-model failed-driver-drain remains composed native/owner
-evidence rather than a directly injected model-wide fault. Preserve that scope distinction; do not expose the
-qualified serial model's raw stream to force adoption or fault injection.
-
-Host acceptance: whole-offer prevalidation, exact range/cursor
-and row mapping, state-only intermediate prefill, fallback,
-cancellation, partial enqueue, failed drain and retryable release.
-4090 device acceptance: at least two sequences sharing real
-weight work, correct independent KV histories, full-row numerical
-checks, access sanitizers, memory grants and complete retirement.
-Then measure actual text/HTTP mixed-arrival SLO goodput.
-
-For later capture/replay or restore variants, deliberately delay the final cache/feature
-load and late metadata reads. Compare common-history outputs with the qualified eager
-path, and test cancellation/failed drain while dependencies remain pending. A passing
-host bookkeeping test or an undelayed replay is not device-ordering evidence; an early
-shared-read fence must not release model state. Keep this gate with the variant rather
-than making graph capture a prerequisite for depth-one model-wide batching.
+For later capture/replay or restore, delay the final cache/feature load and late
+metadata reads, compare common-history results against eager, and test cancellation
+and failed drain with dependencies pending. A passing undelayed replay does not
+prove ordering; an early shared-read fence must not release model state.
 
 ### Decision milestones
 
@@ -424,16 +301,17 @@ Host swap/tiered caching follows measured replay/retention costs, not paging by 
 ### 4d. Scheduling with real costs
 
 **Make physical batches real before rewriting scheduling policy.**
-The AR engine already offers aggregate work; Gemma serializes it
-under that contract. First implement backend-owned prepared physical
-lanes with exact sequence/state mapping, whole-offer resource grants
-and model-wide shared-weight execution. Keep CPU/single-row oracles.
+The AR engine offers aggregate work. The qualified Gemma CUDA executor
+shares physical model work; the fallback still serializes sequences.
+Keep backend-owned physical lanes with exact sequence/state mapping and
+whole-offer resource grants, and preserve the CPU/single-row oracles.
 
 Compare physically packed/ragged decode, prefill and separated mixed
 phases under identical logical offers. Track true batched rows/tokens,
 fallback, transfer and kernel/host costs, pressure, queue age and
-latency-objective goodput. Preserve output identity, complete
-continuation state, numerical acceptance and failure retirement.
+latency-objective goodput. Preserve continuation state and failure retirement.
+Use the [numerical contract](inference-engine-design.md#qualification-and-current-evidence)
+to distinguish arithmetic-preserving changes from reordered execution.
 Do not pad to maximum context merely to batch.
 
 Only once physical costs stabilize compare chunked prefill, decode
@@ -445,9 +323,9 @@ and speculation need their own qualified state dependencies.
 
 ### 4e. Model-local integration and composition
 
-Gemma 4 E4B text already has a real CPU/Metal/CUDA experimental
-greedy decoder and bounded within-request prefill, not competitive
-concurrent execution. Keep its model-local processor/configuration,
+Gemma 4 E4B text has an experimental CPU/Metal/CUDA greedy decoder.
+The scoped CUDA promotion does not establish competitive concurrent execution.
+Keep its model-local processor/configuration,
 independent CPU oracle and qualified fallbacks. Retain historical
 experiment data in [Gemma CUDA](../benchmarks/gemma4-cuda-baseline.md),
 [Metal](../benchmarks/gemma4-metal-baseline.md) and
@@ -482,7 +360,8 @@ execution lifecycle. Non-local use needs a separate security policy.
 
 ### First competitive acceptance matrix
 
-Use AIPerf plus the incumbent-native cross-check described in [benchmark methodology](../benchmarks/README.md).
+Use the [audited endpoint runner](../benchmarks/README.md#audited-endpoint-runner)
+and incumbent-native cross-checks.
 Pin revisions, artifacts/tokenizer, numerical policy, device/software, protocol fields,
 warmup and objectives. Compare identical artifacts where supported; otherwise report
 quality-matched configurations as a separate comparison, never an equal-artifact ratio.
@@ -600,15 +479,5 @@ and distributed training need separate qualification. Training is not an AR sche
 
 ## Required checks
 
-```sh
-python3 tools/check-boundaries.py
-cargo fmt --all -- --check
-cargo test --workspace --locked
-cargo clippy --workspace --all-targets --locked -- -D warnings
-cargo clippy --workspace --all-targets --locked --features cuda -- -D warnings
-```
-
-Capture actual exit codes. CUDA compilation does not qualify device execution. Follow
-[model integration](../.agents/skills/model-integration/SKILL.md) for numerical gates and
-[execution contracts](../.agents/skills/execution-contracts/SKILL.md) for lifecycle changes.
-Keep unrun gates explicit; documentation redesign does not complete implementation gates.
+Use the [maintainer verification guide](README.md#verification) and the affected
+qualification gates above.

@@ -625,6 +625,30 @@ doubled request throughput, output-token throughput and goodput. These checks qu
 the selected scalar arithmetic, not aggregate
 percentiles, device behavior or load-generator capacity.
 
+### HTTP SDK compatibility gate
+
+Host TCP tests exercise the real HTTP entry point, tokenizer, text facade and driver
+with only the device substituted. An opt-in official OpenAI JavaScript SDK gate
+uses that same CPU fixture, not a second HTTP server or model execution loop:
+
+```sh
+RIBN_OPENAI_NODE=/absolute/path/to/node \
+RIBN_OPENAI_SDK=/absolute/path/to/openai/index.mjs \
+  cargo test -p ribn-server --test http --locked openai_sdk_ -- \
+  --ignored --test-threads=1 --nocapture
+```
+
+Both paths must refer to an existing local installation; the gate installs nothing
+and contacts only its owned loopback server. It checks completion/chat streams,
+usage-only empty choices, a hidden EOS token with below-cap usage, typed request
+rejection and healthy reuse. Early stream iteration exit must produce observable
+server abandonment **before the SDK process exits**, followed by runtime retirement
+and a healthy request. Child output and execution time are bounded; failure kills
+and reaps the owned child before model cleanup. SDK and Node versions are printed
+with the result. The CPU gate passed with OpenAI JavaScript 7.19.0 on Node 26.12.1;
+this does not qualify arbitrary SDK versions. This gate checks protocol and delivery lifecycle, not incumbent performance,
+model quality or device behavior.
+
 ## Timestamped text replay
 
 For a finite declared arrival cohort, use `kind = "fixed_schedule"` rather than

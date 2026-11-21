@@ -366,7 +366,7 @@ Shared CUDA physical retirement and downstream-workspace progress remain unprove
 | Path/package | Responsibility |
 | --- | --- |
 | `crates/runtime` / `ribn` | AR lifecycle, scheduling, mailboxes and owned token driver |
-| `crates/text` / `ribn-text` | Text processor, bounded preparation/decoding, owned facade and offline batching |
+| `crates/text` / `ribn-text` | Raw/chat/token facade, bounded preparation/decoding and offline batching; `TextModel` is cloneable, `TextOwner` owns shutdown |
 | `crates/qwen` / `engine-qwen` | Qwen config, GGUF mapping, CUDA assembly and AR adapter; serving benchmark |
 | `crates/nvidia` / `engine-nvidia` | NVIDIA storage, completion, dispatch and kernels |
 | `crates/bert` / `engine-bert` | BERT semantics, preparation, executor binding and device retirement |
@@ -379,7 +379,7 @@ Shared CUDA physical retirement and downstream-workspace progress remain unprove
 | `crates/foundation` / `ribn-foundation` | Byte accounting, readiness and consumed version/scalar types |
 | `crates/batch` / `ribn-batch` | Non-AR batching, leased results and cancellation |
 | `crates/server` / `ribn-server` | Bounded loopback text HTTP transport, health/metrics and lifecycle adapter |
-| `crates/cli` / `ribn-cli` | `inspect`, experimental `run`/`serve` (CUDA) and `run-gemma` (Metal or CUDA) |
+| `crates/cli` / `ribn-cli` | `inspect`, experimental `run`/`serve` (CUDA) and `run-gemma`/`serve-gemma` (Metal or CUDA) |
 
 `tools/check-boundaries.py` checks production dependency direction and retired-path
 resurrection. It does not freeze the remaining shared crates against an accepted migration.

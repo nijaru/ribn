@@ -1,13 +1,13 @@
 ---
 name: execution-contracts
-description: Use when changing Ribn request lifecycle, concurrent handles, readiness, resource preparation, device handoff ownership or text-facade delivery and bounds; not for kernel-only tuning or ordinary model parameter mappings.
+description: Use when changing request lifecycle, resource ownership, readiness, or bounded delivery.
 ---
 
 # Execution contract changes
 
-Read `../../../docs/inference-engine-design.md`, `../../../docs/resource-protocol.md`
-and the active gate in `../../../docs/roadmap.md`. Inspect the actual owner and its
-callers. Historical experiments are counterexamples, not implementation mandates.
+Start with the affected section of [the resource protocol](../../../docs/resource-protocol.md),
+then trace the owner and its callers. Use [target design](../../../docs/inference-engine-design.md)
+for boundary changes and the [roadmap](../../../docs/roadmap.md) for open decisions.
 
 ## Settle the contract before dependent code
 
@@ -46,9 +46,7 @@ are genuine failing-before regressions and which demonstrate new behavior only.
 
 ## Verify and record
 
-Run the roadmap checks, including CUDA-feature clippy for CUDA assembly and CLI paths.
-Capture actual exit codes. Run affected device tests serialized; host tests are not device
-qualification. Inspect the diff for new allocations, clones, lock/await lifetimes,
+Use the [verification guide](../../../docs/README.md#verification). Inspect the diff for new allocations, clones, lock/await lifetimes,
 ignored errors and competing cleanup owners. Measure direct/handle overhead and
 representative workload effects when introducing performance-sensitive machinery.
 

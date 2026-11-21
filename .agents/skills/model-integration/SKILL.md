@@ -1,19 +1,15 @@
 ---
 name: model-integration
-description: Use when adding a Ribn model architecture or processor, reviewing a model-support PR, or qualifying an optimized execution variant for automatic selection; not for ordinary refactors or unrelated documentation edits.
+description: Use when adding or reviewing model support or qualifying a variant for automatic selection.
 ---
 
 # Model integration and qualification
 
 ## Establish the change boundary
 
-Read `../../../docs/roadmap.md` for the model-local integration acceptance gate and
-current priorities. Read `../../../docs/inference-engine-design.md` and
-`../../../docs/pipeline-composition.md` when the integration changes execution or
-composition. If resource admission or handoff changes, also read
-`../../../docs/resource-protocol.md` and `../execution-contracts/SKILL.md`.
-The protocol owns lifecycle rules; exact preparation/readiness types require the
-real implementation and roadmap gate, not transcription of a speculative sketch.
+Use the [model-local gate](../../../docs/roadmap.md#4e-model-local-integration-and-composition)
+for acceptance. For composition, compare the [sequential and coupled counterexamples](../../../docs/pipeline-composition.md).
+Use [execution-contracts](../execution-contracts/SKILL.md) if admission, ownership or readiness changes.
 
 1. Identify whether this is an existing-architecture checkpoint, a new architecture
    using existing mechanisms, a new state/resource mechanism, or a new execution
@@ -80,5 +76,4 @@ real implementation and roadmap gate, not transcription of a speculative sketch.
 Run repository verification and the relevant device gates. Report unrun checks and
 remaining unsupported scope. Record reproducible evidence in the established
 benchmark documents and update roadmap status only when its exit evidence exists.
-The PR summary should identify model-local changes, justified core changes, artifact
-and operation coverage, numerical evidence, lifecycle checks and performance trade-offs.
+Report artifact/operation coverage and the evidence for any shared-runtime change.
