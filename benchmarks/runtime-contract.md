@@ -1472,16 +1472,38 @@ histories at the first output differences before treating either path as a quali
 baseline. The result does not establish whether tails, launch overhead or projection
 cost dominate the current endpoint.
 
-A short native probe at the same revision on the RTX 4090 measured 438 ms TTFT
-for 64 repeated fixture tokens (eight eight-token chunks) and 632 ms for 71
-(eight chunks and seven scalar steps). Both printed successful dispatch reports;
-model preparation took 20.80 and 20.68 seconds, excluded from the TTFTs. The
-72-token runs did not report a measurement before the whole-process deadlines;
-one deadline was shorter than observed preparation alone. The comparison and
-Nsight trace are incomplete, not evidence of a width-72 execution failure or a
-quantified tail saving. Next, load once and use a serial native workload with
-repeated exact lengths, separating setup and inference deadlines. Logs are in
-`desktop`'s `benchmarks/results/qualification/qwen-short-prefill-20261121T233311Z`.
+#### Single-load short-prefill follow-up (2026-11-21)
+
+The initial fresh-process probe ran out of startup budget at length 72. A
+single-load follow-up using the same pinned Qwen GGUF, 4090 and current production
+kernels resolves that ambiguity. The native Rust engine example uses one active
+sequence, one queued slot, eight-token prefill and one output token. Nine arrivals
+at two-second intervals use the 64-, 71- and 72-token prefixes of
+`crates/qwen/tests/fixtures/qwen38-code-fill4096-257.tokens`, alternating order.
+All nine complete in both the control and separate Nsight Systems trace, with
+42 submissions, 600 batched prefill tokens and 21 scalar prefill tokens. TTFT
+includes host delivery and excludes the 20.73-second control model load.
+
+| Prompt tokens | Physical prefill | Control median TTFT (range) | Median kernel span in trace | Median scalar GEMV time in trace |
+| --- | --- | ---: | ---: | ---: |
+| 64 | 8 chunks | 430.5 ms (430.3–438.5) | 433.1 ms | 1.2 ms |
+| 71 | 8 chunks + 7 scalar | 623.3 ms (622.9–623.5) | 627.4 ms | 138.9 ms |
+| 72 | 9 chunks | 484.9 ms (484.7–485.0) | 487.5 ms | 1.2 ms |
+
+Kernel spans run from first kernel start to last kernel end; gaps over 500 ms
+separate the nine groups in arrival order. The scalar category includes the
+sampled head. The 71-token prompt pays about 138 ms more in scalar projections
+than the 72-token prompt despite using one fewer token. Batched projections
+still dominate the all-chunk cases (about 294–330 ms), so removing the scalar
+cliff alone cannot close the external gap. This is not an equal-work A/B, a
+numerical gate, or an endpoint comparison. It supports trying exact short
+prefill widths through the existing lane before changing scheduler policy,
+then testing identical prompts against the current path for numerics and time.
+
+Raw workload, control, trace, and report are under `desktop`'s
+`benchmarks/results/qualification/qwen-short-prefill-control-20261121T233648Z`.
+The 277 MiB `.nsys-rep` is retained so the kernel summary and SQLite export can
+be regenerated.
 
 ### Current-source equal-artifact endpoint diagnostic (2026-11-04)
 
