@@ -1428,6 +1428,50 @@ page indices are consecutive and no cache, reuse policy or growth path exists ye
 shared arena with non-identity tables and page growth is the next slice, and the
 per-request device allocation it removes is still on the admission path.
 
+### Qwen equal-artifact diagnostic without HTTP slot rejection (2026-11-21)
+
+One fresh 32-request episode per engine on the RTX 4090. Reused the
+[November 4 protocol](#current-source-equal-artifact-endpoint-diagnostic-2026-11-04)
+and exact GGUF, schedule, tokenizer and client, with Ribn
+HTTP slots raised from eight to sixteen to cover the driver-visible client cap.
+Both still prepare four active sequences at 512 positions. Ribn is release CUDA
+at `4c0eb98` (ELF SHA-256 `da26e4555daf75ff0fa8e3e1b0ca6454395b85dd605371e51a8d5f73b30c4ee7`),
+llama.cpp is `6050b467c` build 11887, and the driver is now 620.70.06. The launch
+commands and both original protocol-validation reports are retained on `desktop`
+under `benchmarks/results/qualification/qwen-admission-diagnostic-20261121T232725Z`.
+Offline re-audit reproduces both reports exactly.
+
+Both completed 32/32 with 2,144 prompt and 1,024 completion tokens. Ribn's HTTP
+metrics show zero generation failures, rejections, abandonments or deadlines.
+The existing joint diagnostic thresholds (5 s TTFT, 200 ms average ITL, 10 s
+last content) were met by 21/32 for Ribn and 32/32 for llama.cpp. Of the sixteen
+burst requests, eleven missed the joint threshold on Ribn, compared to none on
+llama.cpp. No failures are excluded from these counts.
+
+| Cohort | Ribn median TTFT / average ITL | llama.cpp median TTFT / average ITL |
+| --- | ---: | ---: |
+| Spaced (8) | 686.7 / 40.6 ms | 112.0 / 19.8 ms |
+| Burst (16) | 7,413.3 / 91.6 ms | 2,094.5 / 26.7 ms |
+| Recovery-labelled (8) | 513.2 / 28.9 ms | 108.4 / 19.8 ms |
+
+Equal artifact, matched prompt fingerprint and equal token counts do not imply
+quality equivalence: only 10/32 visible continuations matched exactly, although all
+finish reasons matched. Actual arrivals also differed: AIPerf's reported phase
+clock put Ribn's last burst dispatch about 1.36 s after its configured offset;
+llama.cpp's largest offset among all 32 requests was under 17 ms. These are
+issued-request timings, not aligned arrival-to-completion clocks. One episode,
+no verified physical-memory peak, no independent quality gate and no native-client
+cross-check: this is not competitive qualification. Whole-phase rates are dominated
+by the long gaps in the fixed schedule; do not use them to rank saturated throughput.
+
+Removing HTTP rejection alone did not close the gap. The sizeable first-content
+gap persists outside the burst; profile a matched single-active-request prefill
+before changing queue policy. Trace the short exact prompt lengths through real
+chunk widths, scalar tails, projection cost and host/device gaps. Inspect common
+histories at the first output differences before treating either path as a quality
+baseline. The result does not establish whether tails, launch overhead or projection
+cost dominate the current endpoint.
+
 ### Current-source equal-artifact endpoint diagnostic (2026-11-04)
 
 One fixed 32-request episode per engine establishes issued-request latency, usage

@@ -22,11 +22,14 @@ prefill groups tokens from *one* request and still reads PLE to host,
 uploads contexts each layer and reads full logits to host. The promoted
 loopback c4/c8 cohort reached roughly 41 output tokens/s versus fresh
 SGLang 281–291; the models were **not independently quality-equivalent**.
-Qwen's 2026-11-04 equal-artifact diagnostic completed 23/32 requests
-versus llama.cpp's 32/32 under differing admission policies. Neither
-establishes a clean competitive ranking.
-[Gemma evidence](../benchmarks/gemma4-cuda-baseline.md);
-[Qwen evidence](../benchmarks/runtime-contract.md#current-source-equal-artifact-endpoint-diagnostic-2026-11-04).
+In the [Qwen equal-artifact follow-up](../benchmarks/runtime-contract.md#qwen-equal-artifact-diagnostic-without-http-slot-rejection-2026-11-21),
+both engines complete 32/32 after the HTTP slot cap increases. Ribn still
+misses the joint latency objective for eleven burst requests versus none
+for llama.cpp, and first content is slower even outside the burst. Trace
+short-prompt prefill on the current device path and resolve output
+quality differences before choosing a kernel or scheduler change.
+Neither workload establishes a clean competitive ranking.
+[Gemma evidence](../benchmarks/gemma4-cuda-baseline.md).
 
 ### Active deliveries
 
