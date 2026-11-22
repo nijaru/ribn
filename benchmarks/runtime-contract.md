@@ -1554,6 +1554,32 @@ qualify the selection. Raw configs, patch, ELF hash and results remain on
 `desktop` under `benchmarks/results/qualification/qwen-exact-tail-ab-20261122T003511Z`
 and `qwen-exact-tail-dispatch-20261122T003948Z`.
 
+**Native mixed-arrival follow-up (2026-11-22).** Release CUDA at `f9aeb23`,
+[pinned trace](workloads/qwen-mixed-arrivals.json), four active/four queued,
+500 MiB logical continuation grant, and the same RTX 4090/GGUF. Four fresh
+processes (control/exact/exact/control) each completed all eight requests and
+emitted 136 tokens. Only the two five-token prompt tails changed physical
+layout (816 → 826 batched prompt tokens out of 832); both roles retained the
+same 95 submissions and decode lane counts. There were no rejection or
+failure outcomes, so this is a constrained-capacity measurement, not an
+observed pressure-recovery test.
+
+| Metric | Controls | Exact tails |
+| --- | ---: | ---: |
+| Native elapsed | 9.125–9.142 s | 8.952–8.959 s |
+| Completed output tokens/s | 14.88–14.90 | 15.18–15.19 |
+| Worst TTFT | 8,233–8,249 ms | 8,059–8,066 ms |
+| Joint SLO completions (5 s TTFT / 200 ms max ITL / 10 s E2E) | 0/8 in each | 0/8 in each |
+
+The tail change improves elapsed time by about 2% here without changing SLO
+attainment. Post-preparation free memory was 32 MiB lower again; it does not
+bound live allocations. GPU process checks passed between runs but utilization
+samples were not uniformly idle. This trace validates scheduling/accounting and
+isolates a limited improvement; it does not qualify deployment or justify default
+selection. The larger gap is not a scalar-remainder problem on this mix; look at
+physical prefill cost and its interference with decode. Raw evidence:
+`desktop` → `benchmarks/results/qualification/qwen-exact-tail-mixed-20261122T004513Z`.
+
 ### Current-source equal-artifact endpoint diagnostic (2026-11-04)
 
 One fixed 32-request episode per engine establishes issued-request latency, usage
