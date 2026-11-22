@@ -1652,6 +1652,37 @@ physical cost still requires faster prefill/model batching. Patch, script, raw
 rows and response samples are local under
 `benchmarks/results/qualification/gemma-metal-offer-trace-20261122T172510Z`.
 
+### Phase-separated offer A/B (2026-11-22)
+
+Four fresh Metal HTTP processes at `c1f03e7` plus a private scheduler-only patch,
+in control/split/split/control order, each served a warmup and two copies of the
+same four-way burst. Both roles used the same binary and physical decoder path.
+The split candidate offers runnable decode alone; when none is eligible it offers
+prefill. After the existing eight-step decode-only limit it first attempts one
+aged prefill row alone, falling back to decode if no prefill is eligible. It does
+not change offer commitment, per-row prefill width, cache ownership or the frontend.
+All 36 streams including warmups completed, matched the original smoke's text,
+usage and finish reasons for their prompts, and all servers exited zero.
+
+| Prompt tokens | Median first content, control → split | Median EOF, control → split | Median per-request max content gap, control → split |
+| ---: | ---: | ---: | ---: |
+| 5 | 273 → 273 ms | 7,442 → 1,722 ms | 1,234 → 219 ms |
+| 8 | 1,652 → 2,718 ms | 9,229 → 4,177 ms | 1,216 → 236 ms |
+| 113 | 9,229 → 9,410 ms | 9,869 → 9,655 ms | — |
+| 337 | 14,774 → 14,334 ms | 15,032 → 14,583 ms | — |
+
+Times are from each client's own start; max gaps are between nonempty SSE
+content frames, not individual GPU token intervals. The long prompts emitted
+only one nonempty frame per stream. The shorter prompts complete much sooner,
+but the eight-token prompt starts later; batch completion remains dominated by
+the long prompt. Long prompts did progress in this finite cohort, but eight-token
+output caps cannot establish fairness under sustained decode arrivals. No
+production policy adopted. If pursuing the scheduler lever, compare a bounded
+short/final-prefill opportunity with this control under sustained inputs and
+explicit joint latency objectives; improve physical prefill cost independently.
+Raw client records, counters, executable identity and private patch are local in
+`benchmarks/results/qualification/gemma-metal-phase-ab-20261122T181410Z`.
+
 ## Native HTTP versus stock MLX diagnostic (2026-10-24)
 
 **Actual HTTP protocol and accounting pass; the predeclared matched-result gate
