@@ -36,7 +36,7 @@ const PROBE_PROMPTS: [&[u32]; 6] = [
 ];
 const DEFAULT_CONCURRENCY: usize = 4;
 const DEFAULT_OUTPUT_TOKENS: u32 = 32;
-const PREFILL_CHUNK_TOKENS: u32 = 16;
+const DEFAULT_BATCH_TOKENS_PER_SEQUENCE: u32 = 16;
 const WEIGHT_BUDGET_BYTES: u64 = 20_u64 << 30;
 
 #[path = "serving_bench/options.rs"]
@@ -83,7 +83,7 @@ fn runtime_settings(options: &Options) -> Result<(EngineConfig, SchedulePolicy),
         .ok_or_else(|| "aggregate event budget overflowed".to_owned())?;
     let batch_tokens = u32::try_from(options.concurrency)
         .ok()
-        .and_then(|count| count.checked_mul(PREFILL_CHUNK_TOKENS))
+        .and_then(|count| count.checked_mul(DEFAULT_BATCH_TOKENS_PER_SEQUENCE))
         .ok_or_else(|| "batch token budget overflowed".to_owned())?;
     Ok((
         EngineConfig {
@@ -95,7 +95,7 @@ fn runtime_settings(options: &Options) -> Result<(EngineConfig, SchedulePolicy),
         },
         SchedulePolicy {
             max_batch_tokens: batch_tokens,
-            prefill_chunk_tokens: PREFILL_CHUNK_TOKENS,
+            prefill_chunk_tokens: options.prefill_step_tokens,
             ..SchedulePolicy::default()
         },
     ))
@@ -568,6 +568,12 @@ mod tests {
         assert_eq!(&*defaults.prompt, &PROMPT);
         assert_eq!(defaults.context_tokens, 37);
         assert_eq!(defaults.prefill_chunk, None);
+        let (_, baseline) = runtime_settings(&defaults).unwrap();
+        let tuned = options(&["--prefill-step-tokens=8"]).unwrap();
+        let (_, candidate) = runtime_settings(&tuned).unwrap();
+        assert_eq!(baseline.prefill_chunk_tokens, 16);
+        assert_eq!(candidate.prefill_chunk_tokens, 8);
+        assert_eq!(candidate.max_batch_tokens, baseline.max_batch_tokens);
         assert!(!defaults.grouped_decode);
         assert!(!defaults.member_descriptors);
         assert!(!QwenLoadOptions::default().member_descriptors);
@@ -802,6 +808,7 @@ mod tests {
             "--tokens=0",
             "--prompt-tokens=0",
             "--prefill-chunk=0",
+            "--prefill-step-tokens=0",
             "--gemv=unknown",
             "--tokens=no",
             "--divergence-probe",

@@ -1580,6 +1580,34 @@ selection. The larger gap is not a scalar-remainder problem on this mix; look at
 physical prefill cost and its interference with decode. Raw evidence:
 `desktop` → `benchmarks/results/qualification/qwen-exact-tail-mixed-20261122T004513Z`.
 
+#### Qwen prefill slice versus decode latency (2026-11-22)
+
+`qwen_serving_bench --prefill-step-tokens=N` changes only the scheduler's
+per-sequence offer cap; `--prefill-chunk=8` still sets the physical lane width.
+Six fresh release CUDA processes ran the same eight-request native mixed trace
+in order 16/8/32/32/8/16, with the same RTX 4090/GGUF, four active/four queued,
+500 MiB logical continuation grant and 64-token aggregate offer budget. Exact
+tails were off. Each completed 8/8 and produced the same 136 output token IDs
+in request order, with 816 of 832 prompt tokens physically batched in every run.
+
+| Logical prefill cap | Submissions | Elapsed | Observed p95 ITL | Worst TTFT |
+| ---: | ---: | ---: | ---: | ---: |
+| 8 | 118 | 9.133–9.142 s | 248.5–248.6 ms | 8.488–8.497 s |
+| 16 (control) | 95 | 9.124–9.139 s | 291.4–292.0 ms | 8.232–8.246 s |
+| 32 | 84 | 8.958–8.973 s | 515.3–515.6 ms | 7.884–7.897 s |
+
+Every policy met the joint objective on **0/8** requests (5 s TTFT, 200 ms
+max ITL, 10 s E2E). Smaller logical slices reduce decode tail latency without
+meaningfully improving elapsed time; larger slices trade away decode latency
+for modestly faster completion. This is controlled native evidence that the
+logical quantum matters even with the same physical prefill width, not a
+qualified policy change, external comparison, or pressure-recovery test. GPU
+process checks passed; sampled utilization did not always read zero. The next
+backend comparison should target batched projection cost at an unchanged
+scheduler cap, rather than trading prefill and decode latency by default.
+Raw reports, token histories, executable hash and source diff are in
+`desktop`'s `benchmarks/results/qualification/qwen-prefill-step-20261122T054026Z`.
+
 ### Current-source equal-artifact endpoint diagnostic (2026-11-04)
 
 One fixed 32-request episode per engine establishes issued-request latency, usage

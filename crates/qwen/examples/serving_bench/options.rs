@@ -18,6 +18,7 @@ pub(super) struct Options {
     pub member_descriptors: bool,
     pub dispatch_diagnostics: bool,
     pub prefill_chunk: Option<usize>,
+    pub prefill_step_tokens: u32,
     pub exact_prefill_tail: bool,
     pub print_tokens: bool,
     pub divergence_probe: bool,
@@ -69,10 +70,15 @@ impl Options {
         }
         let concurrency = parse_usize(arguments, "--concurrency=", DEFAULT_CONCURRENCY)?;
         let output_tokens = parse_u32(arguments, "--tokens=", DEFAULT_OUTPUT_TOKENS)?;
-        if concurrency == 0 || output_tokens == 0 {
-            return Err("concurrency and token count must be greater than zero".to_owned());
+        if concurrency == 0 {
+            return Err("concurrency must be greater than zero".to_owned());
         }
         let gemv_mode = parse_gemv_mode(arguments)?;
+        let prefill_step_tokens = parse_u32(
+            arguments,
+            "--prefill-step-tokens=",
+            super::DEFAULT_BATCH_TOKENS_PER_SEQUENCE,
+        )?;
         let prefill_chunk = arguments
             .iter()
             .find_map(|argument| argument.strip_prefix("--prefill-chunk="))
@@ -115,6 +121,7 @@ impl Options {
                 .iter()
                 .any(|argument| argument == "--dispatch-diagnostics"),
             prefill_chunk,
+            prefill_step_tokens,
             exact_prefill_tail: arguments.iter().any(|arg| arg == "--exact-prefill-tail"),
             print_tokens,
             divergence_probe: input.divergence,
@@ -144,6 +151,7 @@ fn validate_arguments(arguments: &[String]) -> Result<(), String> {
         "--prompt-tokens=",
         "--gemv=",
         "--prefill-chunk=",
+        "--prefill-step-tokens=",
         "--model=",
         "--workload=",
         "--queue-capacity=",
@@ -300,8 +308,9 @@ fn parse_u32(arguments: &[String], prefix: &str, default: u32) -> Result<u32, St
         .find_map(|argument| argument.strip_prefix(prefix))
         .map_or(Ok(default), |value| {
             value
-                .parse::<u32>()
-                .map_err(|_| format!("{prefix} expects an integer"))
+                .parse::<std::num::NonZeroU32>()
+                .map(std::num::NonZeroU32::get)
+                .map_err(|_| format!("{prefix} expects a positive integer"))
         })
 }
 
