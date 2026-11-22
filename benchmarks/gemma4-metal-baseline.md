@@ -1594,6 +1594,36 @@ suites are not rerun for this documentation-only result; the unchanged implement
 retains its `e08775b` qualification. The experiment's isolated release build and all
 three device tests pass.
 
+## Current Metal HTTP serial versus burst smoke (2026-11-22)
+
+Release Metal CLI at `0ee0804` on the 40-core M3 Max, macOS 26.7.3, with the
+pinned BF16 E4B snapshot `ee0ef6023621cff504d758262d4e04895a5af4a2`. The ignored
+Metal decoder gate separately matched all four archived greedy tokens and its
+common-history row checks. For HTTP, one fresh loopback `serve-gemma` process
+served a warmup followed by serial, four-way burst, burst, serial on the same
+four prompts. Each streaming raw completion uses greedy EOS-aware decoding and
+an eight-token cap; usage and `[DONE]` were required, and the client read to EOF.
+
+| Prompt tokens | Consumed output | Serial first content | Burst first content | Serial start to EOF | Burst start to EOF |
+| ---: | ---: | ---: | ---: | ---: | ---: |
+| 5 | 8 | 307–308 ms | 310–1,934 ms | 1.91–1.97 s | 8.07–10.46 s |
+| 8 | 8 | 290 ms | 279–842 ms | 1.96–1.97 s | 8.56–8.96 s |
+| 113 | 2 | 3.02 s | 9.51–10.46 s | 3.27 s | 10.08–11.11 s |
+| 337 | 2 | 8.34–8.93 s | 14.88–15.86 s | 8.56–9.20 s | 15.11–16.12 s |
+
+Times are from client start, including queueing and transport. All four cohort
+repetitions match the baseline text, usage and finish reasons per prompt.
+Server counters report 17/17 including warmup, no rejection, failure, abandonment
+or deadline, and clean SIGTERM exit. The first startup-only attempt used a bad
+parsed port (trailing semicolon); it sent no traffic and is not counted.
+
+This is a one-process smoke, not a comparative SLO or memory qualification. The
+short requests' completion tails grow substantially in bursts containing long
+prefills. Profile the physical work and publication timing before choosing a
+Metal change; the client clocks alone do not isolate the mechanism. Raw SSE,
+metrics, exact prompts and binary identity are local in
+`benchmarks/results/qualification/gemma-metal-current-http-20261122T171231Z`.
+
 ## Native HTTP versus stock MLX diagnostic (2026-10-24)
 
 **Actual HTTP protocol and accounting pass; the predeclared matched-result gate
