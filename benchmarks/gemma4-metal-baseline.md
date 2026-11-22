@@ -1683,6 +1683,33 @@ explicit joint latency objectives; improve physical prefill cost independently.
 Raw client records, counters, executable identity and private patch are local in
 `benchmarks/results/qualification/gemma-metal-phase-ab-20261122T181410Z`.
 
+### Short final prefill allowance (2026-11-22)
+
+A second private A/B at `12deb8f` used the same four-process/two-burst protocol,
+with pure phase separation as the control. The candidate permits at most one
+final prefill of up to eight tokens beside runnable decode, subject to the
+existing offer budget and output credits. It still isolates aged prefill and
+never adds a nonfinal prefill beside decode. All 36 requests completed, and each
+measured response matched the original smoke's text, usage and finish reason.
+All servers exited zero.
+
+| Prompt tokens | Median first content, split → allowance | Median EOF, split → allowance | Median max content gap, split → allowance |
+| ---: | ---: | ---: | ---: |
+| 5 | 177 → 179 ms | 1,284 → 1,602 ms | 161 → 217 ms |
+| 8 | 1,296 → 342 ms | 2,036 → 1,706 ms | 161 → 212 ms |
+| 113 | 4,236 → 4,226 ms | 4,347 → 4,335 ms | — |
+| 337 | 6,638 → 6,622 ms | 6,755 → 6,738 ms | — |
+
+This recovers first-content latency for the second short prompt in this sample
+at the expense of larger decode gaps and slower completion of the first.
+Absolute timings are not comparable to the earlier A/B; even this control has
+one materially slower burst, retained in the results. The finite cohort does
+not justify the eight-token cutoff or policy promotion. The strongest next
+question is how to reduce the cost of long physical prefill, rather than
+continuing to trade short-request latency on this fixture. No production code
+retained. Raw results, runner and patch:
+`benchmarks/results/qualification/gemma-metal-short-final-ab-20261122T182200Z`.
+
 ## Native HTTP versus stock MLX diagnostic (2026-10-24)
 
 **Actual HTTP protocol and accounting pass; the predeclared matched-result gate
