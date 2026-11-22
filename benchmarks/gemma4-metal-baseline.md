@@ -1624,6 +1624,34 @@ Metal change; the client clocks alone do not isolate the mechanism. Raw SSE,
 metrics, exact prompts and binary identity are local in
 `benchmarks/results/qualification/gemma-metal-current-http-20261122T171231Z`.
 
+### Offer settlement trace (2026-11-22)
+
+A separate release build at `29c1caa` with private host timestamps repeated two
+four-way bursts of the same prompts after one warmup. Text, usage and terminal
+reasons match both corresponding uninstrumented bursts; all nine requests
+finish and the server exits cleanly. Instrumentation records entry/exit of each
+serial model row, whole-offer execution return, and the driver's delivery scan
+following the completed `Engine::step`. It does not timestamp internal GPU
+operations, engine commit, or socket publication. This is a diagnostic of where
+rows wait, not a paired timing comparison: absolute HTTP latencies differ
+substantially from the smoke and no observer-overhead result is claimed.
+
+The 58 offers contain 39 decode rows, 56 16-token state-only prefill rows and
+nine final prefill rows. Median 16-token prefill row time is 161 ms. In mixed
+phase offers, 26 decode rows wait another **161–1,102 ms (median 421 ms)** after
+the physical row returns before the offer's execution returns. In the worst
+case an early decode row waits for another 249 ms decode and two 418–434 ms
+prefills. The driver's post-step delivery scan takes **4 µs median / 30 µs max**;
+those times are scan duration, not total settlement-to-wire latency.
+
+This isolates a material serial mixed-offer wait before publication. Compare
+bounded decode-only and prefill-only offers against the same arrivals, preserving
+full-offer commitment and checking that prefill still progresses under ongoing
+decode. Do not publish rows early just to bypass the measured wait. The larger
+physical cost still requires faster prefill/model batching. Patch, script, raw
+rows and response samples are local under
+`benchmarks/results/qualification/gemma-metal-offer-trace-20261122T172510Z`.
+
 ## Native HTTP versus stock MLX diagnostic (2026-10-24)
 
 **Actual HTTP protocol and accounting pass; the predeclared matched-result gate
