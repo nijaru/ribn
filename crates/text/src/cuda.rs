@@ -11,7 +11,7 @@ mod tests;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use engine_qwen::{QwenCuda, QwenLoadOptions};
+use engine_qwen::{PrefillTail, QwenCuda, QwenLoadOptions};
 use ribn::driver::{Driver, DriverConfig};
 use ribn::{Engine, EngineConfig, GenerationExecutor, SchedulePolicy};
 
@@ -55,7 +55,7 @@ impl Default for LoadOptions {
             context_tokens: qwen.context_tokens,
             max_sequences: qwen.max_sequences,
             prefill_chunk_members: qwen.prefill_chunk_members,
-            sampled_prefill_final: qwen.sampled_prefill_final,
+            sampled_prefill_final: qwen.prefill_tail != PrefillTail::Serial,
             weight_budget_bytes: qwen.weight_budget_bytes,
             continuation_capacity_bytes: qwen.continuation_capacity_bytes,
             headroom_bytes: qwen.headroom_bytes,
@@ -72,7 +72,11 @@ impl From<LoadOptions> for QwenLoadOptions {
             context_tokens: value.context_tokens,
             max_sequences: value.max_sequences,
             prefill_chunk_members: value.prefill_chunk_members,
-            sampled_prefill_final: value.sampled_prefill_final,
+            prefill_tail: if value.sampled_prefill_final {
+                PrefillTail::SampleFullChunk
+            } else {
+                PrefillTail::Serial
+            },
             weight_budget_bytes: value.weight_budget_bytes,
             continuation_capacity_bytes: value.continuation_capacity_bytes,
             headroom_bytes: value.headroom_bytes,

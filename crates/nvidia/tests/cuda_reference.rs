@@ -6789,13 +6789,15 @@ fn serves_chunked_prefill_matching_the_serial_path() {
         fed_chunked = next_chunked;
     }
 
-    // The sampled-final path only applies to prompts that are an exact whole
-    // number of chunks. Feed the same anchored continuation with a 16-token
-    // prompt: two whole chunks, with the second chunk's last row producing the
-    // sampled token instead of a third serial step.
+    // Exercise the exact tail through the asynchronous dispatcher, including
+    // its sampled output and continuation against the same llama history.
     let mut short_prompt = vec![760, 6511, 314, 9338, 369];
-    short_prompt.extend_from_slice(&LLAMA_GREEDY_CONTINUATION[..11]);
-    assert_eq!(short_prompt.len(), 2 * MEMBERS, "two whole chunks");
+    short_prompt.extend_from_slice(&LLAMA_GREEDY_CONTINUATION[..10]);
+    assert_eq!(
+        short_prompt.len(),
+        2 * MEMBERS - 1,
+        "one full and one short chunk"
+    );
 
     let mut sampled_manager =
         LogicalStateManager::new(device, ribn_foundation::BytePool::new(state_bytes).shared());
@@ -6813,7 +6815,9 @@ fn serves_chunked_prefill_matching_the_serial_path() {
             .expect("sampled dispatcher")
             .with_prefill_chunk(MEMBERS)
             .expect("sampled prefill lane")
-            .with_sampled_prefill_final(true);
+            .with_sampled_prefill_final(true)
+            .with_exact_prefill_tail()
+            .expect("exact tail lanes");
     let mut sampled_backend =
         NvidiaBackend::new(device, WeightBinding::empty(device), sampled_dispatcher);
     let observer = sampled_backend.dispatcher_mut().observe_dispatch();
@@ -6843,7 +6847,7 @@ fn serves_chunked_prefill_matching_the_serial_path() {
         short_prompt_len,
     );
     assert_eq!(
-        sampled_token, LLAMA_GREEDY_CONTINUATION[11],
+        sampled_token, LLAMA_GREEDY_CONTINUATION[10],
         "the sampled final chunk must reproduce the independent continuation"
     );
     assert_eq!(
@@ -6854,9 +6858,9 @@ fn serves_chunked_prefill_matching_the_serial_path() {
     let snapshot = observer.snapshot();
     assert_eq!(
         snapshot.work.prefill_chunk_calls, 2,
-        "the 16-token prompt must run as two chunks"
+        "the 15-token prompt must run as two chunks"
     );
-    assert_eq!(snapshot.work.prefill_chunk_tokens, 16);
+    assert_eq!(snapshot.work.prefill_chunk_tokens, 15);
     assert_eq!(
         snapshot.work.prefill_tokens - snapshot.work.prefill_chunk_tokens,
         0,
@@ -6867,7 +6871,7 @@ fn serves_chunked_prefill_matching_the_serial_path() {
     let mut fed_sampled = sampled_token;
     for step in 0..DECODE_STEPS {
         let position = short_prompt_len + u32::try_from(step).expect("fits u32");
-        let expected = LLAMA_GREEDY_CONTINUATION[12 + step];
+        let expected = LLAMA_GREEDY_CONTINUATION[11 + step];
         let next_plain = run_one_step(
             &mut serial_backend,
             &mut plain_manager,

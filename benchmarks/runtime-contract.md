@@ -1514,10 +1514,45 @@ common-history continuation residual per width remained bit-identical. It ran in
 31.06 seconds. Raw result and source patch are retained in
 `desktop`'s `benchmarks/results/qualification/qwen-prefill-width-gate-20261121T234741Z`.
 This qualifies existing fixed-width lane arithmetic on this fixture, not a
-production tail-selection change. Next test exact short ranges with reusable
-scratch and measure the same prompts against the scalar remainder, including
-workspace cost. A full scratch allocation per width needs its own justification;
-this test does not change automatic selection.
+production tail-selection change.
+
+**Opt-in exact-tail dispatch (2026-11-22).** `qwen_serving_bench --exact-prefill-tail`
+selects the candidate for warp sampled-final prefill. The dispatcher reuses
+prepared decode lanes on the same stream and allocates missing widths at load.
+A remainder of one still runs scalar; no padding or extra state advance is
+needed. The CUDA `serves_chunked_prefill_matching_the_serial_path` regression
+passes in 23.62 seconds, checking a 15-token asynchronous prefill (8 + 7), its
+physical-work counters, sampled output and subsequent greedy tokens against
+serial and an archived independent llama.cpp history.
+
+Four fresh single-active-request runs on the pinned 4090/GGUF used the same
+12 fixture-prefix requests in control/candidate/candidate/control order. Every
+run completed all 12 and emitted 12 tokens. The control batched 784 of 819 prompt
+tokens in 98 chunks; the candidate batched 818 in 105. Medians below are over
+four occurrences per role for 64, 71 and 72; two for each other length.
+
+| Prompt tokens | Control TTFT | Exact-tail TTFT |
+| --- | ---: | ---: |
+| 64 | 434.0 ms | 434.0 ms |
+| 65 | 457.8 ms | 457.9 ms |
+| 66 | 485.5 ms | 465.5 ms |
+| 67 | 512.9 ms | 468.1 ms |
+| 68 | 540.6 ms | 470.9 ms |
+| 69 | 568.3 ms | 474.6 ms |
+| 70 | 595.8 ms | 478.0 ms |
+| 71 | 623.4 ms | 481.2 ms |
+| 72 | 484.7 ms | 484.9 ms |
+
+Observed post-preparation free memory was 32 MiB lower in each candidate.
+That is not a live memory peak: attention-score scratch can grow during serving,
+and fewer new lanes may be needed at higher prepared decode capacity. Compute
+processes were checked before each launch; instantaneous utilization was not
+uniformly zero, so this is not an exclusive-device claim. These are native
+latencies, not HTTP, mixed-offer, or competitive goodput evidence. Keep ordinary
+loading unchanged until mixed arrivals, continuation, cancellation and pressure
+qualify the selection. Raw configs, patch, ELF hash and results remain on
+`desktop` under `benchmarks/results/qualification/qwen-exact-tail-ab-20261122T003511Z`
+and `qwen-exact-tail-dispatch-20261122T003948Z`.
 
 ### Current-source equal-artifact endpoint diagnostic (2026-11-04)
 

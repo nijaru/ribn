@@ -61,11 +61,11 @@ pub struct DispatchWork {
 }
 
 impl DispatchWork {
-    pub(crate) fn prefill(tokens: usize, chunked: usize, members: Option<usize>) -> Self {
+    pub(crate) fn prefill(tokens: usize, chunked: usize, chunks: usize) -> Self {
         Self {
             prefill_rows: 1,
             prefill_tokens: count(tokens),
-            prefill_chunk_calls: members.map_or(0, |members| count(chunked / members)),
+            prefill_chunk_calls: count(chunks),
             prefill_chunk_tokens: count(chunked),
             ..Self::default()
         }
@@ -261,13 +261,13 @@ mod tests {
         observer.record(
             &batch,
             DispatchRoute::RowWise(DecodeFallback::SingleRow),
-            Some(DispatchWork::prefill(17, 16, Some(8))),
+            Some(DispatchWork::prefill(17, 16, 2)),
             u64::MAX,
         );
         observer.record(
             &batch,
             DispatchRoute::RowWise(DecodeFallback::SingleRow),
-            Some(DispatchWork::prefill(17, 16, Some(8))),
+            Some(DispatchWork::prefill(17, 16, 2)),
             1,
         );
         let snapshot = observer.snapshot();

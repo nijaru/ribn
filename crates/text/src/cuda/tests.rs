@@ -99,12 +99,15 @@ fn loaded_sequence_limit_controls_admission_without_a_hidden_permit_cap() {
 fn sampled_final_prefill_preference_is_on_by_default_and_can_be_disabled() {
     let defaults = LoadOptions::default();
     assert!(defaults.sampled_prefill_final);
-    assert!(QwenLoadOptions::from(defaults).sampled_prefill_final);
+    assert_eq!(
+        QwenLoadOptions::from(defaults).prefill_tail,
+        PrefillTail::SampleFullChunk
+    );
     let disabled = QwenLoadOptions::from(LoadOptions {
         sampled_prefill_final: false,
         ..defaults
     });
-    assert!(!disabled.sampled_prefill_final);
+    assert_eq!(disabled.prefill_tail, PrefillTail::Serial);
     assert_eq!(
         disabled.prefill_chunk_members,
         defaults.prefill_chunk_members

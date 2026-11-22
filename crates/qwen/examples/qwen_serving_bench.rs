@@ -123,6 +123,11 @@ fn run() -> Result<(), String> {
             // Burst probes preserve their serial baseline; trace traffic uses
             // the production prefill default unless explicitly set to off.
             prefill_chunk_members: options.prefill_chunk,
+            prefill_tail: if options.exact_prefill_tail {
+                engine_qwen::PrefillTail::Exact
+            } else {
+                engine_qwen::PrefillTail::SampleFullChunk
+            },
             weight_budget_bytes: Some(WEIGHT_BUDGET_BYTES),
             continuation_capacity_bytes: options.continuation_capacity_bytes,
             ..QwenLoadOptions::default()
@@ -231,7 +236,7 @@ fn report_trace(
             "model": model_path, "artifact": artifact, "load_seconds": load_elapsed.as_secs_f64(),
             "max_active_requests": options.concurrency, "max_queued_requests": options.queue_capacity,
             "batch_token_budget": policy.max_batch_tokens, "prefill_token_budget": policy.prefill_chunk_tokens,
-            "prefill_chunk_members": options.prefill_chunk, "gemv_mode": format!("{:?}", options.gemv_mode),
+            "prefill_chunk_members": options.prefill_chunk, "exact_prefill_tail": options.exact_prefill_tail, "gemv_mode": format!("{:?}", options.gemv_mode),
             "grouped_decode": options.grouped_decode,
             "member_descriptors": options.member_descriptors,
             "continuation_capacity_bytes": memory.reserved_sequence_bytes,

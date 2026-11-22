@@ -25,6 +25,15 @@ use crate::state;
 /// capacity moves without this measured default being re-decided.
 pub const DEFAULT_PREFILL_CHUNK_MEMBERS: usize = 8;
 
+/// How a chunked prefill lane handles the final sampling token.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PrefillTail {
+    Serial,
+    SampleFullChunk,
+    /// Experimental: prepare short warp lanes and sample their final row too.
+    Exact,
+}
+
 /// Preparation limits, not live request scheduling policy.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct QwenLoadOptions {
@@ -45,10 +54,7 @@ pub struct QwenLoadOptions {
     /// serving-effect gates are recorded in
     /// `benchmarks/qwen-prefill-qualification.md`.
     pub prefill_chunk_members: Option<usize>,
-    /// Sample a whole prefill chunk's final row instead of re-running that token
-    /// on the serial path. Only the warp projection without the chunk-parallel
-    /// scan honours it; every other mode and prompt shape keeps the serial step.
-    pub sampled_prefill_final: bool,
+    pub prefill_tail: PrefillTail,
     /// Optional upper bound for staged weights. Automatic mode uses observed
     /// free device memory minus request-state reservations and headroom.
     pub weight_budget_bytes: Option<u64>,
@@ -72,7 +78,7 @@ impl Default for QwenLoadOptions {
             grouped_decode: false,
             member_descriptors: false,
             prefill_chunk_members: Some(DEFAULT_PREFILL_CHUNK_MEMBERS),
-            sampled_prefill_final: true,
+            prefill_tail: PrefillTail::SampleFullChunk,
             weight_budget_bytes: None,
             continuation_capacity_bytes: None,
             headroom_bytes: 512 << 20,
@@ -200,13 +206,18 @@ fn prepare_dispatcher(
     let dispatcher = dispatcher
         .with_member_descriptors(options.member_descriptors)
         .map_err(model_error)?;
-    let Some(members) = options.prefill_chunk_members else {
-        return Ok(dispatcher);
+    let dispatcher = match options.prefill_chunk_members {
+        Some(members) => dispatcher
+            .with_prefill_chunk(members)
+            .map_err(model_error)?
+            .with_sampled_prefill_final(options.prefill_tail != PrefillTail::Serial),
+        None => dispatcher,
     };
-    Ok(dispatcher
-        .with_prefill_chunk(members)
-        .map_err(model_error)?
-        .with_sampled_prefill_final(options.sampled_prefill_final))
+    if options.prefill_tail == PrefillTail::Exact {
+        dispatcher.with_exact_prefill_tail().map_err(model_error)
+    } else {
+        Ok(dispatcher)
+    }
 }
 
 /// Continuation bytes this loaded execution may charge in total.

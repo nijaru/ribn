@@ -18,6 +18,7 @@ pub(super) struct Options {
     pub member_descriptors: bool,
     pub dispatch_diagnostics: bool,
     pub prefill_chunk: Option<usize>,
+    pub exact_prefill_tail: bool,
     pub print_tokens: bool,
     pub divergence_probe: bool,
     pub context_tokens: u32,
@@ -114,6 +115,7 @@ impl Options {
                 .iter()
                 .any(|argument| argument == "--dispatch-diagnostics"),
             prefill_chunk,
+            exact_prefill_tail: arguments.iter().any(|arg| arg == "--exact-prefill-tail"),
             print_tokens,
             divergence_probe: input.divergence,
             context_tokens,
@@ -164,6 +166,7 @@ fn validate_arguments(arguments: &[String]) -> Result<(), String> {
                     "--grouped-decode",
                     "--member-descriptors",
                     "--dispatch-diagnostics",
+                    "--exact-prefill-tail",
                 ]
                 .into_iter()
                 .find(|flag| argument == flag)
