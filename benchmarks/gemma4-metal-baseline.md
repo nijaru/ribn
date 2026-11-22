@@ -1710,6 +1710,33 @@ continuing to trade short-request latency on this fixture. No production code
 retained. Raw results, runner and patch:
 `benchmarks/results/qualification/gemma-metal-short-final-ab-20261122T182200Z`.
 
+### Wider physical prefill screen (2026-11-22)
+
+One release Metal decoder process on the same Mac and pinned E4B package used
+prefixes made by cycling the archived chat token IDs. The temporary extension
+of `metal_decoder_reproduces_the_archived_greedy_tokens` ran 16-, 32- and 64-row
+partitions after resetting continuation, then compared full finite logits and
+three teacher-forced continuation rows per partition. All compared rows were
+bit-identical; the existing archived four-token gate also passed. The 513-token
+case crosses the preset local attention window. These are synthetic common
+histories, not a task-quality evaluation.
+
+| Prompt tokens | 16-row prefill | 32-row prefill | 64-row prefill |
+| ---: | ---: | ---: | ---: |
+| 113 | 3,013 ms | 2,214 ms | 1,420 ms |
+| 337 | 8,879 ms | 6,211 ms | 3,765 ms |
+| 513 | 11,798 ms | 5,331 ms | 4,408 ms |
+
+Clocks cover direct decoder prefill including its output head/readback per chunk;
+continuation, load and reset are outside the timing. One sample per cell, fixed
+order, no interference or memory-peak proof: the magnitude warrants a controlled
+A/B, not a speedup claim for HTTP. A 64-row isolated prefill path is worth testing
+before building a new kernel. Keep wide prefill out of decode offers until the
+latency trade-off is measured; compare measured time, first content, max content
+gaps, completion and live memory under mixed arrivals. Do not globally raise
+`SchedulePolicy`'s default from these direct timings. No production code changed.
+Private patch and log: `benchmarks/results/qualification/gemma-metal-wide-prefill-20261122T200808Z`.
+
 ## Native HTTP versus stock MLX diagnostic (2026-10-24)
 
 **Actual HTTP protocol and accounting pass; the predeclared matched-result gate
