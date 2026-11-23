@@ -1823,11 +1823,28 @@ row can still delay short work: the first short request completed in 1.56–1.63
 versus 1.01–1.05 s at width 16. This finite arrival train shows continued service,
 not a wall-clock fairness guarantee under persistent load. It does not exercise
 stalled clients, cancellation during a wide offer, or measure live memory.
-Before selecting a production policy, test the bounded 32-row midpoint against
-16/64 on the same workload plus a higher-pressure lifecycle case. There is no
-reason to retain the earlier unbounded short-final priority on this evidence.
-The private patch was removed; raw data and runner are in
+There is no reason to retain the earlier unbounded short-final priority on
+this evidence. The private patch was removed; raw data and runner are in
 `benchmarks/results/qualification/gemma-metal-fifo-sustained-20261123T014229Z`.
+
+**Midpoint check.** Six fresh processes used the identical executable, runner
+and arrival trace in 16/32/64/64/32/16 order. All 90 requests including warmup
+completed; all 84 measured responses retained the same text, usage and finish
+reasons, with no rejection, failures or abandonment. Every server exited zero.
+Largest client start lag was 10.06 ms. The 32-row control did not recover most
+of the 64-row gain and did not consistently improve short-request latency:
+
+| Idle prefill cap | Long EOF | Short median EOF | Worst short EOF |
+| ---: | ---: | ---: | ---: |
+| 16 | 13.84–16.31 s | 2.53–3.58 s | 4.25–5.66 s |
+| 32 | 9.20–12.01 s | 2.62–3.66 s | 3.52–5.75 s |
+| 64 | 5.92–6.08 s | 3.03–3.32 s | 4.22–4.59 s |
+
+Cross-process variation prevents ranking the short path; it does not erase
+the long-path ordering in this cohort. Advance 64 rather than 32 to cancellation,
+stalled output and memory tests. Keep defaults unchanged pending those checks
+and broader latency evidence. Raw records:
+`benchmarks/results/qualification/gemma-metal-fifo-midpoint-20261123T014650Z`.
 
 ## Native HTTP versus stock MLX diagnostic (2026-10-24)
 
