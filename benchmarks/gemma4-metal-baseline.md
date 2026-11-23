@@ -1875,6 +1875,31 @@ TCP socket or a Metal memory upper bound. Ordinary assembly still selects mixed
 offers. Local device log:
 `benchmarks/results/qualification/gemma-metal-typed-policy-20261123T032720Z`.
 
+**Allocation sampling through typed HTTP assembly (2026-11-23).** Two fresh
+processes at `e20820b` plus a private loader override replayed the recurring
+arrival cohort, width 16 then 64, with the same typed phase-separated policy.
+Both completed 15/15 including warmup, with matching measured text, usage and
+finish reasons, zero rejections/abandonments/failures, and clean SIGTERM exit.
+An in-process observer sampled `MTLDevice.currentAllocatedSize` and this
+process's `TASK_VM_INFO` footprint and lifetime ledger. The observer did not
+retain model buffers; no production observer or override was committed.
+
+| Idle cap | Device counter sampled max | Process footprint ledger peak | Final sampled device counter |
+| ---: | ---: | ---: | ---: |
+| 16 | 14,928,461,824 B | 15,378,132,248 B | 606,208 B |
+| 64 | 14,931,804,160 B | 15,397,383,472 B | 606,208 B |
+
+The wider run adds 3.19 MiB to the sampled device counter and 18.36 MiB to the
+process footprint ledger peak in this pair. There were 9,151/5,582 samples at
+median 2.52 ms intervals, with maximum gaps of 24.25/69.50 ms. These counters
+overlap on unified memory and must not be added. Sampling can miss transient
+device allocations; one ordered pair and sampling do not establish a hard
+physical bound or a timing comparison. This is evidence against a large
+persistent allocation increase for this workload, not a substitute for a
+resource grant or broader serving qualification. Raw records, observer source
+and removed override are local in
+`benchmarks/results/qualification/gemma-metal-wide-alloc-20261123T045925Z`.
+
 ## Native HTTP versus stock MLX diagnostic (2026-10-24)
 
 **Actual HTTP protocol and accounting pass; the predeclared matched-result gate
