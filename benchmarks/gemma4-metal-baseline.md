@@ -1764,6 +1764,36 @@ wide row and isolation from prompt-final work), then tests arrivals during it.
 The source patch was removed. Evidence is in
 `benchmarks/results/qualification/gemma-metal-idle-wide-ab-20261123T011606Z`.
 
+### One wide row with arrivals during prefill (2026-11-23)
+
+Four fresh release Metal HTTP processes at `f5b65e0` plus a private patch ran in
+16/64/64/16 order, with one warmup and two staggered four-request trials each.
+The 337-token prompt starts at the planned origin; the 5-, 8- and 113-token
+prompts follow at 90, 550 and 850 ms. The largest observed client start lag was
+5.04 ms. Both variants isolate decode and aged prefill, and when decode is not
+runnable they first offer prompt-final rows that fit the ordinary 16-token cap.
+Only when no such row is eligible do they offer **one** prefill row with the
+candidate cap. Unlike the earlier wide A/B, this keeps a final short prompt out
+of a wide offer with a long prompt. All 36 requests completed, measured text,
+usage and finish reasons matched the original smoke, and all servers exited zero.
+
+| Prompt tokens | Median first content, 16 → 64 | Median EOF, 16 → 64 | Median max content gap, 16 → 64 |
+| ---: | ---: | ---: | ---: |
+| 5 | 911 → 983 ms | 2,333 → 2,416 ms | 225 → 227 ms |
+| 8 | 2,159 → 2,214 ms | 3,698 → 3,693 ms | 232 → 236 ms |
+| 113 | 8,605 → 5,905 ms | 8,824 → 6,050 ms | — |
+| 337 | 14,138 → 7,647 ms | 14,382 → 7,781 ms | — |
+
+The long-prompt gain survives the one-row bound, with similar short-request
+median streaming gaps. First content for short requests still moves later.
+These two pairs do not isolate each arrival's device overlap, bound memory, or
+prove progress when new final-prefill rows continually arrive. The prototype's
+final-row priority in particular needs a fairness bound independent of the
+existing decode-only step counter before general use. Keep production unchanged;
+qualify sustained arrivals, backpressure and memory before selecting a default.
+Raw evidence and removed source patch are local in
+`benchmarks/results/qualification/gemma-metal-one-wide-arrivals-20261123T012126Z`.
+
 ## Native HTTP versus stock MLX diagnostic (2026-10-24)
 
 **Actual HTTP protocol and accounting pass; the predeclared matched-result gate
