@@ -1794,6 +1794,41 @@ qualify sustained arrivals, backpressure and memory before selecting a default.
 Raw evidence and removed source patch are local in
 `benchmarks/results/qualification/gemma-metal-one-wide-arrivals-20261123T012126Z`.
 
+### FIFO single-row wide prefill under recurring arrivals (2026-11-23)
+
+Four fresh release Metal HTTP processes at `8d35275` plus a private patch ran
+in 16/64/64/16 order. The control and candidate both remove final-prefill
+priority: when decode is not runnable they take one eligible prefill at the
+head of the existing ready queue and return unfinished rows to its tail.
+Decode runs in a separate offer; after eight decode-only submissions one aged
+prefill can run at the ordinary 16-token cap. Only the idle prefill width differs.
+The two policies use the same executor, physical operations, and transport.
+
+After a 337-token warmup, a fresh 337-token request starts at time zero;
+thirteen alternating 5-/8-token requests arrive every 330 ms starting at 125 ms.
+All request output caps are two, with greedy EOS-aware streaming. Largest
+client-side start lag was 5.06 ms. All 60 requests across the four processes
+completed without rejection, failure or abandonment; all 56 measured texts,
+usage and finish reasons matched across repetitions and policies. Every server
+exited zero. Ranges below are over the two processes per role; the short-request
+column takes the median of the thirteen short requests within each process.
+
+| Idle prefill cap | Long first content | Long EOF | Short median EOF | Worst short EOF |
+| ---: | ---: | ---: | ---: | ---: |
+| 16 | 11.49–13.06 s | 11.63–13.32 s | 2.40–2.55 s | 3.46–3.85 s |
+| 64 | 4.94–5.46 s | 5.08–5.60 s | 2.50–3.00 s | 3.42–3.73 s |
+
+The wide-row gain survives removing final-row priority. One wider nonpreemptive
+row can still delay short work: the first short request completed in 1.56–1.63 s
+versus 1.01–1.05 s at width 16. This finite arrival train shows continued service,
+not a wall-clock fairness guarantee under persistent load. It does not exercise
+stalled clients, cancellation during a wide offer, or measure live memory.
+Before selecting a production policy, test the bounded 32-row midpoint against
+16/64 on the same workload plus a higher-pressure lifecycle case. There is no
+reason to retain the earlier unbounded short-final priority on this evidence.
+The private patch was removed; raw data and runner are in
+`benchmarks/results/qualification/gemma-metal-fifo-sustained-20261123T014229Z`.
+
 ## Native HTTP versus stock MLX diagnostic (2026-10-24)
 
 **Actual HTTP protocol and accounting pass; the predeclared matched-result gate
