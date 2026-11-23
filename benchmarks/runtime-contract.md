@@ -1676,6 +1676,39 @@ ran. Advance a narrow pinned projection binding and a captured-real arithmetic
 screen before changing selection; do not make the GGML graph or its allocator
 an execution owner. Evidence: `stream-probe/` beneath the directory above.
 
+**Captured Qwen projection arithmetic (2026-11-23).** Rebuilt the same
+one-shape shim against llama.cpp `6050b467c` with a pointer-typed Rust ABI and
+recorded the linked binary hashes. The probe still owns the CUDA stream,
+weights, input/output and workspace on the Rust side. This is a disposable
+binding, not a new runtime dependency. With Ribn at `9db47ba`, a private tap
+captured F32 inputs immediately before `ffn_down` on the Warp prefill path:
+`qwen_decode_bench --gemv=warp --tokens=1 --prompt-tokens=73 --prefill-chunk=8`.
+The benchmark repeats the same five prompt tokens and keeps the final token
+serial. The tap captured all 24 IQ4_XS down-projections at positions 0–7 and
+64–71 in `Qwen3.8-27B-UD-Q4_K_M.gguf` (SHA-256
+`322e194ff79741c7baa497c240f677f54b201b0efab44ca8e50f122b39123482`).
+
+Warp and packed MMVQ used matching weights and identical captured inputs.
+Each of the 384 output rows (5,120 values per row) was finite and compared to
+host IQ4_XS dequantization with an F64 dot over the original F32 input.
+Relative L2 is `‖output − reference‖₂ / ‖reference‖₂` per row.
+
+| Chunk start | Warp median / worst relative L2 | MMVQ median / worst relative L2 |
+| ---: | ---: | ---: |
+| 0 | 1.61e-7 / 1.85e-7 | 0.850% / 1.207% |
+| 64 | 1.52e-7 / 1.82e-7 | 0.787% / 1.133% |
+
+Worst absolute element error across both chunks was `2.58e-6` (Warp) and
+`0.02369` (MMVQ). The packed candidate does not preserve Warp arithmetic;
+these observations are not tolerances. This screen replays projections from
+unchanged Warp histories; it cannot measure accumulated recurrent/KV or logit
+error. No candidate full-model run, timing comparison, or serving gate ran.
+Keep automatic selection unchanged. If pursuing the candidate, first define a
+model-quality criterion independently of this screen, then measure it under
+common histories with the candidate inserted only at this projection shape.
+Local sources and logs: `benchmarks/results/qualification/qwen-mmvq-real/`;
+the captured F32 inputs remain on desktop.
+
 ### Current-source equal-artifact endpoint diagnostic (2026-11-04)
 
 One fixed 32-request episode per engine establishes issued-request latency, usage
