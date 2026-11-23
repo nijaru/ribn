@@ -1846,6 +1846,24 @@ stalled output and memory tests. Keep defaults unchanged pending those checks
 and broader latency evidence. Raw records:
 `benchmarks/results/qualification/gemma-metal-fifo-midpoint-20261123T014650Z`.
 
+**HTTP cancellation and overload.** The same private release executable ran
+separately at widths 16 and 64 with only two HTTP generation slots. Each of
+three iterations opened two 337-token streams, verified both slots were
+occupied, and sent a third request, which returned 503 with `Retry-After: 1`.
+The client closed one long stream 1.7–33.5 ms after launch; the healthy peer
+and a subsequent short request both delivered successful terminal SSE.
+Each iteration adds exactly one rejection, one abandonment and two
+completions. Both servers exited zero after SIGTERM. This measures recovery
+at the HTTP boundary, not the exact cancellation point relative to command
+submission or reclamation. The test did not prove socket backpressure.
+
+Sampled process RSS at roughly 100 ms intervals reached 15,031,728 KiB at
+width 16 and 15,060,864 KiB at width 64 (about 28 MiB more in this run).
+Process RSS does not bound Metal allocations or transient unified-memory
+peaks. Keep the selection private until the actual Metal resource envelope
+and stalled-output behavior are exercised. Raw counters and samples:
+`benchmarks/results/qualification/gemma-metal-fifo-lifecycle-20261123T015347Z`.
+
 ## Native HTTP versus stock MLX diagnostic (2026-10-24)
 
 **Actual HTTP protocol and accounting pass; the predeclared matched-result gate
