@@ -1649,8 +1649,32 @@ can consume Ribn-owned buffers on its stream with bounded workspace. Do not
 route every projection through a second graph owner based on these timings.
 A useful fast path also needs an independent numerical gate: the candidate
 quantizes activations, unlike Ribn's default warp projection. Raw evidence and
-probe sources are in `desktop`'s
-`benchmarks/results/qualification/qwen-projection-library-20261122T054646Z`.
+probe sources are in `benchmarks/results/qualification/qwen-projection-library-20261122T054646Z`
+on both hosts (Linux executables remain on desktop).
+
+**Caller-owned CUDA stream probe (2026-11-23).** A disposable Rust/cudarc
+program allocated the encoded IQ4_XS weights, F32 input/output and 156,672-byte
+Q8_1 workspace, and passed its own non-default stream to a one-shape C++ shim.
+The shim calls the pinned library's `quantize_row_q8_1_cuda` and
+`ggml_cuda_op_mul_mat_vec_q` entry points directly: it uses the internal context
+object for the device ordinal, but does not instantiate a graph backend, create a
+stream, or request GGML scratch. This is a private C++ ABI, not a public stable
+link interface. The probe's Rust integer device-address arguments rely on the
+platform calling convention for C pointer parameters; use pointer-typed FFI and
+a pinned build before using this in production.
+
+For K=17408, N=5120, eight rows and the matched synthetic bytes, two alternating
+100-pair measurements gave **185.9–186.5 µs** for the existing Warp path and
+**64.3–64.9 µs** for MMVQ with packing and stream synchronization. The candidate
+and control each used a different resident copy of the same encoded bytes;
+absolute control latency differs from the earlier harness, so only these like-run
+figures describe this probe. Both outputs were finite. The observed maximum
+absolute difference was 40.91 at a control maximum magnitude of 15,210.95; this
+is descriptive, not an independently justified error bound. Compute Sanitizer
+memcheck reported zero errors. No model, serving or asynchronous retirement gate
+ran. Advance a narrow pinned projection binding and a captured-real arithmetic
+screen before changing selection; do not make the GGML graph or its allocator
+an execution owner. Evidence: `stream-probe/` beneath the directory above.
 
 ### Current-source equal-artifact endpoint diagnostic (2026-11-04)
 
