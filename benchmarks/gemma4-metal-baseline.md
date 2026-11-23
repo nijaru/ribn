@@ -1737,6 +1737,33 @@ gaps, completion and live memory under mixed arrivals. Do not globally raise
 `SchedulePolicy`'s default from these direct timings. No production code changed.
 Private patch and log: `benchmarks/results/qualification/gemma-metal-wide-prefill-20261122T200808Z`.
 
+### Wider idle prefill through HTTP (2026-11-23)
+
+Four fresh release Metal HTTP processes at `8dd47ff` plus a private patch ran
+in 16/64/64/16 order, with a warmup and two identical four-request bursts each.
+Both roles use phase separation and the same 16-token aged-prefill cap. Only
+when no decode row is runnable can the candidate offer up to 64 prefill tokens
+per row; the aggregate offer budget is unchanged. All 36 requests including
+warmups finished, all measured outputs matched the original text/usage/finish
+per prompt, and all servers exited cleanly.
+
+| Prompt tokens | Median first content, 16 → 64 | Median EOF, 16 → 64 | Median max content gap, 16 → 64 |
+| ---: | ---: | ---: | ---: |
+| 5 | 288 → 449 ms | 1,804 → 2,966 ms | 220 → 369 ms |
+| 8 | 2,570 → 1,795 ms | 3,818 → 4,289 ms | 225 → 367 ms |
+| 113 | 9,151 → 5,902 ms | 9,380 → 6,038 ms | — |
+| 337 | 14,647 → 8,180 ms | 14,829 → 8,376 ms | — |
+
+The long-prefill gain survives the HTTP path, but merely excluding *currently
+runnable* decode does not protect a short prompt whose first token becomes ready
+inside a wide prefill offer. Nor does it preempt a wide offer when new work arrives.
+These are client timings, not an attribution of each gap; admission order varied
+and no sustained-arrival, memory-pressure or fairness gate ran. Do not promote this
+policy. A useful next comparison bounds the lifetime of a wide offer (e.g. one
+wide row and isolation from prompt-final work), then tests arrivals during it.
+The source patch was removed. Evidence is in
+`benchmarks/results/qualification/gemma-metal-idle-wide-ab-20261123T011606Z`.
+
 ## Native HTTP versus stock MLX diagnostic (2026-10-24)
 
 **Actual HTTP protocol and accounting pass; the predeclared matched-result gate
