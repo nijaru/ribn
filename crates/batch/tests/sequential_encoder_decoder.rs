@@ -191,6 +191,7 @@ fn engine(shared: Arc<Mutex<Shared>>) -> Engine {
             prefill_chunk_tokens: 8,
             decode_tokens: 1,
             max_decode_only_steps: 1,
+            ..SchedulePolicy::default()
         },
     )
     .expect("decoder engine")

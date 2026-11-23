@@ -1860,9 +1860,20 @@ submission or reclamation. The test did not prove socket backpressure.
 Sampled process RSS at roughly 100 ms intervals reached 15,031,728 KiB at
 width 16 and 15,060,864 KiB at width 64 (about 28 MiB more in this run).
 Process RSS does not bound Metal allocations or transient unified-memory
-peaks. Keep the selection private until the actual Metal resource envelope
-and stalled-output behavior are exercised. Raw counters and samples:
+peaks. Raw counters and samples:
 `benchmarks/results/qualification/gemma-metal-fifo-lifecycle-20261123T015347Z`.
+
+**Typed policy gate.** The Rust runtime now exposes opt-in
+`PrefillScheduling::Separate { idle_chunk_tokens }` on `SchedulePolicy`. The
+release Metal decoder test additionally runs an owned driver with width 64 and
+a one-event delivery channel. A 129-token peer finishes while a 32-token
+stream is left unread; the stalled stream observes cancellation and the driver
+shuts down cleanly. The archived four-token and common-history Metal decoder
+checks still pass. Runtime contract tests check the exact phase/aging behavior
+and credit isolation. This tests bounded driver backpressure, not a stalled
+TCP socket or a Metal memory upper bound. Ordinary assembly still selects mixed
+offers. Local device log:
+`benchmarks/results/qualification/gemma-metal-typed-policy-20261123T032720Z`.
 
 ## Native HTTP versus stock MLX diagnostic (2026-10-24)
 

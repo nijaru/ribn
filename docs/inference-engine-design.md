@@ -216,6 +216,14 @@ state shape and kernel constraints still determine compatibility. Never remove a
 without qualifying the replacement addressing path or pad every request to maximum
 context merely to preserve a dense kernel.
 
+For a serial executor, a phase-separated policy can bound each idle prefill
+submission to one ready row, with a separate wider token cap. If decode is
+runnable, offer decode alone except at the decode-only aging limit, when one
+eligible prefill row uses the ordinary cap. Keep prefill in ready-queue order;
+short final rows cannot repeatedly bypass unfinished long rows. Neither policy
+preempts an already submitted offer or changes its settlement semantics. A
+step limit is not a wall-clock latency guarantee.
+
 A mixed logical batch is not evidence of mixed physical batching. Measure scheduled versus
 actually batched rows/tokens, per-phase execution time, host dispatch gaps and fallback
 frequency. Compare policy changes independently of lane changes, including workloads

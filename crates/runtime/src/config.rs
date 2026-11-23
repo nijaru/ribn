@@ -27,12 +27,23 @@ impl Default for EngineConfig {
     }
 }
 
+/// How ready prefill shares offers with decode.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum PrefillScheduling {
+    #[default]
+    Mixed,
+    /// Only one prefill row per offer. When decode has no eligible rows, use
+    /// the wider cap; an aged prefill takes the ordinary cap instead.
+    Separate { idle_chunk_tokens: u32 },
+}
+
 /// Live scheduling policy. Updating it does not change request semantics or
 /// invalidate in-flight work; completions are checked against their saved batch.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct SchedulePolicy {
     pub max_batch_tokens: u32,
     pub prefill_chunk_tokens: u32,
+    pub prefill_scheduling: PrefillScheduling,
     pub decode_tokens: u32,
     /// Force admitted prefill after this many decode-only submissions.
     /// This is a step bound, not a wall-clock latency guarantee.
@@ -44,6 +55,7 @@ impl Default for SchedulePolicy {
         Self {
             max_batch_tokens: 128,
             prefill_chunk_tokens: 16,
+            prefill_scheduling: PrefillScheduling::Mixed,
             decode_tokens: 1,
             max_decode_only_steps: 8,
         }
@@ -56,6 +68,12 @@ pub(crate) fn validate_policy(
 ) -> Result<(), EngineError> {
     if policy.max_batch_tokens == 0
         || policy.prefill_chunk_tokens == 0
+        || matches!(
+            policy.prefill_scheduling,
+            PrefillScheduling::Separate {
+                idle_chunk_tokens: 0
+            }
+        )
         || policy.decode_tokens == 0
         || policy.max_decode_only_steps == 0
         || policy.max_batch_tokens > info.limits.max_batch_tokens

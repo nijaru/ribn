@@ -5,8 +5,9 @@ use std::sync::{Arc, Mutex};
 
 use ribn::{
     Admission, BatchItem, Engine, EngineConfig, EngineError, Event, ExecutionError, ExecutorInfo,
-    FinishReason, GenerationExecutor, GenerationLimits, GenerationOptions, RequestId,
-    SchedulePolicy, SequenceId, StepCompletion, SubmissionId, TokenRequest, Usage,
+    FinishReason, GenerationExecutor, GenerationLimits, GenerationOptions, PrefillScheduling,
+    RequestId, SchedulePolicy, SequenceId, StepCompletion, StepKind, SubmissionId, TokenRequest,
+    Usage,
 };
 
 #[allow(
@@ -656,6 +657,61 @@ fn decode_cannot_starve_admitted_prefill_under_a_one_token_budget() {
 }
 
 #[test]
+fn separate_prefill_uses_idle_width_and_ages_without_mixing() {
+    let control = Arc::new(Mutex::new(Control::default()));
+    let policy = SchedulePolicy {
+        prefill_chunk_tokens: 1,
+        prefill_scheduling: PrefillScheduling::Separate {
+            idle_chunk_tokens: 4,
+        },
+        max_decode_only_steps: 2,
+        ..SchedulePolicy::default()
+    };
+    let mut runtime =
+        Engine::new(Model::<DenseState>::new(control.clone()), config(), policy).unwrap();
+    assert_eq!(
+        runtime.set_policy(SchedulePolicy {
+            prefill_scheduling: PrefillScheduling::Separate {
+                idle_chunk_tokens: 0
+            },
+            ..policy
+        }),
+        Err(EngineError::InvalidConfig)
+    );
+    runtime.enqueue(request(1, 10)).unwrap();
+    runtime.enqueue(request(8, 1)).unwrap();
+    for _ in 0..40 {
+        runtime.step().unwrap();
+        while runtime.pop_event().is_some() {}
+    }
+    let control = control.lock().unwrap();
+    assert_eq!(control.released.len(), 2);
+    let first = control.admitted[0];
+    let second = control.admitted[1];
+    let batches = &control.batches;
+    assert_eq!(batches[0].len(), 1);
+    assert_eq!(batches[0][0].sequence, first);
+    assert!(
+        batches[1..3]
+            .iter()
+            .all(|batch| batch[0].kind == StepKind::Decode)
+    );
+    assert_eq!(batches[3].len(), 1);
+    assert_eq!(batches[3][0].sequence, second);
+    assert_eq!(batches[3][0].token_budget, 1);
+    assert!(
+        batches
+            .iter()
+            .all(|batch| batch.iter().all(|row| row.kind == batch[0].kind))
+    );
+    assert!(
+        batches
+            .iter()
+            .any(|batch| batch[0].sequence == second && batch[0].token_budget == 4)
+    );
+}
+
+#[test]
 fn stop_and_output_budgets_remain_exact_with_multi_token_completion() {
     let control = Arc::new(Mutex::new(Control::default()));
     let mut runtime = engine::<HybridState>(&control);
@@ -716,6 +772,17 @@ fn invalid_requests_and_policy_are_rejected_before_model_admission() {
 
 #[test]
 fn stalled_consumer_does_not_block_a_peer_with_output_capacity() {
+    for scheduling in [
+        PrefillScheduling::Mixed,
+        PrefillScheduling::Separate {
+            idle_chunk_tokens: 4,
+        },
+    ] {
+        check_stalled_consumer(scheduling);
+    }
+}
+
+fn check_stalled_consumer(prefill_scheduling: PrefillScheduling) {
     let control = Arc::new(Mutex::new(Control::default()));
     let mut cfg = config();
     cfg.max_buffered_events = 8;
@@ -723,11 +790,14 @@ fn stalled_consumer_does_not_block_a_peer_with_output_capacity() {
     let mut runtime = Engine::new(
         Model::<DenseState>::new(control.clone()),
         cfg,
-        SchedulePolicy::default(),
+        SchedulePolicy {
+            prefill_scheduling,
+            ..SchedulePolicy::default()
+        },
     )
     .unwrap();
     let slow = runtime.enqueue(request(1, 8)).unwrap();
-    let peer = runtime.enqueue(request(1, 5)).unwrap();
+    let peer = runtime.enqueue(request(8, 5)).unwrap();
     let mut peer_tokens = 0;
     let mut peer_finished = false;
     for _ in 0..100 {

@@ -17,7 +17,7 @@ mod executor;
 mod output;
 mod request;
 
-pub use config::{EngineConfig, SchedulePolicy};
+pub use config::{EngineConfig, PrefillScheduling, SchedulePolicy};
 pub use engine::{Engine, EngineStatus, StepStatus};
 pub use error::EngineError;
 pub use executor::{

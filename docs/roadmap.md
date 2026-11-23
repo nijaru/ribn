@@ -53,6 +53,9 @@ Neither workload establishes a clean competitive ranking.
    device PLE, sampled-token readout, capture or fusion from measured
    losses, not the launch count. Do not repeat unchanged negative
    M4, descriptors, PLE-only, attention and FFN graph candidates.
+   On Metal, [wide single-row prefill](../benchmarks/gemma4-metal-baseline.md#fifo-single-row-wide-prefill-under-recurring-arrivals-2026-11-23)
+   is a measured candidate, not the default. Validate the live allocation
+   envelope and compare broader arrival/latency cohorts before loader selection.
 3. **Native versus externally prepared executor, concurrently.**
    Test a pinned Gemma model and at least two contexts/shapes through
    a truly Rust-invocable prepared program; compare full numerical/

@@ -1,6 +1,6 @@
 //! Selection over engine-owned queues; no duplicate request or resource owner.
 use super::Engine;
-use crate::{BatchItem, StepKind};
+use crate::{BatchItem, PrefillScheduling, StepKind};
 
 impl Engine {
     pub(super) fn build_batch(&mut self) {
@@ -9,11 +9,24 @@ impl Engine {
         let mut budget = self.policy.max_batch_tokens;
         let force_prefill =
             !self.prefill.is_empty() && self.decode_only_steps >= self.policy.max_decode_only_steps;
+        let prefill_cap = self.policy.prefill_chunk_tokens;
+        let scheduling = self.policy.prefill_scheduling;
         if force_prefill {
-            self.schedule_kind(StepKind::Prefill, &mut budget, 1);
+            self.schedule_kind(StepKind::Prefill, &mut budget, 1, prefill_cap);
+            if !self.batch.is_empty() && matches!(scheduling, PrefillScheduling::Separate { .. }) {
+                return;
+            }
         }
-        self.schedule_kind(StepKind::Decode, &mut budget, usize::MAX);
-        self.schedule_kind(StepKind::Prefill, &mut budget, usize::MAX);
+        self.schedule_kind(StepKind::Decode, &mut budget, usize::MAX, prefill_cap);
+        match scheduling {
+            PrefillScheduling::Mixed => {
+                self.schedule_kind(StepKind::Prefill, &mut budget, usize::MAX, prefill_cap);
+            }
+            PrefillScheduling::Separate { idle_chunk_tokens } if self.batch.is_empty() => {
+                self.schedule_kind(StepKind::Prefill, &mut budget, 1, idle_chunk_tokens);
+            }
+            PrefillScheduling::Separate { .. } => {}
+        }
     }
 
     pub(super) fn record_scheduled_batch(&mut self) {
@@ -24,7 +37,7 @@ impl Engine {
         }
     }
 
-    fn schedule_kind(&mut self, kind: StepKind, budget: &mut u32, limit: usize) {
+    fn schedule_kind(&mut self, kind: StepKind, budget: &mut u32, limit: usize, prefill_cap: u32) {
         let queue = match kind {
             StepKind::Prefill => &mut self.prefill,
             StepKind::Decode => &mut self.decode,
@@ -45,7 +58,7 @@ impl Engine {
             let (tokens, outputs) = match kind {
                 StepKind::Prefill => {
                     let tokens = (sequence.prompt_tokens - sequence.prefix)
-                        .min(self.policy.prefill_chunk_tokens)
+                        .min(prefill_cap)
                         .min(*budget);
                     (
                         tokens,

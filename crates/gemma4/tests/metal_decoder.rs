@@ -1,10 +1,18 @@
 //! End-to-end Metal Gemma forwarding, gated on macOS and the metal feature.
 #![cfg(all(target_os = "macos", feature = "metal"))]
 
-use engine_gemma4::{Gemma4Config, Gemma4MetalDecoder, Gemma4Source, metal_argmax};
+use engine_gemma4::{
+    Gemma4Config, Gemma4Executor, Gemma4MetalDecoder, Gemma4MetalFfn, Gemma4MetalModel,
+    Gemma4Source, metal_argmax,
+};
+use ribn::driver::{Driver, DriverConfig};
+use ribn::{
+    Engine, EngineConfig, Event, FinishReason, GenerationOptions, PrefillScheduling,
+    SchedulePolicy, TokenRequest,
+};
 use ribn_hf::LocalModelPackage;
 use serde_json::Value;
-use std::path::PathBuf;
+use std::{path::PathBuf, sync::Arc};
 
 fn environment(name: &str) -> PathBuf {
     PathBuf::from(
@@ -68,7 +76,9 @@ fn metal_decoder_reproduces_the_archived_greedy_tokens() {
     assert_eq!(steps.len(), 4);
 
     assert_eq!(source.config(), &config);
-    let mut decoder = Gemma4MetalDecoder::load(&source).expect("Metal decoder");
+    let model =
+        Arc::new(Gemma4MetalModel::load(&source, Gemma4MetalFfn::Native).expect("Metal model"));
+    let mut decoder = Gemma4MetalDecoder::shared(Arc::clone(&model)).expect("Metal decoder");
     let mut logits = decoder.prefill(&prompt).expect("prompt prefill");
     finite_logits(&logits);
     let mut full = vec![logits.clone()];
@@ -143,4 +153,76 @@ fn metal_decoder_reproduces_the_archived_greedy_tokens() {
     }
     decoder.reset();
     assert_eq!(decoder.position(), 0);
+    drop(decoder);
+    wide_prefill_with_stalled_peer(&model, &prompt);
+}
+
+fn wide_prefill_with_stalled_peer(model: &Arc<Gemma4MetalModel>, prompt: &[u32]) {
+    let executor = Gemma4Executor::metal(Arc::clone(model)).expect("Metal executor");
+    let config = EngineConfig {
+        max_active_requests: 2,
+        max_queued_requests: 1,
+        max_events_per_request: 2,
+        max_buffered_events: 6,
+        ..EngineConfig::default()
+    };
+    let policy = SchedulePolicy {
+        prefill_scheduling: PrefillScheduling::Separate {
+            idle_chunk_tokens: 64,
+        },
+        ..SchedulePolicy::default()
+    };
+    let engine = Engine::new(executor, config, policy).expect("separate prefill engine");
+    let driver_config = DriverConfig {
+        events_per_request: 1,
+        ..DriverConfig::for_engine(&engine)
+    };
+    let (mut driver, handle) = Driver::spawn(engine, driver_config).expect("driver");
+    let request = |tokens, max_output_tokens| {
+        TokenRequest::new(
+            tokens,
+            GenerationOptions {
+                max_output_tokens,
+                ..GenerationOptions::default()
+            },
+        )
+    };
+    let mut stalled = handle
+        .stream_blocking(request(prompt.to_vec(), 32))
+        .expect("stalled stream");
+    assert!(matches!(
+        stalled.next_blocking(),
+        Some(Ok(Event::Token { .. }))
+    ));
+    // Leave the stream unread. Its bounded channel plus mailbox cannot hold
+    // the full continuation; the other sequence still needs to cross 64 rows.
+    let long_prompt: Vec<_> = prompt.iter().copied().cycle().take(129).collect();
+    let mut peer = handle
+        .stream_blocking(request(long_prompt, 2))
+        .expect("healthy stream");
+    assert!(matches!(
+        peer.next_blocking(),
+        Some(Ok(Event::Token { .. }))
+    ));
+    assert!(matches!(
+        peer.next_blocking(),
+        Some(Ok(Event::Token { .. }))
+    ));
+    assert!(
+        matches!(peer.next_blocking(), Some(Ok(Event::Finished { reason: FinishReason::Length, usage, .. })) if usage.prompt_tokens == 129 && usage.completion_tokens == 2)
+    );
+    assert!(peer.next_blocking().is_none());
+    stalled.cancel();
+    let buffered = std::iter::from_fn(|| stalled.next_blocking())
+        .collect::<Result<Vec<_>, _>>()
+        .expect("cancelled stream");
+    assert!(matches!(
+        buffered.last(),
+        Some(Event::Finished {
+            reason: FinishReason::Cancelled,
+            ..
+        })
+    ));
+    drop((stalled, peer));
+    driver.shutdown().expect("retire Metal model");
 }
