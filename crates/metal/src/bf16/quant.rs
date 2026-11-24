@@ -5,7 +5,7 @@
 //! into immutable shared Metal storage with bounded ~8 MiB staging scratch.
 
 use super::fast::{MetalDeviceBf16, MetalDeviceU32, MetalFastSession};
-use super::{MetalBf16Error, MetalBf16Executor};
+use super::{MetalBf16Buffer, MetalBf16Error, MetalBf16Executor};
 use metal::{Buffer, CompileOptions, ComputePipelineState, Device, MTLLanguageVersion, MTLSize};
 use std::io::Read;
 
@@ -70,6 +70,9 @@ pub(super) struct QuantPipelines {
     q4_gemm_m16: ComputePipelineState,
     q4_gemm_m32: ComputePipelineState,
     q4_embed_gather: ComputePipelineState,
+    q4_dual_gemv_m1: ComputePipelineState,
+    q4_gate_up_geglu_m1: ComputePipelineState,
+    q4_linear_geglu_m1: ComputePipelineState,
     q8_gemv_m1: ComputePipelineState,
     q8_gemv_m2: ComputePipelineState,
     q8_gemv_m4: ComputePipelineState,
@@ -77,6 +80,9 @@ pub(super) struct QuantPipelines {
     q8_gemm_m16: ComputePipelineState,
     q8_gemm_m32: ComputePipelineState,
     q8_embed_gather: ComputePipelineState,
+    q8_dual_gemv_m1: ComputePipelineState,
+    q8_gate_up_geglu_m1: ComputePipelineState,
+    q8_linear_geglu_m1: ComputePipelineState,
 }
 
 impl QuantPipelines {
@@ -102,6 +108,9 @@ impl QuantPipelines {
             q4_gemm_m16: load("fast_q4_gemm_m16")?,
             q4_gemm_m32: load("fast_q4_gemm_m32")?,
             q4_embed_gather: load("fast_q4_embed_gather")?,
+            q4_dual_gemv_m1: load("fast_q4_dual_gemv_m1")?,
+            q4_gate_up_geglu_m1: load("fast_q4_gate_up_geglu_m1")?,
+            q4_linear_geglu_m1: load("fast_q4_linear_geglu_m1")?,
             q8_gemv_m1: load("fast_q8_gemv_m1")?,
             q8_gemv_m2: load("fast_q8_gemv_m2")?,
             q8_gemv_m4: load("fast_q8_gemv_m4")?,
@@ -109,6 +118,9 @@ impl QuantPipelines {
             q8_gemm_m16: load("fast_q8_gemm_m16")?,
             q8_gemm_m32: load("fast_q8_gemm_m32")?,
             q8_embed_gather: load("fast_q8_embed_gather")?,
+            q8_dual_gemv_m1: load("fast_q8_dual_gemv_m1")?,
+            q8_gate_up_geglu_m1: load("fast_q8_gate_up_geglu_m1")?,
+            q8_linear_geglu_m1: load("fast_q8_linear_geglu_m1")?,
         })
     }
 }
@@ -606,6 +618,181 @@ impl MetalFastSession<'_> {
         }
         Ok(())
     }
+
+    /// Fused `M = 1` dual quantized projection (`out_a = input @ weight_a^T`, `out_b = input @ weight_b^T`).
+    /// # Errors
+    /// Rejects shape/kind mismatches or undersized buffers.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "explicit GPU kernel bindings for fused M=1 dual quantized GEMV"
+    )]
+    pub fn dual_linear_quant_m1(
+        &mut self,
+        input: &MetalDeviceBf16,
+        weight_a: &MetalQuantWeight,
+        weight_b: &MetalQuantWeight,
+        out_a: &MetalDeviceBf16,
+        out_b: &MetalDeviceBf16,
+        columns: usize,
+        inner: usize,
+    ) -> Result<(), MetalBf16Error> {
+        if weight_a.kind != weight_b.kind
+            || weight_a.rows != columns
+            || weight_a.cols != inner
+            || weight_b.rows != columns
+            || weight_b.cols != inner
+        {
+            return Err(MetalBf16Error::Shape(
+                "dual_linear_quant_m1 weight shape or kind mismatch".into(),
+            ));
+        }
+        if input.elements() < inner || out_a.elements() < columns || out_b.elements() < columns {
+            return Err(MetalBf16Error::Shape(
+                "dual_linear_quant_m1 buffer capacity too small".into(),
+            ));
+        }
+        let n_u32 = checked_u32(columns, "dual_linear_quant_m1 N")?;
+        let k_u32 = checked_u32(inner, "dual_linear_quant_m1 K")?;
+        let pipeline = match weight_a.kind {
+            MetalQuantKind::Q4 => &self.executor().quant.q4_dual_gemv_m1,
+            MetalQuantKind::Q8 => &self.executor().quant.q8_dual_gemv_m1,
+        };
+        let encoder = self.encoder();
+        encoder.set_compute_pipeline_state(pipeline);
+        encoder.set_buffer(0, Some(input.raw_buffer()), 0);
+        encoder.set_buffer(1, Some(&weight_a.packed), 0);
+        encoder.set_buffer(2, Some(&weight_a.scales_biases), 0);
+        encoder.set_buffer(3, Some(&weight_b.packed), 0);
+        encoder.set_buffer(4, Some(&weight_b.scales_biases), 0);
+        encoder.set_buffer(5, Some(out_a.raw_buffer()), 0);
+        encoder.set_buffer(6, Some(out_b.raw_buffer()), 0);
+        encoder.set_bytes(7, 4, (&raw const n_u32).cast());
+        encoder.set_bytes(8, 4, (&raw const k_u32).cast());
+        let tgs = u64::from(n_u32).div_ceil(2);
+        encoder.dispatch_thread_groups(MTLSize::new(tgs, 1, 1), MTLSize::new(64, 1, 1));
+        Ok(())
+    }
+
+    /// Fused `M = 1` quantized `Gate + Up + exact table GeGLU`.
+    /// # Errors
+    /// Rejects shape/kind mismatches or undersized buffers.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "explicit GPU kernel bindings for fused M=1 quantized Gate+Up+GeGLU"
+    )]
+    pub fn gate_up_geglu_quant_m1(
+        &mut self,
+        input: &MetalDeviceBf16,
+        gate_w: &MetalQuantWeight,
+        up_w: &MetalQuantWeight,
+        gelu_table: &MetalBf16Buffer,
+        output: &MetalDeviceBf16,
+        error_flag: &MetalDeviceU32,
+        columns: usize,
+        inner: usize,
+    ) -> Result<(), MetalBf16Error> {
+        if gate_w.kind != up_w.kind
+            || gate_w.rows != columns
+            || gate_w.cols != inner
+            || up_w.rows != columns
+            || up_w.cols != inner
+            || gelu_table.elements != 65_536
+        {
+            return Err(MetalBf16Error::Shape(
+                "gate_up_geglu_quant_m1 shape, kind, or GELU table mismatch".into(),
+            ));
+        }
+        if input.elements() < inner || output.elements() < columns || error_flag.elements() < 1 {
+            return Err(MetalBf16Error::Shape(
+                "gate_up_geglu_quant_m1 buffer capacity too small".into(),
+            ));
+        }
+        let n_u32 = checked_u32(columns, "gate_up_geglu_quant_m1 N")?;
+        let k_u32 = checked_u32(inner, "gate_up_geglu_quant_m1 K")?;
+        let pipeline = match gate_w.kind {
+            MetalQuantKind::Q4 => &self.executor().quant.q4_gate_up_geglu_m1,
+            MetalQuantKind::Q8 => &self.executor().quant.q8_gate_up_geglu_m1,
+        };
+        let encoder = self.encoder();
+        encoder.set_compute_pipeline_state(pipeline);
+        encoder.set_buffer(0, Some(input.raw_buffer()), 0);
+        encoder.set_buffer(1, Some(&gate_w.packed), 0);
+        encoder.set_buffer(2, Some(&gate_w.scales_biases), 0);
+        encoder.set_buffer(3, Some(&up_w.packed), 0);
+        encoder.set_buffer(4, Some(&up_w.scales_biases), 0);
+        encoder.set_buffer(5, Some(&gelu_table.buffer), 0);
+        encoder.set_buffer(6, Some(output.raw_buffer()), 0);
+        encoder.set_buffer(7, Some(error_flag.raw_buffer()), 0);
+        encoder.set_bytes(8, 4, (&raw const n_u32).cast());
+        encoder.set_bytes(9, 4, (&raw const k_u32).cast());
+        let tgs = u64::from(n_u32).div_ceil(2);
+        encoder.dispatch_thread_groups(MTLSize::new(tgs, 1, 1), MTLSize::new(64, 1, 1));
+        Ok(())
+    }
+
+    /// Fused `M = 1` quantized linear projection + exact table `GeGLU` with `up_in[up_offset..]`.
+    /// # Errors
+    /// Rejects shape mismatches or undersized buffers.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "explicit GPU kernel bindings for fused M=1 quantized linear+GeGLU"
+    )]
+    pub fn linear_geglu_quant_m1(
+        &mut self,
+        input: &MetalDeviceBf16,
+        weight: &MetalQuantWeight,
+        up_in: &MetalDeviceBf16,
+        up_offset_elems: usize,
+        gelu_table: &MetalBf16Buffer,
+        output: &MetalDeviceBf16,
+        error_flag: &MetalDeviceU32,
+        columns: usize,
+        inner: usize,
+    ) -> Result<(), MetalBf16Error> {
+        if weight.rows != columns || weight.cols != inner || gelu_table.elements != 65_536 {
+            return Err(MetalBf16Error::Shape(
+                "linear_geglu_quant_m1 shape or GELU table mismatch".into(),
+            ));
+        }
+        let up_end = up_offset_elems.checked_add(columns).ok_or_else(|| {
+            MetalBf16Error::Shape("linear_geglu_quant_m1 up offset overflow".into())
+        })?;
+        if input.elements() < inner
+            || up_in.elements() < up_end
+            || output.elements() < columns
+            || error_flag.elements() < 1
+        {
+            return Err(MetalBf16Error::Shape(
+                "linear_geglu_quant_m1 buffer capacity too small".into(),
+            ));
+        }
+        let up_byte_offset = u64::try_from(
+            up_offset_elems
+                .checked_mul(2)
+                .ok_or_else(|| MetalBf16Error::Shape("up byte offset overflow".into()))?,
+        )
+        .map_err(|_| MetalBf16Error::Shape("up byte offset exceeds u64".into()))?;
+        let n_u32 = checked_u32(columns, "linear_geglu_quant_m1 N")?;
+        let k_u32 = checked_u32(inner, "linear_geglu_quant_m1 K")?;
+        let pipeline = match weight.kind {
+            MetalQuantKind::Q4 => &self.executor().quant.q4_linear_geglu_m1,
+            MetalQuantKind::Q8 => &self.executor().quant.q8_linear_geglu_m1,
+        };
+        let encoder = self.encoder();
+        encoder.set_compute_pipeline_state(pipeline);
+        encoder.set_buffer(0, Some(input.raw_buffer()), 0);
+        encoder.set_buffer(1, Some(&weight.packed), 0);
+        encoder.set_buffer(2, Some(&weight.scales_biases), 0);
+        encoder.set_buffer(3, Some(up_in.raw_buffer()), up_byte_offset);
+        encoder.set_buffer(4, Some(&gelu_table.buffer), 0);
+        encoder.set_buffer(5, Some(output.raw_buffer()), 0);
+        encoder.set_buffer(6, Some(error_flag.raw_buffer()), 0);
+        encoder.set_bytes(7, 4, (&raw const n_u32).cast());
+        encoder.set_bytes(8, 4, (&raw const k_u32).cast());
+        let tgs = u64::from(n_u32).div_ceil(4);
+        encoder.dispatch_thread_groups(MTLSize::new(tgs, 1, 1), MTLSize::new(64, 1, 1));
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -746,6 +933,119 @@ mod tests {
                     );
                 }
             }
+        }
+    }
+
+    #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "verifies dual_linear, gate_up_geglu, and linear_geglu bit-exactness across Q4 and Q8"
+    )]
+    fn fused_m1_quant_ops_match_unfused_bit_for_bit() {
+        let exec = MetalBf16Executor::new().expect("Metal device");
+        let gelu_vals: Vec<u16> = (0..65_536_usize)
+            .map(|bits| {
+                let val = bf16_to_f32(u16::try_from(bits).expect("u16 range"));
+                if val.is_finite() {
+                    let coeff = (2.0_f32 / std::f32::consts::PI).sqrt();
+                    let gelu =
+                        0.5 * val * (1.0 + (coeff * (val + 0.044_715 * val * val * val)).tanh());
+                    f32_to_bf16_rne(gelu)
+                } else {
+                    0
+                }
+            })
+            .collect();
+        let gelu_tbl = exec.upload(&gelu_vals).unwrap();
+        let cols = 67_usize;
+        let inner = 256_usize;
+        let x_vals: Vec<u16> = (0..inner)
+            .map(|i| {
+                #[expect(clippy::cast_precision_loss, reason = "small test index")]
+                let v = ((i * 13 + 5) % 83) as f32 * 0.02 - 0.82;
+                f32_to_bf16_rne(v)
+            })
+            .collect();
+        let gate_vals: Vec<u16> = (0..cols * inner)
+            .map(|i| {
+                #[expect(clippy::cast_precision_loss, reason = "small test index")]
+                let v = ((i * 29 + 11) % 79) as f32 * 0.025 - 0.95;
+                f32_to_bf16_rne(v)
+            })
+            .collect();
+        let up_vals: Vec<u16> = (0..cols * inner)
+            .map(|i| {
+                #[expect(clippy::cast_precision_loss, reason = "small test index")]
+                let v = ((i * 37 + 3) % 71) as f32 * 0.025 - 0.88;
+                f32_to_bf16_rne(v)
+            })
+            .collect();
+        let mut x_dev = exec.alloc_bf16(inner).unwrap();
+        x_dev.write(&x_vals).unwrap();
+
+        for kind in [MetalQuantKind::Q4, MetalQuantKind::Q8] {
+            let gate_w = exec
+                .upload_quantized_bf16(cols, inner, kind, &gate_vals)
+                .unwrap();
+            let up_w = exec
+                .upload_quantized_bf16(cols, inner, kind, &up_vals)
+                .unwrap();
+            let gate_ref = exec.alloc_bf16(cols).unwrap();
+            let up_ref = exec.alloc_bf16(cols).unwrap();
+            let geglu_ref = exec.alloc_bf16(cols).unwrap();
+            let dual_gate = exec.alloc_bf16(cols).unwrap();
+            let dual_up = exec.alloc_bf16(cols).unwrap();
+            let geglu_fused = exec.alloc_bf16(cols).unwrap();
+            let lin_geglu_fused = exec.alloc_bf16(cols).unwrap();
+            let err_flag = exec.alloc_u32(1).unwrap();
+
+            let mut session = exec.begin_fast_session().unwrap();
+            session
+                .linear_quant(&x_dev, &gate_w, &gate_ref, 1, cols, inner)
+                .unwrap();
+            session
+                .linear_quant(&x_dev, &up_w, &up_ref, 1, cols, inner)
+                .unwrap();
+            session
+                .geglu_table(
+                    &gate_ref, &up_ref, 0, &gelu_tbl, &geglu_ref, &err_flag, cols,
+                )
+                .unwrap();
+            session
+                .dual_linear_quant_m1(&x_dev, &gate_w, &up_w, &dual_gate, &dual_up, cols, inner)
+                .unwrap();
+            session
+                .gate_up_geglu_quant_m1(
+                    &x_dev,
+                    &gate_w,
+                    &up_w,
+                    &gelu_tbl,
+                    &geglu_fused,
+                    &err_flag,
+                    cols,
+                    inner,
+                )
+                .unwrap();
+            session
+                .linear_geglu_quant_m1(
+                    &x_dev,
+                    &gate_w,
+                    &up_ref,
+                    0,
+                    &gelu_tbl,
+                    &lin_geglu_fused,
+                    &err_flag,
+                    cols,
+                    inner,
+                )
+                .unwrap();
+            session.submit("test fused M=1 quant ops").unwrap();
+
+            assert_eq!(err_flag.as_slice(1)[0], 0);
+            assert_eq!(dual_gate.as_slice(cols), gate_ref.as_slice(cols));
+            assert_eq!(dual_up.as_slice(cols), up_ref.as_slice(cols));
+            assert_eq!(geglu_fused.as_slice(cols), geglu_ref.as_slice(cols));
+            assert_eq!(lin_geglu_fused.as_slice(cols), geglu_ref.as_slice(cols));
         }
     }
 }

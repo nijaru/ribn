@@ -1178,3 +1178,194 @@ kernel void fast_bf16_softcap_argmax_stage2(
         argmax_out[row] = sm_idx[0];
     }
 }
+
+// ============================================================================
+// 15. Fused M=1 BF16 Decode Kernels:
+//     - dual_gemv_m1: computes K & V sharing input reads
+//     - gate_up_geglu_m1: computes Gate + Up + exact table GeGLU in one pass
+//     - linear_geglu_m1: computes PleGate + exact table GeGLU against up_in
+// ============================================================================
+static inline ushort bf16_geglu_apply(
+    ushort g_bits,
+    ushort u_bits,
+    device const ushort* gelu_table,
+    device atomic_uint* error_flag)
+{
+    if ((g_bits & 0x7f80u) == 0x7f80u) {
+        atomic_fetch_or_explicit(error_flag, 1u, memory_order_relaxed);
+        return 0;
+    }
+    return fast_bf16_product_rne(gelu_table[g_bits], u_bits);
+}
+
+kernel void fast_bf16_dual_gemv_m1(
+    device const bfloat* input [[buffer(0)]],
+    device const bfloat* weight_a [[buffer(1)]],
+    device const bfloat* weight_b [[buffer(2)]],
+    device ushort* out_a [[buffer(3)]],
+    device ushort* out_b [[buffer(4)]],
+    constant uint& N [[buffer(5)]],
+    constant uint& K [[buffer(6)]],
+    uint tg_id [[threadgroup_position_in_grid]],
+    uint tid [[thread_index_in_threadgroup]])
+{
+    uint sg = tid >> 5;
+    uint lane = tid & 31u;
+    uint n = tg_id * 4u + sg;
+    if (n >= N) return;
+
+    float acc_a = 0.0f;
+    float acc_b = 0.0f;
+    if ((K & 3u) == 0u) {
+        uint k4 = K >> 2;
+        device const bfloat4* x4 = (device const bfloat4*)input;
+        device const bfloat4* wa = (device const bfloat4*)(weight_a + (ulong)n * K);
+        device const bfloat4* wb = (device const bfloat4*)(weight_b + (ulong)n * K);
+        uint i = lane;
+        for (; i + 32u < k4; i += 64u) {
+            float4 xa = float4(x4[i]);
+            float4 xb = float4(x4[i + 32u]);
+            acc_a += dot(xa, float4(wa[i])) + dot(xb, float4(wa[i + 32u]));
+            acc_b += dot(xa, float4(wb[i])) + dot(xb, float4(wb[i + 32u]));
+        }
+        if (i < k4) {
+            float4 xa = float4(x4[i]);
+            acc_a += dot(xa, float4(wa[i]));
+            acc_b += dot(xa, float4(wb[i]));
+        }
+    } else {
+        device const bfloat* wa = weight_a + (ulong)n * K;
+        device const bfloat* wb = weight_b + (ulong)n * K;
+        for (uint i = lane; i < K; i += 32u) {
+            float xv = float(input[i]);
+            acc_a += xv * float(wa[i]);
+            acc_b += xv * float(wb[i]);
+        }
+    }
+    acc_a = simd_sum(acc_a);
+    acc_b = simd_sum(acc_b);
+    if (lane == 0u) {
+        out_a[n] = bf16_rne(acc_a);
+        out_b[n] = bf16_rne(acc_b);
+    }
+}
+
+kernel void fast_bf16_gate_up_geglu_m1(
+    device const bfloat* input [[buffer(0)]],
+    device const bfloat* gate_w [[buffer(1)]],
+    device const bfloat* up_w [[buffer(2)]],
+    device const ushort* gelu_table [[buffer(3)]],
+    device ushort* output [[buffer(4)]],
+    device atomic_uint* error_flag [[buffer(5)]],
+    constant uint& N [[buffer(6)]],
+    constant uint& K [[buffer(7)]],
+    uint tg_id [[threadgroup_position_in_grid]],
+    uint tid [[thread_index_in_threadgroup]])
+{
+    uint sg = tid >> 5;
+    uint lane = tid & 31u;
+    uint n = tg_id * 4u + sg;
+    if (n >= N) return;
+
+    float acc_g = 0.0f;
+    float acc_u = 0.0f;
+    if ((K & 3u) == 0u) {
+        uint k4 = K >> 2;
+        device const bfloat4* x4 = (device const bfloat4*)input;
+        device const bfloat4* wg = (device const bfloat4*)(gate_w + (ulong)n * K);
+        device const bfloat4* wu = (device const bfloat4*)(up_w + (ulong)n * K);
+        uint i = lane;
+        for (; i + 32u < k4; i += 64u) {
+            float4 xa = float4(x4[i]);
+            float4 xb = float4(x4[i + 32u]);
+            acc_g += dot(xa, float4(wg[i])) + dot(xb, float4(wg[i + 32u]));
+            acc_u += dot(xa, float4(wu[i])) + dot(xb, float4(wu[i + 32u]));
+        }
+        if (i < k4) {
+            float4 xa = float4(x4[i]);
+            acc_g += dot(xa, float4(wg[i]));
+            acc_u += dot(xa, float4(wu[i]));
+        }
+    } else {
+        device const bfloat* wg = gate_w + (ulong)n * K;
+        device const bfloat* wu = up_w + (ulong)n * K;
+        for (uint i = lane; i < K; i += 32u) {
+            float xv = float(input[i]);
+            acc_g += xv * float(wg[i]);
+            acc_u += xv * float(wu[i]);
+        }
+    }
+    acc_g = simd_sum(acc_g);
+    acc_u = simd_sum(acc_u);
+    if (lane == 0u) {
+        output[n] = bf16_geglu_apply(bf16_rne(acc_g), bf16_rne(acc_u), gelu_table, error_flag);
+    }
+}
+
+kernel void fast_bf16_linear_geglu_m1(
+    device const bfloat* input [[buffer(0)]],
+    device const bfloat* weight [[buffer(1)]],
+    device const ushort* up_in [[buffer(2)]],
+    device const ushort* gelu_table [[buffer(3)]],
+    device ushort* output [[buffer(4)]],
+    device atomic_uint* error_flag [[buffer(5)]],
+    constant uint& N [[buffer(6)]],
+    constant uint& K [[buffer(7)]],
+    uint tg_id [[threadgroup_position_in_grid]],
+    uint tid [[thread_index_in_threadgroup]])
+{
+    uint sg = tid >> 5;
+    uint lane = tid & 31u;
+    uint n0 = (tg_id * 4u + sg) * 2u;
+    if (n0 >= N) return;
+
+    if ((K & 3u) == 0u) {
+        uint k4 = K >> 2;
+        device const bfloat4* x4 = (device const bfloat4*)input;
+        if (n0 + 1u < N) {
+            device const bfloat4* w0 = (device const bfloat4*)(weight + (ulong)(n0 + 0u) * K);
+            device const bfloat4* w1 = (device const bfloat4*)(weight + (ulong)(n0 + 1u) * K);
+            float acc0 = 0.0f, acc1 = 0.0f;
+            uint i = lane;
+            for (; i + 32u < k4; i += 64u) {
+                float4 xa = float4(x4[i]);
+                float4 xb = float4(x4[i + 32u]);
+                acc0 += dot(xa, float4(w0[i])) + dot(xb, float4(w0[i + 32u]));
+                acc1 += dot(xa, float4(w1[i])) + dot(xb, float4(w1[i + 32u]));
+            }
+            if (i < k4) {
+                float4 xa = float4(x4[i]);
+                acc0 += dot(xa, float4(w0[i]));
+                acc1 += dot(xa, float4(w1[i]));
+            }
+            acc0 = simd_sum(acc0);
+            acc1 = simd_sum(acc1);
+            if (lane == 0u) {
+                output[n0 + 0u] = bf16_geglu_apply(bf16_rne(acc0), up_in[n0 + 0u], gelu_table, error_flag);
+                output[n0 + 1u] = bf16_geglu_apply(bf16_rne(acc1), up_in[n0 + 1u], gelu_table, error_flag);
+            }
+        } else {
+            device const bfloat4* w0 = (device const bfloat4*)(weight + (ulong)n0 * K);
+            float acc0 = 0.0f;
+            for (uint i = lane; i < k4; i += 32u) {
+                acc0 += dot(float4(x4[i]), float4(w0[i]));
+            }
+            acc0 = simd_sum(acc0);
+            if (lane == 0u) {
+                output[n0] = bf16_geglu_apply(bf16_rne(acc0), up_in[n0], gelu_table, error_flag);
+            }
+        }
+    } else {
+        for (uint r = 0u; r < 2u && (n0 + r) < N; ++r) {
+            device const bfloat* wr = weight + (ulong)(n0 + r) * K;
+            float acc = 0.0f;
+            for (uint i = lane; i < K; i += 32u) {
+                acc += float(input[i]) * float(wr[i]);
+            }
+            acc = simd_sum(acc);
+            if (lane == 0u) {
+                output[n0 + r] = bf16_geglu_apply(bf16_rne(acc), up_in[n0 + r], gelu_table, error_flag);
+            }
+        }
+    }
+}

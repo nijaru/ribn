@@ -320,6 +320,130 @@ fn synthetic_prefix_cache_is_bit_exact_and_evicts_lru() {
     );
 }
 
+#[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "end-to-end slot and KV-pool backpressure, deferral wakeup, and permanent-refusal verification"
+)]
+fn kv_pool_and_slot_pressure_defer_wake_and_reject_impossibly_large_requests() {
+    let dir = weights::Dir::new();
+    let pkg = weights::package(&dir, &weights::inventory(), false);
+    let source = Gemma4Source::open(&pkg).unwrap();
+    let pool_cfg = Gemma4MetalModelWideConfig {
+        max_sequences: 2,
+        max_positions: 96,
+        max_batch_tokens: 64,
+        num_kv_blocks: 4, // 64 tokens total across the entire pool
+        quant: Gemma4MetalQuant::Bf16,
+    };
+    let model = Gemma4MetalModelWide::load(&source, pool_cfg).unwrap();
+    let exec = Gemma4MetalModelWideExecutor::new(model).unwrap();
+    let engine_cfg = EngineConfig {
+        max_active_requests: 2,
+        max_queued_requests: 8,
+        ..EngineConfig::default()
+    };
+    let policy = SchedulePolicy {
+        max_batch_tokens: 64,
+        prefill_chunk_tokens: 32,
+        ..SchedulePolicy::default()
+    };
+    let engine = Engine::new(exec, engine_cfg, policy).unwrap();
+    let driver_cfg = DriverConfig::for_engine(&engine);
+    let (mut driver, handle) = Driver::spawn(engine, driver_cfg).unwrap();
+
+    // 1. Permanently impossible request (65 prompt + 1 output = 5 pages > 4 pool blocks)
+    //    must reject immediately instead of hanging in Admission::Deferred.
+    let impossible = handle
+        .stream_blocking(TokenRequest::new(
+            vec![2_u32; 65],
+            GenerationOptions {
+                max_output_tokens: 1,
+                ..GenerationOptions::default()
+            },
+        ))
+        .unwrap();
+    let mut s = impossible;
+    let first_event = s
+        .next_blocking()
+        .expect("impossible request must emit terminal failure event");
+    assert!(
+        matches!(
+            first_event,
+            Err(_)
+                | Ok(Event::Finished {
+                    reason: ribn::FinishReason::Failed(_),
+                    ..
+                })
+        ),
+        "request exceeding total KV pool blocks must fail cleanly, got {first_event:?}"
+    );
+
+    // 2. Concurrent KV-pool & slot burst: 4 requests, each needing 3 pages (34 prompt + 2 output).
+    //    Only 1 fits at a time in 4 blocks (3 + 3 = 6 > 4), so requests 2..4 must defer and
+    //    wake cleanly as peers complete without ever triggering mid-generation KV OOM.
+    let mut streams = Vec::new();
+    for idx in 0_u32..4 {
+        let mut prompt = vec![2 + (idx % 4); 34];
+        prompt[33] = 2 + ((idx + 1) % 4);
+        streams.push(
+            handle
+                .stream_blocking(TokenRequest::new(
+                    prompt,
+                    GenerationOptions {
+                        max_output_tokens: 2,
+                        ..GenerationOptions::default()
+                    },
+                ))
+                .unwrap(),
+        );
+    }
+    for (idx, mut stream) in streams.into_iter().enumerate() {
+        let mut count = 0_usize;
+        while let Some(ev) = stream.next_blocking() {
+            match ev.unwrap() {
+                Event::Token { .. } => count += 1,
+                Event::Finished { .. } => break,
+            }
+        }
+        assert_eq!(
+            count, 2,
+            "deferred burst request {idx} must wake and produce all 2 tokens"
+        );
+    }
+
+    // 3. Slot saturation with small requests (4 concurrent 4-token prompts on max_sequences=2).
+    let mut small_streams = Vec::new();
+    for idx in 0_u32..4 {
+        small_streams.push(
+            handle
+                .stream_blocking(TokenRequest::new(
+                    vec![2, 3, 4, 2 + (idx % 4)],
+                    GenerationOptions {
+                        max_output_tokens: 3,
+                        ..GenerationOptions::default()
+                    },
+                ))
+                .unwrap(),
+        );
+    }
+    for (idx, mut stream) in small_streams.into_iter().enumerate() {
+        let mut count = 0_usize;
+        while let Some(ev) = stream.next_blocking() {
+            match ev.unwrap() {
+                Event::Token { .. } => count += 1,
+                Event::Finished { .. } => break,
+            }
+        }
+        assert_eq!(
+            count, 3,
+            "slot-deferred request {idx} must wake and produce all 3 tokens"
+        );
+    }
+
+    driver.shutdown().unwrap();
+}
+
 fn assert_close_logits(actual: &[u16], expected: &[u16], label: &str) {
     assert_eq!(actual.len(), expected.len());
     for (i, (&a, &e)) in actual.iter().zip(expected).enumerate() {

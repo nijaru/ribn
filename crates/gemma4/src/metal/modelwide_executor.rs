@@ -1,12 +1,14 @@
 //! Continuous-batching `GenerationExecutor` over `Gemma4MetalModelWide`.
 
+use super::kv_pool::KV_PAGE_TOKENS;
 use super::modelwide::{Gemma4MetalModelWide, PackedStepItem};
 use super::sampling::sample_bf16_logits;
 use crate::Gemma4Error;
 use crate::generation::{BoundRow, LogicalSequence, RowInput, bind_batch};
 use ribn::{
     Admission, BatchItem, BatchPreparation, ExecutionError, ExecutorInfo, GenerationExecutor,
-    GenerationLimits, RequestId, Sampling, SequenceId, StepCompletion, SubmissionId, TokenRequest,
+    GenerationLimits, Readiness, RequestId, Sampling, SequenceId, StepCompletion, SubmissionId,
+    TokenRequest,
 };
 use std::collections::HashMap;
 use std::mem::ManuallyDrop;
@@ -23,6 +25,7 @@ enum Phase {
 struct SequenceEntry {
     slot: usize,
     logical: LogicalSequence,
+    max_reach_pages: usize,
     sampling: Sampling,
     rng_state: u64,
 }
@@ -31,11 +34,23 @@ struct Execution {
     model: Gemma4MetalModelWide,
     states: HashMap<SequenceId, SequenceEntry>,
     rows: Vec<BoundRow>,
+    readiness: Readiness,
     phase: Phase,
     next: u64,
 }
 
 impl Execution {
+    fn reserved_future_blocks(&self) -> usize {
+        self.states
+            .values()
+            .map(|entry| {
+                entry
+                    .max_reach_pages
+                    .saturating_sub(self.model.slot_allocated_blocks(entry.slot))
+            })
+            .sum()
+    }
+
     fn close(&mut self) -> Result<(), ExecutionError> {
         if self.phase == Phase::Closed {
             return Ok(());
@@ -47,6 +62,7 @@ impl Execution {
         self.states.clear();
         self.rows.clear();
         self.phase = Phase::Closed;
+        self.readiness.publish();
         Ok(())
     }
 }
@@ -92,6 +108,7 @@ impl Gemma4MetalModelWideExecutor {
                 model,
                 states: HashMap::with_capacity(max_sequences),
                 rows: Vec::with_capacity(max_sequences),
+                readiness: Readiness::default(),
                 phase: Phase::Idle,
                 next: 0,
             }))),
@@ -145,11 +162,6 @@ impl GenerationExecutor for Gemma4MetalModelWideExecutor {
             owner.phase = Phase::Failed;
             return Err(ExecutionError::new("duplicate Metal sequence incarnation"));
         }
-        if owner.states.len() >= self.info.limits.max_sequences {
-            return Ok(Admission::Rejected(ExecutionError::new(
-                "Metal sequence capacity exhausted",
-            )));
-        }
         let mut logical = match LogicalSequence::new_sampled(
             owner.model.config(),
             self.info.limits.context_tokens,
@@ -158,6 +170,38 @@ impl GenerationExecutor for Gemma4MetalModelWideExecutor {
             Ok(logical) => logical,
             Err(error) => return Ok(Admission::Rejected(error)),
         };
+
+        let reach_tokens = request
+            .tokens
+            .len()
+            .checked_add(request.options.max_output_tokens as usize)
+            .ok_or_else(|| ExecutionError::new("Metal reachable token count overflow"))?;
+        let total_pages = reach_tokens.div_ceil(KV_PAGE_TOKENS);
+        let pool_blocks = owner.model.kv_pool_total_blocks();
+        if total_pages > pool_blocks {
+            return Ok(Admission::Rejected(ExecutionError::new(format!(
+                "request needs {total_pages} KV pages, exceeding shared Metal pool capacity of {pool_blocks}"
+            ))));
+        }
+
+        // Register before testing transient slot/KV-pool capacity (zero lost-wakeup window).
+        let wait = owner.readiness.register();
+        if owner.states.len() >= self.info.limits.max_sequences {
+            return Ok(Admission::Deferred(wait));
+        }
+
+        let (matched_pages, newly_pinned) = owner.model.peek_prefix_pages(&request.tokens);
+        let future_for_new = total_pages.saturating_sub(matched_pages);
+        let worst_case_blocks = owner
+            .model
+            .kv_pool_pinned_blocks()
+            .saturating_add(newly_pinned)
+            .saturating_add(owner.reserved_future_blocks())
+            .saturating_add(future_for_new);
+        if worst_case_blocks > pool_blocks {
+            return Ok(Admission::Deferred(wait));
+        }
+
         let (slot, matched_prefix) = match owner.model.allocate_slot_with_prefix(&request.tokens) {
             Ok(result) => result,
             Err(error) => return Ok(Admission::Rejected(execution_error(&error))),
@@ -174,6 +218,7 @@ impl GenerationExecutor for Gemma4MetalModelWideExecutor {
             SequenceEntry {
                 slot,
                 logical,
+                max_reach_pages: total_pages,
                 sampling: request.options.sampling,
                 rng_state: seed,
             },
@@ -251,6 +296,10 @@ impl GenerationExecutor for Gemma4MetalModelWideExecutor {
         Ok(id)
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "atomic packed-batch submission, sampling, commit, and KV-reservation wakeup"
+    )]
     fn poll(
         &mut self,
         submission: SubmissionId,
@@ -260,10 +309,13 @@ impl GenerationExecutor for Gemma4MetalModelWideExecutor {
             return Err(ExecutionError::new("unknown Metal submission"));
         }
         owner.phase = Phase::Failed;
+        let pinned_before = owner.model.kv_pool_pinned_blocks();
+        let reserved_before = owner.reserved_future_blocks();
         let Execution {
             model,
             states,
             rows,
+            readiness,
             phase,
             ..
         } = owner;
@@ -353,6 +405,18 @@ impl GenerationExecutor for Gemma4MetalModelWideExecutor {
         }
         rows.clear();
         *phase = Phase::Idle;
+        let pinned_after = model.kv_pool_pinned_blocks();
+        let reserved_after: usize = states
+            .values()
+            .map(|entry| {
+                entry
+                    .max_reach_pages
+                    .saturating_sub(model.slot_allocated_blocks(entry.slot))
+            })
+            .sum();
+        if pinned_after + reserved_after < pinned_before + reserved_before {
+            readiness.publish();
+        }
         Ok(Some(completions))
     }
 
@@ -378,6 +442,7 @@ impl GenerationExecutor for Gemma4MetalModelWideExecutor {
                 .map_err(|error| execution_error(&error))?;
             owner.states.remove(&sequence);
             owner.phase = previous;
+            owner.readiness.publish();
         }
         Ok(())
     }

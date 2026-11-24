@@ -303,7 +303,10 @@ default `Gemma4MetalFfn::Native` path (`head_dim <= 512`) selects
 multi-sequence prefill/decode batches into one `MTLCommandBuffer` over a shared
 16-token paged KV pool (`metal/kv_pool.rs`, default 16K context / 2,048 blocks)
 with exact content-addressed radix prefix caching (`GenerationExecutor::admitted_prefix`),
-exact shared-KV tail pruning, capability-gated stochastic sampling
+exact pinned+reserved KV-pool and slot admission backpressure (`Admission::Deferred`
+with `Readiness` wakeups on release/deduplication), exact shared-KV tail pruning,
+bit-exact fused norm/residual and `M=1` decode kernels (`Gate+Up+GeGLU`,
+`PleGate+GeGLU`, `K+V`), capability-gated stochastic sampling
 (`GenerationExecutor::supports_sampling`), and opt-in affine group-64 weight
 quantization (`Gemma4MetalQuant::{Bf16, Q8, Q4}`, backed by `engine-metal`'s
 `quant_fast.metal` and `bf16/quant.rs`, defaulting to `Bf16`). Explicit

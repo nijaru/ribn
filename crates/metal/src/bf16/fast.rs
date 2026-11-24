@@ -22,6 +22,9 @@ pub(super) struct FastPipelines {
     gemv_m4: ComputePipelineState,
     gemv_m8: ComputePipelineState,
     gemm_m32: ComputePipelineState,
+    dual_gemv_m1: ComputePipelineState,
+    gate_up_geglu_m1: ComputePipelineState,
+    linear_geglu_m1: ComputePipelineState,
     embed_gather: ComputePipelineState,
     ple_combine_transpose: ComputePipelineState,
     rms: ComputePipelineState,
@@ -63,6 +66,9 @@ impl FastPipelines {
             gemv_m4: load("fast_bf16_gemv_m4")?,
             gemv_m8: load("fast_bf16_gemv_m8")?,
             gemm_m32: load("fast_bf16_gemm_m32")?,
+            dual_gemv_m1: load("fast_bf16_dual_gemv_m1")?,
+            gate_up_geglu_m1: load("fast_bf16_gate_up_geglu_m1")?,
+            linear_geglu_m1: load("fast_bf16_linear_geglu_m1")?,
             embed_gather: load("fast_bf16_embed_gather")?,
             ple_combine_transpose: load("fast_bf16_ple_combine_transpose")?,
             rms: load("fast_bf16_rms")?,
@@ -1167,6 +1173,163 @@ impl MetalFastSession<'_> {
             self.encoder
                 .dispatch_thread_groups(MTLSize::new(rows as u64, 1, 1), MTLSize::new(256, 1, 1));
         }
+        Ok(())
+    }
+
+    /// Fused `M = 1` BF16 dual linear projection (`out_a = input @ weight_a^T`, `out_b = input @ weight_b^T`).
+    /// # Errors
+    /// Rejects shape mismatches or undersized buffers.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "explicit GPU kernel bindings for fused M=1 BF16 dual GEMV"
+    )]
+    pub fn dual_linear_m1(
+        &mut self,
+        input: &MetalDeviceBf16,
+        weight_a: &MetalBf16Buffer,
+        weight_b: &MetalBf16Buffer,
+        out_a: &MetalDeviceBf16,
+        out_b: &MetalDeviceBf16,
+        columns: usize,
+        inner: usize,
+    ) -> Result<(), MetalBf16Error> {
+        let weight_elems = columns
+            .checked_mul(inner)
+            .filter(|&n| n > 0)
+            .ok_or_else(|| MetalBf16Error::Shape("dual_linear_m1 overflow".into()))?;
+        if weight_a.elements != weight_elems || weight_b.elements != weight_elems {
+            return Err(MetalBf16Error::Shape(
+                "dual_linear_m1 weight shape mismatch".into(),
+            ));
+        }
+        check_len(input.elements, inner, "dual_linear_m1 input")?;
+        check_len(out_a.elements, columns, "dual_linear_m1 out_a")?;
+        check_len(out_b.elements, columns, "dual_linear_m1 out_b")?;
+        let n_u32 = checked_u32(columns, "dual_linear_m1 N")?;
+        let k_u32 = checked_u32(inner, "dual_linear_m1 K")?;
+        self.encoder
+            .set_compute_pipeline_state(&self.executor.fast.dual_gemv_m1);
+        self.encoder.set_buffer(0, Some(&input.buffer), 0);
+        self.encoder.set_buffer(1, Some(&weight_a.buffer), 0);
+        self.encoder.set_buffer(2, Some(&weight_b.buffer), 0);
+        self.encoder.set_buffer(3, Some(&out_a.buffer), 0);
+        self.encoder.set_buffer(4, Some(&out_b.buffer), 0);
+        self.encoder.set_bytes(5, 4, (&raw const n_u32).cast());
+        self.encoder.set_bytes(6, 4, (&raw const k_u32).cast());
+        let tgs = u64::from(n_u32).div_ceil(4);
+        self.encoder
+            .dispatch_thread_groups(MTLSize::new(tgs, 1, 1), MTLSize::new(128, 1, 1));
+        Ok(())
+    }
+
+    /// Fused `M = 1` BF16 `Gate + Up + exact table GeGLU`.
+    /// # Errors
+    /// Rejects shape mismatches or undersized buffers.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "explicit GPU kernel bindings for fused M=1 BF16 Gate+Up+GeGLU"
+    )]
+    pub fn gate_up_geglu_m1(
+        &mut self,
+        input: &MetalDeviceBf16,
+        gate_w: &MetalBf16Buffer,
+        up_w: &MetalBf16Buffer,
+        gelu_table: &MetalBf16Buffer,
+        output: &MetalDeviceBf16,
+        error_flag: &MetalDeviceU32,
+        columns: usize,
+        inner: usize,
+    ) -> Result<(), MetalBf16Error> {
+        let weight_elems = columns
+            .checked_mul(inner)
+            .filter(|&n| n > 0)
+            .ok_or_else(|| MetalBf16Error::Shape("gate_up_geglu_m1 overflow".into()))?;
+        if gate_w.elements != weight_elems
+            || up_w.elements != weight_elems
+            || gelu_table.elements != 65_536
+        {
+            return Err(MetalBf16Error::Shape(
+                "gate_up_geglu_m1 weight or GELU table mismatch".into(),
+            ));
+        }
+        check_len(input.elements, inner, "gate_up_geglu_m1 input")?;
+        check_len(output.elements, columns, "gate_up_geglu_m1 output")?;
+        check_len(error_flag.elements, 1, "gate_up_geglu_m1 error_flag")?;
+        let n_u32 = checked_u32(columns, "gate_up_geglu_m1 N")?;
+        let k_u32 = checked_u32(inner, "gate_up_geglu_m1 K")?;
+        self.encoder
+            .set_compute_pipeline_state(&self.executor.fast.gate_up_geglu_m1);
+        self.encoder.set_buffer(0, Some(&input.buffer), 0);
+        self.encoder.set_buffer(1, Some(&gate_w.buffer), 0);
+        self.encoder.set_buffer(2, Some(&up_w.buffer), 0);
+        self.encoder.set_buffer(3, Some(&gelu_table.buffer), 0);
+        self.encoder.set_buffer(4, Some(&output.buffer), 0);
+        self.encoder.set_buffer(5, Some(&error_flag.buffer), 0);
+        self.encoder.set_bytes(6, 4, (&raw const n_u32).cast());
+        self.encoder.set_bytes(7, 4, (&raw const k_u32).cast());
+        let tgs = u64::from(n_u32).div_ceil(4);
+        self.encoder
+            .dispatch_thread_groups(MTLSize::new(tgs, 1, 1), MTLSize::new(128, 1, 1));
+        Ok(())
+    }
+
+    /// Fused `M = 1` BF16 linear projection + exact table `GeGLU` with `up_in[up_offset_elems..]`.
+    /// # Errors
+    /// Rejects shape mismatches or undersized buffers.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "explicit GPU kernel bindings for fused M=1 BF16 linear+GeGLU"
+    )]
+    pub fn linear_geglu_m1(
+        &mut self,
+        input: &MetalDeviceBf16,
+        weight: &MetalBf16Buffer,
+        up_in: &MetalDeviceBf16,
+        up_offset_elems: usize,
+        gelu_table: &MetalBf16Buffer,
+        output: &MetalDeviceBf16,
+        error_flag: &MetalDeviceU32,
+        columns: usize,
+        inner: usize,
+    ) -> Result<(), MetalBf16Error> {
+        let weight_elems = columns
+            .checked_mul(inner)
+            .filter(|&n| n > 0)
+            .ok_or_else(|| MetalBf16Error::Shape("linear_geglu_m1 overflow".into()))?;
+        if weight.elements != weight_elems || gelu_table.elements != 65_536 {
+            return Err(MetalBf16Error::Shape(
+                "linear_geglu_m1 weight or GELU table mismatch".into(),
+            ));
+        }
+        let up_end = up_offset_elems
+            .checked_add(columns)
+            .ok_or_else(|| MetalBf16Error::Shape("linear_geglu_m1 up offset overflow".into()))?;
+        check_len(input.elements, inner, "linear_geglu_m1 input")?;
+        check_len(up_in.elements, up_end, "linear_geglu_m1 up_in")?;
+        check_len(output.elements, columns, "linear_geglu_m1 output")?;
+        check_len(error_flag.elements, 1, "linear_geglu_m1 error_flag")?;
+        let up_byte_offset = u64::try_from(
+            up_offset_elems
+                .checked_mul(2)
+                .ok_or_else(|| MetalBf16Error::Shape("up byte offset overflow".into()))?,
+        )
+        .map_err(|_| MetalBf16Error::Shape("up byte offset exceeds u64".into()))?;
+        let n_u32 = checked_u32(columns, "linear_geglu_m1 N")?;
+        let k_u32 = checked_u32(inner, "linear_geglu_m1 K")?;
+        self.encoder
+            .set_compute_pipeline_state(&self.executor.fast.linear_geglu_m1);
+        self.encoder.set_buffer(0, Some(&input.buffer), 0);
+        self.encoder.set_buffer(1, Some(&weight.buffer), 0);
+        self.encoder
+            .set_buffer(2, Some(&up_in.buffer), up_byte_offset);
+        self.encoder.set_buffer(3, Some(&gelu_table.buffer), 0);
+        self.encoder.set_buffer(4, Some(&output.buffer), 0);
+        self.encoder.set_buffer(5, Some(&error_flag.buffer), 0);
+        self.encoder.set_bytes(6, 4, (&raw const n_u32).cast());
+        self.encoder.set_bytes(7, 4, (&raw const k_u32).cast());
+        let tgs = u64::from(n_u32).div_ceil(8);
+        self.encoder
+            .dispatch_thread_groups(MTLSize::new(tgs, 1, 1), MTLSize::new(128, 1, 1));
         Ok(())
     }
 

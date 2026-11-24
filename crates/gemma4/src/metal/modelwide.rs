@@ -154,6 +154,155 @@ impl ModelWideWeights {
 
     #[expect(
         clippy::too_many_arguments,
+        reason = "dispatches BF16 or quantized dual equal-shape linear projection (K+V) with M=1 fusion"
+    )]
+    fn encode_dual_linear(
+        &self,
+        session: &mut MetalFastSession<'_>,
+        input: &MetalDeviceBf16,
+        id_a: ParameterId,
+        id_b: ParameterId,
+        out_a: &MetalDeviceBf16,
+        out_b: &MetalDeviceBf16,
+        rows: usize,
+        columns: usize,
+        inner: usize,
+    ) -> Result<(), Gemma4Error> {
+        if rows == 1 {
+            if let (Some(qa), Some(qb)) = (self.quant.get(&id_a), self.quant.get(&id_b))
+                && qa.kind() == qb.kind()
+            {
+                return session
+                    .dual_linear_quant_m1(input, qa, qb, out_a, out_b, columns, inner)
+                    .map_err(|e| metal_error(&e));
+            }
+            if let (Some(wa), Some(wb)) = (self.bf16.get(&id_a), self.bf16.get(&id_b)) {
+                return session
+                    .dual_linear_m1(input, wa, wb, out_a, out_b, columns, inner)
+                    .map_err(|e| metal_error(&e));
+            }
+        }
+        self.encode_linear(session, input, id_a, out_a, rows, columns, inner)?;
+        self.encode_linear(session, input, id_b, out_b, rows, columns, inner)
+    }
+
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "dispatches fused M=1 Gate+Up+GeGLU or unfused batched path"
+    )]
+    fn encode_gate_up_geglu(
+        &self,
+        session: &mut MetalFastSession<'_>,
+        input: &MetalDeviceBf16,
+        gate_id: ParameterId,
+        up_id: ParameterId,
+        gelu_table: &MetalBf16Buffer,
+        gate_out: &MetalDeviceBf16,
+        up_scratch: &MetalDeviceBf16,
+        error_flag: &MetalDeviceU32,
+        rows: usize,
+        columns: usize,
+        inner: usize,
+    ) -> Result<(), Gemma4Error> {
+        if rows == 1 {
+            if let (Some(qg), Some(qu)) = (self.quant.get(&gate_id), self.quant.get(&up_id))
+                && qg.kind() == qu.kind()
+            {
+                return session
+                    .gate_up_geglu_quant_m1(
+                        input, qg, qu, gelu_table, gate_out, error_flag, columns, inner,
+                    )
+                    .map_err(|e| metal_error(&e));
+            }
+            if let (Some(wg), Some(wu)) = (self.bf16.get(&gate_id), self.bf16.get(&up_id)) {
+                return session
+                    .gate_up_geglu_m1(
+                        input, wg, wu, gelu_table, gate_out, error_flag, columns, inner,
+                    )
+                    .map_err(|e| metal_error(&e));
+            }
+        }
+        self.encode_linear(session, input, gate_id, gate_out, rows, columns, inner)?;
+        self.encode_linear(session, input, up_id, up_scratch, rows, columns, inner)?;
+        session
+            .geglu_table(
+                gate_out,
+                up_scratch,
+                0,
+                gelu_table,
+                gate_out,
+                error_flag,
+                rows * columns,
+            )
+            .map_err(|e| metal_error(&e))
+    }
+
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "dispatches fused M=1 linear+GeGLU (PleGate) or unfused batched path"
+    )]
+    fn encode_linear_geglu(
+        &self,
+        session: &mut MetalFastSession<'_>,
+        input: &MetalDeviceBf16,
+        gate_id: ParameterId,
+        up_in: &MetalDeviceBf16,
+        up_offset_elems: usize,
+        gelu_table: &MetalBf16Buffer,
+        output: &MetalDeviceBf16,
+        error_flag: &MetalDeviceU32,
+        rows: usize,
+        columns: usize,
+        inner: usize,
+    ) -> Result<(), Gemma4Error> {
+        if rows == 1 {
+            if let Some(qg) = self.quant.get(&gate_id) {
+                return session
+                    .linear_geglu_quant_m1(
+                        input,
+                        qg,
+                        up_in,
+                        up_offset_elems,
+                        gelu_table,
+                        output,
+                        error_flag,
+                        columns,
+                        inner,
+                    )
+                    .map_err(|e| metal_error(&e));
+            }
+            if let Some(wg) = self.bf16.get(&gate_id) {
+                return session
+                    .linear_geglu_m1(
+                        input,
+                        wg,
+                        up_in,
+                        up_offset_elems,
+                        gelu_table,
+                        output,
+                        error_flag,
+                        columns,
+                        inner,
+                    )
+                    .map_err(|e| metal_error(&e));
+            }
+        }
+        self.encode_linear(session, input, gate_id, output, rows, columns, inner)?;
+        session
+            .geglu_table(
+                output,
+                up_in,
+                up_offset_elems,
+                gelu_table,
+                output,
+                error_flag,
+                rows * columns,
+            )
+            .map_err(|e| metal_error(&e))
+    }
+
+    #[expect(
+        clippy::too_many_arguments,
         reason = "dispatches BF16 or quantized embedding gather over explicit session bindings"
     )]
     fn encode_embed(
@@ -550,6 +699,34 @@ impl Gemma4MetalModelWide {
             .map(|s| s.position)
     }
 
+    /// Number of physical KV blocks currently held by `slot` (0 if unoccupied).
+    #[must_use]
+    pub fn slot_allocated_blocks(&self, slot: usize) -> usize {
+        self.slots
+            .get(slot)
+            .and_then(Option::as_ref)
+            .map_or(0, |s| s.blocks.len())
+    }
+
+    /// Total physical KV pages in the shared pool.
+    #[must_use]
+    pub const fn kv_pool_total_blocks(&self) -> usize {
+        self.kv_pool.total_blocks()
+    }
+
+    /// Distinct physical KV pages currently pinned by at least one active sequence.
+    #[must_use]
+    pub const fn kv_pool_pinned_blocks(&self) -> usize {
+        self.kv_pool.pinned_blocks()
+    }
+
+    /// Non-mutating check of cached prefix pages matching `prompt`, returning
+    /// `(matched_pages, newly_pinned_blocks)`.
+    #[must_use]
+    pub fn peek_prefix_pages(&self, prompt: &[u32]) -> (usize, usize) {
+        self.kv_pool.peek_prefix_match(prompt)
+    }
+
     /// Reset an occupied slot to position 0 (preserving cached prefix blocks in the pool).
     /// # Errors
     /// Rejects an unoccupied or out-of-range slot or faulted model.
@@ -908,25 +1085,18 @@ impl Gemma4MetalModelWide {
                 let owner_kv = self.kv_caches[layer]
                     .as_ref()
                     .ok_or_else(|| Gemma4Error::new("Metal modelwide", "missing KV owner cache"))?;
-                self.weights.encode_linear(
+                self.weights.encode_dual_linear(
                     &mut session,
                     active_normed,
                     ParameterId::Layer {
                         layer,
                         parameter: LayerParameter::Key,
                     },
-                    &self.scratch.k_buf,
-                    active_tokens,
-                    kv_cols,
-                    hidden_size,
-                )?;
-                self.weights.encode_linear(
-                    &mut session,
-                    active_normed,
                     ParameterId::Layer {
                         layer,
                         parameter: LayerParameter::Value,
                     },
+                    &self.scratch.k_buf,
                     &self.scratch.v_buf,
                     active_tokens,
                     kv_cols,
@@ -1065,41 +1235,25 @@ impl Gemma4MetalModelWide {
                 )
                 .map_err(|e| metal_error(&e))?;
 
-            self.weights.encode_linear(
+            self.weights.encode_gate_up_geglu(
                 &mut session,
                 &self.scratch.proj_out,
                 ParameterId::Layer {
                     layer,
                     parameter: LayerParameter::Gate,
                 },
-                &self.scratch.ffn_gate,
-                active_tokens,
-                intermediate,
-                hidden_size,
-            )?;
-            self.weights.encode_linear(
-                &mut session,
-                &self.scratch.proj_out,
                 ParameterId::Layer {
                     layer,
                     parameter: LayerParameter::Up,
                 },
+                &self.gelu_table,
+                &self.scratch.ffn_gate,
                 &self.scratch.ffn_up,
+                &self.scratch.error_flag,
                 active_tokens,
                 intermediate,
                 hidden_size,
             )?;
-            session
-                .geglu_table(
-                    &self.scratch.ffn_gate,
-                    &self.scratch.ffn_up,
-                    0,
-                    &self.gelu_table,
-                    &self.scratch.ffn_gate,
-                    &self.scratch.error_flag,
-                    active_tokens * intermediate,
-                )
-                .map_err(|e| metal_error(&e))?;
             self.weights.encode_linear(
                 &mut session,
                 &self.scratch.ffn_gate,
@@ -1125,18 +1279,6 @@ impl Gemma4MetalModelWide {
                 )
                 .map_err(|e| metal_error(&e))?;
 
-            self.weights.encode_linear(
-                &mut session,
-                active_hidden,
-                ParameterId::Layer {
-                    layer,
-                    parameter: LayerParameter::PleGate,
-                },
-                &self.scratch.ple_gate,
-                active_tokens,
-                ple_dim,
-                hidden_size,
-            )?;
             let (ple_up, ple_up_offset) = if pruned {
                 session
                     .gather_rows(
@@ -1153,17 +1295,22 @@ impl Gemma4MetalModelWide {
             } else {
                 (&self.scratch.per_layer_ple, layer * total_tokens * ple_dim)
             };
-            session
-                .geglu_table(
-                    &self.scratch.ple_gate,
-                    ple_up,
-                    ple_up_offset,
-                    &self.gelu_table,
-                    &self.scratch.ple_gate,
-                    &self.scratch.error_flag,
-                    active_tokens * ple_dim,
-                )
-                .map_err(|e| metal_error(&e))?;
+            self.weights.encode_linear_geglu(
+                &mut session,
+                active_hidden,
+                ParameterId::Layer {
+                    layer,
+                    parameter: LayerParameter::PleGate,
+                },
+                ple_up,
+                ple_up_offset,
+                &self.gelu_table,
+                &self.scratch.ple_gate,
+                &self.scratch.error_flag,
+                active_tokens,
+                ple_dim,
+                hidden_size,
+            )?;
             self.weights.encode_linear(
                 &mut session,
                 &self.scratch.ple_gate,

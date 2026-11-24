@@ -56,22 +56,28 @@ Neither workload establishes a clean competitive ranking.
    On Metal, the single-command-buffer model-wide engine (`Gemma4MetalModelWide`
    + `Gemma4MetalModelWideExecutor`) is now the default `Native` loader path for
    `head_dim <= 512` with 16-token paged KV (16K context, 2,048 shared blocks),
-   exact content-addressed radix prefix caching, mixed-precision BF16 MMA prefill
-   (`512`-token chunking), exact shared-KV tail pruning, fused post-norm/residual
-   kernels, parallel softcap/argmax, capability-gated HTTP stochastic sampling,
+   exact content-addressed radix prefix caching, exact KV-pool & slot admission
+   backpressure (`Admission::Deferred` with `Readiness` wakeups and immediate
+   refusal for requests exceeding total pool blocks), mixed-precision BF16 MMA
+   prefill (`512`-token chunking), exact shared-KV tail pruning, bit-exact fused
+   post-norm/residual and `M=1` decode kernels (`Gate+Up+GeGLU`, `PleGate+GeGLU`,
+   `K+V`), parallel softcap/argmax, capability-gated HTTP stochastic sampling,
    and opt-in affine group-64 weight quantization (`--quantize bf16|q8|q4`,
    default `bf16`). On M3 Max E4B, BF16 matches 12/12 archived CPU BF16 oracle
-   winners (`2,114 tok/s` direct 512-token prefill, `364.3 tok/s` `M=16` decode)
+   winners (`2,100+ tok/s` direct 512-token prefill, `361+ tok/s` `M=16` decode)
    and beats `mlx-lm==0.32.2` across all 10 tested BF16 HTTP SSE cohorts on TTFT
    and batched throughput; opt-in `q8` (`7.39 GiB` weights / `9.58 GiB` RSS) and
-   `q4` (`3.91 GiB` weights / `6.11 GiB` RSS) also match 12/12 BF16 oracle
-   winners with bit-exact 512-token prefix caching (`11.9×`/`16.9×`) and reach
-   `431.9` / `459.1 tok/s` live HTTP SSE throughput at `c=16` (`466.2` / `492.5`
-   tok/s direct; see
-   [Metal baseline](../benchmarks/gemma4-metal-baseline.md#affine-group-64-metal-quantization-q8--q4-fused-norms-and-parallel-softcap-2026-11-24)).
+   `q4` (`3.91 GiB` weights / `6.14 GiB` RSS) also match 12/12 BF16 oracle
+   winners with bit-exact 512-token prefix caching. In same-day head-to-head
+   live HTTP SSE against `mlx-lm==0.32.2` 4-bit group-64, `ribn --quantize q4`
+   reaches `79.6` vs `80.7 tok/s` at `c=1` (`19.7` vs `27.6 ms` TTFT), beats MLX
+   at `c=16` (`474.5` vs `375.2 tok/s`, +26.5%) and `c=32` burst deferral
+   (`478.8` vs `346.6 tok/s`, +38.1%, `32/32 ok`), and leads `Prefix burst c=8`
+   (`281.2` vs `87.5 tok/s`) and `Mixed c=8` (`271.1` vs `71.6 tok/s`; see
+   [Metal baseline](../benchmarks/gemma4-metal-baseline.md#kv-pool-admission-backpressure-fused-m1-decode-kernels-and-q4-head-to-head-vs-mlx-lm0322-2026-11-24)).
    Formal multi-process matched-quality external serving cohorts, quantized task
-   QA, pre-quantized checkpoint loading, memory-pressure recovery under
-   constrained RAM, and CUDA/4090 packed-batch parity remain open.
+   QA, pre-quantized checkpoint loading, multi-model Metal expansion, and
+   CUDA/4090 packed-batch parity remain open.
 3. **Native versus externally prepared executor, concurrently.**
    Test a pinned Gemma model and at least two contexts/shapes through
    a truly Rust-invocable prepared program; compare full numerical/

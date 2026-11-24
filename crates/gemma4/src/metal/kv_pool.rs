@@ -54,6 +54,7 @@ pub(crate) struct PagedKvPool {
     node_to_block: HashMap<u64, usize>,
     tick: u64,
     next_node_id: u64,
+    pinned_blocks: usize,
     cached_blocks: usize,
     prefix_hit_tokens: u64,
     prefix_miss_tokens: u64,
@@ -76,11 +77,45 @@ impl PagedKvPool {
             node_to_block: HashMap::new(),
             tick: 0,
             next_node_id: 1,
+            pinned_blocks: 0,
             cached_blocks: 0,
             prefix_hit_tokens: 0,
             prefix_miss_tokens: 0,
             evictions: 0,
         })
+    }
+
+    pub(crate) const fn total_blocks(&self) -> usize {
+        self.blocks.len()
+    }
+
+    pub(crate) const fn pinned_blocks(&self) -> usize {
+        self.pinned_blocks
+    }
+
+    /// Inspect how many 16-token cached prefix pages match `prompt` without mutating
+    /// reference counts, returning `(matched_pages, newly_pinned_blocks)` where
+    /// `newly_pinned_blocks` is the number of matched pages currently unpinned (`ref_count == 0`).
+    pub(crate) fn peek_prefix_match(&self, prompt: &[u32]) -> (usize, usize) {
+        let max_pages = prompt.len().saturating_sub(1) / KV_PAGE_TOKENS;
+        let mut matched_pages = 0_usize;
+        let mut newly_pinned = 0_usize;
+        let mut parent = 0_u64;
+        for page in 0..max_pages {
+            let start = page * KV_PAGE_TOKENS;
+            let mut key = [0_u32; KV_PAGE_TOKENS];
+            key.copy_from_slice(&prompt[start..start + KV_PAGE_TOKENS]);
+            let Some(&block_id) = self.prefix_map.get(&(parent, key)) else {
+                break;
+            };
+            let block = &self.blocks[block_id];
+            if block.ref_count == 0 {
+                newly_pinned += 1;
+            }
+            parent = block.node_id.expect("cached block has node_id");
+            matched_pages += 1;
+        }
+        (matched_pages, newly_pinned)
     }
 
     pub(crate) fn stats(&self) -> PrefixCacheStats {
@@ -110,6 +145,9 @@ impl PagedKvPool {
             };
             self.tick += 1;
             let block = &mut self.blocks[block_id];
+            if block.ref_count == 0 {
+                self.pinned_blocks += 1;
+            }
             block.ref_count += 1;
             block.last_used = self.tick;
             parent = block.node_id.expect("cached block has node_id");
@@ -175,6 +213,9 @@ impl PagedKvPool {
                 } else {
                     let node_id = {
                         let block = &mut self.blocks[existing];
+                        if block.ref_count == 0 {
+                            self.pinned_blocks += 1;
+                        }
                         block.ref_count += 1;
                         block.last_used = self.tick;
                         block.node_id.expect("cached block has node_id")
@@ -213,8 +254,11 @@ impl PagedKvPool {
             let block = &mut self.blocks[block_id];
             debug_assert!(block.ref_count > 0, "block ref_count underflow");
             block.ref_count -= 1;
-            if block.ref_count == 0 && block.node_id.is_none() {
-                self.free_blocks.push(block_id);
+            if block.ref_count == 0 {
+                self.pinned_blocks -= 1;
+                if block.node_id.is_none() {
+                    self.free_blocks.push(block_id);
+                }
             }
         }
     }
@@ -223,8 +267,11 @@ impl PagedKvPool {
         let block = &mut self.blocks[block_id];
         debug_assert!(block.ref_count > 0);
         block.ref_count -= 1;
-        if block.ref_count == 0 && block.node_id.is_none() {
-            self.free_blocks.push(block_id);
+        if block.ref_count == 0 {
+            self.pinned_blocks -= 1;
+            if block.node_id.is_none() {
+                self.free_blocks.push(block_id);
+            }
         }
     }
 
@@ -232,7 +279,9 @@ impl PagedKvPool {
         if let Some(block_id) = self.free_blocks.pop() {
             self.tick += 1;
             let block = &mut self.blocks[block_id];
+            debug_assert_eq!(block.ref_count, 0);
             block.ref_count = 1;
+            self.pinned_blocks += 1;
             block.node_id = None;
             block.parent_node = 0;
             block.child_count = 0;
@@ -277,7 +326,9 @@ impl PagedKvPool {
         self.tick += 1;
 
         let block = &mut self.blocks[victim_id];
+        debug_assert_eq!(block.ref_count, 0);
         block.ref_count = 1;
+        self.pinned_blocks += 1;
         block.node_id = None;
         block.parent_node = 0;
         block.child_count = 0;

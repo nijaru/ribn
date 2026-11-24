@@ -2836,3 +2836,48 @@ optimization target (concurrent encoder / async step pipelining).
 Scope limits: `Q8` and `Q4` are opt-in (`--quantize q8|q4`); `bf16` remains the default and the
 exact BF16 numerical oracle is unchanged. Quantized task-quality benchmarks (beyond the 12-row BF16
 winner/KL audit), quantized pre-packed checkpoint serialization, and CUDA/4090 quantization remain open.
+
+### KV-pool admission backpressure, fused `M=1` decode kernels, and Q4 head-to-head vs `mlx-lm==0.32.2` (2026-11-24)
+
+Added two serving and kernel upgrades on top of `541ae31`:
+1. **Exact KV-pool & slot admission backpressure (`crates/gemma4/src/metal/{kv_pool,modelwide,modelwide_executor}.rs`):**
+   `PagedKvPool` now tracks exact distinct `pinned_blocks` (`ref_count > 0`) and provides non-mutating
+   `peek_prefix_match`. `Gemma4MetalModelWideExecutor::admit` rejects permanently infeasible requests
+   (`total_pages > pool_blocks`) immediately, registers a `ribn::Readiness` wait before checking transient
+   capacity, and returns `Admission::Deferred(wait)` whenever `max_sequences` or worst-case
+   `pinned_blocks + newly_pinned + reserved_future_blocks + future_for_new > pool_blocks` would be
+   exceeded — waking waiters via `Readiness::publish()` on slot release, block deduplication, or
+   shutdown. Verified by adversarial test
+   `kv_pool_and_slot_pressure_defer_wake_and_reject_impossibly_large_requests`.
+2. **Bit-exact fused `M=1` decode kernels (`crates/metal/src/{quant_fast,bf16_fast}.metal`, `bf16/{quant,fast}.rs`, `modelwide.rs`):**
+   Fused `Gate + Up + GeGLU` (`gate_up_geglu_m1`), `PleGate + GeGLU` (`linear_geglu_m1`), and
+   `K + V` (`dual_gemv_m1`) across `Q4`, `Q8`, and `BF16`, eliminating 150 serial GPU pipeline barriers
+   per `M=1` step while matching unfused execution bit-for-bit (`Q8` `M=1` mean `19.27 → 18.66 ms` /
+   `53.6 tok/s`, prefix hit `12.8×`; `Q4` `M=1` mean `12.75 → 12.52 ms` / `79.9 tok/s`, `M=16`
+   `495.6 tok/s`; `BF16` 12/12 oracle bit-identical `worst_rel_l2 = 0.03108`, `worst_kl = 0.006894`).
+
+Same-day serialized loopback HTTP SSE comparison between `ribn serve-gemma --quantize q4 --max-requests 32`
+and `mlx-lm==0.32.2` (`mlx==0.32.4`) serving an identical 4-bit group-64 converted `google/gemma-4-E4B-it`
+snapshot (`--decode-concurrency 16 --prompt-concurrency 8 --temp 0.0 --chat-template-args '{"enable_thinking":false}'`,
+verified identical `21 / 663 / 1127` prompt token counts on both servers):
+
+| Live HTTP SSE Q4 workload (`max_tokens = 64`) | `ribn serve-gemma --quantize q4` | `mlx-lm 0.32.2` Q4 (`c=16/p=8`) |
+| --- | ---: | ---: |
+| Short `c = 1` (`in=21, out=45/47`) | `79.6 tok/s` · TTFT **`19.7 ms`** · ITL `12.3 ms` | **`80.7 tok/s`** · TTFT `27.6 ms` · ITL **`12.0 ms`** |
+| Short `c = 4` (`in=21, out=177/200`) | `199.8 tok/s` · TTFT **`27.5 ms`** · ITL `18.3 ms` | **`258.9 tok/s`** · TTFT `34.9 ms` · ITL **`15.0 ms`** |
+| Short `c = 8` (`in=21, out=346/400`) | **`329.5 tok/s`** · TTFT `80.2/80.6 ms` · ITL **`23.1 ms`** | `312.3 tok/s` · TTFT **`55.0/55.3 ms`** · ITL `25.0 ms` |
+| Short `c = 16` (`in=21, out=690/776`) | **`474.5 tok/s`** · TTFT **`98.5/99.9 ms`** · ITL **`32.2 ms`** | `375.2 tok/s` · TTFT `105.9/126.9 ms` · ITL `40.0 ms` |
+| Short `c = 32` burst (`in=21`, `32/32 ok`) | **`478.8 tok/s`** · TTFT **`808 / 1,519 ms`** · ITL **`32.3 ms`** | `346.6 tok/s` · TTFT `1,047 / 2,757 ms` · ITL `39.4 ms` |
+| Long `c = 1` cold (`in=663, out=28/9`) | TTFT `346.1 ms` · ITL `16.5 ms` | TTFT **`331.2 ms`** · ITL **`12.9 ms`** |
+| Prefix `c = 1` cold / warm (`in=1127/1128`) | `591.1 →` **`38.4 ms`** (`15.4×` hit) | **`532.5`** → `556.2 ms` (no cross-suffix hit) |
+| Prefix burst `c = 8` (`in=1126, out=512`) | **`281.2 tok/s`** · TTFT **`157.8 / 158.0 ms`** | `87.5 tok/s` · TTFT `3,909 / 3,910 ms` |
+| Mixed `c = 8` (4 short + 4×663-tok, `out=282/232`) | **`271.1 tok/s`** · TTFT **`81.8 / 82.2 ms`** | `71.6 tok/s` · TTFT `2,338 / 2,339 ms` |
+| Steady-state RSS / SIGTERM exit | `6.14 → 6.14 GiB` / **exit `0`** | **`4.97 → 5.00 GiB`** / exit `143` |
+
+Note: on `Prefix c = 1 warm`, `Prefix burst c = 8`, and `Mixed c = 8` (which reused the earlier `Long c = 1`
+prompt), Ribn's radix prefix cache shared immutable prefix blocks across distinct suffixes while
+`mlx_lm.server` re-prefilled. On uncached short-prompt bursts (`c = 16`, `c = 32`), Ribn leads by
++26.5% and +38.1% aggregate throughput with lower p95 TTFT and ITL; `mlx_lm.server` leads on `Short c = 4`
+throughput (`258.9` vs `199.8 tok/s`) and lower RSS (`5.00` vs `6.14 GiB`, since Ribn retains a 16K
+shared KV pool of ~1.84 GiB). Scope limits remain single-process M3 Max observation without formal
+multi-process randomized quality-matched external cohorts or CUDA/4090 parity.

@@ -22,6 +22,45 @@ inline ushort q_bf16_rne(float x) {
     return ushort(u >> 16);
 }
 
+inline uint q_rne_shift(uint value, uint shift) {
+    if (shift == 0) return value;
+    if (shift >= 32) return 0;
+    uint truncated = value >> shift;
+    uint remainder = value & ((1u << shift) - 1u);
+    uint halfway = 1u << (shift - 1u);
+    return truncated + uint(remainder > halfway || (remainder == halfway && (truncated & 1u)));
+}
+
+inline ushort q_bf16_product_rne(ushort a, ushort b) {
+    uint sign = (a ^ b) & 0x8000u;
+    uint ea = (a >> 7) & 255u, eb = (b >> 7) & 255u;
+    uint ma = a & 127u, mb = b & 127u;
+    if (ea == 255u || eb == 255u) {
+        if ((ea == 255u && ma != 0) || (eb == 255u && mb != 0)
+            || ((a & 0x7fffu) == 0 && eb == 255u)
+            || ((b & 0x7fffu) == 0 && ea == 255u)) return 0x7fc0u;
+        return ushort(sign | 0x7f80u);
+    }
+    uint product = (ea == 0 ? ma : ma | 128u) * (eb == 0 ? mb : mb | 128u);
+    if (product == 0) return ushort(sign);
+    int top = 31 - int(clz(product));
+    int power = int(max(ea, 1u)) + int(max(eb, 1u)) - 268;
+    int exponent = top + power + 127;
+    if (exponent <= 0) return ushort(sign | q_rne_shift(product, uint(-power - 133)));
+    uint rounded = q_rne_shift(product, uint(top - 7));
+    if (rounded == 256u) { rounded = 128u; ++exponent; }
+    if (exponent >= 255) return ushort(sign | 0x7f80u);
+    return ushort(sign | (uint(exponent) << 7) | (rounded - 128u));
+}
+
+inline ushort q_geglu_apply(ushort g_bits, ushort u_bits, device const ushort* gelu_table, device atomic_uint* error_flag) {
+    if ((g_bits & 0x7f80u) == 0x7f80u) {
+        atomic_fetch_or_explicit(error_flag, 1u, memory_order_relaxed);
+        return 0;
+    }
+    return q_bf16_product_rne(gelu_table[g_bits], u_bits);
+}
+
 inline float q4_dot16(uint2 p, float4 x0, float4 x1, float4 x2, float4 x3) {
     ushort a = ushort(p.x & 0xFFFFu);
     ushort b = ushort(p.x >> 16);
@@ -1135,4 +1174,403 @@ kernel void fast_q8_embed_gather(
     output[dst + 1u] = q_bf16_rne((float(q.y) * sv + bv) * scale);
     output[dst + 2u] = q_bf16_rne((float(q.z) * sv + bv) * scale);
     output[dst + 3u] = q_bf16_rne((float(q.w) * sv + bv) * scale);
+}
+
+// ============================================================================
+// 11. Fused M=1 Q4/Q8 Decode Kernels:
+//     - dual_gemv_m1: computes K & V (two equal-shape projections) sharing x
+//     - gate_up_geglu_m1: computes Gate + Up + exact table GeGLU in one pass
+//     - linear_geglu_m1: computes PleGate + exact table GeGLU against up_in
+// ============================================================================
+kernel void fast_q4_dual_gemv_m1(
+    device const bfloat* input [[buffer(0)]],
+    device const uint* packed_a [[buffer(1)]],
+    device const bfloat2* sb_a [[buffer(2)]],
+    device const uint* packed_b [[buffer(3)]],
+    device const bfloat2* sb_b [[buffer(4)]],
+    device ushort* out_a [[buffer(5)]],
+    device ushort* out_b [[buffer(6)]],
+    constant uint& N [[buffer(7)]],
+    constant uint& K [[buffer(8)]],
+    uint tg_id [[threadgroup_position_in_grid]],
+    uint tid [[thread_index_in_threadgroup]])
+{
+    uint sg = tid >> 5;
+    uint lane = tid & 31u;
+    uint n = tg_id * 2u + sg;
+    if (n >= N) return;
+
+    uint num_groups = K >> 6;
+    uint k_u64 = K >> 4;
+    uint sub_g = lane >> 2;
+    uint sub_l = lane & 3u;
+
+    device const uint2* wa = (device const uint2*)packed_a + (ulong)n * k_u64;
+    device const uint2* wb = (device const uint2*)packed_b + (ulong)n * k_u64;
+    device const bfloat2* sba = sb_a + (ulong)n * num_groups;
+    device const bfloat2* sbb = sb_b + (ulong)n * num_groups;
+    device const bfloat4* x4 = (device const bfloat4*)input;
+    const float4 nib_scale = float4(1.0f, 1.0f / 16.0f, 1.0f / 256.0f, 1.0f / 4096.0f);
+
+    float acc_a = 0.0f;
+    float acc_b = 0.0f;
+
+    for (uint g0 = 0u; g0 < num_groups; g0 += 8u) {
+        uint g = g0 + sub_g;
+        if (g < num_groups) {
+            uint x_idx = g * 16u + sub_l * 4u;
+            float4 r0 = float4(x4[x_idx + 0u]);
+            float4 r1 = float4(x4[x_idx + 1u]);
+            float4 r2 = float4(x4[x_idx + 2u]);
+            float4 r3 = float4(x4[x_idx + 3u]);
+            float xsum = ((r0.x + r0.y) + (r0.z + r0.w))
+                       + ((r1.x + r1.y) + (r1.z + r1.w))
+                       + ((r2.x + r2.y) + (r2.z + r2.w))
+                       + ((r3.x + r3.y) + (r3.z + r3.w));
+            float4 s0 = r0 * nib_scale;
+            float4 s1 = r1 * nib_scale;
+            float4 s2 = r2 * nib_scale;
+            float4 s3 = r3 * nib_scale;
+
+            uint idx = g * 4u + sub_l;
+            bfloat2 pa = sba[g];
+            acc_a += q4_dot16(wa[idx], s0, s1, s2, s3) * float(pa.x) + xsum * float(pa.y);
+            bfloat2 pb = sbb[g];
+            acc_b += q4_dot16(wb[idx], s0, s1, s2, s3) * float(pb.x) + xsum * float(pb.y);
+        }
+    }
+
+    float oa = simd_sum(acc_a);
+    float ob = simd_sum(acc_b);
+    if (lane == 0u) {
+        out_a[n] = q_bf16_rne(oa);
+        out_b[n] = q_bf16_rne(ob);
+    }
+}
+
+kernel void fast_q4_gate_up_geglu_m1(
+    device const bfloat* input [[buffer(0)]],
+    device const uint* gate_packed [[buffer(1)]],
+    device const bfloat2* gate_sb [[buffer(2)]],
+    device const uint* up_packed [[buffer(3)]],
+    device const bfloat2* up_sb [[buffer(4)]],
+    device const ushort* gelu_table [[buffer(5)]],
+    device ushort* output [[buffer(6)]],
+    device atomic_uint* error_flag [[buffer(7)]],
+    constant uint& N [[buffer(8)]],
+    constant uint& K [[buffer(9)]],
+    uint tg_id [[threadgroup_position_in_grid]],
+    uint tid [[thread_index_in_threadgroup]])
+{
+    uint sg = tid >> 5;
+    uint lane = tid & 31u;
+    uint n = tg_id * 2u + sg;
+    if (n >= N) return;
+
+    uint num_groups = K >> 6;
+    uint k_u64 = K >> 4;
+    uint sub_g = lane >> 2;
+    uint sub_l = lane & 3u;
+
+    device const uint2* wg = (device const uint2*)gate_packed + (ulong)n * k_u64;
+    device const uint2* wu = (device const uint2*)up_packed + (ulong)n * k_u64;
+    device const bfloat2* sbg = gate_sb + (ulong)n * num_groups;
+    device const bfloat2* sbu = up_sb + (ulong)n * num_groups;
+    device const bfloat4* x4 = (device const bfloat4*)input;
+    const float4 nib_scale = float4(1.0f, 1.0f / 16.0f, 1.0f / 256.0f, 1.0f / 4096.0f);
+
+    float acc_g = 0.0f;
+    float acc_u = 0.0f;
+
+    for (uint g0 = 0u; g0 < num_groups; g0 += 8u) {
+        uint g = g0 + sub_g;
+        if (g < num_groups) {
+            uint x_idx = g * 16u + sub_l * 4u;
+            float4 r0 = float4(x4[x_idx + 0u]);
+            float4 r1 = float4(x4[x_idx + 1u]);
+            float4 r2 = float4(x4[x_idx + 2u]);
+            float4 r3 = float4(x4[x_idx + 3u]);
+            float xsum = ((r0.x + r0.y) + (r0.z + r0.w))
+                       + ((r1.x + r1.y) + (r1.z + r1.w))
+                       + ((r2.x + r2.y) + (r2.z + r2.w))
+                       + ((r3.x + r3.y) + (r3.z + r3.w));
+            float4 s0 = r0 * nib_scale;
+            float4 s1 = r1 * nib_scale;
+            float4 s2 = r2 * nib_scale;
+            float4 s3 = r3 * nib_scale;
+
+            uint idx = g * 4u + sub_l;
+            bfloat2 pg = sbg[g];
+            acc_g += q4_dot16(wg[idx], s0, s1, s2, s3) * float(pg.x) + xsum * float(pg.y);
+            bfloat2 pu = sbu[g];
+            acc_u += q4_dot16(wu[idx], s0, s1, s2, s3) * float(pu.x) + xsum * float(pu.y);
+        }
+    }
+
+    float og = simd_sum(acc_g);
+    float ou = simd_sum(acc_u);
+    if (lane == 0u) {
+        output[n] = q_geglu_apply(q_bf16_rne(og), q_bf16_rne(ou), gelu_table, error_flag);
+    }
+}
+
+kernel void fast_q4_linear_geglu_m1(
+    device const bfloat* input [[buffer(0)]],
+    device const uint* packed [[buffer(1)]],
+    device const bfloat2* scales_biases [[buffer(2)]],
+    device const ushort* up_in [[buffer(3)]],
+    device const ushort* gelu_table [[buffer(4)]],
+    device ushort* output [[buffer(5)]],
+    device atomic_uint* error_flag [[buffer(6)]],
+    constant uint& N [[buffer(7)]],
+    constant uint& K [[buffer(8)]],
+    uint tg_id [[threadgroup_position_in_grid]],
+    uint tid [[thread_index_in_threadgroup]])
+{
+    uint sg = tid >> 5;
+    uint lane = tid & 31u;
+    uint n0 = tg_id * 4u + sg * 2u;
+    if (n0 >= N) return;
+
+    bool has_second = (n0 + 1u) < N;
+    uint num_groups = K >> 6;
+    uint k_u64 = K >> 4;
+    uint sub_g = lane >> 2;
+    uint sub_l = lane & 3u;
+
+    device const uint2* w_base = (device const uint2*)packed;
+    device const uint2* w0 = w_base + (ulong)n0 * k_u64;
+    device const uint2* w1 = has_second ? (w0 + k_u64) : w0;
+    device const bfloat2* sb0 = scales_biases + (ulong)n0 * num_groups;
+    device const bfloat2* sb1 = has_second ? (sb0 + num_groups) : sb0;
+    device const bfloat4* x4 = (device const bfloat4*)input;
+    const float4 nib_scale = float4(1.0f, 1.0f / 16.0f, 1.0f / 256.0f, 1.0f / 4096.0f);
+
+    float acc0 = 0.0f;
+    float acc1 = 0.0f;
+
+    for (uint g0 = 0u; g0 < num_groups; g0 += 8u) {
+        uint g = g0 + sub_g;
+        if (g < num_groups) {
+            uint x_idx = g * 16u + sub_l * 4u;
+            float4 r0 = float4(x4[x_idx + 0u]);
+            float4 r1 = float4(x4[x_idx + 1u]);
+            float4 r2 = float4(x4[x_idx + 2u]);
+            float4 r3 = float4(x4[x_idx + 3u]);
+            float xsum = ((r0.x + r0.y) + (r0.z + r0.w))
+                       + ((r1.x + r1.y) + (r1.z + r1.w))
+                       + ((r2.x + r2.y) + (r2.z + r2.w))
+                       + ((r3.x + r3.y) + (r3.z + r3.w));
+            float4 s0 = r0 * nib_scale;
+            float4 s1 = r1 * nib_scale;
+            float4 s2 = r2 * nib_scale;
+            float4 s3 = r3 * nib_scale;
+
+            uint idx = g * 4u + sub_l;
+            bfloat2 p_sb0 = sb0[g];
+            acc0 += q4_dot16(w0[idx], s0, s1, s2, s3) * float(p_sb0.x) + xsum * float(p_sb0.y);
+            if (has_second) {
+                bfloat2 p_sb1 = sb1[g];
+                acc1 += q4_dot16(w1[idx], s0, s1, s2, s3) * float(p_sb1.x) + xsum * float(p_sb1.y);
+            }
+        }
+    }
+
+    float o0 = simd_sum(acc0);
+    float o1 = has_second ? simd_sum(acc1) : 0.0f;
+    if (lane == 0u) {
+        output[n0] = q_geglu_apply(q_bf16_rne(o0), up_in[n0], gelu_table, error_flag);
+        if (has_second) {
+            output[n0 + 1u] = q_geglu_apply(q_bf16_rne(o1), up_in[n0 + 1u], gelu_table, error_flag);
+        }
+    }
+}
+
+kernel void fast_q8_dual_gemv_m1(
+    device const bfloat* input [[buffer(0)]],
+    device const uchar* packed_a [[buffer(1)]],
+    device const bfloat2* sb_a [[buffer(2)]],
+    device const uchar* packed_b [[buffer(3)]],
+    device const bfloat2* sb_b [[buffer(4)]],
+    device ushort* out_a [[buffer(5)]],
+    device ushort* out_b [[buffer(6)]],
+    constant uint& N [[buffer(7)]],
+    constant uint& K [[buffer(8)]],
+    uint tg_id [[threadgroup_position_in_grid]],
+    uint tid [[thread_index_in_threadgroup]])
+{
+    uint sg = tid >> 5;
+    uint lane = tid & 31u;
+    uint n = tg_id * 2u + sg;
+    if (n >= N) return;
+
+    uint num_groups = K >> 6;
+    uint k_u128 = K >> 4;
+    uint sub_g = lane >> 2;
+    uint sub_l = lane & 3u;
+
+    device const uint4* wa = (device const uint4*)packed_a + (ulong)n * k_u128;
+    device const uint4* wb = (device const uint4*)packed_b + (ulong)n * k_u128;
+    device const bfloat2* sba = sb_a + (ulong)n * num_groups;
+    device const bfloat2* sbb = sb_b + (ulong)n * num_groups;
+    device const bfloat4* x4 = (device const bfloat4*)input;
+
+    float acc_a = 0.0f;
+    float acc_b = 0.0f;
+
+    for (uint g0 = 0u; g0 < num_groups; g0 += 8u) {
+        uint g = g0 + sub_g;
+        if (g < num_groups) {
+            uint x_idx = g * 16u + sub_l * 4u;
+            float4 r0 = float4(x4[x_idx + 0u]);
+            float4 r1 = float4(x4[x_idx + 1u]);
+            float4 r2 = float4(x4[x_idx + 2u]);
+            float4 r3 = float4(x4[x_idx + 3u]);
+            float xsum = ((r0.x + r0.y) + (r0.z + r0.w))
+                       + ((r1.x + r1.y) + (r1.z + r1.w))
+                       + ((r2.x + r2.y) + (r2.z + r2.w))
+                       + ((r3.x + r3.y) + (r3.z + r3.w));
+
+            uint idx = g * 4u + sub_l;
+            bfloat2 pa = sba[g];
+            acc_a += q8_dot16(wa[idx], r0, r1, r2, r3) * float(pa.x) + xsum * float(pa.y);
+            bfloat2 pb = sbb[g];
+            acc_b += q8_dot16(wb[idx], r0, r1, r2, r3) * float(pb.x) + xsum * float(pb.y);
+        }
+    }
+
+    float oa = simd_sum(acc_a);
+    float ob = simd_sum(acc_b);
+    if (lane == 0u) {
+        out_a[n] = q_bf16_rne(oa);
+        out_b[n] = q_bf16_rne(ob);
+    }
+}
+
+kernel void fast_q8_gate_up_geglu_m1(
+    device const bfloat* input [[buffer(0)]],
+    device const uchar* gate_packed [[buffer(1)]],
+    device const bfloat2* gate_sb [[buffer(2)]],
+    device const uchar* up_packed [[buffer(3)]],
+    device const bfloat2* up_sb [[buffer(4)]],
+    device const ushort* gelu_table [[buffer(5)]],
+    device ushort* output [[buffer(6)]],
+    device atomic_uint* error_flag [[buffer(7)]],
+    constant uint& N [[buffer(8)]],
+    constant uint& K [[buffer(9)]],
+    uint tg_id [[threadgroup_position_in_grid]],
+    uint tid [[thread_index_in_threadgroup]])
+{
+    uint sg = tid >> 5;
+    uint lane = tid & 31u;
+    uint n = tg_id * 2u + sg;
+    if (n >= N) return;
+
+    uint num_groups = K >> 6;
+    uint k_u128 = K >> 4;
+    uint sub_g = lane >> 2;
+    uint sub_l = lane & 3u;
+
+    device const uint4* wg = (device const uint4*)gate_packed + (ulong)n * k_u128;
+    device const uint4* wu = (device const uint4*)up_packed + (ulong)n * k_u128;
+    device const bfloat2* sbg = gate_sb + (ulong)n * num_groups;
+    device const bfloat2* sbu = up_sb + (ulong)n * num_groups;
+    device const bfloat4* x4 = (device const bfloat4*)input;
+
+    float acc_g = 0.0f;
+    float acc_u = 0.0f;
+
+    for (uint g0 = 0u; g0 < num_groups; g0 += 8u) {
+        uint g = g0 + sub_g;
+        if (g < num_groups) {
+            uint x_idx = g * 16u + sub_l * 4u;
+            float4 r0 = float4(x4[x_idx + 0u]);
+            float4 r1 = float4(x4[x_idx + 1u]);
+            float4 r2 = float4(x4[x_idx + 2u]);
+            float4 r3 = float4(x4[x_idx + 3u]);
+            float xsum = ((r0.x + r0.y) + (r0.z + r0.w))
+                       + ((r1.x + r1.y) + (r1.z + r1.w))
+                       + ((r2.x + r2.y) + (r2.z + r2.w))
+                       + ((r3.x + r3.y) + (r3.z + r3.w));
+
+            uint idx = g * 4u + sub_l;
+            bfloat2 pg = sbg[g];
+            acc_g += q8_dot16(wg[idx], r0, r1, r2, r3) * float(pg.x) + xsum * float(pg.y);
+            bfloat2 pu = sbu[g];
+            acc_u += q8_dot16(wu[idx], r0, r1, r2, r3) * float(pu.x) + xsum * float(pu.y);
+        }
+    }
+
+    float og = simd_sum(acc_g);
+    float ou = simd_sum(acc_u);
+    if (lane == 0u) {
+        output[n] = q_geglu_apply(q_bf16_rne(og), q_bf16_rne(ou), gelu_table, error_flag);
+    }
+}
+
+kernel void fast_q8_linear_geglu_m1(
+    device const bfloat* input [[buffer(0)]],
+    device const uchar* packed [[buffer(1)]],
+    device const bfloat2* scales_biases [[buffer(2)]],
+    device const ushort* up_in [[buffer(3)]],
+    device const ushort* gelu_table [[buffer(4)]],
+    device ushort* output [[buffer(5)]],
+    device atomic_uint* error_flag [[buffer(6)]],
+    constant uint& N [[buffer(7)]],
+    constant uint& K [[buffer(8)]],
+    uint tg_id [[threadgroup_position_in_grid]],
+    uint tid [[thread_index_in_threadgroup]])
+{
+    uint sg = tid >> 5;
+    uint lane = tid & 31u;
+    uint n0 = tg_id * 4u + sg * 2u;
+    if (n0 >= N) return;
+
+    bool has_second = (n0 + 1u) < N;
+    uint num_groups = K >> 6;
+    uint k_u128 = K >> 4;
+    uint sub_g = lane >> 2;
+    uint sub_l = lane & 3u;
+
+    device const uint4* w_base = (device const uint4*)packed;
+    device const uint4* w0 = w_base + (ulong)n0 * k_u128;
+    device const uint4* w1 = has_second ? (w0 + k_u128) : w0;
+    device const bfloat2* sb0 = scales_biases + (ulong)n0 * num_groups;
+    device const bfloat2* sb1 = has_second ? (sb0 + num_groups) : sb0;
+    device const bfloat4* x4 = (device const bfloat4*)input;
+
+    float acc0 = 0.0f;
+    float acc1 = 0.0f;
+
+    for (uint g0 = 0u; g0 < num_groups; g0 += 8u) {
+        uint g = g0 + sub_g;
+        if (g < num_groups) {
+            uint x_idx = g * 16u + sub_l * 4u;
+            float4 r0 = float4(x4[x_idx + 0u]);
+            float4 r1 = float4(x4[x_idx + 1u]);
+            float4 r2 = float4(x4[x_idx + 2u]);
+            float4 r3 = float4(x4[x_idx + 3u]);
+            float xsum = ((r0.x + r0.y) + (r0.z + r0.w))
+                       + ((r1.x + r1.y) + (r1.z + r1.w))
+                       + ((r2.x + r2.y) + (r2.z + r2.w))
+                       + ((r3.x + r3.y) + (r3.z + r3.w));
+
+            uint idx = g * 4u + sub_l;
+            bfloat2 p_sb0 = sb0[g];
+            acc0 += q8_dot16(w0[idx], r0, r1, r2, r3) * float(p_sb0.x) + xsum * float(p_sb0.y);
+            if (has_second) {
+                bfloat2 p_sb1 = sb1[g];
+                acc1 += q8_dot16(w1[idx], r0, r1, r2, r3) * float(p_sb1.x) + xsum * float(p_sb1.y);
+            }
+        }
+    }
+
+    float o0 = simd_sum(acc0);
+    float o1 = has_second ? simd_sum(acc1) : 0.0f;
+    if (lane == 0u) {
+        output[n0] = q_geglu_apply(q_bf16_rne(o0), up_in[n0], gelu_table, error_flag);
+        if (has_second) {
+            output[n0 + 1u] = q_geglu_apply(q_bf16_rne(o1), up_in[n0 + 1u], gelu_table, error_flag);
+        }
+    }
 }
