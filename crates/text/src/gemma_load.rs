@@ -133,8 +133,8 @@ where
         ..ribn::EngineConfig::default()
     };
     let policy = ribn::SchedulePolicy {
-        max_batch_tokens: limits.max_batch_tokens.min(256),
-        prefill_chunk_tokens: limits.max_batch_tokens.min(128),
+        max_batch_tokens: limits.max_batch_tokens.min(512),
+        prefill_chunk_tokens: limits.max_batch_tokens.min(512),
         prefill_scheduling: ribn::PrefillScheduling::Mixed,
         decode_tokens: 1,
         max_decode_only_steps: 8,

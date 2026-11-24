@@ -25,7 +25,7 @@ use engine_metal::{
 /// sequences, and zero-copy shared prefix blocks.
 pub const DEFAULT_METAL_MAX_SEQUENCES: usize = 16;
 pub const DEFAULT_METAL_MAX_POSITIONS: usize = 16_384;
-pub const DEFAULT_METAL_MAX_BATCH_TOKENS: usize = 256;
+pub const DEFAULT_METAL_MAX_BATCH_TOKENS: usize = 512;
 pub const DEFAULT_METAL_KV_BLOCKS: usize = 2048;
 
 /// Physical resource bounds for one `Gemma4MetalModelWide` instance.

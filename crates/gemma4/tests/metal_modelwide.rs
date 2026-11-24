@@ -404,7 +404,7 @@ fn e4b_modelwide_matches_12_row_bf16_oracle_and_benchmarks() {
     let limits = Gemma4MetalModelWideConfig {
         max_sequences: 16,
         max_positions: 2048,
-        max_batch_tokens: 256,
+        max_batch_tokens: 512,
         num_kv_blocks: 512,
     };
     let mut model = Gemma4MetalModelWide::load(&source, limits).unwrap();
@@ -510,6 +510,8 @@ fn e4b_modelwide_matches_12_row_bf16_oracle_and_benchmarks() {
     let long32: Vec<u32> = chat_prompt.iter().copied().cycle().take(32).collect();
     let long64: Vec<u32> = chat_prompt.iter().copied().cycle().take(64).collect();
     let long128: Vec<u32> = chat_prompt.iter().copied().cycle().take(128).collect();
+    let long256: Vec<u32> = chat_prompt.iter().copied().cycle().take(256).collect();
+    let long512: Vec<u32> = chat_prompt.iter().copied().cycle().take(512).collect();
 
     // Verify chunked (16) vs token-by-token (1) prefill bit-exact invariance on E4B
     let p16 = &chat_prompt[..16];
@@ -535,6 +537,8 @@ fn e4b_modelwide_matches_12_row_bf16_oracle_and_benchmarks() {
         ("prefill_32", long32.as_slice()),
         ("prefill_64", long64.as_slice()),
         ("prefill_128", long128.as_slice()),
+        ("prefill_256", long256.as_slice()),
+        ("prefill_512", long512.as_slice()),
     ] {
         let mut times = Vec::new();
         for _ in 0..3 {

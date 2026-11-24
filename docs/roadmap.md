@@ -56,15 +56,20 @@ Neither workload establishes a clean competitive ranking.
    On Metal, the single-command-buffer model-wide engine (`Gemma4MetalModelWide`
    + `Gemma4MetalModelWideExecutor`) is now the default `Native` loader path for
    `head_dim <= 512` with 16-token paged KV (16K context, 2,048 shared blocks),
-   exact content-addressed radix prefix caching, and capability-gated HTTP
-   stochastic sampling (`temperature`/`top_p`/`top_k`/`seed`). On M3 Max BF16
-   E4B it matches all 12 archived CPU BF16 oracle winners, reaches 30.6–31.3 ms
-   `M=1` decode (350 tok/s direct at `M=16`; 310.9 tok/s live HTTP SSE at `c=16`),
-   lowers server RSS to 16.10 GiB, and cuts ~995-token shared-prefix HTTP TTFT
-   from 1,117.5 ms to 59.5 ms (**18.8×**; see
-   [Metal baseline](../benchmarks/gemma4-metal-baseline.md#single-command-buffer-model-wide-metal-engine-2026-11-24)).
-   Formal multi-process matched-quality external serving cohorts, memory-pressure
-   recovery under constrained RAM, and CUDA/4090 packed-batch parity remain open.
+   exact content-addressed radix prefix caching, mixed-precision BF16 MMA prefill
+   (`512`-token chunking), and capability-gated HTTP stochastic sampling. On M3
+   Max BF16 E4B it matches all 12 archived CPU BF16 oracle winners and beats
+   `mlx-lm==0.32.2` (`--decode-concurrency 16 --prompt-concurrency 8`) in a
+   same-day serialized loopback HTTP SSE run on `c=1` short TTFT (`54.8` vs
+   `84.8 ms`), `c=16` throughput/ITL (`322.9` vs `251.4 tok/s`, `44.5` vs `60.7 ms`),
+   warm 994-token prefix-cache TTFT (`59.1` vs `87.7 ms`), and mixed `c=8`
+   heterogeneous throughput/median TTFT (`111.9` vs `100.4 tok/s`, `701.7` vs
+   `2,273.4 ms`), while trailing on cold long-prompt prefill (`567.7` vs `358.0 ms`
+   at 657 tokens; see
+   [Metal baseline](../benchmarks/gemma4-metal-baseline.md#mixed-precision-bf16-mma-prefill-gemm-and-head-to-head-http-serving-vs-mlx-lm0322-2026-11-24)).
+   Formal multi-process matched-quality external serving cohorts, quantized Metal
+   weights, memory-pressure recovery under constrained RAM, and CUDA/4090
+   packed-batch parity remain open.
 3. **Native versus externally prepared executor, concurrently.**
    Test a pinned Gemma model and at least two contexts/shapes through
    a truly Rust-invocable prepared program; compare full numerical/

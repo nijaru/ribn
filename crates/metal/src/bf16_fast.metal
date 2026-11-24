@@ -230,10 +230,11 @@ kernel void fast_bf16_gemv_m8(
 }
 
 // ============================================================================
-// 3. High-Occupancy Native simdgroup_float8x8 Tiled GEMM (BM=32, BN=32, BK=32)
-//    Used for M > 32. 2D grid (gx = ceil(M/32), gy = ceil(N/32)) runs M-tiles
-//    for the same N columns concurrently for L2/SLC weight sharing. acc[2][2]
-//    (4 tiles/SG) and 9 KiB shared memory maximize occupancy on M3 Max.
+// 3. Mixed-Precision BF16->FP32 Tiled GEMM (BM=32, BN=32, BK=32, 4 SGs)
+//    Used for M > 16. Stores BF16 tiles in 5 KiB threadgroup memory (8-byte
+//    aligned) and accumulates via hardware simdgroup_bfloat8x8 -> float8x8 MMA.
+//    Clamped in-bounds row pointers keep the inner K loop branch-free even for
+//    non-multiple-of-32 M/N edge tiles (e.g. M=18, M=511).
 // ============================================================================
 kernel void fast_bf16_gemm_m32(
     device const bfloat* input [[buffer(0)]],
@@ -248,15 +249,15 @@ kernel void fast_bf16_gemm_m32(
     constexpr uint BM = 32u;
     constexpr uint BN = 32u;
     constexpr uint BK = 32u;
-    constexpr uint STRIDE = 36u;
+    constexpr uint STRIDE = 40u;
 
     uint m0 = tg_pos.x * BM;
     uint n0 = tg_pos.y * BN;
     if (m0 >= M || n0 >= N) return;
 
-    threadgroup float smem[2304];
-    threadgroup float* As = smem;
-    threadgroup float* Bs = smem + BM * STRIDE;
+    threadgroup bfloat4 smem_v[640]; // (32 + 32) * 40 bfloats = 5120 bytes (1280 floats)
+    threadgroup bfloat* As = (threadgroup bfloat*)smem_v;
+    threadgroup bfloat* Bs = As + BM * STRIDE;
 
     uint sg = tid >> 5;
     uint sg_m = sg >> 1;
@@ -272,28 +273,31 @@ kernel void fast_bf16_gemm_m32(
     uint ar = tid >> 3;        // 0..15
     uint ac = (tid & 7u) << 2; // 0, 4, ..., 28
     bool aligned_k = (K & 3u) == 0u;
-    bool full_m = (m0 + BM <= M);
-    bool full_n = (n0 + BN <= N);
 
-    // Branch-free fast path for aligned interior tiles (99%+ of real E4B work)
-    uint k_fast = (full_m && full_n && aligned_k) ? (K & ~31u) : 0u;
+    // Clamped in-bounds row offsets: out-of-bounds tile rows never affect valid
+    // outputs (gr < M && gc < N), keeping the main K loop 100% branch-free.
+    ulong a_row0 = (ulong)min(m0 + ar, M - 1u) * K + ac;
+    ulong a_row1 = (ulong)min(m0 + 16u + ar, M - 1u) * K + ac;
+    ulong b_row0 = (ulong)min(n0 + ar, N - 1u) * K + ac;
+    ulong b_row1 = (ulong)min(n0 + 16u + ar, N - 1u) * K + ac;
+
+    uint k_fast = aligned_k ? (K & ~31u) : 0u;
     for (uint k0 = 0u; k0 < k_fast; k0 += BK) {
-        uint lr0 = ar;
-        uint lr1 = 16u + ar;
-        *(threadgroup float4*)(As + lr0 * STRIDE + ac) =
-            float4(*(device const bfloat4*)(input + (ulong)(m0 + lr0) * K + k0 + ac));
-        *(threadgroup float4*)(As + lr1 * STRIDE + ac) =
-            float4(*(device const bfloat4*)(input + (ulong)(m0 + lr1) * K + k0 + ac));
-        *(threadgroup float4*)(Bs + lr0 * STRIDE + ac) =
-            float4(*(device const bfloat4*)(weight + (ulong)(n0 + lr0) * K + k0 + ac));
-        *(threadgroup float4*)(Bs + lr1 * STRIDE + ac) =
-            float4(*(device const bfloat4*)(weight + (ulong)(n0 + lr1) * K + k0 + ac));
+        *(threadgroup bfloat4*)(As + ar * STRIDE + ac) =
+            *(device const bfloat4*)(input + a_row0 + k0);
+        *(threadgroup bfloat4*)(As + (16u + ar) * STRIDE + ac) =
+            *(device const bfloat4*)(input + a_row1 + k0);
+        *(threadgroup bfloat4*)(Bs + ar * STRIDE + ac) =
+            *(device const bfloat4*)(weight + b_row0 + k0);
+        *(threadgroup bfloat4*)(Bs + (16u + ar) * STRIDE + ac) =
+            *(device const bfloat4*)(weight + b_row1 + k0);
 
         threadgroup_barrier(mem_flags::mem_threadgroup);
 
+        #pragma unroll
         for (uint kk = 0u; kk < BK; kk += 8u) {
-            simdgroup_float8x8 a_frag[2];
-            simdgroup_float8x8 b_frag[2];
+            simdgroup_bfloat8x8 a_frag[2];
+            simdgroup_bfloat8x8 b_frag[2];
             simdgroup_load(a_frag[0], As + (sg_m * 16u + 0u) * STRIDE + kk, STRIDE, ulong2(0, 0), false);
             simdgroup_load(a_frag[1], As + (sg_m * 16u + 8u) * STRIDE + kk, STRIDE, ulong2(0, 0), false);
             simdgroup_load(b_frag[0], Bs + (sg_n * 16u + 0u) * STRIDE + kk, STRIDE, ulong2(0, 0), true);
@@ -314,50 +318,48 @@ kernel void fast_bf16_gemm_m32(
             uint gr_a = m0 + lr;
             uint dst_a = lr * STRIDE + ac;
             if (gr_a < M && full_k) {
-                *(threadgroup float4*)(As + dst_a) =
-                    float4(*(device const bfloat4*)(input + (ulong)gr_a * K + k0 + ac));
+                *(threadgroup bfloat4*)(As + dst_a) =
+                    *(device const bfloat4*)(input + (ulong)gr_a * K + k0 + ac);
             } else {
                 for (uint c = 0u; c < 4u; ++c) {
                     uint gc = k0 + ac + c;
-                    As[dst_a + c] = (gr_a < M && gc < K) ? float(input[(ulong)gr_a * K + gc]) : 0.0f;
+                    As[dst_a + c] = (gr_a < M && gc < K) ? input[(ulong)gr_a * K + gc] : bfloat(0.0f);
                 }
             }
 
             uint gr_b = n0 + lr;
             uint dst_b = lr * STRIDE + ac;
             if (gr_b < N && full_k) {
-                *(threadgroup float4*)(Bs + dst_b) =
-                    float4(*(device const bfloat4*)(weight + (ulong)gr_b * K + k0 + ac));
+                *(threadgroup bfloat4*)(Bs + dst_b) =
+                    *(device const bfloat4*)(weight + (ulong)gr_b * K + k0 + ac);
             } else {
                 for (uint c = 0u; c < 4u; ++c) {
                     uint gc = k0 + ac + c;
-                    Bs[dst_b + c] = (gr_b < N && gc < K) ? float(weight[(ulong)gr_b * K + gc]) : 0.0f;
+                    Bs[dst_b + c] = (gr_b < N && gc < K) ? weight[(ulong)gr_b * K + gc] : bfloat(0.0f);
                 }
             }
         }
 
         threadgroup_barrier(mem_flags::mem_threadgroup);
 
+        #pragma unroll
         for (uint kk = 0u; kk < BK; kk += 8u) {
-            simdgroup_float8x8 a_frag[2];
-            simdgroup_float8x8 b_frag[2];
-            for (uint i = 0u; i < 2u; ++i) {
-                simdgroup_load(a_frag[i], As + (sg_m * 16u + i * 8u) * STRIDE + kk, STRIDE, ulong2(0, 0), false);
-            }
-            for (uint j = 0u; j < 2u; ++j) {
-                simdgroup_load(b_frag[j], Bs + (sg_n * 16u + j * 8u) * STRIDE + kk, STRIDE, ulong2(0, 0), true);
-            }
-            for (uint i = 0u; i < 2u; ++i) {
-                for (uint j = 0u; j < 2u; ++j) {
-                    simdgroup_multiply_accumulate(acc[i][j], a_frag[i], b_frag[j], acc[i][j]);
-                }
-            }
+            simdgroup_bfloat8x8 a_frag[2];
+            simdgroup_bfloat8x8 b_frag[2];
+            simdgroup_load(a_frag[0], As + (sg_m * 16u + 0u) * STRIDE + kk, STRIDE, ulong2(0, 0), false);
+            simdgroup_load(a_frag[1], As + (sg_m * 16u + 8u) * STRIDE + kk, STRIDE, ulong2(0, 0), false);
+            simdgroup_load(b_frag[0], Bs + (sg_n * 16u + 0u) * STRIDE + kk, STRIDE, ulong2(0, 0), true);
+            simdgroup_load(b_frag[1], Bs + (sg_n * 16u + 8u) * STRIDE + kk, STRIDE, ulong2(0, 0), true);
+            simdgroup_multiply_accumulate(acc[0][0], a_frag[0], b_frag[0], acc[0][0]);
+            simdgroup_multiply_accumulate(acc[0][1], a_frag[0], b_frag[1], acc[0][1]);
+            simdgroup_multiply_accumulate(acc[1][0], a_frag[1], b_frag[0], acc[1][0]);
+            simdgroup_multiply_accumulate(acc[1][1], a_frag[1], b_frag[1], acc[1][1]);
         }
 
         threadgroup_barrier(mem_flags::mem_threadgroup);
     }
 
-    threadgroup float* Cs = smem;
+    threadgroup float* Cs = (threadgroup float*)smem_v;
     for (uint i = 0u; i < 2u; ++i) {
         for (uint j = 0u; j < 2u; ++j) {
             simdgroup_store(
@@ -371,8 +373,8 @@ kernel void fast_bf16_gemm_m32(
     threadgroup_barrier(mem_flags::mem_threadgroup);
 
     for (uint idx = tid; idx < BM * BN; idx += 128u) {
-        uint r = idx / BN;
-        uint c = idx % BN;
+        uint r = idx >> 5;
+        uint c = idx & 31u;
         uint gr = m0 + r;
         uint gc = n0 + c;
         if (gr < M && gc < N) {
@@ -690,9 +692,9 @@ kernel void fast_bf16_flash_attn(
     threadgroup float sm_o[4 * 512]; // Supports head_dim <= 512 (8 KiB)
 
     if (head_dim == 256u) {
-        device const ushort4* q4 = (device const ushort4*)(q + q_base);
-        float4 q0 = bf16_load4(q4[lane]);
-        float4 q1 = bf16_load4(q4[lane + 32u]);
+        device const bfloat4* q4 = (device const bfloat4*)(q + q_base);
+        float4 q0 = float4(q4[lane]);
+        float4 q1 = float4(q4[lane + 32u]);
         float4 o0 = float4(0.0f);
         float4 o1 = float4(0.0f);
         float m_max = -INFINITY;
@@ -702,9 +704,9 @@ kernel void fast_bf16_flash_attn(
             uint phys_block = seq_blocks[j >> 4];
             uint page_off = j & 15u;
             ulong kv_off = (((ulong)phys_block * kv_heads + kh) * 16u + page_off) * 256u;
-            device const ushort4* k4 = (device const ushort4*)(k_cache + kv_off);
-            device const ushort4* v4 = (device const ushort4*)(v_cache + kv_off);
-            float partial = dot(q0, bf16_load4(k4[lane])) + dot(q1, bf16_load4(k4[lane + 32u]));
+            device const bfloat4* k4 = (device const bfloat4*)(k_cache + kv_off);
+            device const bfloat4* v4 = (device const bfloat4*)(v_cache + kv_off);
+            float partial = dot(q0, float4(k4[lane])) + dot(q1, float4(k4[lane + 32u]));
             float score = bf16_load(bf16_rne(simd_sum(partial)));
 
             float new_max = max(m_max, score);
@@ -712,8 +714,8 @@ kernel void fast_bf16_flash_attn(
             float w = exp(score - new_max);
             l_sum = l_sum * alpha + w;
             m_max = new_max;
-            o0 = o0 * alpha + w * bf16_load4(v4[lane]);
-            o1 = o1 * alpha + w * bf16_load4(v4[lane + 32u]);
+            o0 = o0 * alpha + w * float4(v4[lane]);
+            o1 = o1 * alpha + w * float4(v4[lane + 32u]);
         }
 
         if (lane == 0u) {
@@ -725,11 +727,11 @@ kernel void fast_bf16_flash_attn(
         sm_o[dst0 + 0u] = o0.x; sm_o[dst0 + 1u] = o0.y; sm_o[dst0 + 2u] = o0.z; sm_o[dst0 + 3u] = o0.w;
         sm_o[dst1 + 0u] = o1.x; sm_o[dst1 + 1u] = o1.y; sm_o[dst1 + 2u] = o1.z; sm_o[dst1 + 3u] = o1.w;
     } else if (head_dim == 512u) {
-        device const ushort4* q4 = (device const ushort4*)(q + q_base);
-        float4 q0 = bf16_load4(q4[lane]);
-        float4 q1 = bf16_load4(q4[lane + 32u]);
-        float4 q2 = bf16_load4(q4[lane + 64u]);
-        float4 q3 = bf16_load4(q4[lane + 96u]);
+        device const bfloat4* q4 = (device const bfloat4*)(q + q_base);
+        float4 q0 = float4(q4[lane]);
+        float4 q1 = float4(q4[lane + 32u]);
+        float4 q2 = float4(q4[lane + 64u]);
+        float4 q3 = float4(q4[lane + 96u]);
         float4 o0 = float4(0.0f), o1 = float4(0.0f), o2 = float4(0.0f), o3 = float4(0.0f);
         float m_max = -INFINITY;
         float l_sum = 0.0f;
@@ -738,12 +740,12 @@ kernel void fast_bf16_flash_attn(
             uint phys_block = seq_blocks[j >> 4];
             uint page_off = j & 15u;
             ulong kv_off = (((ulong)phys_block * kv_heads + kh) * 16u + page_off) * 512u;
-            device const ushort4* k4 = (device const ushort4*)(k_cache + kv_off);
-            device const ushort4* v4 = (device const ushort4*)(v_cache + kv_off);
-            float partial = dot(q0, bf16_load4(k4[lane]))
-                          + dot(q1, bf16_load4(k4[lane + 32u]))
-                          + dot(q2, bf16_load4(k4[lane + 64u]))
-                          + dot(q3, bf16_load4(k4[lane + 96u]));
+            device const bfloat4* k4 = (device const bfloat4*)(k_cache + kv_off);
+            device const bfloat4* v4 = (device const bfloat4*)(v_cache + kv_off);
+            float partial = dot(q0, float4(k4[lane]))
+                          + dot(q1, float4(k4[lane + 32u]))
+                          + dot(q2, float4(k4[lane + 64u]))
+                          + dot(q3, float4(k4[lane + 96u]));
             float score = bf16_load(bf16_rne(simd_sum(partial)));
 
             float new_max = max(m_max, score);
@@ -751,10 +753,10 @@ kernel void fast_bf16_flash_attn(
             float w = exp(score - new_max);
             l_sum = l_sum * alpha + w;
             m_max = new_max;
-            o0 = o0 * alpha + w * bf16_load4(v4[lane]);
-            o1 = o1 * alpha + w * bf16_load4(v4[lane + 32u]);
-            o2 = o2 * alpha + w * bf16_load4(v4[lane + 64u]);
-            o3 = o3 * alpha + w * bf16_load4(v4[lane + 96u]);
+            o0 = o0 * alpha + w * float4(v4[lane]);
+            o1 = o1 * alpha + w * float4(v4[lane + 32u]);
+            o2 = o2 * alpha + w * float4(v4[lane + 64u]);
+            o3 = o3 * alpha + w * float4(v4[lane + 96u]);
         }
 
         if (lane == 0u) {

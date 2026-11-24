@@ -409,7 +409,7 @@ impl MetalFastSession<'_> {
             let tgs = u64::from(n_u32).div_ceil(8);
             self.encoder
                 .dispatch_thread_groups(MTLSize::new(tgs, 1, 1), MTLSize::new(128, 1, 1));
-        } else if rows <= 32 {
+        } else if rows <= 16 {
             let (pipeline, bm) = if rows == 2 {
                 (&self.executor.fast.gemv_m2, 2_u64)
             } else if rows <= 4 {

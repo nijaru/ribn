@@ -2694,6 +2694,44 @@ Re-verified on the unchanged M3 Max / `google/gemma-4-E4B-it` BF16 snapshot:
     repeated `seed=42`, distinct coherent output on `seed=999`, HTTP 400 on invalid
     `temperature=-0.1` and `top_p=0.0`.
 
-Scope limits: single-host M3 Max BF16 observations; does not replace multi-process
-matched-quality external serving cohorts, CUDA/4090 qualification, or
+### Mixed-precision BF16 MMA prefill GEMM and head-to-head HTTP serving vs `mlx-lm==0.32.2` (2026-11-24)
+
+Upgraded `fast_bf16_gemm_m32` (`crates/metal/src/bf16_fast.metal`) from FP32 shared-memory
+tiles + `simdgroup_float8x8` MMA to **5 KiB BF16 shared-memory tiles + hardware
+`simdgroup_bfloat8x8 → simdgroup_float8x8` MMA** with clamped in-bounds row pointers so
+edge tiles (`M = 18`, `M = 511`, etc.) stay on the branch-free vectorized `bfloat4` loop,
+switched `fast_bf16_flash_attn` (`head_dim = 256/512`) to native `bfloat4` loads, and raised
+`DEFAULT_METAL_MAX_BATCH_TOKENS` / `prefill_chunk_tokens` from `128` to `512` (adding ~0.01 GiB
+scratch RSS).
+
+Re-verified on the unchanged M3 Max / `google/gemma-4-E4B-it` BF16 snapshot:
+- **Numerical gates:** 12/12 stock CPU BF16 oracle winners exact (`worst_rel_l2 = 0.03108`,
+  `worst_kl = 0.006894`), 16-token vs 1-token prefill bit-identical, and `window_513` cached-prefix
+  prefill bit-identical (`444.90 ms → 35.02 ms`, 12.7×).
+- **Direct warm latency:** `prefill 18` **54.47 ms**, `prefill 32` **55.06 ms** (17% faster than
+  MLX 64.28 ms), `prefill 64` **71.55 ms** (matching MLX 71.23 ms), `prefill 128` **115.40 ms**
+  (1,109 tok/s), `prefill 256` **212.30 ms** (1,206 tok/s), `prefill 512` **414.18 ms**
+  (1,236 tok/s); `decode M = 1/4/8/16` **31.8 / 120.8 / 222.2 / 349.1 tok/s**.
+
+Same-day serialized loopback HTTP SSE comparison on the identical unconverted BF16
+`google/gemma-4-E4B-it` snapshot (`ee0ef602…`, `temperature = 0`, `top_p = 1`, `stream = true`,
+`--chat-template-args '{"enable_thinking":false}'` on `mlx-lm==0.32.2` / `mlx==0.32.4` with
+`--decode-concurrency 16 --prompt-concurrency 8`; verified identical `19/657/996` prompt token
+counts on both servers):
+
+| HTTP SSE workload (`max_tokens = 64` unless noted) | `ribn serve-gemma` | `mlx-lm 0.32.2` (`c=16`) |
+| --- | ---: | ---: |
+| Short `c = 1` (`in=19, out=49`) | **31.6 tok/s** · TTFT **54.8 ms** · ITL **31.1 ms** | 31.0 tok/s · TTFT 84.8 ms · ITL 31.2 ms |
+| Short `c = 4` (`in=19, out=222/225`) | **99.2 tok/s** · TTFT **158.8 ms** · ITL 32.9 ms | 82.4 tok/s · TTFT 717.6 ms · ITL 31.8 ms |
+| Short `c = 8` (`in=19, out=478/477`) | 198.6 tok/s · TTFT **178.7/179.1 ms** · ITL 35.2 ms | **203.7 tok/s** · TTFT 184.8/202.8 ms · ITL 33.8 ms |
+| Short `c = 16` (`in=19, out=990/991`) | **322.9 tok/s** · TTFT **256.1/257.1 ms** · ITL **44.5 ms** | 251.4 tok/s · TTFT 317.4/341.0 ms · ITL 60.7 ms |
+| Mixed `c = 8` (4 short + 4×657-tok, `out=445`) | **111.9 tok/s** (`3.976s`) · TTFT **701.7 / 1,740.8 ms** | 100.4 tok/s (`4.431s`) · TTFT 2,273.4 / 2,273.9 ms |
+| Prefix `c = 1` warm TTFT (`in=994`, 32 out) | **59.1 ms** (14.5× hit) | 87.7 ms (5.6× hit) |
+| Prefix burst `c = 4` (`out=85/81`) | 68.6 tok/s (`1.239s`) · med TTFT **106.0 ms** | **74.0 tok/s** (`1.095s`) · med TTFT 142.2 ms |
+| Prefix burst `c = 8` (`out=208/204`) | 135.6 tok/s (`1.534s`) · p95 TTFT **240.5 ms** | **141.2 tok/s** (`1.444s`) · p95 TTFT 251.0 ms |
+| Long `c = 1` cold prefill (`in=657 / 996`) | 567.7 ms / 855.4 ms | **358.0 ms / 495.4 ms** |
+| Steady-state RSS / SIGTERM exit | 16.12–16.13 GiB / **exit 0** | **14.95–14.96 GiB** / exit 143 |
+
+Scope limits: single-process-per-server M3 Max BF16 observation; does not replace multi-process
+randomized matched-quality external serving cohorts, CUDA/4090 qualification, or
 memory-pressure/recovery qualification under constrained RAM.
