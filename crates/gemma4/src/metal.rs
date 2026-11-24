@@ -108,11 +108,19 @@ mod activation;
 mod attention;
 #[cfg(test)]
 mod graph_tests;
+mod modelwide;
+mod modelwide_executor;
+mod sampling;
 use activation::GeluTable;
 use attention::attention_forward;
 use engine_metal::{
     MetalAttentionConfig, MetalBf16Error, MetalFfnWeights, MetalLinearShape, MetalProjectionNorm,
 };
+pub use modelwide::{
+    DEFAULT_METAL_MAX_BATCH_TOKENS, DEFAULT_METAL_MAX_POSITIONS, DEFAULT_METAL_MAX_SEQUENCES,
+    Gemma4MetalModelWide, Gemma4MetalModelWideConfig, PackedStepItem, PackedStepOutput,
+};
+pub use modelwide_executor::Gemma4MetalModelWideExecutor;
 
 // Bound the encoded packed RMS upload, native result and host result to 2 MiB each.
 // Larger prompt chunks or PLE geometries retain layer-at-a-time normalization.

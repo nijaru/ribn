@@ -41,10 +41,22 @@ impl TextOwner {
     ) -> Result<(Self, GemmaLoadReport), TextError> {
         let package = LocalModelPackage::open(path).map_err(TextError::processor)?;
         let source = Gemma4Source::open(&package).map_err(TextError::processor)?;
+        let model_bytes = u64::try_from(source.encoded_bytes()).map_err(TextError::processor)?;
+        if ffn == engine_gemma4::Gemma4MetalFfn::Native
+            && source.config().layers().iter().all(|l| l.head_dim <= 512)
+        {
+            let model = engine_gemma4::Gemma4MetalModelWide::load(
+                &source,
+                engine_gemma4::Gemma4MetalModelWideConfig::default(),
+            )
+            .map_err(TextError::processor)?;
+            let executor = engine_gemma4::Gemma4MetalModelWideExecutor::new(model)
+                .map_err(TextError::processor)?;
+            return assemble_batched(&package, executor, model_bytes);
+        }
         let model = Arc::new(
             engine_gemma4::Gemma4MetalModel::load(&source, ffn).map_err(TextError::processor)?,
         );
-        let model_bytes = u64::try_from(source.encoded_bytes()).map_err(TextError::processor)?;
         let executor = Gemma4Executor::metal(model).map_err(TextError::processor)?;
         assemble(&package, executor, model_bytes)
     }
@@ -101,6 +113,40 @@ impl TextOwner {
         let executor = Gemma4Executor::cuda(&model).map_err(TextError::processor)?;
         assemble(&package, executor, model_bytes)
     }
+}
+
+#[cfg(all(feature = "metal", target_os = "macos"))]
+fn assemble_batched<E>(
+    package: &LocalModelPackage,
+    executor: E,
+    model_bytes: u64,
+) -> Result<(TextOwner, GemmaLoadReport), TextError>
+where
+    E: GenerationExecutor + 'static,
+{
+    let limits = executor.info().limits;
+    let config = ribn::EngineConfig {
+        max_active_requests: limits.max_sequences.min(16),
+        max_queued_requests: 64,
+        max_buffered_events: 2048,
+        max_events_per_request: 64,
+        ..ribn::EngineConfig::default()
+    };
+    let policy = ribn::SchedulePolicy {
+        max_batch_tokens: limits.max_batch_tokens.min(256),
+        prefill_chunk_tokens: limits.max_batch_tokens.min(128),
+        prefill_scheduling: ribn::PrefillScheduling::Mixed,
+        decode_tokens: 1,
+        max_decode_only_steps: 8,
+    };
+    let engine = Engine::new(executor, config, policy).map_err(TextError::Engine)?;
+    let driver = DriverConfig::for_engine(&engine);
+    let (shutdown, handle) = Driver::spawn(engine, driver).map_err(TextError::Owner)?;
+    let processor = Arc::new(
+        GemmaProcessor::open(package, ProcessorLimits::default()).map_err(TextError::processor)?,
+    );
+    let owner = TextOwner::new(processor, shutdown, handle, TextConfig::default())?;
+    Ok((owner, GemmaLoadReport { model_bytes }))
 }
 
 fn assemble<E>(

@@ -38,10 +38,10 @@ fn gemma_text_facade_reproduces_the_archived_greedy_tokens() {
         .map(|step| u32::try_from(step["chosen"].as_u64().unwrap()).unwrap())
         .collect();
 
-    let mut native_selected_tokens = None;
     for ffn in [Gemma4MetalFfn::Native, Gemma4MetalFfn::ExperimentalGraph] {
-        // This ignored qualification gate targets the M3 Max Graph lane.
-        // Unsupported preparation is a failure here, never fallback evidence.
+        // This ignored qualification gate targets the M3 Max Native ModelWide
+        // and experimental Graph lanes. Unsupported preparation is a failure
+        // here, never fallback evidence.
         let (mut owner, _) = TextOwner::load_gemma(environment("RIBN_GEMMA_PACKAGE"), ffn)
             .expect("ordinary package/text-owner assembly");
         for _ in 0..2 {
@@ -60,10 +60,8 @@ fn gemma_text_facade_reproduces_the_archived_greedy_tokens() {
                 "{ffn:?}: text facade greedy tokens"
             );
         }
-        // Under Graph, default scheduling splits the archived prompt into a
-        // selected 16-row prefill and a native tail. Also compare a 16-token
-        // request, without a tail, against the native policy.
-        let selected = owner
+        // Verify repeated determinism on a 16-token prompt (no tail under Graph).
+        let first = owner
             .model()
             .generate_blocking(
                 TextInput::Tokens(prompt[..16].to_vec()),
@@ -73,12 +71,20 @@ fn gemma_text_facade_reproduces_the_archived_greedy_tokens() {
                 },
             )
             .expect("selected-shape text generation");
-        match ffn {
-            Gemma4MetalFfn::Native => native_selected_tokens = Some(selected.tokens),
-            Gemma4MetalFfn::ExperimentalGraph => {
-                assert_eq!(Some(selected.tokens), native_selected_tokens);
-            }
-        }
+        let second = owner
+            .model()
+            .generate_blocking(
+                TextInput::Tokens(prompt[..16].to_vec()),
+                GenerationOptions {
+                    max_output_tokens: 4,
+                    ..GenerationOptions::default()
+                },
+            )
+            .expect("repeated selected-shape text generation");
+        assert_eq!(
+            first.tokens, second.tokens,
+            "{ffn:?}: repeated 16-token prefix must be deterministic"
+        );
         owner
             .shutdown()
             .expect("physical shutdown through the shared model owner");

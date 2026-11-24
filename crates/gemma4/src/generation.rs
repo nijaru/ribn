@@ -49,6 +49,14 @@ impl LogicalSequence {
                 "Gemma executor currently supports greedy sampling only",
             ));
         }
+        Self::new_sampled(config, context_tokens, request)
+    }
+
+    pub(crate) fn new_sampled(
+        config: &Gemma4Config,
+        context_tokens: u32,
+        request: &TokenRequest,
+    ) -> Result<Self, ExecutionError> {
         let prompt = u32::try_from(request.tokens.len())
             .map_err(|_| ExecutionError::new("prompt length exceeds u32"))?;
         let output = request.options.max_output_tokens;

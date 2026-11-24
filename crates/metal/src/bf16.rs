@@ -7,6 +7,7 @@ use std::{mem::ManuallyDrop, sync::Mutex};
 
 mod attention;
 mod execution;
+mod fast;
 mod graph;
 mod loading;
 mod projection;
@@ -14,6 +15,7 @@ mod rotary;
 mod submission;
 
 pub use attention::MetalAttentionConfig;
+pub use fast::{MetalDeviceBf16, MetalDeviceF32, MetalDeviceU32, MetalFastSession};
 pub use projection::{
     MetalAttentionProjections, MetalFfnWeights, MetalLinearShape, MetalNormalizedProjection,
     MetalProjectionNorm,
@@ -112,6 +114,7 @@ pub struct MetalBf16Executor {
     rotary: ComputePipelineState,
     elementwise: ComputePipelineState,
     lookup_product: ComputePipelineState,
+    fast: fast::FastPipelines,
 }
 
 impl Drop for MetalBf16Executor {
@@ -220,6 +223,7 @@ impl MetalBf16Executor {
         let lookup_product = device
             .new_compute_pipeline_state_with_function(&lookup_product)
             .map_err(MetalBf16Error::Pipeline)?;
+        let fast = fast::FastPipelines::compile(&device)?;
         let queue = Self::command_queue(&device)?;
         // Do not extend an optimization measured on M3 Max to other Apple GPUs.
         let block_linear_rows = device.name() == "Apple M3 Max";
@@ -244,6 +248,7 @@ impl MetalBf16Executor {
             rotary,
             elementwise,
             lookup_product,
+            fast,
         })
     }
 

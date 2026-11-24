@@ -383,9 +383,9 @@ Shared CUDA physical retirement and downstream-workspace progress remain unprove
 | `crates/qwen` / `engine-qwen` | Qwen config, GGUF mapping, CUDA assembly and AR adapter; serving benchmark |
 | `crates/nvidia` / `engine-nvidia` | NVIDIA storage, completion, dispatch and kernels |
 | `crates/bert` / `engine-bert` | BERT semantics, preparation, executor binding and device retirement |
-| `crates/gemma4` / `engine-gemma4` | Gemma 4 text processing, config, source/KV preflight, CPU text decoder and separate vision component, native BF16 CUDA weight/compute bindings |
+| `crates/gemma4` / `engine-gemma4` | Gemma 4 text processing, config, source/KV preflight, CPU text decoder and separate vision component, model-wide single-command-buffer Metal continuous-batching engine and native BF16 CUDA bindings |
 | `crates/inkling2` / `engine-inkling2` | Inkling 2 / Inkling 2 Loop config, GGUF inventory/preflight, logical slot continuation, CPU reference forward and greedy AR executor |
-| `crates/metal` / `engine-metal` | Apple Metal BF16 linear/RMS/rotary/attention/elementwise primitives; macOS-gated, no decoder |
+| `crates/metal` / `engine-metal` | Apple Metal BF16 primitives, Metal 3.1 single-command-buffer fast GEMV/tiled-GEMM/FlashAttention/fused-norm kernels and persistent device buffers; macOS-gated |
 | `crates/core` / `engine-core` | Prepared batch, backend submission, continuation state and weight contracts; no scheduler, plan or model description |
 | `crates/gguf` / `engine-gguf` | GGUF artifact access and current tokenizer/chat-template implementation |
 | `crates/safetensors` / `ribn-safetensors` | Validated SafeTensors metadata and bounded payload readers |

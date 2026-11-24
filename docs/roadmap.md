@@ -53,9 +53,14 @@ Neither workload establishes a clean competitive ranking.
    device PLE, sampled-token readout, capture or fusion from measured
    losses, not the launch count. Do not repeat unchanged negative
    M4, descriptors, PLE-only, attention and FFN graph candidates.
-   On Metal, [wide single-row prefill](../benchmarks/gemma4-metal-baseline.md#fifo-single-row-wide-prefill-under-recurring-arrivals-2026-11-23)
-   is a measured candidate, not the default. Validate the live allocation
-   envelope and compare broader arrival/latency cohorts before loader selection.
+   On Metal, the single-command-buffer model-wide engine (`Gemma4MetalModelWide`
+   + `Gemma4MetalModelWideExecutor`) is now the default `Native` loader path for
+   `head_dim <= 512`, matching all 12 archived CPU BF16 oracle winners on M3 Max
+   and reaching 31.7 ms `M=1` decode (356 tok/s direct at `M=16`; 310.9 tok/s
+   live HTTP SSE at `c=16`, 45.7 ms median ITL; see
+   [Metal baseline](../benchmarks/gemma4-metal-baseline.md#single-command-buffer-model-wide-metal-engine-2026-11-24)).
+   Formal multi-process matched-quality external serving cohorts, memory-pressure
+   recovery under constrained RAM, and CUDA/4090 packed-batch parity remain open.
 3. **Native versus externally prepared executor, concurrently.**
    Test a pinned Gemma model and at least two contexts/shapes through
    a truly Rust-invocable prepared program; compare full numerical/

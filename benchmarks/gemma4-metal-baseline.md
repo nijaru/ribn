@@ -2582,3 +2582,88 @@ selection or metrics. Accepted preparation, preflight, supervisor, analysis and
 post-run verification exit zero. No production arithmetic, dependency, environment
 or default changes; no desktop access, new CPU model run or performance cohort.
 The unchanged-code gates above are reused; ignored device suites are not rerun.
+
+## Single-command-buffer model-wide Metal engine (2026-11-24)
+
+**Promoted as default `Gemma4MetalFfn::Native` path (`TextOwner::load_gemma`):**
+replaces the host-orchestrated, per-layer synchronous `Gemma4MetalDecoder` for
+models with `head_dim <= 512` (retaining `Gemma4MetalDecoder` for explicit
+`ExperimentalGraph` opt-in and wider heads).
+
+- **`engine-metal` (`bf16_fast.metal` + `bf16/fast.rs`):** Metal 3.1 kernels
+  encoded into one `MTLCommandBuffer` per forward step over pre-allocated
+  persistent `MetalDeviceBf16`/`MetalDeviceU32`/`MetalDeviceF32` storage:
+  coalesced `bfloat4` SIMD-group GEMV (`M = 1` with 2× K-unroll, and 2D
+  L2-sharing batched GEMV `M = 2..=32`), branch-hoisted `simdgroup_float8x8`
+  tiled GEMM (`BM=32, BN=32, BK=32`, `M > 32`), GPU embedding/PLE gather,
+  fused PLE scale+RMS+combine+transpose, SIMD RMSNorm, fused residual-add+RMS,
+  in-place Q norm+split-half RoPE, fused K/V norm+RoPE+direct device KV write,
+  4-SIMD-group batched online-softmax FlashAttention (`head_dim <= 512`, sliding
+  + full, shared-tail KV owners), exact 128 KiB table GeGLU with atomic
+  non-finite flagging, output-row gather+final RMS, and in-place Gemma 4
+  softcap + deterministic argmax.
+- **`engine-gemma4` (`metal/modelwide.rs`, `metal/modelwide_executor.rs`,
+  `metal/sampling.rs`):** `Gemma4MetalModelWide` owns weights, persistent
+  device KV caches (`[max_sequences, kv_heads, max_positions, head_dim]`),
+  pre-uploaded FP32 RoPE inverse frequencies, and pre-allocated batch scratch
+  (zero per-step Metal buffer allocations, zero CPU KV copies, zero per-layer
+  waits). `Gemma4MetalModelWideExecutor` packs all offered prefill and decode
+  rows into one command buffer, skips LM head on intermediate prefill chunks,
+  and supports both GPU argmax (`temperature == 0`) and deterministic FP32
+  host sampling (`temperature`, `top_p`, `top_k`, `seed`).
+- **Loader defaults (`crates/text/src/gemma_load.rs`):** selects
+  `max_sequences = 16`, `max_positions = 4096`, `max_batch_tokens = 256`,
+  `prefill_chunk_tokens = 128`, `max_active_requests = 16`,
+  `max_buffered_events = 2048`.
+
+### Numerical qualification (12 archived stock CPU BF16 rows, M3 Max)
+
+Verified with `cargo test --release -p engine-gemma4 --features metal --test metal_modelwide e4b_modelwide_matches_12_row_bf16_oracle_and_benchmarks -- --ignored --nocapture`
+against the unchanged `google/gemma-4-E4B-it` BF16 snapshot (`ee0ef602…`) and
+archived stock CPU BF16 reference (`2026-10-18/bf16`):
+
+| Metric against stock CPU BF16 | `Gemma4MetalModelWide` | Prior Ribn Metal | MLX (`0.32.4`) |
+| --- | ---: | ---: | ---: |
+| Finite full-vocabulary rows | 12/12 | 12/12 | 12/12 |
+| Matching prediction winners | 12/12 | 12/12 | 12/12 |
+| Largest absolute logit error | 0.750 | 0.8125 | 1.0332 |
+| Per-row RMSE range | 0.0639–0.3088 | 0.0684–0.4245 | 0.0694–0.2784 |
+| Per-row relative L2 range | 0.00631–0.03108 | 0.00508–0.03507 | 0.00327–0.02614 |
+| Largest `KL(reference || backend)` | 0.006894 (`window_511[1]`) | 0.001195 | 0.003444 |
+
+Whole 16-token prefill matches token-by-token prefill bit-for-bit across all
+262,144 logits (`RMSE = 0.00000`, `max_abs = 0.0000`). The `ribn-text`
+`gemma_metal` facade gate also passes on both `Native` (model-wide) and
+`ExperimentalGraph`.
+
+### Direct latency and live HTTP SSE serving (M3 Max, 128 GiB, BF16 E4B)
+
+Single-process warmed direct calls (minimum of 3 prefill runs / 5 decode steps):
+
+| Direct workload | Prior Ribn Metal | MLX (`0.32.4`) | `Gemma4MetalModelWide` |
+| --- | ---: | ---: | ---: |
+| Prefill 8 tokens | 161.70 ms | 32.66 ms | **34.61 ms** (231 tok/s) |
+| Prefill 18 tokens | 229.62 ms | 63.16 ms | **54.41 ms** (331 tok/s) |
+| Prefill 32 tokens | 732.17 ms | 64.28 ms | **67.32 ms** (475 tok/s) |
+| Prefill 64 tokens | 362.31 ms | 71.23 ms | **78.90 ms** (811 tok/s) |
+| Prefill 128 tokens | — | — | **132.13 ms** (969 tok/s) |
+| Decode `M = 1` | 148.55 ms (6.7 tok/s) | 31.09 ms (32.2 tok/s) | **31.65 ms** (31.5 tok/s) |
+| Decode `M = 2` | — | — | **33.01 ms** (60.4 tok/s) |
+| Decode `M = 4` | — | — | **33.30 ms** (119.8 tok/s) |
+| Decode `M = 8` | — | — | **35.67 ms** (222.9 tok/s) |
+| Decode `M = 16` | — | — | **44.22 ms** (356.3 tok/s) |
+
+Live loopback `ribn serve-gemma` (`/v1/chat/completions`, `stream=true`,
+`max_tokens=64`, `temperature=0`, server ready in 2.81s, RSS 18.26 GiB stable,
+clean SIGTERM exit 0):
+
+| Concurrency (`64 tok/req`) | Burst wall | Aggregate output | Median / p95 TTFT | Median / p95 ITL |
+| ---: | ---: | ---: | ---: | ---: |
+| `c = 1` | 2.064 s | **31.0 tok/s** | 54.0 / 54.0 ms | 31.9 / 32.2 ms |
+| `c = 4` | 2.322 s | **110.2 tok/s** | 219.0 / 219.0 ms | 33.4 / 33.7 ms |
+| `c = 8` | 2.544 s | **201.3 tok/s** | 150.2 / 279.7 ms | 35.9 / 36.8 ms |
+| `c = 16` | 3.294 s | **310.9 tok/s** | 205.3 / 430.7 ms | 45.7 / 46.1 ms |
+
+Scope limits: single-host M3 Max BF16 observations; does not replace multi-process
+matched-quality external serving cohorts, CUDA/4090 qualification, or
+memory-pressure/recovery qualification under constrained RAM.
