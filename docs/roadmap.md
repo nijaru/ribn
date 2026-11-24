@@ -69,7 +69,10 @@ Neither workload establishes a clean competitive ranking.
    stalled-output recovery, then overlap independent submissions
    with immutable per-submission storage and real fences. Exact hybrid
    prefix reuse remains a separate workload-dependent experiment.
-5. **Broader architecture/hardware.** Complete Gemma VLM's failed
+5. **Broader architecture/hardware.** The next new text port is fixed-loop
+   Inkling 2 Mini. Start with the pinned [reference replay](../benchmarks/inkling-reference/README.md)
+   and qualify continued execution across loop passes and the sliding-window
+   boundary before exposing serving support. Continue Gemma VLM's failed
    full-checkpoint numerical and feature-handoff gates, then test
    a different architecture and backend. Bind encoder features to processor/model/input
    identity and exact prompt layout, with bounded structural metadata and producer
