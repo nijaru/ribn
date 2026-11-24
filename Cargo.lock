@@ -410,6 +410,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "engine-inkling2"
+version = "0.0.0"
+dependencies = [
+ "engine-gguf",
+ "ribn",
+ "ribn-text",
+ "serde_json",
+]
+
+[[package]]
 name = "engine-metal"
 version = "0.0.0"
 dependencies = [

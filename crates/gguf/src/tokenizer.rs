@@ -5,6 +5,7 @@ use crate::{
 };
 use regex::Regex;
 use std::collections::BTreeMap;
+use std::sync::OnceLock;
 
 /// A text role/content pair passed to the artifact's embedded chat template.
 #[derive(Clone, Debug, Eq, PartialEq, serde::Serialize)]
@@ -77,7 +78,7 @@ pub struct GgufTokenizer {
     /// Vocabulary spellings that encode as their own ID, longest first so that
     /// scanning at a position is greedy.
     special_markers: Vec<(String, u32)>,
-    bos_token_id: u32,
+    bos_token_id: Option<u32>,
     eos_token_id: u32,
     /// Additional declared EOS IDs from `tokenizer.ggml.eos_token_ids`.
     additional_eos_token_ids: Vec<u32>,
@@ -87,6 +88,80 @@ pub struct GgufTokenizer {
 }
 
 const QWEN35_PRETOKENIZER: &str = r"(?i:'s|'t|'re|'ve|'m|'ll|'d)|[^\r\n\p{L}\p{N}]?[\p{L}\p{M}]+|\p{N}| ?[^\s\p{L}\p{M}\p{N}]+[\r\n]*|\s+";
+
+/// GPT-4o / Inkling 2 pretokenizer. Rust's `regex` engine has no lookahead, so
+/// the final `\s+(?!\S)|\s+` branches are captured in group 1 and trimmed by
+/// one trailing whitespace character whenever followed by a non-whitespace char.
+const GPT4O_PRETOKENIZER: &str = concat!(
+    r"[^\r\n\p{L}\p{N}]?[\p{Lu}\p{Lt}\p{Lm}\p{Lo}\p{M}]*[\p{Ll}\p{Lm}\p{Lo}\p{M}]+(?i:'s|'t|'re|'ve|'m|'ll|'d)?",
+    r"|[^\r\n\p{L}\p{N}]?[\p{Lu}\p{Lt}\p{Lm}\p{Lo}\p{M}]+[\p{Ll}\p{Lm}\p{Lo}\p{M}]*(?i:'s|'t|'re|'ve|'m|'ll|'d)?",
+    r"|\p{N}{1,3}",
+    r"| ?[^\s\p{L}\p{N}]+[\r\n/]*",
+    r"|\s*[\r\n]+",
+    r"|(\s+)",
+);
+
+fn qwen35_regex() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| Regex::new(QWEN35_PRETOKENIZER).expect("valid Qwen3.5 pretokenizer regex"))
+}
+
+fn gpt4o_regex() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| Regex::new(GPT4O_PRETOKENIZER).expect("valid GPT-4o pretokenizer regex"))
+}
+
+/// `HuggingFace` training-mask tags (`{% generation %}` / `{% endgeneration %}`) are
+/// transparent no-ops during inference rendering. Replace them with empty expression
+/// tags carrying identical `-` whitespace-trim markers so `MiniJinja` preserves exact
+/// whitespace behavior without changing any other template construct.
+fn strip_hf_generation_tags(template: &str) -> std::borrow::Cow<'_, str> {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    if !template.contains("generation") {
+        return std::borrow::Cow::Borrowed(template);
+    }
+    let re = RE.get_or_init(|| {
+        Regex::new(r"\{%(-?)\s*(?:end)?generation\s*(-?)%\}").expect("valid generation tag regex")
+    });
+    re.replace_all(template, |caps: &regex::Captures<'_>| {
+        format!("{{{{{} \"\" {}}}}}", &caps[1], &caps[2])
+    })
+}
+
+fn pretokenize_gpt4o(text: &str) -> Result<Vec<&str>, GgufError> {
+    let re = gpt4o_regex();
+    let mut parts = Vec::new();
+    let mut pos = 0;
+    while pos < text.len() {
+        let Some(captures) = re.captures_at(text, pos) else {
+            return Err(GgufError::TokenizerEncoding {
+                detail: "pretokenizer did not cover the complete input".to_owned(),
+            });
+        };
+        let whole = captures
+            .get(0)
+            .expect("capture group 0 is always present on a match");
+        if whole.start() != pos || whole.is_empty() {
+            return Err(GgufError::TokenizerEncoding {
+                detail: "pretokenizer did not cover the complete input".to_owned(),
+            });
+        }
+        let mut end = whole.end();
+        if captures.get(1).is_some()
+            && text[end..]
+                .chars()
+                .next()
+                .is_some_and(|ch| !ch.is_whitespace())
+            && let Some((last_offset, _)) = whole.as_str().char_indices().next_back()
+            && last_offset > 0
+        {
+            end = whole.start() + last_offset;
+        }
+        parts.push(&text[pos..end]);
+        pos = end;
+    }
+    Ok(parts)
+}
 
 /// GGUF token type for tokens that carry structure rather than content.
 const TOKEN_TYPE_CONTROL: i32 = 3;
@@ -241,7 +316,7 @@ impl GgufTokenizer {
     }
 
     #[must_use]
-    pub const fn bos_token_id(&self) -> u32 {
+    pub const fn bos_token_id(&self) -> Option<u32> {
         self.bos_token_id
     }
 
@@ -288,9 +363,10 @@ impl GgufTokenizer {
         self.padding_token_id
     }
 
-    /// Encode ordinary text with the embedded Qwen3.5 GPT-2/BPE vocabulary.
-    /// Special-token parsing is intentionally not implicit; callers must handle
-    /// chat-template or special-token policy before invoking this method.
+    /// Encode ordinary text with an embedded GPT-2/BPE vocabulary (`qwen35`,
+    /// `inkling2`, or `gpt-4o` pretokenizers). Special-token parsing is
+    /// intentionally not implicit; callers must handle chat-template or
+    /// special-token policy before invoking this method.
     ///
     /// # Errors
     ///
@@ -299,24 +375,41 @@ impl GgufTokenizer {
     /// a merge is malformed, or a final BPE symbol is absent from the
     /// vocabulary.
     pub fn encode(&self, text: &str) -> Result<Vec<u32>, GgufError> {
-        if self.model != "gpt2" || self.pretokenizer != "qwen35" {
+        if self.model != "gpt2" {
             return Err(GgufError::InvalidTokenizer(
-                "only the embedded Qwen3.5 GPT-2 tokenizer is supported",
+                "only embedded GPT-2/BPE tokenizers are supported",
             ));
         }
-        let pretokenizer = Regex::new(QWEN35_PRETOKENIZER)
-            .map_err(|_| GgufError::InvalidTokenizer("invalid Qwen3.5 pretokenizer pattern"))?;
-        let mut encoded = Vec::new();
-        let mut end = 0;
-        for part in pretokenizer.find_iter(text) {
-            if part.start() != end {
-                return Err(GgufError::TokenizerEncoding {
-                    detail: "pretokenizer did not cover the complete input".to_owned(),
-                });
+        let parts: Vec<&str> = match self.pretokenizer.as_str() {
+            "qwen35" => {
+                let mut collected = Vec::new();
+                let mut end = 0;
+                for part in qwen35_regex().find_iter(text) {
+                    if part.start() != end {
+                        return Err(GgufError::TokenizerEncoding {
+                            detail: "pretokenizer did not cover the complete input".to_owned(),
+                        });
+                    }
+                    end = part.end();
+                    collected.push(part.as_str());
+                }
+                if end != text.len() {
+                    return Err(GgufError::TokenizerEncoding {
+                        detail: "pretokenizer did not cover the complete input".to_owned(),
+                    });
+                }
+                collected
             }
-            end = part.end();
+            "inkling2" | "gpt-4o" => pretokenize_gpt4o(text)?,
+            _ => {
+                return Err(GgufError::InvalidTokenizer(
+                    "unsupported GPT-2 pretokenizer",
+                ));
+            }
+        };
+        let mut encoded = Vec::new();
+        for part in parts {
             let mapped: Vec<String> = part
-                .as_str()
                 .as_bytes()
                 .iter()
                 .map(|byte| byte_token_symbol(*byte).to_string())
@@ -330,11 +423,6 @@ impl GgufTokenizer {
                 })?;
                 encoded.push(token_id);
             }
-        }
-        if end != text.len() {
-            return Err(GgufError::TokenizerEncoding {
-                detail: "pretokenizer did not cover the complete input".to_owned(),
-            });
         }
         Ok(encoded)
     }
@@ -512,8 +600,9 @@ impl GgufTokenizer {
                 ))
             },
         );
+        let normalized = strip_hf_generation_tags(template);
         environment
-            .add_template("chat", template)
+            .add_template("chat", normalized.as_ref())
             .map_err(|error| template_error(&error))?;
         let template = environment
             .get_template("chat")
@@ -635,7 +724,7 @@ impl GgufTokenizer {
             merges,
             token_types,
             special_markers,
-            bos_token_id: required_u32(metadata, "tokenizer.ggml.bos_token_id")?,
+            bos_token_id: optional_u32(metadata, "tokenizer.ggml.bos_token_id")?,
             eos_token_id,
             additional_eos_token_ids,
             padding_token_id: optional_u32(metadata, "tokenizer.ggml.padding_token_id")?,
@@ -715,7 +804,7 @@ mod tests {
             Err(GgufError::TokenizerEncoding { .. })
         ));
         assert!(tokenizer.encode("").expect("empty encoding").is_empty());
-        assert_eq!(tokenizer.bos_token_id(), 1);
+        assert_eq!(tokenizer.bos_token_id(), Some(1));
         assert_eq!(tokenizer.eos_token_id(), 2);
         assert_eq!(tokenizer.padding_token_id(), Some(0));
         assert_eq!(tokenizer.chat_template(), Some("{{ messages[0].content }}"));
@@ -948,7 +1037,7 @@ mod tests {
             merges: Vec::new(),
             merge_ranks: BTreeMap::new(),
             token_types,
-            bos_token_id: 0,
+            bos_token_id: Some(0),
             eos_token_id: 1,
             additional_eos_token_ids: Vec::new(),
             padding_token_id: None,
@@ -1041,6 +1130,89 @@ mod tests {
                 )
                 .unwrap(),
             "custom Hello"
+        );
+    }
+
+    #[test]
+    fn inkling2_gpt4o_pretokenizer_and_optional_bos_match_expected_splits() {
+        let parts =
+            pretokenize_gpt4o("In the archive,  the blue12345 notebook's path/to  \n  123  ")
+                .expect("gpt4o pretokenization");
+        assert_eq!(
+            parts,
+            vec![
+                "In",
+                " the",
+                " archive",
+                ",",
+                " ",
+                " the",
+                " blue",
+                "123",
+                "45",
+                " notebook's",
+                " path",
+                "/to",
+                "  \n",
+                " ",
+                " ",
+                "123",
+                "  ",
+            ]
+        );
+
+        let tokens = (0..=255_u8)
+            .map(|byte| byte_token_symbol(byte).to_string())
+            .collect::<Vec<_>>();
+        let mut metadata = BTreeMap::new();
+        metadata.insert(
+            "tokenizer.ggml.model".to_owned(),
+            MetadataValue::String("gpt2".to_owned()),
+        );
+        metadata.insert(
+            "tokenizer.ggml.pre".to_owned(),
+            MetadataValue::String("inkling2".to_owned()),
+        );
+        metadata.insert(
+            "tokenizer.ggml.tokens".to_owned(),
+            MetadataValue::Array(tokens.into_iter().map(MetadataValue::String).collect()),
+        );
+        metadata.insert(
+            "tokenizer.ggml.merges".to_owned(),
+            MetadataValue::Array(Vec::new()),
+        );
+        metadata.insert(
+            "tokenizer.ggml.token_type".to_owned(),
+            MetadataValue::Array(vec![MetadataValue::I32(1); 256]),
+        );
+        metadata.insert(
+            "tokenizer.ggml.eos_token_id".to_owned(),
+            MetadataValue::U32(255),
+        );
+
+        let inkling = GgufTokenizer::from_metadata(&metadata).expect("inkling2 tokenizer");
+        assert_eq!(inkling.bos_token_id(), None);
+        let encoded = inkling.encode("Hello,  world!\n").expect("encode");
+        assert_eq!(
+            inkling.decode(&encoded).expect("decode"),
+            "Hello,  world!\n"
+        );
+
+        let gen_tpl = "{%- for m in messages -%}\
+            {%- if m.role == 'assistant' -%}{%- generation -%}{{- m.content -}}{%- endgeneration -%}\
+            {%- else -%}{{- m.content -}}{%- endif -%}\
+            {%- endfor -%}";
+        assert_eq!(
+            tokenizer(gen_tpl)
+                .render_chat(
+                    &[
+                        ChatMessage::new("user", "Q:"),
+                        ChatMessage::new("assistant", "A"),
+                    ],
+                    ChatTemplateOptions::default()
+                )
+                .expect("render template with HF generation tags"),
+            "Q:A"
         );
     }
 }

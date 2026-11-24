@@ -85,6 +85,14 @@ impl MetadataValue {
             _ => None,
         }
     }
+
+    #[must_use]
+    pub fn as_f32(&self) -> Option<f32> {
+        match self {
+            Self::F32(value) => Some(*value),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

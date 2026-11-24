@@ -76,6 +76,7 @@ FORBIDDEN = {
     "gguf": {"engine-nvidia", "engine-qwen", "ribn", "ribn-text", "ribn-cli"},
     "qwen": {"ribn-text", "ribn-cli"},
     "gemma4": {"engine-gguf", "engine-bert", "engine-qwen", "ribn-text", "ribn-cli"},
+    "inkling2": {"engine-bert", "engine-qwen", "ribn-text", "ribn-cli"},
     "cli": {"engine-core", "engine-nvidia", "engine-qwen"},
     "server": {
         "engine-core",
@@ -88,6 +89,8 @@ FORBIDDEN = {
 for crate, forbidden in FORBIDDEN.items():
     if crate != "gemma4":
         forbidden.add("engine-gemma4")
+    if crate != "inkling2":
+        forbidden.add("engine-inkling2")
     if crate not in {"cli", "server"}:
         forbidden.add("ribn-server")
 

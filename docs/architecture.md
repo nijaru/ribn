@@ -340,6 +340,19 @@ retirement belong to that later integration. Full-checkpoint vision fidelity is 
 established; see the
 [CPU vision gate](../benchmarks/gemma4-reference/README.md#native-cpu-vision-component).
 
+`engine-inkling2` owns model-local Inkling 2 and Inkling 2 Loop text semantics,
+independent of `engine-qwen` and request scheduling. It validates both non-loop
+(`inkling2`) and looped (`inkling2_loop`, fixed-loop or variable-loop) GGUF metadata,
+maps physical layers onto independent logical KV and four-tap short-convolution state
+slots while keeping loop core weights shared, and preflights the complete tensor
+inventory and embedded GPT-2/`inkling2` tokenizer over one retained descriptor.
+It includes a pure-Rust CPU reference forward over compact encoded `F32`/`F16`/`Q8_0`/`IQ4_NL`
+weights and a greedy `ribn::GenerationExecutor` sharing weights across concurrent
+sequences. Host fixtures qualify mixed-encoding GGUF loading, chunked/single-token
+looped continuation across the sliding-window boundary, concurrent cancellation, and
+exact 1,036-token oracle tokenization plus real chat-template rendering; full-checkpoint
+numerical qualification against the pinned GGUF oracle and GPU execution remain open.
+
 `engine-bert` owns configuration, parameter mapping, masked bidirectional attention,
 embedding/LayerNorm/GELU/pooler semantics and a CUDA executor through `ribn-batch`.
 The executor chooses a feasible FIFO prefix and concrete byte envelope. Results own
@@ -371,6 +384,7 @@ Shared CUDA physical retirement and downstream-workspace progress remain unprove
 | `crates/nvidia` / `engine-nvidia` | NVIDIA storage, completion, dispatch and kernels |
 | `crates/bert` / `engine-bert` | BERT semantics, preparation, executor binding and device retirement |
 | `crates/gemma4` / `engine-gemma4` | Gemma 4 text processing, config, source/KV preflight, CPU text decoder and separate vision component, native BF16 CUDA weight/compute bindings |
+| `crates/inkling2` / `engine-inkling2` | Inkling 2 / Inkling 2 Loop config, GGUF inventory/preflight, logical slot continuation, CPU reference forward and greedy AR executor |
 | `crates/metal` / `engine-metal` | Apple Metal BF16 linear/RMS/rotary/attention/elementwise primitives; macOS-gated, no decoder |
 | `crates/core` / `engine-core` | Prepared batch, backend submission, continuation state and weight contracts; no scheduler, plan or model description |
 | `crates/gguf` / `engine-gguf` | GGUF artifact access and current tokenizer/chat-template implementation |

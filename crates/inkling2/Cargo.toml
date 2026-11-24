@@ -1,0 +1,19 @@
+[package]
+name = "engine-inkling2"
+version = "0.0.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[dependencies]
+engine-gguf = { path = "../gguf" }
+ribn = { path = "../runtime" }
+
+[dev-dependencies]
+ribn-text = { path = "../text" }
+serde_json = "1.0.151"
+
+[lints]
+workspace = true

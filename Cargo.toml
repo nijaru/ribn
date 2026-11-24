@@ -6,6 +6,7 @@ members = [
     "crates/batch",
     "crates/bert",
     "crates/gemma4",
+    "crates/inkling2",
     "crates/core",
     "crates/runtime",
     "crates/text",

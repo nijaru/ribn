@@ -1,6 +1,11 @@
 # Inkling 2 Mini reference replay
 
-Ribn does not yet execute Inkling. This oracle pins the text execution of
+`engine-inkling2` now implements model-local config, 704-tensor GGUF preflight,
+logical 48-slot continuation accounting, a pure-Rust CPU reference forward, and
+a greedy `ribn::GenerationExecutor` (host-verified on synthetic mixed-encoding
+GGUFs plus exact 1,036-token oracle tokenization and real chat-template rendering);
+full-checkpoint GGUF numerical qualification against this oracle and GPU serving
+remain pending. This oracle pins the text execution of
 `ggml-org/Inkling-2-Mini-GGUF` snapshot `db61c5b492a6a034d986328d28274af0a439aa6c`,
 file `Inkling-2-Mini-IQ4_NL.gguf`, SHA-256
 `cbdf3fa9dc50a4124977980f37da4f1fa764b0cfe800d275cd43d26ce2a81af4`.
