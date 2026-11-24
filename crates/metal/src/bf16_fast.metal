@@ -858,6 +858,29 @@ kernel void fast_bf16_geglu_table(
 // ============================================================================
 // 13. Gather Output Rows + Final RMSNorm (128 threads = 4 SGs per output row)
 // ============================================================================
+// 13a. Gather Selected Rows (128 threads per output row)
+//      Used to prune non-output tokens after the final KV-owner layer writes
+//      its KV cache, eliminating wasted work across shared-KV tail layers.
+// ============================================================================
+kernel void fast_bf16_gather_rows(
+    device const ushort* src [[buffer(0)]],
+    device const uint* row_indices [[buffer(1)]],
+    device ushort* dst [[buffer(2)]],
+    constant uint& width [[buffer(3)]],
+    uint out_row [[threadgroup_position_in_grid]],
+    uint tid [[thread_position_in_threadgroup]])
+{
+    uint src_row = row_indices[out_row];
+    ulong in_base = (ulong)src_row * width;
+    ulong out_base = (ulong)out_row * width;
+    for (uint j = tid; j < width; j += 128u) {
+        dst[out_base + j] = src[in_base + j];
+    }
+}
+
+// ============================================================================
+// 13b. Gather Output Rows + Final RMSNorm (128 threads per output row)
+// ============================================================================
 kernel void fast_bf16_gather_rows_rms(
     device const ushort* hidden [[buffer(0)]],
     device const uint* output_rows [[buffer(1)]],

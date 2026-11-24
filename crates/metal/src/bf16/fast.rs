@@ -28,6 +28,7 @@ pub(super) struct FastPipelines {
     kv_norm_rope_write: ComputePipelineState,
     flash_attn: ComputePipelineState,
     geglu_table: ComputePipelineState,
+    gather_rows: ComputePipelineState,
     gather_rows_rms: ComputePipelineState,
     softcap_argmax: ComputePipelineState,
 }
@@ -62,6 +63,7 @@ impl FastPipelines {
             kv_norm_rope_write: load("fast_bf16_kv_norm_rope_write")?,
             flash_attn: load("fast_bf16_flash_attn")?,
             geglu_table: load("fast_bf16_geglu_table")?,
+            gather_rows: load("fast_bf16_gather_rows")?,
             gather_rows_rms: load("fast_bf16_gather_rows_rms")?,
             softcap_argmax: load("fast_bf16_softcap_argmax")?,
         })
@@ -855,6 +857,54 @@ impl MetalFastSession<'_> {
             MTLSize::new(total_u64, 1, 1),
             MTLSize::new(total_u64.min(256), 1, 1),
         );
+        Ok(())
+    }
+
+    /// Gather `out_rows` rows selected by `row_indices` from `src` (at `src_offset_elems`) into `dst`.
+    /// # Errors
+    /// Rejects invalid shapes or undersized buffers.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "explicit GPU kernel bindings for output row gather"
+    )]
+    pub fn gather_rows(
+        &mut self,
+        src: &MetalDeviceBf16,
+        src_offset_elems: usize,
+        row_indices: &MetalDeviceU32,
+        dst: &MetalDeviceBf16,
+        total_rows: usize,
+        out_rows: usize,
+        width: usize,
+    ) -> Result<(), MetalBf16Error> {
+        let in_req = total_rows
+            .checked_mul(width)
+            .filter(|&n| n > 0)
+            .and_then(|n| src_offset_elems.checked_add(n))
+            .ok_or_else(|| MetalBf16Error::Shape("gather_rows input overflow".into()))?;
+        let out_req = out_rows
+            .checked_mul(width)
+            .filter(|&n| n > 0)
+            .ok_or_else(|| MetalBf16Error::Shape("gather_rows output overflow".into()))?;
+        check_len(src.elements, in_req, "gather_rows src")?;
+        check_len(row_indices.elements, out_rows, "gather_rows indices")?;
+        check_len(dst.elements, out_req, "gather_rows dst")?;
+        let width_u32 = checked_u32(width, "gather_rows width")?;
+        let src_byte_offset = u64::try_from(
+            src_offset_elems
+                .checked_mul(2)
+                .ok_or_else(|| MetalBf16Error::Shape("gather_rows byte offset overflow".into()))?,
+        )
+        .map_err(|_| MetalBf16Error::Shape("gather_rows byte offset exceeds u64".into()))?;
+        self.encoder
+            .set_compute_pipeline_state(&self.executor.fast.gather_rows);
+        self.encoder
+            .set_buffer(0, Some(&src.buffer), src_byte_offset);
+        self.encoder.set_buffer(1, Some(&row_indices.buffer), 0);
+        self.encoder.set_buffer(2, Some(&dst.buffer), 0);
+        self.encoder.set_bytes(3, 4, (&raw const width_u32).cast());
+        self.encoder
+            .dispatch_thread_groups(MTLSize::new(out_rows as u64, 1, 1), MTLSize::new(128, 1, 1));
         Ok(())
     }
 

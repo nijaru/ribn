@@ -77,11 +77,16 @@ struct BatchScratch {
     ffn_gate: MetalDeviceBf16,
     ffn_up: MetalDeviceBf16,
     ple_gate: MetalDeviceBf16,
+    tail_hidden: MetalDeviceBf16,
+    tail_normed: MetalDeviceBf16,
+    tail_ple: MetalDeviceBf16,
     final_normed: MetalDeviceBf16,
     logits: MetalDeviceBf16,
     token_ids: MetalDeviceU32,
     row_slot: MetalDeviceU32,
     row_pos: MetalDeviceU32,
+    out_row_slot: MetalDeviceU32,
+    out_row_pos: MetalDeviceU32,
     block_table: MetalDeviceU32,
     output_rows: MetalDeviceU32,
     argmax_out: MetalDeviceU32,
@@ -119,6 +124,7 @@ pub struct Gemma4MetalModelWide {
     gelu_table: MetalBf16Buffer,
     inv_freqs: Vec<MetalDeviceF32>,
     kv_caches: Vec<Option<OwnerKv>>,
+    last_kv_owner: usize,
     kv_pool: PagedKvPool,
     max_pages_per_seq: usize,
     scratch: BatchScratch,
@@ -129,6 +135,8 @@ pub struct Gemma4MetalModelWide {
     host_slots: Vec<u32>,
     host_pos: Vec<u32>,
     host_out_rows: Vec<u32>,
+    host_out_slots: Vec<u32>,
+    host_out_pos: Vec<u32>,
     host_page_row: Vec<u32>,
     faulted: bool,
 }
@@ -185,6 +193,7 @@ impl Gemma4MetalModelWide {
         let mut inv_freqs = Vec::with_capacity(config.layers().len());
         let mut kv_caches = Vec::with_capacity(config.layers().len());
         let mut max_head_dim = 0_usize;
+        let mut last_kv_owner = 0_usize;
 
         for (layer, geometry) in config.layers().iter().enumerate() {
             max_head_dim = max_head_dim.max(geometry.head_dim);
@@ -192,6 +201,7 @@ impl Gemma4MetalModelWide {
             inv_freqs.push(executor.upload_f32(&freqs).map_err(|e| metal_error(&e))?);
 
             if geometry.kv_owner == layer {
+                last_kv_owner = layer;
                 let elems = limits
                     .num_kv_blocks
                     .checked_mul(config.num_key_value_heads())
@@ -231,11 +241,16 @@ impl Gemma4MetalModelWide {
             ffn_gate: alloc(max_m * intermediate)?,
             ffn_up: alloc(max_m * intermediate)?,
             ple_gate: alloc(max_m * config.ple_dim())?,
+            tail_hidden: alloc(max_out * hidden_size)?,
+            tail_normed: alloc(max_out * hidden_size)?,
+            tail_ple: alloc(max_out * config.ple_dim())?,
             final_normed: alloc(max_out * hidden_size)?,
             logits: alloc(max_out * config.vocab_size())?,
             token_ids: alloc_u32(max_m)?,
             row_slot: alloc_u32(max_m)?,
             row_pos: alloc_u32(max_m)?,
+            out_row_slot: alloc_u32(max_out)?,
+            out_row_pos: alloc_u32(max_out)?,
             block_table: alloc_u32(limits.max_sequences * max_pages_per_seq)?,
             output_rows: alloc_u32(max_out)?,
             argmax_out: alloc_u32(max_out)?,
@@ -252,6 +267,7 @@ impl Gemma4MetalModelWide {
             gelu_table,
             inv_freqs,
             kv_caches,
+            last_kv_owner,
             kv_pool,
             max_pages_per_seq,
             scratch,
@@ -261,6 +277,8 @@ impl Gemma4MetalModelWide {
             host_slots: Vec::with_capacity(max_m),
             host_pos: Vec::with_capacity(max_m),
             host_out_rows: Vec::with_capacity(max_out),
+            host_out_slots: Vec::with_capacity(max_out),
+            host_out_pos: Vec::with_capacity(max_out),
             host_page_row: Vec::with_capacity(max_pages_per_seq),
             faulted: false,
         })
@@ -445,6 +463,8 @@ impl Gemma4MetalModelWide {
         self.host_slots.clear();
         self.host_pos.clear();
         self.host_out_rows.clear();
+        self.host_out_slots.clear();
+        self.host_out_pos.clear();
 
         // 1. Whole-batch validation before allocating blocks or mutating GPU buffers.
         for (idx, item) in items.iter().enumerate() {
@@ -484,9 +504,12 @@ impl Gemma4MetalModelWide {
                 self.host_pos.push(pos);
             }
             if item.need_logits {
-                let last_row = u32::try_from(self.host_tokens.len() - 1)
+                let last_idx = self.host_tokens.len() - 1;
+                let last_row = u32::try_from(last_idx)
                     .map_err(|_| Gemma4Error::new("Metal modelwide", "row index exceeds u32"))?;
                 self.host_out_rows.push(last_row);
+                self.host_out_slots.push(self.host_slots[last_idx]);
+                self.host_out_pos.push(self.host_pos[last_idx]);
             }
         }
 
@@ -550,6 +573,16 @@ impl Gemma4MetalModelWide {
                 .output_rows
                 .write(&self.host_out_rows)
                 .map_err(|e| metal_error(&e))?;
+            if out_rows < total_tokens {
+                self.scratch
+                    .out_row_slot
+                    .write(&self.host_out_slots)
+                    .map_err(|e| metal_error(&e))?;
+                self.scratch
+                    .out_row_pos
+                    .write(&self.host_out_pos)
+                    .map_err(|e| metal_error(&e))?;
+            }
         }
         self.scratch
             .error_flag
@@ -693,7 +726,21 @@ impl Gemma4MetalModelWide {
             )
             .map_err(|e| metal_error(&e))?;
 
-        // 2. All decoder layers in the SAME command encoder
+        // 2. All decoder layers in the SAME command encoder.
+        //    Once the final KV-owner layer (`last_kv_owner`) has populated its
+        //    KV cache, no subsequent layer writes to any KV cache and no future
+        //    token ever reads non-output rows' hidden states. Intermediate
+        //    prefill chunks (`out_rows == 0`) therefore terminate immediately,
+        //    and batches with `0 < out_rows < total_tokens` prune directly to
+        //    the `out_rows` logit-producing rows (eliminating ~45% of prefill
+        //    FLOPs on Gemma 4 E4B with zero approximation).
+        let mut pruned = false;
+        let mut active_tokens = total_tokens;
+        let mut active_hidden = &self.scratch.hidden;
+        let mut active_normed = &self.scratch.normed;
+        let mut active_slots = &self.scratch.row_slot;
+        let mut active_pos = &self.scratch.row_pos;
+
         for (layer, geometry) in config.layers().iter().enumerate() {
             let head_dim = geometry.head_dim;
             let q_cols = heads * head_dim;
@@ -701,33 +748,11 @@ impl Gemma4MetalModelWide {
 
             session
                 .rms_norm(
-                    &self.scratch.hidden,
+                    active_hidden,
                     Some(self.weights.layer(layer, LayerParameter::InputNorm)?),
-                    &self.scratch.normed,
-                    total_tokens,
+                    active_normed,
+                    active_tokens,
                     hidden_size,
-                    epsilon,
-                )
-                .map_err(|e| metal_error(&e))?;
-            session
-                .linear(
-                    &self.scratch.normed,
-                    self.weights.layer(layer, LayerParameter::Query)?,
-                    &self.scratch.q_buf,
-                    total_tokens,
-                    q_cols,
-                    hidden_size,
-                )
-                .map_err(|e| metal_error(&e))?;
-            session
-                .q_norm_rope(
-                    &self.scratch.q_buf,
-                    self.weights.layer(layer, LayerParameter::QueryNorm)?,
-                    &self.inv_freqs[layer],
-                    &self.scratch.row_pos,
-                    total_tokens,
-                    heads,
-                    head_dim,
                     epsilon,
                 )
                 .map_err(|e| metal_error(&e))?;
@@ -738,20 +763,20 @@ impl Gemma4MetalModelWide {
                     .ok_or_else(|| Gemma4Error::new("Metal modelwide", "missing KV owner cache"))?;
                 session
                     .linear(
-                        &self.scratch.normed,
+                        active_normed,
                         self.weights.layer(layer, LayerParameter::Key)?,
                         &self.scratch.k_buf,
-                        total_tokens,
+                        active_tokens,
                         kv_cols,
                         hidden_size,
                     )
                     .map_err(|e| metal_error(&e))?;
                 session
                     .linear(
-                        &self.scratch.normed,
+                        active_normed,
                         self.weights.layer(layer, LayerParameter::Value)?,
                         &self.scratch.v_buf,
-                        total_tokens,
+                        active_tokens,
                         kv_cols,
                         hidden_size,
                     )
@@ -762,12 +787,12 @@ impl Gemma4MetalModelWide {
                         &self.scratch.v_buf,
                         self.weights.layer(layer, LayerParameter::KeyNorm)?,
                         &self.inv_freqs[layer],
-                        &self.scratch.row_slot,
-                        &self.scratch.row_pos,
+                        active_slots,
+                        active_pos,
                         &self.scratch.block_table,
                         &owner_kv.keys,
                         &owner_kv.values,
-                        total_tokens,
+                        active_tokens,
                         kv_heads,
                         head_dim,
                         max_pages,
@@ -775,6 +800,65 @@ impl Gemma4MetalModelWide {
                     )
                     .map_err(|e| metal_error(&e))?;
             }
+
+            if layer == self.last_kv_owner {
+                if out_rows == 0 {
+                    break;
+                }
+                if out_rows < total_tokens {
+                    session
+                        .gather_rows(
+                            &self.scratch.hidden,
+                            0,
+                            &self.scratch.output_rows,
+                            &self.scratch.tail_hidden,
+                            total_tokens,
+                            out_rows,
+                            hidden_size,
+                        )
+                        .map_err(|e| metal_error(&e))?;
+                    session
+                        .gather_rows(
+                            &self.scratch.normed,
+                            0,
+                            &self.scratch.output_rows,
+                            &self.scratch.tail_normed,
+                            total_tokens,
+                            out_rows,
+                            hidden_size,
+                        )
+                        .map_err(|e| metal_error(&e))?;
+                    pruned = true;
+                    active_tokens = out_rows;
+                    active_hidden = &self.scratch.tail_hidden;
+                    active_normed = &self.scratch.tail_normed;
+                    active_slots = &self.scratch.out_row_slot;
+                    active_pos = &self.scratch.out_row_pos;
+                }
+            }
+
+            session
+                .linear(
+                    active_normed,
+                    self.weights.layer(layer, LayerParameter::Query)?,
+                    &self.scratch.q_buf,
+                    active_tokens,
+                    q_cols,
+                    hidden_size,
+                )
+                .map_err(|e| metal_error(&e))?;
+            session
+                .q_norm_rope(
+                    &self.scratch.q_buf,
+                    self.weights.layer(layer, LayerParameter::QueryNorm)?,
+                    &self.inv_freqs[layer],
+                    active_pos,
+                    active_tokens,
+                    heads,
+                    head_dim,
+                    epsilon,
+                )
+                .map_err(|e| metal_error(&e))?;
 
             let donor_kv = self.kv_caches[geometry.kv_owner]
                 .as_ref()
@@ -789,10 +873,10 @@ impl Gemma4MetalModelWide {
                     &donor_kv.keys,
                     &donor_kv.values,
                     &self.scratch.attn_out,
-                    &self.scratch.row_slot,
-                    &self.scratch.row_pos,
+                    active_slots,
+                    active_pos,
                     &self.scratch.block_table,
-                    total_tokens,
+                    active_tokens,
                     heads,
                     kv_heads,
                     head_dim,
@@ -806,7 +890,7 @@ impl Gemma4MetalModelWide {
                     &self.scratch.attn_out,
                     self.weights.layer(layer, LayerParameter::AttentionOutput)?,
                     &self.scratch.proj_out,
-                    total_tokens,
+                    active_tokens,
                     hidden_size,
                     q_cols,
                 )
@@ -818,20 +902,20 @@ impl Gemma4MetalModelWide {
                         self.weights
                             .layer(layer, LayerParameter::PostAttentionNorm)?,
                     ),
-                    &self.scratch.normed,
-                    total_tokens,
+                    active_normed,
+                    active_tokens,
                     hidden_size,
                     epsilon,
                 )
                 .map_err(|e| metal_error(&e))?;
             session
                 .add_rms_norm(
-                    &self.scratch.hidden,
-                    &self.scratch.normed,
+                    active_hidden,
+                    active_normed,
                     self.weights
                         .layer(layer, LayerParameter::PreFeedforwardNorm)?,
                     &self.scratch.proj_out,
-                    total_tokens,
+                    active_tokens,
                     hidden_size,
                     epsilon,
                 )
@@ -842,7 +926,7 @@ impl Gemma4MetalModelWide {
                     &self.scratch.proj_out,
                     self.weights.layer(layer, LayerParameter::Gate)?,
                     &self.scratch.ffn_gate,
-                    total_tokens,
+                    active_tokens,
                     intermediate,
                     hidden_size,
                 )
@@ -852,7 +936,7 @@ impl Gemma4MetalModelWide {
                     &self.scratch.proj_out,
                     self.weights.layer(layer, LayerParameter::Up)?,
                     &self.scratch.ffn_up,
-                    total_tokens,
+                    active_tokens,
                     intermediate,
                     hidden_size,
                 )
@@ -865,7 +949,7 @@ impl Gemma4MetalModelWide {
                     &self.gelu_table,
                     &self.scratch.ffn_gate,
                     &self.scratch.error_flag,
-                    total_tokens * intermediate,
+                    active_tokens * intermediate,
                 )
                 .map_err(|e| metal_error(&e))?;
             session
@@ -873,7 +957,7 @@ impl Gemma4MetalModelWide {
                     &self.scratch.ffn_gate,
                     self.weights.layer(layer, LayerParameter::Down)?,
                     &self.scratch.proj_out,
-                    total_tokens,
+                    active_tokens,
                     hidden_size,
                     intermediate,
                 )
@@ -885,40 +969,56 @@ impl Gemma4MetalModelWide {
                         self.weights
                             .layer(layer, LayerParameter::PostFeedforwardNorm)?,
                     ),
-                    &self.scratch.normed,
-                    total_tokens,
+                    active_normed,
+                    active_tokens,
                     hidden_size,
                     epsilon,
                 )
                 .map_err(|e| metal_error(&e))?;
             session
                 .residual_add_scale(
-                    &self.scratch.hidden,
-                    &self.scratch.normed,
+                    active_hidden,
+                    active_normed,
                     None,
-                    total_tokens * hidden_size,
+                    active_tokens * hidden_size,
                 )
                 .map_err(|e| metal_error(&e))?;
 
             session
                 .linear(
-                    &self.scratch.hidden,
+                    active_hidden,
                     self.weights.layer(layer, LayerParameter::PleGate)?,
                     &self.scratch.ple_gate,
-                    total_tokens,
+                    active_tokens,
                     ple_dim,
                     hidden_size,
                 )
                 .map_err(|e| metal_error(&e))?;
+            let (ple_up, ple_up_offset) = if pruned {
+                session
+                    .gather_rows(
+                        &self.scratch.per_layer_ple,
+                        layer * total_tokens * ple_dim,
+                        &self.scratch.output_rows,
+                        &self.scratch.tail_ple,
+                        total_tokens,
+                        out_rows,
+                        ple_dim,
+                    )
+                    .map_err(|e| metal_error(&e))?;
+                (&self.scratch.tail_ple, 0)
+            } else {
+                (&self.scratch.per_layer_ple, layer * total_tokens * ple_dim)
+            };
             session
                 .geglu_table(
                     &self.scratch.ple_gate,
-                    &self.scratch.per_layer_ple,
-                    layer * total_tokens * ple_dim,
+                    ple_up,
+                    ple_up_offset,
                     &self.gelu_table,
                     &self.scratch.ple_gate,
                     &self.scratch.error_flag,
-                    total_tokens * ple_dim,
+                    active_tokens * ple_dim,
                 )
                 .map_err(|e| metal_error(&e))?;
             session
@@ -926,7 +1026,7 @@ impl Gemma4MetalModelWide {
                     &self.scratch.ple_gate,
                     self.weights.layer(layer, LayerParameter::PleProjection)?,
                     &self.scratch.proj_out,
-                    total_tokens,
+                    active_tokens,
                     hidden_size,
                     ple_dim,
                 )
@@ -935,18 +1035,18 @@ impl Gemma4MetalModelWide {
                 .rms_norm(
                     &self.scratch.proj_out,
                     Some(self.weights.layer(layer, LayerParameter::PostPleNorm)?),
-                    &self.scratch.normed,
-                    total_tokens,
+                    active_normed,
+                    active_tokens,
                     hidden_size,
                     epsilon,
                 )
                 .map_err(|e| metal_error(&e))?;
             session
                 .residual_add_scale(
-                    &self.scratch.hidden,
-                    &self.scratch.normed,
+                    active_hidden,
+                    active_normed,
                     Some(self.weights.layer(layer, LayerParameter::LayerScalar)?),
-                    total_tokens * hidden_size,
+                    active_tokens * hidden_size,
                 )
                 .map_err(|e| metal_error(&e))?;
         }
@@ -957,18 +1057,31 @@ impl Gemma4MetalModelWide {
                 .weights
                 .parameter(ParameterId::FinalNorm)
                 .ok_or_else(|| Gemma4Error::new("Metal modelwide", "missing final norm"))?;
-            session
-                .gather_rows_rms(
-                    &self.scratch.hidden,
-                    &self.scratch.output_rows,
-                    final_norm,
-                    &self.scratch.final_normed,
-                    total_tokens,
-                    out_rows,
-                    hidden_size,
-                    epsilon,
-                )
-                .map_err(|e| metal_error(&e))?;
+            if pruned {
+                session
+                    .rms_norm(
+                        active_hidden,
+                        Some(final_norm),
+                        &self.scratch.final_normed,
+                        out_rows,
+                        hidden_size,
+                        epsilon,
+                    )
+                    .map_err(|e| metal_error(&e))?;
+            } else {
+                session
+                    .gather_rows_rms(
+                        &self.scratch.hidden,
+                        &self.scratch.output_rows,
+                        final_norm,
+                        &self.scratch.final_normed,
+                        total_tokens,
+                        out_rows,
+                        hidden_size,
+                        epsilon,
+                    )
+                    .map_err(|e| metal_error(&e))?;
+            }
             session
                 .linear(
                     &self.scratch.final_normed,

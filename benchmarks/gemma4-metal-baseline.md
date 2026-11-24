@@ -2732,6 +2732,49 @@ counts on both servers):
 | Long `c = 1` cold prefill (`in=657 / 996`) | 567.7 ms / 855.4 ms | **358.0 ms / 495.4 ms** |
 | Steady-state RSS / SIGTERM exit | 16.12–16.13 GiB / **exit 0** | **14.95–14.96 GiB** / exit 143 |
 
+### Exact shared-KV tail pruning and refreshed head-to-head vs `mlx-lm==0.32.2` (2026-11-24)
+
+Added exact shared-KV tail pruning in `Gemma4MetalModelWide::encode_and_submit`
+(`crates/gemma4/src/metal/modelwide.rs`, backed by `fast_bf16_gather_rows` in
+`crates/metal/src/bf16_fast.metal` and `bf16/fast.rs`): once the final KV-owner layer
+(`last_kv_owner`, layer 23 in E4B) writes its KV cache, intermediate prefill chunks
+(`out_rows == 0`) terminate immediately, and batches with `0 < out_rows < total_tokens`
+gather only the logit-producing rows before executing `last_kv_owner`'s query/attention/FFN/PLE
+and all 18 subsequent KV-shared layers (`layers 24..=41`). Because those layers never
+write KV cache and no future token ever reads non-output hidden states from them, the
+pruning is mathematically exact (~45% of E4B prefill FLOPs eliminated with zero
+approximation).
+
+Re-verified on the unchanged M3 Max / `google/gemma-4-E4B-it` BF16 snapshot:
+- **Numerical gates:** 12/12 stock CPU BF16 oracle winners exact (`worst_rel_l2 = 0.03108`,
+  `worst_kl = 0.006894`; `chat[0]` KL improved from `0.000961` to `0.000009`), 16-token
+  vs 1-token prefill bit-identical, and `window_513` cached-prefix prefill bit-identical
+  (`262.79 ms → 33.62 ms`).
+- **Direct warm latency:** `prefill 8` **33.01 ms**, `prefill 18` **44.54 ms** (1.42× faster
+  than MLX 63.16 ms), `prefill 32` **45.17 ms** (1.42× faster than MLX 64.28 ms), `prefill 64`
+  **55.19 ms** (1,160 tok/s, 1.29× faster than MLX 71.23 ms), `prefill 128` **79.07 ms**
+  (1,619 tok/s), `prefill 256` **133.29 ms** (1,921 tok/s), `prefill 512` **245.57 ms**
+  (**2,085 tok/s**, 1.12× faster than `mlx_lm.generate.generate_step` 276.03 ms);
+  `decode M = 1/2/4/8/16` **32.5 / 62.0 / 122.9 / 225.9 / 349.0 tok/s** (`M = 1` min 30.57 ms).
+
+Same-day serialized loopback HTTP SSE comparison on the identical unconverted BF16
+`google/gemma-4-E4B-it` snapshot (`ee0ef602…`, `temperature = 0`, `top_p = 1`, `stream = true`,
+`--chat-template-args '{"enable_thinking":false}'` on `mlx-lm==0.32.2` / `mlx==0.32.4` with
+`--decode-concurrency 16 --prompt-concurrency 8`):
+
+| HTTP SSE workload (`max_tokens = 64` unless noted) | `ribn serve-gemma` (tail-pruned) | `mlx-lm 0.32.2` (`c=16`) |
+| --- | ---: | ---: |
+| Short `c = 1` (`in=19, out=49`) | **32.2 tok/s** · TTFT **45.2 ms** · ITL 30.4 ms | 32.0 tok/s · TTFT 83.5 ms · ITL **30.0 ms** |
+| Short `c = 4` (`in=19, out=222`) | **100.2 tok/s** · TTFT **131.3 ms** · ITL 33.0 ms | 99.7 tok/s · TTFT 181.4 ms · ITL **32.3 ms** |
+| Short `c = 8` (`in=19, out=478/476`) | 199.7 tok/s · TTFT **144.1 / 148.4 ms** | **201.9 tok/s** · TTFT 193.1 / 211.3 ms |
+| Short `c = 16` (`in=19, out=990/989`) | **323.4 tok/s** · TTFT **189.8 / 193.9 ms** · ITL **45.5 ms** | 238.1 tok/s · TTFT 326.1 / 404.1 ms · ITL 64.2 ms |
+| Long `c = 1` cold prefill (`in=657, out=40`) | **TTFT 333.6 ms** · total **1,663.7 ms** | TTFT 387.2 ms · total 1,673.2 ms |
+| Prefix `c = 1` cold / warm TTFT (`in=996/994`, 32 out) | **494.6 ms / 50.8 ms** (9.7× hit) | 524.8 ms / 94.2 ms (5.6× hit) |
+| Prefix burst `c = 4` (`out=85/81`) | **74.2 tok/s** · TTFT **126.1 / 126.4 ms** | 72.3 tok/s · TTFT 154.3 / 154.5 ms |
+| Prefix burst `c = 8` (`out=208/204`) | 140.6 tok/s · TTFT **187.9 / 192.1 ms** | **142.3 tok/s** · TTFT 225.1 / 245.4 ms |
+| Mixed `c = 8` (4 short + 4×657-tok, `out=445`) | **136.0 tok/s** (`3.272s`) · TTFT **313.5 / 1,054.8 ms** | 103.1 tok/s (`4.317s`) · TTFT 2,113.9 / 2,114.2 ms |
+| Steady-state RSS / SIGTERM exit | 16.14–16.15 GiB / **exit 0** | **14.95–14.96 GiB** / exit 143 |
+
 Scope limits: single-process-per-server M3 Max BF16 observation; does not replace multi-process
 randomized matched-quality external serving cohorts, CUDA/4090 qualification, or
 memory-pressure/recovery qualification under constrained RAM.
