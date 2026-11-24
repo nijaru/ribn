@@ -1900,6 +1900,42 @@ resource grant or broader serving qualification. Raw records, observer source
 and removed override are local in
 `benchmarks/results/qualification/gemma-metal-wide-alloc-20261123T045925Z`.
 
+### Typed wide prefill versus ordinary mixed scheduling (2026-11-24)
+
+Eight fresh M3 Max HTTP processes used the same release executable as the
+allocation pair, without the sampler. The control left the loader override
+unset (ordinary mixed scheduling); the candidate selected typed separate
+scheduling at idle width 64. This comparison changes both offer composition
+and idle width. Each process warmed up once, then served two longer prompts
+(337/114 tokens, output cap four) and ten short prompts (5/8 tokens, cap eight).
+In the sparse cohort the second long prompt arrived at 600 ms and short
+requests started at 150 ms, 470 ms apart. In the burst cohort those values were
+140, 170 and 50 ms. Run order (cohort/policy): sparse/mixed, burst/64,
+burst/mixed, sparse/64, sparse/64, burst/mixed, burst/64, sparse/mixed.
+The pinned Gemma 4 E4B BF16 snapshot was `ee0ef6023621cff504d758262d4e04895a5af4a2`.
+
+All 104 requests completed, including warmups; all 96 measured responses matched
+text, usage and finish reason by case within each cohort. No request was rejected,
+failed or abandoned. Maximum client start lag was 10.11 ms. The table gives
+ranges over the two fresh processes per policy and cohort, in seconds. The
+streaming gap is the longest interval between nonempty SSE content events;
+it is not token-level ITL.
+
+| Cohort / policy | 337-token first content | Short median EOF | Worst content gap | Origin to last EOF |
+| --- | ---: | ---: | ---: | ---: |
+| Sparse / mixed | 10.25–20.31 | 8.64–18.84 | 0.555–1.137 | 14.01–26.70 |
+| Sparse / separate 64 | 9.55–11.62 | 5.69–10.16 | 0.194–0.272 | 12.33–19.31 |
+| Burst / mixed | 12.13–20.20 | 12.88–19.90 | 1.201–1.213 | 19.95–26.13 |
+| Burst / separate 64 | 9.43–15.80 | 7.44–12.55 | 0.108–0.239 | 12.14–21.08 |
+
+The clearest separation was in worst streaming gaps. Wall-clock outcomes varied
+substantially between repetitions, including warmups; overlapping ranges do not
+support a stable TTFT or throughput multiplier. These short, loopback cohorts
+neither establish a serving SLO nor test memory pressure. Keep the policy opt-in;
+a promotion comparison needs more repetitions under controlled host conditions
+and a prespecified latency objective and pressure cohort. Raw streams, analyzer
+and private loader override: `benchmarks/results/qualification/gemma-metal-mixed-vs-separate/`.
+
 ## Native HTTP versus stock MLX diagnostic (2026-10-24)
 
 **Actual HTTP protocol and accounting pass; the predeclared matched-result gate
