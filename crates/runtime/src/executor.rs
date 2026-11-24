@@ -172,6 +172,19 @@ pub trait GenerationExecutor: Send {
     /// Immutable scheduling metadata, resolved before the engine is created.
     fn info(&self) -> &ExecutorInfo;
 
+    /// Whether this executor supports non-greedy stochastic sampling
+    /// (`temperature > 0`, `top_p < 1`, `top_k > 0`). Defaults to `false`.
+    fn supports_sampling(&self) -> bool {
+        false
+    }
+
+    /// Exact cached prompt prefix already materialized by `admit` for `sequence`.
+    /// Must be strictly less than `prompt_tokens` so at least one prompt token
+    /// runs to produce output. Defaults to `0`.
+    fn admitted_prefix(&self, _sequence: SequenceId) -> u32 {
+        0
+    }
+
     /// Validate request semantics and reserve a coherent initial continuation
     /// bundle. Partial envelopes require a model-specific progress policy; the
     /// current Qwen implementation keeps full request-reachable reservation.

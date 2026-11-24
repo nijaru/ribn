@@ -121,8 +121,9 @@ async fn generation(
         .map_err(|_| ApiError::bad("malformed or unsupported request fields"))?;
     drop(bytes);
     let stream = request.stream;
-    let (text_request, include_usage) = request.prepare(operation, config)?;
     let model = state.model().ok_or_else(ApiError::unavailable)?;
+    let (text_request, include_usage) =
+        request.prepare(operation, config, model.supports_sampling())?;
     guard.started = true;
     let events = model.stream_request(text_request).await.map_err(|e| {
         guard.observe_owner();

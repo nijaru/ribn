@@ -55,9 +55,13 @@ Neither workload establishes a clean competitive ranking.
    M4, descriptors, PLE-only, attention and FFN graph candidates.
    On Metal, the single-command-buffer model-wide engine (`Gemma4MetalModelWide`
    + `Gemma4MetalModelWideExecutor`) is now the default `Native` loader path for
-   `head_dim <= 512`, matching all 12 archived CPU BF16 oracle winners on M3 Max
-   and reaching 31.7 ms `M=1` decode (356 tok/s direct at `M=16`; 310.9 tok/s
-   live HTTP SSE at `c=16`, 45.7 ms median ITL; see
+   `head_dim <= 512` with 16-token paged KV (16K context, 2,048 shared blocks),
+   exact content-addressed radix prefix caching, and capability-gated HTTP
+   stochastic sampling (`temperature`/`top_p`/`top_k`/`seed`). On M3 Max BF16
+   E4B it matches all 12 archived CPU BF16 oracle winners, reaches 30.6–31.3 ms
+   `M=1` decode (350 tok/s direct at `M=16`; 310.9 tok/s live HTTP SSE at `c=16`),
+   lowers server RSS to 16.10 GiB, and cuts ~995-token shared-prefix HTTP TTFT
+   from 1,117.5 ms to 59.5 ms (**18.8×**; see
    [Metal baseline](../benchmarks/gemma4-metal-baseline.md#single-command-buffer-model-wide-metal-engine-2026-11-24)).
    Formal multi-process matched-quality external serving cohorts, memory-pressure
    recovery under constrained RAM, and CUDA/4090 packed-batch parity remain open.

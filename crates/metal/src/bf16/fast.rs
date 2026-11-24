@@ -135,6 +135,31 @@ impl MetalDeviceU32 {
         unsafe { std::slice::from_raw_parts(self.buffer.contents().cast::<u32>(), count) }
     }
 
+    /// Overwrite `values` starting at element `offset` while idle.
+    /// # Errors
+    /// Rejects writes exceeding capacity.
+    pub fn write_at(&mut self, offset: usize, values: &[u32]) -> Result<(), MetalBf16Error> {
+        let end = offset
+            .checked_add(values.len())
+            .ok_or_else(|| MetalBf16Error::Shape("MetalDeviceU32 offset overflow".into()))?;
+        if end > self.elements {
+            return Err(MetalBf16Error::Shape(
+                "MetalDeviceU32 write_at exceeds capacity".into(),
+            ));
+        }
+        if !values.is_empty() {
+            // SAFETY: destination is exclusively owned (`&mut self`) and `[offset..end]` fits.
+            unsafe {
+                std::ptr::copy_nonoverlapping(
+                    values.as_ptr(),
+                    self.buffer.contents().cast::<u32>().add(offset),
+                    values.len(),
+                );
+            }
+        }
+        Ok(())
+    }
+
     /// Overwrite the prefix with host `u32` values while idle.
     /// # Errors
     /// Rejects slices longer than the buffer capacity.
@@ -642,12 +667,12 @@ impl MetalFastSession<'_> {
         Ok(())
     }
 
-    /// Fused K/V Norm + `RoPE` + direct scatter into persistent KV cache `[slot, kv_head, max_pos, head_dim]`.
+    /// Fused K/V Norm + `RoPE` + paged scatter into KV pool `[phys_block, kv_head, 16, head_dim]`.
     /// # Errors
     /// Rejects invalid dimensions or undersized buffers.
     #[expect(
         clippy::too_many_arguments,
-        reason = "explicit GPU kernel bindings for fused KV norm+RoPE+cache write"
+        reason = "explicit GPU kernel bindings for fused paged KV norm+RoPE+write"
     )]
     pub fn kv_norm_rope_write(
         &mut self,
@@ -657,12 +682,13 @@ impl MetalFastSession<'_> {
         inv_freq: &MetalDeviceF32,
         row_slot: &MetalDeviceU32,
         row_pos: &MetalDeviceU32,
+        block_table: &MetalDeviceU32,
         k_cache: &MetalDeviceBf16,
         v_cache: &MetalDeviceBf16,
         rows: usize,
         kv_heads: usize,
         head_dim: usize,
-        max_positions: usize,
+        max_pages: usize,
         epsilon: f32,
     ) -> Result<(), MetalBf16Error> {
         let total = rows
@@ -674,6 +700,11 @@ impl MetalFastSession<'_> {
         check_len(v_in.elements, total, "kv_norm_rope_write v_in")?;
         check_len(row_slot.elements, rows, "kv_norm_rope_write row_slot")?;
         check_len(row_pos.elements, rows, "kv_norm_rope_write row_pos")?;
+        check_len(
+            block_table.elements,
+            max_pages,
+            "kv_norm_rope_write block_table",
+        )?;
         if k_norm.elements != head_dim || inv_freq.elements != head_dim / 2 {
             return Err(MetalBf16Error::Shape(
                 "kv_norm_rope_write norm or inv_freq length mismatch".into(),
@@ -681,7 +712,7 @@ impl MetalFastSession<'_> {
         }
         let kv_heads_u32 = checked_u32(kv_heads, "kv_norm_rope_write kv_heads")?;
         let dim_u32 = checked_u32(head_dim, "kv_norm_rope_write head_dim")?;
-        let max_pos_u32 = checked_u32(max_positions, "kv_norm_rope_write max_positions")?;
+        let max_pages_u32 = checked_u32(max_pages, "kv_norm_rope_write max_pages")?;
         self.encoder
             .set_compute_pipeline_state(&self.executor.fast.kv_norm_rope_write);
         self.encoder.set_buffer(0, Some(&k_in.buffer), 0);
@@ -690,26 +721,27 @@ impl MetalFastSession<'_> {
         self.encoder.set_buffer(3, Some(&inv_freq.buffer), 0);
         self.encoder.set_buffer(4, Some(&row_slot.buffer), 0);
         self.encoder.set_buffer(5, Some(&row_pos.buffer), 0);
-        self.encoder.set_buffer(6, Some(&k_cache.buffer), 0);
-        self.encoder.set_buffer(7, Some(&v_cache.buffer), 0);
+        self.encoder.set_buffer(6, Some(&block_table.buffer), 0);
+        self.encoder.set_buffer(7, Some(&k_cache.buffer), 0);
+        self.encoder.set_buffer(8, Some(&v_cache.buffer), 0);
         self.encoder
-            .set_bytes(8, 4, (&raw const kv_heads_u32).cast());
-        self.encoder.set_bytes(9, 4, (&raw const dim_u32).cast());
+            .set_bytes(9, 4, (&raw const kv_heads_u32).cast());
+        self.encoder.set_bytes(10, 4, (&raw const dim_u32).cast());
         self.encoder
-            .set_bytes(10, 4, (&raw const max_pos_u32).cast());
-        self.encoder.set_bytes(11, 4, (&raw const epsilon).cast());
+            .set_bytes(11, 4, (&raw const max_pages_u32).cast());
+        self.encoder.set_bytes(12, 4, (&raw const epsilon).cast());
         let groups = (rows as u64) * u64::from(kv_heads_u32);
         self.encoder
             .dispatch_thread_groups(MTLSize::new(groups, 1, 1), MTLSize::new(32, 1, 1));
         Ok(())
     }
 
-    /// Online-softmax `FlashAttention` over persistent device KV cache for arbitrary packed batches.
+    /// Online-softmax paged `FlashAttention` (`PAGE_TOKENS = 16`) for arbitrary packed batches.
     /// # Errors
     /// Rejects invalid geometry (`head_dim > 512`, non-divisible GQA) or undersized buffers.
     #[expect(
         clippy::too_many_arguments,
-        reason = "explicit GPU kernel bindings for batched FlashAttention"
+        reason = "explicit GPU kernel bindings for batched paged FlashAttention"
     )]
     pub fn flash_attention(
         &mut self,
@@ -719,11 +751,12 @@ impl MetalFastSession<'_> {
         output: &MetalDeviceBf16,
         row_slot: &MetalDeviceU32,
         row_pos: &MetalDeviceU32,
+        block_table: &MetalDeviceU32,
         rows: usize,
         heads: usize,
         kv_heads: usize,
         head_dim: usize,
-        max_positions: usize,
+        max_pages: usize,
         window: Option<usize>,
     ) -> Result<(), MetalBf16Error> {
         let total = rows
@@ -740,10 +773,15 @@ impl MetalFastSession<'_> {
         check_len(output.elements, total, "flash_attention output")?;
         check_len(row_slot.elements, rows, "flash_attention row_slot")?;
         check_len(row_pos.elements, rows, "flash_attention row_pos")?;
+        check_len(
+            block_table.elements,
+            max_pages,
+            "flash_attention block_table",
+        )?;
         let heads_u32 = checked_u32(heads, "flash_attention heads")?;
         let kv_heads_u32 = checked_u32(kv_heads, "flash_attention kv_heads")?;
         let dim_u32 = checked_u32(head_dim, "flash_attention head_dim")?;
-        let max_pos_u32 = checked_u32(max_positions, "flash_attention max_positions")?;
+        let max_pages_u32 = checked_u32(max_pages, "flash_attention max_pages")?;
         let window_u32 = checked_u32(window.unwrap_or(0), "flash_attention window")?;
         self.encoder
             .set_compute_pipeline_state(&self.executor.fast.flash_attn);
@@ -753,14 +791,15 @@ impl MetalFastSession<'_> {
         self.encoder.set_buffer(3, Some(&output.buffer), 0);
         self.encoder.set_buffer(4, Some(&row_slot.buffer), 0);
         self.encoder.set_buffer(5, Some(&row_pos.buffer), 0);
-        self.encoder.set_bytes(6, 4, (&raw const heads_u32).cast());
+        self.encoder.set_buffer(6, Some(&block_table.buffer), 0);
+        self.encoder.set_bytes(7, 4, (&raw const heads_u32).cast());
         self.encoder
-            .set_bytes(7, 4, (&raw const kv_heads_u32).cast());
-        self.encoder.set_bytes(8, 4, (&raw const dim_u32).cast());
+            .set_bytes(8, 4, (&raw const kv_heads_u32).cast());
+        self.encoder.set_bytes(9, 4, (&raw const dim_u32).cast());
         self.encoder
-            .set_bytes(9, 4, (&raw const max_pos_u32).cast());
+            .set_bytes(10, 4, (&raw const max_pages_u32).cast());
         self.encoder
-            .set_bytes(10, 4, (&raw const window_u32).cast());
+            .set_bytes(11, 4, (&raw const window_u32).cast());
         let groups = (rows as u64) * u64::from(heads_u32);
         self.encoder
             .dispatch_thread_groups(MTLSize::new(groups, 1, 1), MTLSize::new(128, 1, 1));
@@ -1019,12 +1058,13 @@ mod tests {
         };
         let heads = 4;
         let kv_heads = 2;
-        let max_positions = 16;
-        let max_slots = 2;
+        let max_pages = 2; // 32 positions per sequence
+        let num_blocks = 4; // non-identity physical page mapping
 
         for (head_dim, window) in [(64_usize, Some(4_usize)), (256, Some(5)), (512, None)] {
-            // Two sequences at different lengths: slot 0 has 7 tokens (0..7), slot 1 has 4 tokens (0..4)
-            let kv_total = max_slots * kv_heads * max_positions * head_dim;
+            // Non-identity block table: slot 0 -> [3, 1], slot 1 -> [2, 0]
+            let block_table_host = [3_u32, 1, 2, 0];
+            let kv_total = num_blocks * kv_heads * 16 * head_dim;
             let mut k_host = vec![0_u16; kv_total];
             let mut v_host = vec![0_u16; kv_total];
             for (i, slot) in k_host.iter_mut().enumerate() {
@@ -1033,9 +1073,9 @@ mod tests {
             for (i, slot) in v_host.iter_mut().enumerate() {
                 *slot = bf16((small_f32((i * 5 + 2) % 19) - 9.0) * 0.05);
             }
-            // Batch of 3 tokens: (slot=0, pos=6), (slot=1, pos=3), (slot=0, pos=0)
+            // Batch of 3 tokens spanning across page boundary (pos=18 -> page 1!)
             let slots = [0_u32, 1, 0];
-            let positions = [6_u32, 3, 0];
+            let positions = [18_u32, 3, 0];
             let m = slots.len();
             let q_host: Vec<u16> = (0..m * heads * head_dim)
                 .map(|i| bf16((small_f32((i * 7 + 1) % 15) - 7.0) * 0.05))
@@ -1052,28 +1092,20 @@ mod tests {
             slot_dev.write(&slots).unwrap();
             let mut pos_dev = exec.alloc_u32(m).unwrap();
             pos_dev.write(&positions).unwrap();
+            let mut bt_dev = exec.alloc_u32(block_table_host.len()).unwrap();
+            bt_dev.write(&block_table_host).unwrap();
 
             let mut session = exec.begin_fast_session().unwrap();
             session
                 .flash_attention(
-                    &q_dev,
-                    &k_dev,
-                    &v_dev,
-                    &out_dev,
-                    &slot_dev,
-                    &pos_dev,
-                    m,
-                    heads,
-                    kv_heads,
-                    head_dim,
-                    max_positions,
-                    window,
+                    &q_dev, &k_dev, &v_dev, &out_dev, &slot_dev, &pos_dev, &bt_dev, m, heads,
+                    kv_heads, head_dim, max_pages, window,
                 )
                 .unwrap();
             session.submit("test flash attention").unwrap();
 
             let actual = out_dev.as_slice(q_host.len());
-            // CPU exact reference
+            // CPU exact reference over paged block table
             for row in 0..m {
                 let slot = slots[row] as usize;
                 let pos = positions[row] as usize;
@@ -1084,7 +1116,8 @@ mod tests {
                     let mut scores = Vec::new();
                     let mut max_s = f32::NEG_INFINITY;
                     for j in first..=pos {
-                        let kv_off = ((slot * kv_heads + kh) * max_positions + j) * head_dim;
+                        let phys = block_table_host[slot * max_pages + (j >> 4)] as usize;
+                        let kv_off = ((phys * kv_heads + kh) * 16 + (j & 15)) * head_dim;
                         let mut dot = 0.0_f32;
                         for d in 0..head_dim {
                             dot += f32_from_bf16(q_host[q_off + d])
@@ -1098,7 +1131,8 @@ mod tests {
                     for d in 0..head_dim {
                         let mut acc = 0.0_f32;
                         for &(j, s) in &scores {
-                            let kv_off = ((slot * kv_heads + kh) * max_positions + j) * head_dim;
+                            let phys = block_table_host[slot * max_pages + (j >> 4)] as usize;
+                            let kv_off = ((phys * kv_heads + kh) * 16 + (j & 15)) * head_dim;
                             let w = (s - max_s).exp() / denom;
                             acc += w * f32_from_bf16(v_host[kv_off + d]);
                         }

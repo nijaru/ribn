@@ -72,6 +72,7 @@ struct Sequence {
 pub struct Engine {
     model: Option<Box<dyn GenerationExecutor>>,
     info: ExecutorInfo,
+    supports_sampling: bool,
     config: EngineConfig,
     policy: SchedulePolicy,
     slots: Vec<Option<Sequence>>,
@@ -103,6 +104,7 @@ impl Engine {
         policy: SchedulePolicy,
     ) -> Result<Self, EngineError> {
         let info = model.info().clone();
+        let supports_sampling = model.supports_sampling();
         info.limits.validate()?;
         validate_policy(policy, &info)?;
         let capacity = config
@@ -120,6 +122,7 @@ impl Engine {
         Ok(Self {
             model: Some(Box::new(model)),
             info,
+            supports_sampling,
             config,
             policy,
             slots: Vec::with_capacity(capacity),
@@ -176,6 +179,11 @@ impl Engine {
     #[must_use]
     pub const fn info(&self) -> &ExecutorInfo {
         &self.info
+    }
+
+    #[must_use]
+    pub const fn supports_sampling(&self) -> bool {
+        self.supports_sampling
     }
 
     #[must_use]
@@ -478,7 +486,25 @@ impl Engine {
             );
             match admitted {
                 Ok(Admission::Ready) => {
+                    let seq_id = self.slots[index].as_ref().expect("waiting slot exists").id;
+                    let prompt_tokens = self.slots[index]
+                        .as_ref()
+                        .expect("waiting slot exists")
+                        .prompt_tokens;
+                    let cached = self
+                        .model
+                        .as_ref()
+                        .expect("engine owns model")
+                        .admitted_prefix(seq_id);
+                    if cached >= prompt_tokens {
+                        let error = ExecutionError::new(
+                            "executor reported an admitted prefix at or past prompt end",
+                        );
+                        self.fault_all(&error);
+                        return Err(EngineError::Faulted(error));
+                    }
                     let sequence = self.slots[index].as_mut().expect("waiting slot exists");
+                    sequence.prefix = cached;
                     sequence.admitted = true;
                     sequence.resource_wait = None;
                     sequence.input = None;

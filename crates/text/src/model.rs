@@ -111,6 +111,12 @@ impl TextModel {
         self.processor.limits()
     }
 
+    /// Whether the underlying executor supports non-greedy stochastic sampling.
+    #[must_use]
+    pub const fn supports_sampling(&self) -> bool {
+        self.handle.supports_sampling()
+    }
+
     /// Total application request permits, including preprocessing, queued work and
     /// retained delivery/retirement. Not the active sequence or physical batch count,
     /// and not a snapshot of currently available permits.

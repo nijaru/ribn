@@ -26,6 +26,7 @@ pub(crate) struct Request {
     max_tokens: Option<u32>,
     temperature: Option<f32>,
     top_p: Option<f32>,
+    top_k: Option<u32>,
     n: Option<u32>,
     repetition_penalty: Option<f32>,
     logprobs: Option<u32>,
@@ -83,17 +84,32 @@ impl Request {
         self,
         operation: Operation,
         config: &ServerConfig,
+        supports_sampling: bool,
     ) -> Result<(TextRequest, bool), ApiError> {
         if self.model != config.model_name {
             return Err(ApiError::bad("unknown model"));
         }
-        if self.temperature.is_some_and(|n| n != 0.0)
-            || self.top_p.is_some_and(|n| n.to_bits() != 1.0_f32.to_bits())
-            || self.n.is_some_and(|n| n != 1)
+        if self.n.is_some_and(|n| n != 1)
             || self
                 .repetition_penalty
                 .is_some_and(|n| n.to_bits() != 1.0_f32.to_bits())
             || self.logprobs.is_some()
+        {
+            return Err(ApiError::bad(
+                "only n=1, repetition_penalty=1 and logprobs=null are supported",
+            ));
+        }
+        let temperature = self.temperature.unwrap_or(0.0);
+        let top_p = self.top_p.unwrap_or(1.0);
+        let top_k = self.top_k.unwrap_or(0);
+        if !temperature.is_finite() || temperature < 0.0 {
+            return Err(ApiError::bad("temperature must be finite and nonnegative"));
+        }
+        if !top_p.is_finite() || top_p <= 0.0 || top_p > 1.0 {
+            return Err(ApiError::bad("top_p must be in (0, 1]"));
+        }
+        if !supports_sampling
+            && (temperature != 0.0 || top_p.to_bits() != 1.0_f32.to_bits() || top_k != 0)
         {
             return Err(ApiError::bad(
                 "only greedy temperature=0, top_p=1, n=1, repetition_penalty=1 and logprobs=null are supported",
@@ -134,6 +150,9 @@ impl Request {
             max_output_tokens: max_tokens,
             ..GenerationOptions::default()
         };
+        options.sampling.temperature = temperature;
+        options.sampling.top_p = top_p;
+        options.sampling.top_k = top_k;
         options.sampling.seed = self.seed;
         let stops = match self.stop {
             None => Vec::new(),

@@ -11,8 +11,9 @@ curl -N http://127.0.0.1:8000/v1/chat/completions \
 
 For a Gemma 4 package, use `serve-gemma /path/to/gemma-package` with
 `--features metal` on macOS or `--features cuda` on NVIDIA. Gemma uses its
-prepared context (4K on CUDA) and default device; omit `--device`,
-`--context-length` and `--max-sequences` for `serve-gemma`.
+prepared context (16K paged KV with automatic exact prefix caching on Metal;
+4K on CUDA) and default device; omit `--device`, `--context-length` and
+`--max-sequences` for `serve-gemma`.
 
 The adapter binds only to loopback. It has no authentication, TLS or authorization
 boundary; do not expose it through a proxy. This is an experimental OpenAI-style
@@ -29,15 +30,14 @@ POST JSON to `/v1/completions` or `/v1/chat/completions`.
 | `messages` | 1–128 text messages; roles `system`, `user`, `assistant`; artifact template applies |
 | `max_tokens` | Positive integer, default 32; limited by server cap and remaining context |
 | `stream`, `stream_options` | Default false; streaming optionally accepts `{"include_usage":true/false}` |
-| `temperature`, `top_p`, `n` | Only 0, 1 and 1 respectively; greedy decoding |
+| `temperature`, `top_p`, `top_k`, `n` | `n` must be `1`. On sampling-capable executors (Gemma 4 Metal model-wide), accepts finite `temperature >= 0`, `top_p` in `(0, 1]`, and optional `top_k`; on greedy-only executors, only `temperature = 0`, `top_p = 1`, and omitted/`0` `top_k` are accepted |
 | `repetition_penalty`, `logprobs` | Only 1 and null respectively |
 | `stop` | One string or up to four strings, 256 bytes total; matched against decoded text and excluded from output |
-| `seed` | Accepted; has no effect on greedy decoding |
+| `seed` | Deterministic sampling seed when stochastic sampling is active; accepted with no effect on greedy decoding |
 | `ignore_eos` | Boolean; disables artifact/chat token stops, not explicit strings |
 
 Unknown fields, query parameters, content encodings and request trailers reject.
-Multimodal input, tools, stochastic sampling, token-ID prompts and structured
-output are unsupported.
+Multimodal input, tools, token-ID prompts and structured output are unsupported.
 
 ## Responses and limits
 

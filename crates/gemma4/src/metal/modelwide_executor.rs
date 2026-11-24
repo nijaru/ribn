@@ -118,6 +118,17 @@ impl GenerationExecutor for Gemma4MetalModelWideExecutor {
         &self.info
     }
 
+    fn supports_sampling(&self) -> bool {
+        true
+    }
+
+    fn admitted_prefix(&self, sequence: SequenceId) -> u32 {
+        self.execution
+            .as_ref()
+            .and_then(|owner| owner.states.get(&sequence))
+            .map_or(0, |entry| entry.logical.cursor)
+    }
+
     fn admit(
         &mut self,
         request_id: RequestId,
@@ -139,7 +150,7 @@ impl GenerationExecutor for Gemma4MetalModelWideExecutor {
                 "Metal sequence capacity exhausted",
             )));
         }
-        let logical = match LogicalSequence::new_sampled(
+        let mut logical = match LogicalSequence::new_sampled(
             owner.model.config(),
             self.info.limits.context_tokens,
             request,
@@ -147,10 +158,12 @@ impl GenerationExecutor for Gemma4MetalModelWideExecutor {
             Ok(logical) => logical,
             Err(error) => return Ok(Admission::Rejected(error)),
         };
-        let slot = match owner.model.allocate_slot() {
-            Ok(slot) => slot,
+        let (slot, matched_prefix) = match owner.model.allocate_slot_with_prefix(&request.tokens) {
+            Ok(result) => result,
             Err(error) => return Ok(Admission::Rejected(execution_error(&error))),
         };
+        logical.cursor = u32::try_from(matched_prefix)
+            .map_err(|_| ExecutionError::new("cached prefix exceeds u32"))?;
         let seed = request
             .options
             .sampling

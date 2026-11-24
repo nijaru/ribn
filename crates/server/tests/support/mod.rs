@@ -29,6 +29,7 @@ pub struct Plan {
     pub fail_sync: AtomicBool,
     pub live: AtomicUsize,
     pub produced: AtomicUsize,
+    pub supports_sampling: bool,
 }
 
 struct Fixture {
@@ -42,6 +43,9 @@ struct Fixture {
 impl GenerationExecutor for Fixture {
     fn info(&self) -> &ExecutorInfo {
         &self.info
+    }
+    fn supports_sampling(&self) -> bool {
+        self.plan.supports_sampling
     }
     fn admit(
         &mut self,

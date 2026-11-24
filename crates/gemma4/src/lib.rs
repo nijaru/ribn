@@ -19,10 +19,11 @@ pub use cuda::{
 };
 #[cfg(all(feature = "metal", target_os = "macos"))]
 pub use metal::{
-    DEFAULT_METAL_MAX_BATCH_TOKENS, DEFAULT_METAL_MAX_POSITIONS, DEFAULT_METAL_MAX_SEQUENCES,
-    Gemma4MetalDecoder, Gemma4MetalFfn, Gemma4MetalModel, Gemma4MetalModelWide,
-    Gemma4MetalModelWideConfig, Gemma4MetalModelWideExecutor, Gemma4MetalWeights, PackedStepItem,
-    PackedStepOutput, metal_argmax,
+    DEFAULT_METAL_KV_BLOCKS, DEFAULT_METAL_MAX_BATCH_TOKENS, DEFAULT_METAL_MAX_POSITIONS,
+    DEFAULT_METAL_MAX_SEQUENCES, Gemma4MetalDecoder, Gemma4MetalFfn, Gemma4MetalModel,
+    Gemma4MetalModelWide, Gemma4MetalModelWideConfig, Gemma4MetalModelWideExecutor,
+    Gemma4MetalWeights, KV_PAGE_TOKENS, PackedStepItem, PackedStepOutput, PrefixCacheStats,
+    metal_argmax,
 };
 
 mod config;

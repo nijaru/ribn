@@ -245,6 +245,7 @@ impl Driver {
     ) -> Result<(DriverOwner, GenerationHandle), DriverError> {
         let runtime = engine.config();
         let status = engine.status();
+        let supports_sampling = engine.supports_sampling();
         let requests = runtime
             .max_active_requests
             .checked_add(runtime.max_queued_requests);
@@ -322,6 +323,7 @@ impl Driver {
                 permits,
                 permits_tx,
                 config,
+                supports_sampling,
             },
         ))
     }
@@ -435,9 +437,15 @@ pub struct GenerationHandle {
     permits: Receiver<()>,
     permits_tx: Sender<()>,
     config: DriverConfig,
+    supports_sampling: bool,
 }
 
 impl GenerationHandle {
+    /// Whether the underlying executor supports non-greedy stochastic sampling.
+    #[must_use]
+    pub const fn supports_sampling(&self) -> bool {
+        self.supports_sampling
+    }
     /// Observe owner availability without reserving request capacity.
     ///
     /// # Errors

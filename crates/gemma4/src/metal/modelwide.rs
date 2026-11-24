@@ -1,11 +1,13 @@
-//! Model-wide single-command-buffer Metal engine for Gemma 4.
+//! Model-wide single-command-buffer Metal engine for Gemma 4 with Paged KV & Prefix Caching.
 //!
-//! Keeps weights, per-owner KV caches, `RoPE` inverse frequencies, and batch
-//! scratch resident on the Apple GPU. Encodes an entire packed multi-sequence
-//! forward pass (mixed prefill + decode) into one `MTLCommandBuffer` with zero
-//! per-step buffer allocations, zero CPU KV copies, and zero per-layer syncs.
+//! Keeps weights, paged per-owner KV pools (`KV_PAGE_TOKENS = 16`), `RoPE` inverse
+//! frequencies, and batch scratch resident on the Apple GPU. Encodes an entire
+//! packed multi-sequence forward pass (mixed prefill + decode) into one
+//! `MTLCommandBuffer` with zero per-step buffer allocations, zero CPU KV copies,
+//! and automatic zero-copy prefix reuse across turns and concurrent requests.
 
 use super::activation::GeluTable;
+use super::kv_pool::{KV_PAGE_TOKENS, PagedKvPool, PrefixCacheStats};
 use super::{Gemma4MetalWeights, bf16_f32, f32_value, metal_error, usize_to_f32};
 use crate::{
     AttentionKind, Gemma4Config, Gemma4Error, Gemma4Source, LayerParameter, ParameterId,
@@ -16,9 +18,15 @@ use engine_metal::{
 };
 
 /// Default serving bounds for model-wide Metal execution.
+///
+/// With paged KV (`KV_PAGE_TOKENS = 16`), `2048` physical blocks hold `32,768`
+/// pooled tokens (~1.84 GiB for Gemma 4 E4B across all 24 KV-owner layers) while
+/// supporting up to `16,384`-token single-sequence contexts, `16` concurrent
+/// sequences, and zero-copy shared prefix blocks.
 pub const DEFAULT_METAL_MAX_SEQUENCES: usize = 16;
-pub const DEFAULT_METAL_MAX_POSITIONS: usize = 4096;
+pub const DEFAULT_METAL_MAX_POSITIONS: usize = 16_384;
 pub const DEFAULT_METAL_MAX_BATCH_TOKENS: usize = 256;
+pub const DEFAULT_METAL_KV_BLOCKS: usize = 2048;
 
 /// Physical resource bounds for one `Gemma4MetalModelWide` instance.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -26,6 +34,9 @@ pub struct Gemma4MetalModelWideConfig {
     pub max_sequences: usize,
     pub max_positions: usize,
     pub max_batch_tokens: usize,
+    /// Number of physical `KV_PAGE_TOKENS`-token KV blocks in the shared pool.
+    /// `0` auto-sizes from `max_sequences` and `max_positions` (capped at `DEFAULT_METAL_KV_BLOCKS`).
+    pub num_kv_blocks: usize,
 }
 
 impl Default for Gemma4MetalModelWideConfig {
@@ -34,12 +45,17 @@ impl Default for Gemma4MetalModelWideConfig {
             max_sequences: DEFAULT_METAL_MAX_SEQUENCES,
             max_positions: DEFAULT_METAL_MAX_POSITIONS,
             max_batch_tokens: DEFAULT_METAL_MAX_BATCH_TOKENS,
+            num_kv_blocks: DEFAULT_METAL_KV_BLOCKS,
         }
     }
 }
 
 struct SlotState {
     position: usize,
+    blocks: Vec<usize>,
+    tokens: Vec<u32>,
+    cached_pages: usize,
+    last_node: u64,
 }
 
 struct OwnerKv {
@@ -66,6 +82,7 @@ struct BatchScratch {
     token_ids: MetalDeviceU32,
     row_slot: MetalDeviceU32,
     row_pos: MetalDeviceU32,
+    block_table: MetalDeviceU32,
     output_rows: MetalDeviceU32,
     argmax_out: MetalDeviceU32,
     error_flag: MetalDeviceU32,
@@ -95,13 +112,15 @@ impl PackedStepOutput<'_> {
     }
 }
 
-/// Model-wide Gemma 4 Metal engine with persistent device KV cache and continuous batching.
+/// Model-wide Gemma 4 Metal engine with paged KV pool, radix prefix caching, and continuous batching.
 pub struct Gemma4MetalModelWide {
     executor: MetalBf16Executor,
     weights: Gemma4MetalWeights,
     gelu_table: MetalBf16Buffer,
     inv_freqs: Vec<MetalDeviceF32>,
     kv_caches: Vec<Option<OwnerKv>>,
+    kv_pool: PagedKvPool,
+    max_pages_per_seq: usize,
     scratch: BatchScratch,
     slots: Vec<Option<SlotState>>,
     limits: Gemma4MetalModelWideConfig,
@@ -110,13 +129,18 @@ pub struct Gemma4MetalModelWide {
     host_slots: Vec<u32>,
     host_pos: Vec<u32>,
     host_out_rows: Vec<u32>,
+    host_page_row: Vec<u32>,
     faulted: bool,
 }
 
 impl Gemma4MetalModelWide {
-    /// Load weights and pre-allocate persistent KV caches and batch scratch on Metal.
+    /// Load weights and pre-allocate paged KV pool and batch scratch on Metal.
     /// # Errors
     /// Rejects invalid limits, device/compilation failure, weight load failure, or OOM.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "pre-allocates weights, paged KV pools, RoPE frequencies, and batch scratch"
+    )]
     pub fn load(
         source: &Gemma4Source,
         mut limits: Gemma4MetalModelWideConfig,
@@ -129,6 +153,13 @@ impl Gemma4MetalModelWide {
             ));
         }
         limits.max_positions = limits.max_positions.min(config.max_position_embeddings());
+        let max_pages_per_seq = limits.max_positions.div_ceil(KV_PAGE_TOKENS);
+        if limits.num_kv_blocks == 0 {
+            limits.num_kv_blocks = limits
+                .max_sequences
+                .saturating_mul(max_pages_per_seq)
+                .clamp(max_pages_per_seq, DEFAULT_METAL_KV_BLOCKS);
+        }
         for (layer, geometry) in config.layers().iter().enumerate() {
             if geometry.kv_owner > layer {
                 return Err(Gemma4Error::new(
@@ -162,11 +193,11 @@ impl Gemma4MetalModelWide {
 
             if geometry.kv_owner == layer {
                 let elems = limits
-                    .max_sequences
+                    .num_kv_blocks
                     .checked_mul(config.num_key_value_heads())
-                    .and_then(|n| n.checked_mul(limits.max_positions))
+                    .and_then(|n| n.checked_mul(KV_PAGE_TOKENS))
                     .and_then(|n| n.checked_mul(geometry.head_dim))
-                    .ok_or_else(|| Gemma4Error::new("Metal modelwide", "KV cache size overflow"))?;
+                    .ok_or_else(|| Gemma4Error::new("Metal modelwide", "KV pool size overflow"))?;
                 let keys = executor.alloc_bf16(elems).map_err(|e| metal_error(&e))?;
                 let values = executor.alloc_bf16(elems).map_err(|e| metal_error(&e))?;
                 kv_caches.push(Some(OwnerKv { keys, values }));
@@ -205,11 +236,13 @@ impl Gemma4MetalModelWide {
             token_ids: alloc_u32(max_m)?,
             row_slot: alloc_u32(max_m)?,
             row_pos: alloc_u32(max_m)?,
+            block_table: alloc_u32(limits.max_sequences * max_pages_per_seq)?,
             output_rows: alloc_u32(max_out)?,
             argmax_out: alloc_u32(max_out)?,
             error_flag: alloc_u32(1)?,
         };
 
+        let kv_pool = PagedKvPool::new(limits.num_kv_blocks)?;
         let mut slots = Vec::with_capacity(limits.max_sequences);
         slots.resize_with(limits.max_sequences, || None);
 
@@ -219,6 +252,8 @@ impl Gemma4MetalModelWide {
             gelu_table,
             inv_freqs,
             kv_caches,
+            kv_pool,
+            max_pages_per_seq,
             scratch,
             slots,
             limits,
@@ -226,6 +261,7 @@ impl Gemma4MetalModelWide {
             host_slots: Vec::with_capacity(max_m),
             host_pos: Vec::with_capacity(max_m),
             host_out_rows: Vec::with_capacity(max_out),
+            host_page_row: Vec::with_capacity(max_pages_per_seq),
             faulted: false,
         })
     }
@@ -245,7 +281,12 @@ impl Gemma4MetalModelWide {
         self.weights.bytes()
     }
 
-    /// Reserve a physical KV slot at position 0.
+    #[must_use]
+    pub fn prefix_cache_stats(&self) -> PrefixCacheStats {
+        self.kv_pool.stats()
+    }
+
+    /// Reserve a physical slot starting at position 0 (no prefix match).
     /// # Errors
     /// Rejects faulted model or exhausted slot capacity.
     pub fn allocate_slot(&mut self) -> Result<usize, Gemma4Error> {
@@ -254,12 +295,49 @@ impl Gemma4MetalModelWide {
             .slots
             .iter()
             .position(Option::is_none)
-            .ok_or_else(|| Gemma4Error::new("Metal modelwide", "KV slot capacity exhausted"))?;
-        self.slots[slot] = Some(SlotState { position: 0 });
+            .ok_or_else(|| Gemma4Error::new("Metal modelwide", "slot capacity exhausted"))?;
+        self.slots[slot] = Some(SlotState {
+            position: 0,
+            blocks: Vec::new(),
+            tokens: Vec::new(),
+            cached_pages: 0,
+            last_node: 0,
+        });
         Ok(slot)
     }
 
-    /// Release a physical KV slot (idempotent when already vacant).
+    /// Reserve a physical slot and immediately pin any exact 16-token-aligned
+    /// cached prefix matching `prompt` (strictly shorter than `prompt.len()`).
+    ///
+    /// Returns `(slot, matched_prefix_tokens)`.
+    /// # Errors
+    /// Rejects faulted model or exhausted slot capacity.
+    pub fn allocate_slot_with_prefix(
+        &mut self,
+        prompt: &[u32],
+    ) -> Result<(usize, usize), Gemma4Error> {
+        self.check_healthy()?;
+        let slot = self
+            .slots
+            .iter()
+            .position(Option::is_none)
+            .ok_or_else(|| Gemma4Error::new("Metal modelwide", "slot capacity exhausted"))?;
+        let (blocks, last_node) = self.kv_pool.match_and_pin_prefix(prompt);
+        let cached_pages = blocks.len();
+        let matched = cached_pages * KV_PAGE_TOKENS;
+        self.slots[slot] = Some(SlotState {
+            position: matched,
+            blocks,
+            tokens: prompt[..matched].to_vec(),
+            cached_pages,
+            last_node,
+        });
+        self.sync_slot_block_table(slot)?;
+        Ok((slot, matched))
+    }
+
+    /// Release a physical slot, returning private tail blocks to the free list
+    /// while leaving published prefix blocks cached for reuse.
     /// # Errors
     /// Rejects release if the execution owner is faulted or `slot` is out of range.
     pub fn free_slot(&mut self, slot: usize) -> Result<(), Gemma4Error> {
@@ -268,11 +346,13 @@ impl Gemma4MetalModelWide {
             .slots
             .get_mut(slot)
             .ok_or_else(|| Gemma4Error::new("Metal modelwide", "slot out of range"))?;
-        *entry = None;
+        if let Some(state) = entry.take() {
+            self.kv_pool.release_slot_blocks(state.blocks);
+        }
         Ok(())
     }
 
-    /// Number of currently occupied physical KV slots.
+    /// Number of currently occupied sequence slots.
     #[must_use]
     pub fn active_slots(&self) -> usize {
         self.slots.iter().filter(|s| s.is_some()).count()
@@ -287,7 +367,7 @@ impl Gemma4MetalModelWide {
             .map(|s| s.position)
     }
 
-    /// Reset an occupied slot's position to 0 (useful for direct benchmarks/tests).
+    /// Reset an occupied slot to position 0 (preserving cached prefix blocks in the pool).
     /// # Errors
     /// Rejects an unoccupied or out-of-range slot or faulted model.
     pub fn reset_slot(&mut self, slot: usize) -> Result<(), Gemma4Error> {
@@ -297,7 +377,12 @@ impl Gemma4MetalModelWide {
             .get_mut(slot)
             .and_then(Option::as_mut)
             .ok_or_else(|| Gemma4Error::new("Metal modelwide", "slot is not occupied"))?;
+        let old_blocks = std::mem::take(&mut state.blocks);
+        self.kv_pool.release_slot_blocks(old_blocks);
         state.position = 0;
+        state.tokens.clear();
+        state.cached_pages = 0;
+        state.last_node = 0;
         Ok(())
     }
 
@@ -318,14 +403,33 @@ impl Gemma4MetalModelWide {
         self.executor.check_healthy().map_err(|e| metal_error(&e))
     }
 
+    fn sync_slot_block_table(&mut self, slot: usize) -> Result<(), Gemma4Error> {
+        let Some(state) = self.slots[slot].as_ref() else {
+            return Ok(());
+        };
+        self.host_page_row.clear();
+        for &phys in &state.blocks {
+            let phys_u32 = u32::try_from(phys)
+                .map_err(|_| Gemma4Error::new("Metal modelwide", "block index exceeds u32"))?;
+            self.host_page_row.push(phys_u32);
+        }
+        self.scratch
+            .block_table
+            .write_at(slot * self.max_pages_per_seq, &self.host_page_row)
+            .map_err(|e| metal_error(&e))
+    }
+
     /// Execute one packed batch of sequences (mixed prefill + decode) in a SINGLE Metal command buffer.
     ///
-    /// Validates the entire batch before touching GPU buffers or sequence positions.
+    /// Allocates any needed paged KV blocks before GPU launch and publishes newly
+    /// completed 16-token blocks into the radix prefix cache on clean completion.
     /// # Errors
-    /// Rejects invalid slots/tokens/overflows, non-finite activations/logits, or Metal failure.
+    /// Rejects invalid slots/tokens/overflows, KV block exhaustion, non-finite activations/logits, or Metal failure.
+    /// # Panics
+    /// Panics if an internal validated-slot invariant is violated.
     #[expect(
         clippy::too_many_lines,
-        reason = "atomic whole-batch validation, metadata staging, GPU submission and commit"
+        reason = "atomic whole-batch validation, paged block allocation, GPU submission and cache publish"
     )]
     pub fn step_packed(
         &mut self,
@@ -342,7 +446,7 @@ impl Gemma4MetalModelWide {
         self.host_pos.clear();
         self.host_out_rows.clear();
 
-        // Whole-batch validation before mutating any device buffer or sequence cursor.
+        // 1. Whole-batch validation before allocating blocks or mutating GPU buffers.
         for (idx, item) in items.iter().enumerate() {
             if item.tokens.is_empty() {
                 return Err(Gemma4Error::new("Metal modelwide", "empty item tokens"));
@@ -404,7 +508,31 @@ impl Gemma4MetalModelWide {
             ));
         }
 
-        // Write host metadata into shared device buffers while GPU is idle.
+        // 2. Allocate physical KV pages for every item in the batch (atomic rollback on OOM).
+        let mut prev_block_lens: Vec<(usize, usize)> = Vec::with_capacity(items.len());
+        for item in items {
+            let state = self.slots[item.slot].as_mut().expect("validated slot");
+            let old_len = state.blocks.len();
+            let end_pos = state.position + item.tokens.len();
+            if let Err(error) = self
+                .kv_pool
+                .ensure_blocks_for_range(&mut state.blocks, end_pos)
+            {
+                for (slot_idx, len) in prev_block_lens {
+                    if let Some(st) = self.slots[slot_idx].as_mut() {
+                        let extra: Vec<usize> = st.blocks.drain(len..).collect();
+                        self.kv_pool.release_slot_blocks(extra);
+                    }
+                }
+                return Err(error);
+            }
+            prev_block_lens.push((item.slot, old_len));
+        }
+        for &(slot_idx, _) in &prev_block_lens {
+            self.sync_slot_block_table(slot_idx)?;
+        }
+
+        // 3. Stage batch metadata into shared device buffers while GPU is idle.
         self.scratch
             .token_ids
             .write(&self.host_tokens)
@@ -428,7 +556,7 @@ impl Gemma4MetalModelWide {
             .write(&[0_u32])
             .map_err(|e| metal_error(&e))?;
 
-        // Encode and execute the complete forward pass in ONE command buffer.
+        // 4. Encode and execute the complete forward pass in ONE command buffer.
         if let Err(error) = self.encode_and_submit(total_tokens, out_rows) {
             self.faulted = true;
             return Err(error);
@@ -447,10 +575,26 @@ impl Gemma4MetalModelWide {
             ));
         }
 
-        // Commit logical/physical positions only after confirmed clean GPU completion.
+        // 5. Commit positions and publish newly completed 16-token blocks into the radix cache.
         for item in items {
+            let mut sync_needed = false;
             if let Some(state) = self.slots[item.slot].as_mut() {
                 state.position += item.tokens.len();
+                state.tokens.extend_from_slice(item.tokens);
+                let prev_cached = state.cached_pages;
+                self.kv_pool.publish_completed_blocks(
+                    &mut state.blocks,
+                    &state.tokens,
+                    &mut state.cached_pages,
+                    &mut state.last_node,
+                );
+                if state.cached_pages != prev_cached {
+                    // Deduplication may have remapped a page to an existing cached block.
+                    sync_needed = true;
+                }
+            }
+            if sync_needed {
+                self.sync_slot_block_table(item.slot)?;
             }
         }
 
@@ -476,7 +620,7 @@ impl Gemma4MetalModelWide {
         let heads = config.num_attention_heads();
         let kv_heads = config.num_key_value_heads();
         let epsilon = config.rms_norm_eps();
-        let max_positions = self.limits.max_positions;
+        let max_pages = self.max_pages_per_seq;
 
         let token_embd = self
             .weights
@@ -549,13 +693,12 @@ impl Gemma4MetalModelWide {
             )
             .map_err(|e| metal_error(&e))?;
 
-        // 2. All 42 decoder layers in the SAME command encoder
+        // 2. All decoder layers in the SAME command encoder
         for (layer, geometry) in config.layers().iter().enumerate() {
             let head_dim = geometry.head_dim;
             let q_cols = heads * head_dim;
             let kv_cols = kv_heads * head_dim;
 
-            // InputNorm -> Q (+ K/V if kv_owner)
             session
                 .rms_norm(
                     &self.scratch.hidden,
@@ -621,12 +764,13 @@ impl Gemma4MetalModelWide {
                         &self.inv_freqs[layer],
                         &self.scratch.row_slot,
                         &self.scratch.row_pos,
+                        &self.scratch.block_table,
                         &owner_kv.keys,
                         &owner_kv.values,
                         total_tokens,
                         kv_heads,
                         head_dim,
-                        max_positions,
+                        max_pages,
                         epsilon,
                     )
                     .map_err(|e| metal_error(&e))?;
@@ -647,16 +791,16 @@ impl Gemma4MetalModelWide {
                     &self.scratch.attn_out,
                     &self.scratch.row_slot,
                     &self.scratch.row_pos,
+                    &self.scratch.block_table,
                     total_tokens,
                     heads,
                     kv_heads,
                     head_dim,
-                    max_positions,
+                    max_pages,
                     window,
                 )
                 .map_err(|e| metal_error(&e))?;
 
-            // O projection -> PostAttentionNorm -> fused Residual Add + PreFeedforwardNorm
             session
                 .linear(
                     &self.scratch.attn_out,
@@ -680,7 +824,6 @@ impl Gemma4MetalModelWide {
                     epsilon,
                 )
                 .map_err(|e| metal_error(&e))?;
-            // Non-aliasing: reads `normed`, updates `hidden` in-place, writes PreFFN norm to `proj_out`.
             session
                 .add_rms_norm(
                     &self.scratch.hidden,
@@ -694,7 +837,6 @@ impl Gemma4MetalModelWide {
                 )
                 .map_err(|e| metal_error(&e))?;
 
-            // Main FFN: Gate, Up, GeGLU, Down, PostFeedforwardNorm, Residual Add
             session
                 .linear(
                     &self.scratch.proj_out,
@@ -758,7 +900,6 @@ impl Gemma4MetalModelWide {
                 )
                 .map_err(|e| metal_error(&e))?;
 
-            // PLE FFN: PleGate, GeGLU(gate, per_layer_ple[layer]), PleProjection, PostPleNorm, Residual Add + LayerScalar
             session
                 .linear(
                     &self.scratch.hidden,
@@ -903,12 +1044,8 @@ impl Gemma4MetalModelWide {
         let out = self.step_packed(&[PackedStepItem {
             slot,
             tokens: &[token],
-            need_logits: false_or_true_logits(),
+            need_logits: true,
         }])?;
         Ok(out.argmax[0])
     }
-}
-
-const fn false_or_true_logits() -> bool {
-    true
 }

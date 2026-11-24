@@ -58,6 +58,7 @@ fn synthetic_modelwide_matches_cpu_and_batches_concurrently() {
         max_sequences: 4,
         max_positions: 32,
         max_batch_tokens: 32,
+        num_kv_blocks: 0,
     };
     let mut model = Gemma4MetalModelWide::load(&source, limits).unwrap();
     let slot0 = model.allocate_slot().unwrap();
@@ -196,6 +197,122 @@ fn synthetic_modelwide_matches_cpu_and_batches_concurrently() {
     driver.shutdown().unwrap();
 }
 
+#[test]
+fn synthetic_prefix_cache_is_bit_exact_and_evicts_lru() {
+    let dir = weights::Dir::new();
+    let pkg = weights::package(&dir, &weights::inventory(), false);
+    let source = Gemma4Source::open(&pkg).unwrap();
+
+    // 40-token prompts sharing a 32-token (2-page) prefix with distinct 8-token suffixes.
+    let shared_prefix: Vec<u32> = (0_u32..32).map(|i| 2 + (i % 5)).collect();
+    let mut prompt_a = shared_prefix.clone();
+    prompt_a.extend([2, 3, 4, 5, 6, 5, 4, 3]);
+    let mut prompt_b = shared_prefix;
+    prompt_b.extend([6, 5, 4, 3, 2, 3, 4, 5]);
+    assert_eq!(prompt_a.len(), 40);
+    assert_eq!(prompt_b.len(), 40);
+
+    // 1. Cold baseline for prompt_b on an empty pool.
+    let limits = Gemma4MetalModelWideConfig {
+        max_sequences: 4,
+        max_positions: 64,
+        max_batch_tokens: 64,
+        num_kv_blocks: 8,
+    };
+    let mut baseline = Gemma4MetalModelWide::load(&source, limits).unwrap();
+    let base_slot = baseline.allocate_slot().unwrap();
+    let cold_b_logits = baseline
+        .prefill_slot(base_slot, &prompt_b, true)
+        .unwrap()
+        .unwrap();
+    let cold_b_tok0 = argmax(&cold_b_logits).unwrap();
+    let cold_b_dec1 = baseline.decode_slot(base_slot, cold_b_tok0).unwrap();
+    let cold_b_tok1 = argmax(&cold_b_dec1).unwrap();
+
+    // 2. Warm prompt_a, then reuse the 32-token cached prefix for prompt_b.
+    let mut model = Gemma4MetalModelWide::load(&source, limits).unwrap();
+    let (slot_a, matched_a) = model.allocate_slot_with_prefix(&prompt_a).unwrap();
+    assert_eq!(matched_a, 0);
+    let _ = model.prefill_slot(slot_a, &prompt_a, true).unwrap();
+    assert_eq!(model.prefix_cache_stats().cached_blocks, 2);
+
+    // Even while slot_a is still live, slot_b shares the 2 read-only prefix blocks zero-copy.
+    let (slot_b, matched_b) = model.allocate_slot_with_prefix(&prompt_b).unwrap();
+    assert_eq!(matched_b, 32);
+    let cached_b_logits = model
+        .prefill_slot(slot_b, &prompt_b[matched_b..], true)
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        cached_b_logits, cold_b_logits,
+        "cached-prefix prefill must be bit-for-bit identical to cold prefill"
+    );
+    let cached_b_dec1 = model.decode_slot(slot_b, cold_b_tok0).unwrap();
+    assert_eq!(
+        cached_b_dec1, cold_b_dec1,
+        "decode following cached-prefix prefill must be bit-for-bit identical"
+    );
+    model.free_slot(slot_a).unwrap();
+    model.free_slot(slot_b).unwrap();
+
+    // 3. Verify Engine + Executor transparently skips the cached prefix on admission.
+    let executor = Gemma4MetalModelWideExecutor::new(model).unwrap();
+    let engine_cfg = EngineConfig {
+        max_active_requests: 4,
+        max_queued_requests: 8,
+        ..EngineConfig::default()
+    };
+    let policy = SchedulePolicy {
+        max_batch_tokens: 64,
+        prefill_chunk_tokens: 16,
+        ..SchedulePolicy::default()
+    };
+    let engine = Engine::new(executor, engine_cfg, policy).unwrap();
+    let driver_cfg = DriverConfig::for_engine(&engine);
+    let (mut driver, handle) = Driver::spawn(engine, driver_cfg).unwrap();
+    let mut stream = handle
+        .stream_blocking(TokenRequest::new(
+            prompt_b.clone(),
+            GenerationOptions {
+                max_output_tokens: 2,
+                ..GenerationOptions::default()
+            },
+        ))
+        .unwrap();
+    let mut tokens = Vec::new();
+    while let Some(event) = stream.next_blocking() {
+        if let Event::Token { token, .. } = event.unwrap() {
+            tokens.push(token);
+        }
+    }
+    assert_eq!(tokens, vec![cold_b_tok0, cold_b_tok1]);
+    driver.shutdown().unwrap();
+
+    // 4. Verify tight pool (4 blocks = 64 tokens) evicts unreferenced cached blocks LRU.
+    let tight = Gemma4MetalModelWideConfig {
+        max_sequences: 2,
+        max_positions: 64,
+        max_batch_tokens: 64,
+        num_kv_blocks: 4,
+    };
+    let mut evicted_model = Gemma4MetalModelWide::load(&source, tight).unwrap();
+    let p1: Vec<u32> = vec![2; 33]; // uses 3 blocks, caches 2
+    let p2: Vec<u32> = vec![3; 33]; // needs 3 blocks -> must evict p1's cached blocks
+    let (s1, m1) = evicted_model.allocate_slot_with_prefix(&p1).unwrap();
+    assert_eq!(m1, 0);
+    let _ = evicted_model.prefill_slot(s1, &p1, true).unwrap();
+    evicted_model.free_slot(s1).unwrap();
+
+    let (s2, m2) = evicted_model.allocate_slot_with_prefix(&p2).unwrap();
+    assert_eq!(m2, 0);
+    let _ = evicted_model.prefill_slot(s2, &p2, true).unwrap();
+    evicted_model.free_slot(s2).unwrap();
+    assert!(
+        evicted_model.prefix_cache_stats().evictions >= 1,
+        "tight KV pool must evict unreferenced cached blocks under pressure"
+    );
+}
+
 fn assert_close_logits(actual: &[u16], expected: &[u16], label: &str) {
     assert_eq!(actual.len(), expected.len());
     for (i, (&a, &e)) in actual.iter().zip(expected).enumerate() {
@@ -288,6 +405,7 @@ fn e4b_modelwide_matches_12_row_bf16_oracle_and_benchmarks() {
         max_sequences: 16,
         max_positions: 2048,
         max_batch_tokens: 256,
+        num_kv_blocks: 512,
     };
     let mut model = Gemma4MetalModelWide::load(&source, limits).unwrap();
     println!("load_ms={:.1}", t_load.elapsed().as_secs_f64() * 1e3);
@@ -297,6 +415,7 @@ fn e4b_modelwide_matches_12_row_bf16_oracle_and_benchmarks() {
     let mut matched_winners = 0_usize;
     let mut worst_kl = 0.0_f64;
     let mut worst_rel_l2 = 0.0_f64;
+    let mut window_513_cold: Option<(Vec<u32>, Vec<u16>, f64)> = None;
 
     for case in reference["cases"].as_array().unwrap() {
         let name = case["name"].as_str().unwrap();
@@ -312,6 +431,9 @@ fn e4b_modelwide_matches_12_row_bf16_oracle_and_benchmarks() {
         let t0 = Instant::now();
         let mut logits = model.prefill_slot(slot, &prompt, true).unwrap().unwrap();
         let prefill_ms = t0.elapsed().as_secs_f64() * 1e3;
+        if name == "window_513" {
+            window_513_cold = Some((prompt.clone(), logits.clone(), prefill_ms));
+        }
 
         for (step_idx, step) in steps.iter().enumerate() {
             let step_ms = if step_idx == 0 {
@@ -351,6 +473,31 @@ fn e4b_modelwide_matches_12_row_bf16_oracle_and_benchmarks() {
         worst_rel_l2 <= 0.035,
         "worst rel_l2 {worst_rel_l2} exceeded 0.035"
     );
+
+    if let Some((prompt_513, cold_logits, cold_ms)) = window_513_cold {
+        let (cached_slot, matched) = model.allocate_slot_with_prefix(&prompt_513).unwrap();
+        assert_eq!(
+            matched, 512,
+            "window_513 must reuse 32 cached 16-token blocks"
+        );
+        let t_hit = Instant::now();
+        let cached_logits = model
+            .prefill_slot(cached_slot, &prompt_513[matched..], true)
+            .unwrap()
+            .unwrap();
+        let cached_ms = t_hit.elapsed().as_secs_f64() * 1e3;
+        assert_eq!(
+            cached_logits, cold_logits,
+            "E4B cached-prefix prefill must be bit-for-bit identical to cold prefill"
+        );
+        let stats = model.prefix_cache_stats();
+        println!(
+            "E4B PREFIX CACHE (len={}, hit={matched}): cold={cold_ms:.2} ms -> cached={cached_ms:.2} ms ({:.1}x) stats={stats:?}",
+            prompt_513.len(),
+            cold_ms / cached_ms
+        );
+        model.free_slot(cached_slot).unwrap();
+    }
 
     // Speed benchmarks: single decode M=1, batched decode M=2,4,8,16, and prefill 18, 64, 128!
     let chat_prompt: Vec<u32> = reference["cases"][0]["prompt_ids"]

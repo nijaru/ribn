@@ -297,8 +297,15 @@ logical sequence metadata and whole-offer input binding. Prepared rows retain or
 work identity and exact prompt ranges or decode tokens; failed binding publishes no rows.
 The serial executor separately checks physical decoder positions before execution and
 commits logical cursor/input/output state only after all synchronous rows succeed.
-`text/src/gemma_load.rs` assembles any `GenerationExecutor`; its current CUDA/Metal
-constructors still select the existing serial executor, not a model-wide GPU path. Failed continuation cannot resume, but teardown can succeed:
+`text/src/gemma_load.rs` assembles any `GenerationExecutor`; on macOS Metal its
+default `Gemma4MetalFfn::Native` path (`head_dim <= 512`) selects
+`Gemma4MetalModelWide` + `Gemma4MetalModelWideExecutor`, which encodes packed
+multi-sequence prefill/decode batches into one `MTLCommandBuffer` over a shared
+16-token paged KV pool (`metal/kv_pool.rs`, default 16K context / 2,048 blocks)
+with exact content-addressed radix prefix caching (`GenerationExecutor::admitted_prefix`)
+and capability-gated stochastic sampling (`GenerationExecutor::supports_sampling`).
+Explicit `ExperimentalGraph`, wider heads, and out-of-scope CUDA configurations
+retain the serial `Gemma4Executor`. Failed continuation cannot resume, but teardown can succeed:
 paired model creation/completion ownership and explicit sequence close establish when
 resources may be destroyed. CPU calls need no device drain; Metal settles the same shared
 model owner even if decoder construction failed, and CUDA settles its associated stream

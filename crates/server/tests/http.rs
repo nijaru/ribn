@@ -627,3 +627,51 @@ async fn stop_sequences_trim_text_and_report_stop_for_both_responses() {
     assert_eq!(finishes, ["stop"]);
     assert!(running.stop().await.1.is_ok());
 }
+
+#[tokio::test]
+async fn sampling_capable_executor_accepts_valid_params_and_rejects_invalid() {
+    let plan = Arc::new(Plan {
+        supports_sampling: true,
+        ..Plan::default()
+    });
+    let running = Running::start(ServerConfig::default(), plan, 2).await;
+    for body in [
+        r#"{"model":"ribn","prompt":"a","max_tokens":2,"temperature":0.7,"top_p":0.9,"top_k":40,"seed":42}"#,
+        r#"{"model":"ribn","prompt":"a","max_tokens":2,"temperature":0.0}"#,
+        r#"{"model":"ribn","prompt":"a","max_tokens":2,"temperature":1.2,"top_p":1.0,"stream":true}"#,
+    ] {
+        assert_eq!(
+            running.post("/v1/completions", body).await.status,
+            200,
+            "{body}"
+        );
+    }
+    let chat = json!({
+        "model": "ribn",
+        "messages": [{"role": "user", "content": "a"}],
+        "max_tokens": 2,
+        "temperature": 0.6,
+        "top_p": 0.95,
+        "top_k": 32,
+        "seed": 7,
+        "stream": true
+    })
+    .to_string();
+    assert_eq!(
+        running.post("/v1/chat/completions", &chat).await.status,
+        200
+    );
+    for bad in [
+        r#"{"model":"ribn","prompt":"a","max_tokens":1,"temperature":-0.1}"#,
+        r#"{"model":"ribn","prompt":"a","max_tokens":1,"top_p":0.0}"#,
+        r#"{"model":"ribn","prompt":"a","max_tokens":1,"top_p":1.5}"#,
+        r#"{"model":"ribn","prompt":"a","max_tokens":1,"top_p":-0.2}"#,
+    ] {
+        assert_eq!(
+            running.post("/v1/completions", bad).await.status,
+            400,
+            "{bad}"
+        );
+    }
+    assert!(running.stop().await.1.is_ok());
+}

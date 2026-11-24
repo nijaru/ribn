@@ -2664,6 +2664,36 @@ clean SIGTERM exit 0):
 | `c = 8` | 2.544 s | **201.3 tok/s** | 150.2 / 279.7 ms | 35.9 / 36.8 ms |
 | `c = 16` | 3.294 s | **310.9 tok/s** | 205.3 / 430.7 ms | 45.7 / 46.1 ms |
 
+### Paged KV, radix prefix caching, and HTTP stochastic sampling (2026-11-24)
+
+Upgraded `Gemma4MetalModelWide` and `engine-metal` (`fast_bf16_kv_norm_rope_write`,
+`fast_bf16_flash_attn`) from flat `[max_sequences, kv_heads, max_positions, head_dim]`
+storage to a shared **16-token paged KV block pool** (`KV_PAGE_TOKENS = 16`,
+`DEFAULT_METAL_KV_BLOCKS = 2048` = 32,768 pooled tokens across all 24 KV-owner layers,
+~1.84 GiB for E4B) with per-sequence GPU block tables, **16,384-token maximum context**
+(up from 4,096), and **exact content-addressed radix prefix caching** (`metal/kv_pool.rs`)
+with ref-counted zero-copy block sharing and leaf-first LRU eviction. Added
+`GenerationExecutor::admitted_prefix` (skipping cached prompt tokens in `ribn::Engine`)
+and capability-gated HTTP stochastic sampling (`GenerationExecutor::supports_sampling`,
+`temperature`, `top_p`, `top_k`, `seed` through `ribn-server`).
+
+Re-verified on the unchanged M3 Max / `google/gemma-4-E4B-it` BF16 snapshot:
+- **Numerical & facade gates:** 12/12 stock CPU BF16 oracle winners exact
+  (`worst_rel_l2 = 0.03108`, `worst_kl = 0.006894`), `gemma_text_facade_reproduces_the_archived_greedy_tokens`
+  passed, and `window_513` cached-prefix prefill (`512/513` tokens hit) matched cold prefill
+  **bit-for-bit** across all 262,144 logits while reducing prefill latency from **526.88 ms to 35.19 ms (15.0×)**.
+- **Direct paged-KV latency (zero regression):** `decode M = 1` **30.55 ms min / 31.27 ms mean (32.0 tok/s)**,
+  `M = 2` **60.3 tok/s**, `M = 4` **120.2 tok/s**, `M = 8` **222.5 tok/s**, `M = 16` **350.1 tok/s**;
+  `prefill 18` **54.69 ms**, `prefill 64` **79.66 ms**, `prefill 128` **132.81 ms**.
+- **Live loopback `ribn serve-gemma` HTTP SSE (`stream=true`, ready in 2.71s, RSS 16.10–16.11 GiB — 2.16 GiB lower than flat 4K KV, clean SIGTERM exit 0):**
+  - ~995-token shared system prompt: cold TTFT **1,117.5 ms** → warm cached TTFT **59.5 ms** (**18.8× speedup**, 35.0 ms median ITL).
+  - Shared-prefix concurrent bursts (~999-token prompt, `max_tokens=64`):
+    `c = 4` **2.566 s wall / 99.8 tok/s** (136.6 ms median TTFT, 37.0 ms median ITL);
+    `c = 8` **2.732 s wall / 187.4 tok/s** (241.4 ms median TTFT, 39.5 ms median ITL).
+  - HTTP stochastic sampling (`temperature=0.9, top_p=0.9, top_k=40`): identical output on
+    repeated `seed=42`, distinct coherent output on `seed=999`, HTTP 400 on invalid
+    `temperature=-0.1` and `top_p=0.0`.
+
 Scope limits: single-host M3 Max BF16 observations; does not replace multi-process
 matched-quality external serving cohorts, CUDA/4090 qualification, or
 memory-pressure/recovery qualification under constrained RAM.

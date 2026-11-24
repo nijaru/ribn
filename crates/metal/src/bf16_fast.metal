@@ -584,8 +584,9 @@ kernel void fast_bf16_q_norm_rope(
 }
 
 // ============================================================================
-// 10. Fused K/V Norm + RoPE + Direct Persistent Device KV Cache Write
-//     KV layout: [slot, kv_head, max_positions, head_dim]
+// 10. Fused K/V Norm + RoPE + Paged Device KV Cache Write (PAGE_TOKENS = 16)
+//     KV pool layout: [phys_block, kv_head, 16, head_dim]
+//     Block table layout: [slot, max_pages] -> phys_block
 //     1 SIMD group per (m, kv_head).
 // ============================================================================
 kernel void fast_bf16_kv_norm_rope_write(
@@ -595,12 +596,13 @@ kernel void fast_bf16_kv_norm_rope_write(
     device const float* inv_freq [[buffer(3)]],
     device const uint* row_slot [[buffer(4)]],
     device const uint* row_pos [[buffer(5)]],
-    device ushort* k_cache [[buffer(6)]],
-    device ushort* v_cache [[buffer(7)]],
-    constant uint& kv_heads [[buffer(8)]],
-    constant uint& head_dim [[buffer(9)]],
-    constant uint& max_positions [[buffer(10)]],
-    constant float& epsilon [[buffer(11)]],
+    device const uint* block_table [[buffer(6)]],
+    device ushort* k_cache [[buffer(7)]],
+    device ushort* v_cache [[buffer(8)]],
+    constant uint& kv_heads [[buffer(9)]],
+    constant uint& head_dim [[buffer(10)]],
+    constant uint& max_pages [[buffer(11)]],
+    constant float& epsilon [[buffer(12)]],
     uint tg_id [[threadgroup_position_in_grid]],
     uint lane [[thread_position_in_threadgroup]])
 {
@@ -611,7 +613,9 @@ kernel void fast_bf16_kv_norm_rope_write(
 
     uint slot = row_slot[m];
     uint pos = row_pos[m];
-    ulong dst_base = (((ulong)slot * kv_heads + kh) * max_positions + pos) * head_dim;
+    uint phys_block = block_table[(ulong)slot * max_pages + (pos >> 4)];
+    uint page_off = pos & 15u;
+    ulong dst_base = (((ulong)phys_block * kv_heads + kh) * 16u + page_off) * head_dim;
 
     // Key: RMSNorm with k_norm + split-half RoPE
     float k_energy = 0.0f;
@@ -647,7 +651,7 @@ kernel void fast_bf16_kv_norm_rope_write(
 }
 
 // ============================================================================
-// 11. Batched Online-Softmax FlashAttention over Persistent Device KV Cache
+// 11. Batched Online-Softmax Paged FlashAttention (PAGE_TOKENS = 16)
 //     4 SIMD groups (128 threads) per (m, head) splitting KV positions.
 //     Gemma 4 attention scale is 1.0 (Q and K are RMS-normalized).
 // ============================================================================
@@ -658,11 +662,12 @@ kernel void fast_bf16_flash_attn(
     device ushort* output [[buffer(3)]],
     device const uint* row_slot [[buffer(4)]],
     device const uint* row_pos [[buffer(5)]],
-    constant uint& heads [[buffer(6)]],
-    constant uint& kv_heads [[buffer(7)]],
-    constant uint& head_dim [[buffer(8)]],
-    constant uint& max_positions [[buffer(9)]],
-    constant uint& window [[buffer(10)]],
+    device const uint* block_table [[buffer(6)]],
+    constant uint& heads [[buffer(7)]],
+    constant uint& kv_heads [[buffer(8)]],
+    constant uint& head_dim [[buffer(9)]],
+    constant uint& max_pages [[buffer(10)]],
+    constant uint& window [[buffer(11)]],
     uint tg_id [[threadgroup_position_in_grid]],
     uint tid [[thread_position_in_threadgroup]])
 {
@@ -678,7 +683,7 @@ kernel void fast_bf16_flash_attn(
     uint first = (window != 0u && pos >= window - 1u) ? (pos - (window - 1u)) : 0u;
 
     ulong q_base = (ulong)tg_id * head_dim;
-    ulong kv_head_base = ((ulong)slot * kv_heads + kh) * max_positions * head_dim;
+    device const uint* seq_blocks = block_table + (ulong)slot * max_pages;
 
     threadgroup float sm_m[4];
     threadgroup float sm_l[4];
@@ -694,7 +699,9 @@ kernel void fast_bf16_flash_attn(
         float l_sum = 0.0f;
 
         for (uint j = first + sg; j <= last; j += 4u) {
-            ulong kv_off = kv_head_base + (ulong)j * 256u;
+            uint phys_block = seq_blocks[j >> 4];
+            uint page_off = j & 15u;
+            ulong kv_off = (((ulong)phys_block * kv_heads + kh) * 16u + page_off) * 256u;
             device const ushort4* k4 = (device const ushort4*)(k_cache + kv_off);
             device const ushort4* v4 = (device const ushort4*)(v_cache + kv_off);
             float partial = dot(q0, bf16_load4(k4[lane])) + dot(q1, bf16_load4(k4[lane + 32u]));
@@ -728,7 +735,9 @@ kernel void fast_bf16_flash_attn(
         float l_sum = 0.0f;
 
         for (uint j = first + sg; j <= last; j += 4u) {
-            ulong kv_off = kv_head_base + (ulong)j * 512u;
+            uint phys_block = seq_blocks[j >> 4];
+            uint page_off = j & 15u;
+            ulong kv_off = (((ulong)phys_block * kv_heads + kh) * 16u + page_off) * 512u;
             device const ushort4* k4 = (device const ushort4*)(k_cache + kv_off);
             device const ushort4* v4 = (device const ushort4*)(v_cache + kv_off);
             float partial = dot(q0, bf16_load4(k4[lane]))
@@ -775,7 +784,9 @@ kernel void fast_bf16_flash_attn(
         float l_sum = 0.0f;
 
         for (uint j = first + sg; j <= last; j += 4u) {
-            ulong kv_off = kv_head_base + (ulong)j * head_dim;
+            uint phys_block = seq_blocks[j >> 4];
+            uint page_off = j & 15u;
+            ulong kv_off = (((ulong)phys_block * kv_heads + kh) * 16u + page_off) * head_dim;
             float partial = 0.0f;
             for (uint t = 0u; t < n_elem; ++t) {
                 uint d = lane + t * 32u;
