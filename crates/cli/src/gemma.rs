@@ -5,9 +5,9 @@ use ribn_text::{GenerationOptions, Message, ProcessorLimits, TextInput, TextOwne
 
 use crate::cli::RunOptions;
 use crate::output::{display, stream};
+use crate::serve_cli::GemmaQuantArg;
 
-const USAGE: &str =
-    "ribn run-gemma <package-dir> [--prompt <text> | --file <path>] [--raw] [--max-tokens <n>]";
+const USAGE: &str = "ribn run-gemma <package-dir> [--quantize bf16|q8|q4] [--prompt <text> | --file <path>] [--raw] [--max-tokens <n>]";
 
 pub(crate) fn run(arguments: &[String]) -> Result<(), String> {
     if matches!(arguments, [help] if matches!(help.as_str(), "-h" | "--help")) {
@@ -16,7 +16,7 @@ pub(crate) fn run(arguments: &[String]) -> Result<(), String> {
         );
         return Ok(());
     }
-    let mut options = parse(arguments)?;
+    let (mut options, quant) = parse(arguments)?;
     let mut message = Message::user("");
     let role_bytes = if options.raw { 0 } else { message.role.len() };
     let max_text_bytes = ProcessorLimits::default()
@@ -32,8 +32,8 @@ pub(crate) fn run(arguments: &[String]) -> Result<(), String> {
     };
 
     eprintln!("preparing the Gemma 4 package on the device (experimental Ribn runtime)");
-    let (mut owner, report) = load_model(options.model).map_err(display)?;
-    eprintln!("ready: {} encoded model bytes", report.model_bytes);
+    let (mut owner, report) = load_model(options.model, quant).map_err(display)?;
+    eprintln!("ready: {} materialized model bytes", report.model_bytes);
     let generation = GenerationOptions {
         max_output_tokens: options.max_tokens,
         ..GenerationOptions::default()
@@ -50,36 +50,53 @@ pub(crate) fn run(arguments: &[String]) -> Result<(), String> {
 #[cfg(all(feature = "metal", target_os = "macos"))]
 pub(crate) fn load_model(
     path: PathBuf,
+    quant: GemmaQuantArg,
 ) -> Result<(TextOwner, ribn_text::GemmaLoadReport), ribn_text::TextError> {
-    TextOwner::load_gemma(path, ribn_text::Gemma4MetalFfn::Native)
+    let policy = match quant {
+        GemmaQuantArg::Bf16 => ribn_text::Gemma4MetalQuant::Bf16,
+        GemmaQuantArg::Q8 => ribn_text::Gemma4MetalQuant::Q8,
+        GemmaQuantArg::Q4 => ribn_text::Gemma4MetalQuant::Q4,
+    };
+    TextOwner::load_gemma_with_quant(path, ribn_text::Gemma4MetalFfn::Native, policy)
 }
 
 #[cfg(all(feature = "cuda", not(all(feature = "metal", target_os = "macos"))))]
 pub(crate) fn load_model(
     path: PathBuf,
+    quant: GemmaQuantArg,
 ) -> Result<(TextOwner, ribn_text::GemmaLoadReport), ribn_text::TextError> {
+    if quant != GemmaQuantArg::Bf16 {
+        return Err(ribn_text::TextError::InvalidInput(
+            "--quantize q8/q4 is currently supported only on Metal",
+        ));
+    }
     TextOwner::load_gemma_cuda(path)
 }
 
-fn parse(arguments: &[String]) -> Result<RunOptions, String> {
+fn parse(arguments: &[String]) -> Result<(RunOptions, GemmaQuantArg), String> {
     let mut model = None;
     let mut prompt = None;
     let mut file = None;
     let mut raw = false;
     let mut max_tokens = 32_u32;
+    let mut quant = GemmaQuantArg::Bf16;
     let mut index = 0;
     while index < arguments.len() {
         let name = &arguments[index];
         if name == "--raw" {
             raw = true;
             index += 1;
-        } else if matches!(name.as_str(), "--prompt" | "--file" | "--max-tokens") {
+        } else if matches!(
+            name.as_str(),
+            "--prompt" | "--file" | "--max-tokens" | "--quantize"
+        ) {
             let value = arguments
                 .get(index + 1)
                 .ok_or_else(|| format!("{name} requires a value; {USAGE}"))?;
             match name.as_str() {
                 "--prompt" => prompt = Some(value.clone()),
                 "--file" => file = Some(PathBuf::from(value)),
+                "--quantize" => quant = GemmaQuantArg::parse(value)?,
                 _ => {
                     max_tokens = value
                         .parse()
@@ -104,13 +121,16 @@ fn parse(arguments: &[String]) -> Result<RunOptions, String> {
     if prompt.is_some() && file.is_some() {
         return Err(format!("use either --prompt or --file, not both; {USAGE}"));
     }
-    Ok(RunOptions {
-        model,
-        prompt,
-        file,
-        raw,
-        max_tokens,
-        context_length: 4096,
-        device: 0,
-    })
+    Ok((
+        RunOptions {
+            model,
+            prompt,
+            file,
+            raw,
+            max_tokens,
+            context_length: 4096,
+            device: 0,
+        },
+        quant,
+    ))
 }

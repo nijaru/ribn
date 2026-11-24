@@ -302,10 +302,13 @@ default `Gemma4MetalFfn::Native` path (`head_dim <= 512`) selects
 `Gemma4MetalModelWide` + `Gemma4MetalModelWideExecutor`, which encodes packed
 multi-sequence prefill/decode batches into one `MTLCommandBuffer` over a shared
 16-token paged KV pool (`metal/kv_pool.rs`, default 16K context / 2,048 blocks)
-with exact content-addressed radix prefix caching (`GenerationExecutor::admitted_prefix`)
-and capability-gated stochastic sampling (`GenerationExecutor::supports_sampling`).
-Explicit `ExperimentalGraph`, wider heads, and out-of-scope CUDA configurations
-retain the serial `Gemma4Executor`. Failed continuation cannot resume, but teardown can succeed:
+with exact content-addressed radix prefix caching (`GenerationExecutor::admitted_prefix`),
+exact shared-KV tail pruning, capability-gated stochastic sampling
+(`GenerationExecutor::supports_sampling`), and opt-in affine group-64 weight
+quantization (`Gemma4MetalQuant::{Bf16, Q8, Q4}`, backed by `engine-metal`'s
+`quant_fast.metal` and `bf16/quant.rs`, defaulting to `Bf16`). Explicit
+`ExperimentalGraph`, wider heads, and out-of-scope CUDA configurations
+retain the serial `Gemma4Executor` (and reject non-`Bf16` quantization). Failed continuation cannot resume, but teardown can succeed:
 paired model creation/completion ownership and explicit sequence close establish when
 resources may be destroyed. CPU calls need no device drain; Metal settles the same shared
 model owner even if decoder construction failed, and CUDA settles its associated stream

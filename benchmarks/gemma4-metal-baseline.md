@@ -2778,3 +2778,61 @@ Same-day serialized loopback HTTP SSE comparison on the identical unconverted BF
 Scope limits: single-process-per-server M3 Max BF16 observation; does not replace multi-process
 randomized matched-quality external serving cohorts, CUDA/4090 qualification, or
 memory-pressure/recovery qualification under constrained RAM.
+
+### Affine group-64 Metal quantization (`Q8` & `Q4`), fused norms, and parallel softcap (2026-11-24)
+
+Implemented end-to-end affine group-64 Metal weight quantization (`Q8` and `Q4`, matching MLX's
+`w = q * scale + bias`, `group_size = 64` layout with interleaved `bfloat2` `scales_biases`)
+alongside two precision-agnostic model-wide speedups:
+- **`engine-metal` (`quant_fast.metal`, `bf16/quant.rs`):** Streaming multi-threaded
+  `MetalBf16Executor::read_quantized_bf16` (~8 MiB bounded staging scratch, zero full-BF16 copy),
+  coalesced 4-lane/group GEMV (`uint2`/`uint4` loads, zero-shift `ushort` nibble unpack) for
+  `M = 1..4`, `BK = 64` hardware `simdgroup_bfloat8x8 → float8x8` MMA GEMMs (`gemm_m8`,
+  `gemm_m16`, `gemm_m32`) for `M >= 5`, and quantized embedding gather.
+- **`engine-metal` (`bf16_fast.metal`, `bf16/fast.rs`) & `engine-gemma4` (`metal/modelwide.rs`):**
+  Bit-exact fused `post_norm_add_pre_norm` and `rms_norm_residual_add_scale` (eliminating 126
+  serial GPU pipeline barriers per step across BF16/Q8/Q4), and 2-stage 64-TG/row parallel
+  `softcap_argmax`.
+- **CLI & text facade (`ribn-text`, `ribn-cli`):** `--quantize bf16|q8|q4` on `serve-gemma` and
+  `run-gemma` (default `bf16`; non-`bf16` rejects explicitly outside the Metal model-wide path).
+
+Verified on the unchanged M3 Max / `google/gemma-4-E4B-it` snapshot (`ee0ef602…`):
+
+| Direct M3 Max E4B metric | **BF16** (13.90 GiB) | **Q8** (7.39 GiB, 1.88×) | **Q4** (3.91 GiB, 3.56×) |
+| --- | ---: | ---: | ---: |
+| Load (+ streaming quant) | `1.67 s` | `2.81 s` | `2.74 s` |
+| 12-row CPU BF16 oracle winners | **12/12** (`rel_l2=0.03108`, `kl=0.006894`) | **12/12** (`rel_l2=0.05534`, `kl=0.013638`) | **12/12** (`rel_l2=0.43213`, `kl=0.605768`) |
+| 512-tok prefix cache (bit-exact) | `260.70 → 34.36 ms` (`7.6×`) | `273.02 → 22.96 ms` (`11.9×`) | `262.95 → 15.52 ms` (`16.9×`) |
+| `prefill_18` (warm min) | `43.73 ms` (`411.6 tok/s`) | `37.77 ms` (`476.6 tok/s`) | `32.79 ms` (`549.0 tok/s`) |
+| `prefill_64` (warm min) | `53.35 ms` (`1,199.5 tok/s`) | `48.99 ms` (`1,306.3 tok/s`) | `44.32 ms` (`1,444.1 tok/s`) |
+| `prefill_128` (warm min) | `77.42 ms` (`1,653.4 tok/s`) | `77.21 ms` (`1,657.8 tok/s`) | `72.60 ms` (`1,763.2 tok/s`) |
+| `prefill_512` (warm min) | `242.19 ms` (`2,114.0 tok/s`) | `258.60 ms` (`1,979.9 tok/s`) | `254.16 ms` (`2,014.4 tok/s`) |
+| `decode M = 1` (min / mean) | `29.85 / 30.02 ms` (`33.3 tok/s`) | `18.78 / 19.27 ms` (`51.9 tok/s`) | `12.45 / 12.75 ms` (`78.5 tok/s`) |
+| `decode M = 2` (min / mean) | `31.40 / 31.88 ms` (`62.7 tok/s`) | `18.99 / 19.39 ms` (`103.1 tok/s`) | `12.60 / 12.64 ms` (`158.2 tok/s`) |
+| `decode M = 4` (min / mean) | `31.20 / 31.95 ms` (`125.2 tok/s`) | `19.82 / 20.51 ms` (`195.1 tok/s`) | `17.77 / 17.85 ms` (`224.0 tok/s`) |
+| `decode M = 8` (min / mean) | `33.86 / 34.23 ms` (`233.7 tok/s`) | `26.90 / 27.42 ms` (`291.7 tok/s`) | `22.74 / 22.82 ms` (`350.6 tok/s`) |
+| `decode M = 16` (min / mean) | `43.52 / 43.93 ms` (`364.3 tok/s`) | `34.10 / 34.32 ms` (`466.2 tok/s`) | `32.18 / 32.48 ms` (`492.5 tok/s`) |
+
+Live loopback `ribn serve-gemma` HTTP SSE (`stream=true`, `temperature=0`, `max_tokens=64`, clean
+`SIGTERM` exit `0`, zero RSS growth across cohorts):
+
+| HTTP SSE workload | `--quantize q8` (`9.58 GiB` RSS, `3.48 s` ready) | `--quantize q4` (`6.11 GiB` RSS, `3.31 s` ready) |
+| --- | ---: | ---: |
+| Short `c = 1` (`in=26, out=64`) | `51.3 tok/s` · TTFT `29.5 ms` · ITL `19.3 ms` | `72.2 tok/s` · TTFT `24.7 ms` · ITL `13.6 ms` |
+| Short `c = 4` (`in=26, out=256`) | `188.0 tok/s` · TTFT `88.3 ms` · ITL `20.2 ms` | `202.4 tok/s` · TTFT `38.0 ms` · ITL `19.0 ms` |
+| Short `c = 8` (`in=26, out=512`) | `279.5 tok/s` · TTFT `109.0/109.4 ms` · ITL `27.3 ms` | `318.9 tok/s` · TTFT `64.9/126.3 ms` · ITL `24.0 ms` |
+| Short `c = 16` (`in=26, out=1024`) | `431.9 tok/s` · TTFT `144.4/146.0 ms` · ITL `35.3 ms` | `459.1 tok/s` · TTFT `134.0/135.3 ms` · ITL `33.2 ms` |
+| Long `c = 1` (`in=663`) | TTFT `356.9 ms` · ITL `21.6 ms` | TTFT `346.1 ms` · ITL `16.2 ms` |
+| Prefix `c = 1` cold / warm (`in=1127/1128`) | `599.0 → 43.1 ms` (`13.9×`) | `593.4 → 39.5 ms` (`15.0×`) |
+| Mixed `c = 8` (4 short + 2 long + 2 prefix warm) | `212.6 tok/s` · TTFT `104.6/104.9 ms` · ITL `30.4 ms` | `251.8 tok/s` · TTFT `91.3/92.1 ms` · ITL `26.3 ms` |
+
+Reference direct MLX Q4 calibration (`mlx-lm==0.32.2`, `nn.quantize(model, group_size=64, bits=4)`,
+identical `4,198,750,292` weight bytes): `prefill_18/64/128/512` = `41.17 / 54.94 / 83.95 / 248.32 ms`,
+`decode M = 1` = `10.47 ms` (`95.5 tok/s`). Ribn Q4 beats MLX Q4 on `prefill_18/64/128` by 16–26%,
+comes within 2.3% on `prefill_512`, and scales batched HTTP SSE decode to `459.1 tok/s` at `c = 16`
+(`492.5 tok/s` direct) while leaving `decode M = 1` (`12.45 ms` vs `10.47 ms`) as a clear remaining
+optimization target (concurrent encoder / async step pipelining).
+
+Scope limits: `Q8` and `Q4` are opt-in (`--quantize q8|q4`); `bf16` remains the default and the
+exact BF16 numerical oracle is unchanged. Quantized task-quality benchmarks (beyond the 12-row BF16
+winner/KL audit), quantized pre-packed checkpoint serialization, and CUDA/4090 quantization remain open.

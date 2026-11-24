@@ -105,10 +105,10 @@ fn load_model(path: std::path::PathBuf, load: ModelLoad) -> Result<TextOwner, Te
         ModelLoad::Qwen { .. } => Err(TextError::InvalidInput(
             "Qwen serving requires --features cuda",
         )),
-        ModelLoad::Gemma => {
-            let (owner, report) = crate::gemma::load_model(path)?;
+        ModelLoad::Gemma { quant } => {
+            let (owner, report) = crate::gemma::load_model(path, quant)?;
             eprintln!(
-                "ready: application request capacity={}; encoded model bytes={} (not resident or peak bytes)",
+                "ready: application request capacity={}; materialized model bytes={} (not resident or peak bytes)",
                 owner.model().request_capacity(),
                 report.model_bytes
             );

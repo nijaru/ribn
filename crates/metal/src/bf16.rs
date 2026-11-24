@@ -11,6 +11,7 @@ mod fast;
 mod graph;
 mod loading;
 mod projection;
+mod quant;
 mod rotary;
 mod submission;
 
@@ -20,6 +21,7 @@ pub use projection::{
     MetalAttentionProjections, MetalFfnWeights, MetalLinearShape, MetalNormalizedProjection,
     MetalProjectionNorm,
 };
+pub use quant::{METAL_QUANT_GROUP_SIZE, MetalQuantKind, MetalQuantWeight};
 pub use rotary::MetalRotaryFactors;
 
 /// Metal preparation or execution failure.
@@ -115,6 +117,7 @@ pub struct MetalBf16Executor {
     elementwise: ComputePipelineState,
     lookup_product: ComputePipelineState,
     fast: fast::FastPipelines,
+    quant: quant::QuantPipelines,
 }
 
 impl Drop for MetalBf16Executor {
@@ -224,6 +227,7 @@ impl MetalBf16Executor {
             .new_compute_pipeline_state_with_function(&lookup_product)
             .map_err(MetalBf16Error::Pipeline)?;
         let fast = fast::FastPipelines::compile(&device)?;
+        let quant = quant::QuantPipelines::compile(&device)?;
         let queue = Self::command_queue(&device)?;
         // Do not extend an optimization measured on M3 Max to other Apple GPUs.
         let block_linear_rows = device.name() == "Apple M3 Max";
@@ -249,6 +253,7 @@ impl MetalBf16Executor {
             elementwise,
             lookup_product,
             fast,
+            quant,
         })
     }
 

@@ -13,6 +13,9 @@ use metal::{
 
 const FAST_SOURCE: &str = include_str!("../bf16_fast.metal");
 
+const SOFTCAP_MAX_PARALLEL_ROWS: usize = 64;
+const SOFTCAP_BLOCKS_PER_ROW: u32 = 64;
+
 pub(super) struct FastPipelines {
     gemv_m1: ComputePipelineState,
     gemv_m2: ComputePipelineState,
@@ -24,6 +27,8 @@ pub(super) struct FastPipelines {
     rms: ComputePipelineState,
     add_rms: ComputePipelineState,
     residual_add_scale: ComputePipelineState,
+    post_norm_add_pre_norm: ComputePipelineState,
+    rms_norm_residual_add_scale: ComputePipelineState,
     q_norm_rope: ComputePipelineState,
     kv_norm_rope_write: ComputePipelineState,
     flash_attn: ComputePipelineState,
@@ -31,6 +36,10 @@ pub(super) struct FastPipelines {
     gather_rows: ComputePipelineState,
     gather_rows_rms: ComputePipelineState,
     softcap_argmax: ComputePipelineState,
+    softcap_argmax_stage1: ComputePipelineState,
+    softcap_argmax_stage2: ComputePipelineState,
+    softcap_partial_vals: Buffer,
+    softcap_partial_idxs: Buffer,
 }
 
 impl FastPipelines {
@@ -59,6 +68,8 @@ impl FastPipelines {
             rms: load("fast_bf16_rms")?,
             add_rms: load("fast_bf16_add_rms")?,
             residual_add_scale: load("fast_bf16_residual_add_scale")?,
+            post_norm_add_pre_norm: load("fast_bf16_post_norm_add_pre_norm")?,
+            rms_norm_residual_add_scale: load("fast_bf16_rms_norm_residual_add_scale")?,
             q_norm_rope: load("fast_bf16_q_norm_rope")?,
             kv_norm_rope_write: load("fast_bf16_kv_norm_rope_write")?,
             flash_attn: load("fast_bf16_flash_attn")?,
@@ -66,6 +77,16 @@ impl FastPipelines {
             gather_rows: load("fast_bf16_gather_rows")?,
             gather_rows_rms: load("fast_bf16_gather_rows_rms")?,
             softcap_argmax: load("fast_bf16_softcap_argmax")?,
+            softcap_argmax_stage1: load("fast_bf16_softcap_argmax_stage1")?,
+            softcap_argmax_stage2: load("fast_bf16_softcap_argmax_stage2")?,
+            softcap_partial_vals: device.new_buffer(
+                (SOFTCAP_MAX_PARALLEL_ROWS * SOFTCAP_BLOCKS_PER_ROW as usize * 4) as u64,
+                metal::MTLResourceOptions::StorageModePrivate,
+            ),
+            softcap_partial_idxs: device.new_buffer(
+                (SOFTCAP_MAX_PARALLEL_ROWS * SOFTCAP_BLOCKS_PER_ROW as usize * 4) as u64,
+                metal::MTLResourceOptions::StorageModePrivate,
+            ),
         })
     }
 }
@@ -80,6 +101,10 @@ impl MetalDeviceBf16 {
     #[must_use]
     pub const fn elements(&self) -> usize {
         self.elements
+    }
+
+    pub(super) const fn raw_buffer(&self) -> &Buffer {
+        &self.buffer
     }
 
     /// Borrow the first `count` BF16 elements after command completion.
@@ -125,6 +150,10 @@ impl MetalDeviceU32 {
     #[must_use]
     pub const fn elements(&self) -> usize {
         self.elements
+    }
+
+    pub(super) const fn raw_buffer(&self) -> &Buffer {
+        &self.buffer
     }
 
     /// Borrow the first `count` u32 elements after command completion.
@@ -226,6 +255,16 @@ pub struct MetalFastSession<'a> {
     command: NativeCommand<'a>,
     encoder: ComputeCommandEncoder,
     ended: bool,
+}
+
+impl<'a> MetalFastSession<'a> {
+    pub(super) const fn executor(&self) -> &'a MetalBf16Executor {
+        self.executor
+    }
+
+    pub(super) const fn encoder(&self) -> &ComputeCommandEncoder {
+        &self.encoder
+    }
 }
 
 impl Drop for MetalFastSession<'_> {
@@ -622,6 +661,114 @@ impl MetalFastSession<'_> {
         Ok(())
     }
 
+    /// Fused bit-exact `rms_norm(delta, post_scale)` + `residual += .` + `rms_norm(residual, pre_scale)`.
+    /// `delta` and `normed_out` may alias the same device buffer.
+    /// # Errors
+    /// Rejects invalid dimensions or undersized buffers.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "explicit GPU kernel bindings for fused post-norm + residual add + pre-norm"
+    )]
+    pub fn post_norm_add_pre_norm(
+        &mut self,
+        residual: &MetalDeviceBf16,
+        delta: &MetalDeviceBf16,
+        post_scale: &MetalBf16Buffer,
+        pre_scale: &MetalBf16Buffer,
+        normed_out: &MetalDeviceBf16,
+        rows: usize,
+        width: usize,
+        epsilon: f32,
+    ) -> Result<(), MetalBf16Error> {
+        let total = rows
+            .checked_mul(width)
+            .filter(|&n| n > 0)
+            .ok_or_else(|| MetalBf16Error::Shape("post_norm_add_pre_norm overflow".into()))?;
+        check_len(residual.elements, total, "post_norm_add_pre_norm residual")?;
+        check_len(delta.elements, total, "post_norm_add_pre_norm delta")?;
+        check_len(
+            normed_out.elements,
+            total,
+            "post_norm_add_pre_norm normed_out",
+        )?;
+        if post_scale.elements != width || pre_scale.elements != width {
+            return Err(MetalBf16Error::Shape(
+                "post_norm_add_pre_norm scale width mismatch".into(),
+            ));
+        }
+        let width_u32 = checked_u32(width, "post_norm_add_pre_norm width")?;
+        self.encoder
+            .set_compute_pipeline_state(&self.executor.fast.post_norm_add_pre_norm);
+        self.encoder.set_buffer(0, Some(&residual.buffer), 0);
+        self.encoder.set_buffer(1, Some(&delta.buffer), 0);
+        self.encoder.set_buffer(2, Some(&post_scale.buffer), 0);
+        self.encoder.set_buffer(3, Some(&pre_scale.buffer), 0);
+        self.encoder.set_buffer(4, Some(&normed_out.buffer), 0);
+        self.encoder.set_bytes(5, 4, (&raw const width_u32).cast());
+        self.encoder.set_bytes(6, 4, (&raw const epsilon).cast());
+        self.encoder
+            .dispatch_thread_groups(MTLSize::new(rows as u64, 1, 1), MTLSize::new(128, 1, 1));
+        Ok(())
+    }
+
+    /// Fused bit-exact `rms_norm(delta, norm_scale)` + `residual = (residual + .) * optional_scalar`.
+    /// # Errors
+    /// Rejects invalid dimensions or undersized buffers.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "explicit GPU kernel bindings for fused post-norm + residual add + optional layer scalar"
+    )]
+    pub fn rms_norm_residual_add_scale(
+        &mut self,
+        residual: &MetalDeviceBf16,
+        delta: &MetalDeviceBf16,
+        norm_scale: &MetalBf16Buffer,
+        layer_scalar: Option<&MetalBf16Buffer>,
+        rows: usize,
+        width: usize,
+        epsilon: f32,
+    ) -> Result<(), MetalBf16Error> {
+        let total = rows
+            .checked_mul(width)
+            .filter(|&n| n > 0)
+            .ok_or_else(|| MetalBf16Error::Shape("rms_norm_residual_add_scale overflow".into()))?;
+        check_len(
+            residual.elements,
+            total,
+            "rms_norm_residual_add_scale residual",
+        )?;
+        check_len(delta.elements, total, "rms_norm_residual_add_scale delta")?;
+        if norm_scale.elements != width {
+            return Err(MetalBf16Error::Shape(
+                "rms_norm_residual_add_scale scale width mismatch".into(),
+            ));
+        }
+        if let Some(scalar) = layer_scalar
+            && scalar.elements == 0
+        {
+            return Err(MetalBf16Error::Shape("empty layer_scalar".into()));
+        }
+        let width_u32 = checked_u32(width, "rms_norm_residual_add_scale width")?;
+        let apply_scalar = u32::from(layer_scalar.is_some());
+        self.encoder
+            .set_compute_pipeline_state(&self.executor.fast.rms_norm_residual_add_scale);
+        self.encoder.set_buffer(0, Some(&residual.buffer), 0);
+        self.encoder.set_buffer(1, Some(&delta.buffer), 0);
+        self.encoder.set_buffer(2, Some(&norm_scale.buffer), 0);
+        self.encoder.set_buffer(
+            3,
+            Some(layer_scalar.map_or(&residual.buffer, |s| &s.buffer)),
+            0,
+        );
+        self.encoder
+            .set_bytes(4, 4, (&raw const apply_scalar).cast());
+        self.encoder.set_bytes(5, 4, (&raw const width_u32).cast());
+        self.encoder.set_bytes(6, 4, (&raw const epsilon).cast());
+        self.encoder
+            .dispatch_thread_groups(MTLSize::new(rows as u64, 1, 1), MTLSize::new(128, 1, 1));
+        Ok(())
+    }
+
     /// In-place Q `RMSNorm` + split-half `RoPE` for `[rows, heads, head_dim]`.
     /// # Errors
     /// Rejects invalid dimensions or undersized buffers.
@@ -979,15 +1126,47 @@ impl MetalFastSession<'_> {
         check_len(argmax_out.elements, rows, "softcap_argmax argmax_out")?;
         check_len(error_flag.elements, 1, "softcap_argmax error_flag")?;
         let vocab_u32 = checked_u32(vocab, "softcap_argmax vocab")?;
-        self.encoder
-            .set_compute_pipeline_state(&self.executor.fast.softcap_argmax);
-        self.encoder.set_buffer(0, Some(&logits.buffer), 0);
-        self.encoder.set_buffer(1, Some(&argmax_out.buffer), 0);
-        self.encoder.set_buffer(2, Some(&error_flag.buffer), 0);
-        self.encoder.set_bytes(3, 4, (&raw const vocab_u32).cast());
-        self.encoder.set_bytes(4, 4, (&raw const cap).cast());
-        self.encoder
-            .dispatch_thread_groups(MTLSize::new(rows as u64, 1, 1), MTLSize::new(256, 1, 1));
+        if rows <= SOFTCAP_MAX_PARALLEL_ROWS && vocab >= 4096 {
+            let blocks = SOFTCAP_BLOCKS_PER_ROW;
+            self.encoder
+                .set_compute_pipeline_state(&self.executor.fast.softcap_argmax_stage1);
+            self.encoder.set_buffer(0, Some(&logits.buffer), 0);
+            self.encoder
+                .set_buffer(1, Some(&self.executor.fast.softcap_partial_vals), 0);
+            self.encoder
+                .set_buffer(2, Some(&self.executor.fast.softcap_partial_idxs), 0);
+            self.encoder.set_buffer(3, Some(&error_flag.buffer), 0);
+            self.encoder.set_bytes(4, 4, (&raw const vocab_u32).cast());
+            self.encoder.set_bytes(5, 4, (&raw const cap).cast());
+            self.encoder.set_bytes(6, 4, (&raw const blocks).cast());
+            self.encoder.dispatch_thread_groups(
+                MTLSize::new(u64::from(blocks), rows as u64, 1),
+                MTLSize::new(256, 1, 1),
+            );
+
+            self.encoder
+                .set_compute_pipeline_state(&self.executor.fast.softcap_argmax_stage2);
+            self.encoder
+                .set_buffer(0, Some(&self.executor.fast.softcap_partial_vals), 0);
+            self.encoder
+                .set_buffer(1, Some(&self.executor.fast.softcap_partial_idxs), 0);
+            self.encoder.set_buffer(2, Some(&argmax_out.buffer), 0);
+            self.encoder.set_bytes(3, 4, (&raw const blocks).cast());
+            self.encoder.dispatch_thread_groups(
+                MTLSize::new(rows as u64, 1, 1),
+                MTLSize::new(u64::from(blocks), 1, 1),
+            );
+        } else {
+            self.encoder
+                .set_compute_pipeline_state(&self.executor.fast.softcap_argmax);
+            self.encoder.set_buffer(0, Some(&logits.buffer), 0);
+            self.encoder.set_buffer(1, Some(&argmax_out.buffer), 0);
+            self.encoder.set_buffer(2, Some(&error_flag.buffer), 0);
+            self.encoder.set_bytes(3, 4, (&raw const vocab_u32).cast());
+            self.encoder.set_bytes(4, 4, (&raw const cap).cast());
+            self.encoder
+                .dispatch_thread_groups(MTLSize::new(rows as u64, 1, 1), MTLSize::new(256, 1, 1));
+        }
         Ok(())
     }
 

@@ -39,20 +39,47 @@ impl TextOwner {
         path: impl Into<std::path::PathBuf>,
         ffn: engine_gemma4::Gemma4MetalFfn,
     ) -> Result<(Self, GemmaLoadReport), TextError> {
+        Self::load_gemma_with_quant(path, ffn, engine_gemma4::Gemma4MetalQuant::Bf16)
+    }
+
+    /// Load one unchanged Gemma 4 package on Metal with an explicit FFN policy and
+    /// weight quantization policy (`Bf16`, `Q8`, or `Q4` affine group-64).
+    ///
+    /// Quantized execution requires the model-wide `Native` path (`head_dim <= 512`)
+    /// and fails explicitly instead of silently falling back to BF16.
+    ///
+    /// # Errors
+    /// Rejects invalid package assets, unsupported quantization/FFN combinations,
+    /// weight loading or Metal preparation failures, and text-owner assembly failures.
+    #[cfg(all(feature = "metal", target_os = "macos"))]
+    pub fn load_gemma_with_quant(
+        path: impl Into<std::path::PathBuf>,
+        ffn: engine_gemma4::Gemma4MetalFfn,
+        quant: engine_gemma4::Gemma4MetalQuant,
+    ) -> Result<(Self, GemmaLoadReport), TextError> {
         let package = LocalModelPackage::open(path).map_err(TextError::processor)?;
         let source = Gemma4Source::open(&package).map_err(TextError::processor)?;
         let model_bytes = u64::try_from(source.encoded_bytes()).map_err(TextError::processor)?;
-        if ffn == engine_gemma4::Gemma4MetalFfn::Native
-            && source.config().layers().iter().all(|l| l.head_dim <= 512)
-        {
+        let modelwide_eligible = ffn == engine_gemma4::Gemma4MetalFfn::Native
+            && source.config().layers().iter().all(|l| l.head_dim <= 512);
+        if modelwide_eligible {
             let model = engine_gemma4::Gemma4MetalModelWide::load(
                 &source,
-                engine_gemma4::Gemma4MetalModelWideConfig::default(),
+                engine_gemma4::Gemma4MetalModelWideConfig {
+                    quant,
+                    ..engine_gemma4::Gemma4MetalModelWideConfig::default()
+                },
             )
             .map_err(TextError::processor)?;
+            let loaded_bytes = model.weights_bytes();
             let executor = engine_gemma4::Gemma4MetalModelWideExecutor::new(model)
                 .map_err(TextError::processor)?;
-            return assemble_batched(&package, executor, model_bytes);
+            return assemble_batched(&package, executor, loaded_bytes);
+        }
+        if quant != engine_gemma4::Gemma4MetalQuant::Bf16 {
+            return Err(TextError::InvalidInput(
+                "quantized Metal execution requires Gemma4MetalFfn::Native and head_dim <= 512",
+            ));
         }
         let model = Arc::new(
             engine_gemma4::Gemma4MetalModel::load(&source, ffn).map_err(TextError::processor)?,

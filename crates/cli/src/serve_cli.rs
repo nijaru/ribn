@@ -16,11 +16,32 @@ impl ServeModel {
                 "model.gguf",
                 " [--device <ordinal>] [--context-length <n>] [--max-sequences <n>]",
             ),
-            Self::Gemma => ("serve-gemma", "package-dir", ""),
+            Self::Gemma => ("serve-gemma", "package-dir", " [--quantize bf16|q8|q4]"),
         };
         format!(
             "ribn {command} <{artifact}>{load} [--bind <loopback-ip:port>] [--model-name <name>] [--max-connections <n>] [--max-requests <n>] [--max-body-bytes <n>] [--max-response-bytes <n>] [--max-output-tokens <n>] [--connection-deadline-secs <n>]"
         )
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(crate) enum GemmaQuantArg {
+    #[default]
+    Bf16,
+    Q8,
+    Q4,
+}
+
+impl GemmaQuantArg {
+    pub(crate) fn parse(value: &str) -> Result<Self, String> {
+        match value {
+            "bf16" => Ok(Self::Bf16),
+            "q8" => Ok(Self::Q8),
+            "q4" => Ok(Self::Q4),
+            other => Err(format!(
+                "--quantize expects bf16, q8, or q4 (got {other:?})"
+            )),
+        }
     }
 }
 
@@ -31,7 +52,9 @@ pub(crate) enum ModelLoad {
         context_length: u32,
         max_sequences: Option<usize>,
     },
-    Gemma,
+    Gemma {
+        quant: GemmaQuantArg,
+    },
 }
 
 #[derive(Debug)]
@@ -58,7 +81,9 @@ pub(crate) fn parse(arguments: &[String], kind: ServeModel) -> Result<ServeOptio
                 context_length: 4096,
                 max_sequences: None,
             },
-            ServeModel::Gemma => ModelLoad::Gemma,
+            ServeModel::Gemma => ModelLoad::Gemma {
+                quant: GemmaQuantArg::Bf16,
+            },
         },
         bind: "127.0.0.1:8000".parse().expect("constant loopback address"),
         model_name: "ribn".to_owned(),
@@ -111,6 +136,12 @@ pub(crate) fn parse(arguments: &[String], kind: ServeModel) -> Result<ServeOptio
                     "--context-length" => *context_length = positive(value, name)?,
                     _ => *max_sequences = Some(positive(value, name)? as usize),
                 }
+            }
+            "--quantize" => {
+                let ModelLoad::Gemma { quant } = &mut options.load else {
+                    return Err(format!("--quantize is not supported by serve; {usage}"));
+                };
+                *quant = GemmaQuantArg::parse(value)?;
             }
             "--max-connections" => options.max_connections = Some(positive(value, name)? as usize),
             "--max-requests" => options.max_requests = Some(positive(value, name)? as usize),
@@ -175,9 +206,24 @@ mod tests {
                         context_length: 4096,
                         max_sequences: None
                     }
-                ) | (ServeModel::Gemma, ModelLoad::Gemma)
+                ) | (
+                    ServeModel::Gemma,
+                    ModelLoad::Gemma {
+                        quant: GemmaQuantArg::Bf16
+                    }
+                )
             ));
         }
+        for (flag, expected) in [
+            ("bf16", GemmaQuantArg::Bf16),
+            ("q8", GemmaQuantArg::Q8),
+            ("q4", GemmaQuantArg::Q4),
+        ] {
+            let options = parse(&args(&["pkg", "--quantize", flag]), ServeModel::Gemma).unwrap();
+            assert!(matches!(options.load, ModelLoad::Gemma { quant } if quant == expected));
+        }
+        assert!(parse(&args(&["pkg", "--quantize", "q3"]), ServeModel::Gemma).is_err());
+        assert!(parse(&args(&["m.gguf", "--quantize", "q4"]), ServeModel::Qwen).is_err());
         let options = parse(
             &args(&[
                 "m.gguf",

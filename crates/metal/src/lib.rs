@@ -10,8 +10,8 @@ mod bf16;
 
 #[cfg(target_os = "macos")]
 pub use bf16::{
-    MetalAttentionConfig, MetalAttentionProjections, MetalBf16Buffer, MetalBf16Error,
-    MetalBf16Executor, MetalDeviceBf16, MetalDeviceF32, MetalDeviceU32, MetalFastSession,
-    MetalFfnWeights, MetalLinearShape, MetalNormalizedProjection, MetalProjectionNorm,
-    MetalRotaryFactors,
+    METAL_QUANT_GROUP_SIZE, MetalAttentionConfig, MetalAttentionProjections, MetalBf16Buffer,
+    MetalBf16Error, MetalBf16Executor, MetalDeviceBf16, MetalDeviceF32, MetalDeviceU32,
+    MetalFastSession, MetalFfnWeights, MetalLinearShape, MetalNormalizedProjection,
+    MetalProjectionNorm, MetalQuantKind, MetalQuantWeight, MetalRotaryFactors,
 };

@@ -544,6 +544,101 @@ kernel void fast_bf16_residual_add_scale(
 }
 
 // ============================================================================
+// 8b. Fused Post-RMSNorm + Residual Add (in-place) + Pre-RMSNorm (128 threads/row)
+//     Bit-exact to rms_norm(delta, post_scale) followed by add_rms_norm(residual, ., pre_scale).
+//     `delta` and `normed_out` may alias the same buffer.
+// ============================================================================
+kernel void fast_bf16_post_norm_add_pre_norm(
+    device ushort* residual [[buffer(0)]],
+    device const ushort* delta [[buffer(1)]],
+    device const ushort* post_scale [[buffer(2)]],
+    device const ushort* pre_scale [[buffer(3)]],
+    device ushort* normed_out [[buffer(4)]],
+    constant uint& width [[buffer(5)]],
+    constant float& epsilon [[buffer(6)]],
+    uint row [[threadgroup_position_in_grid]],
+    uint tid [[thread_position_in_threadgroup]])
+{
+    threadgroup float sg_sums[4];
+    uint sg = tid >> 5;
+    uint lane = tid & 31u;
+    ulong base = (ulong)row * width;
+
+    float e1 = 0.0f;
+    for (uint j = tid; j < width; j += 128u) {
+        float v = bf16_load(delta[base + j]);
+        e1 += v * v;
+    }
+    e1 = simd_sum(e1);
+    if (lane == 0u) sg_sums[sg] = e1;
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    float inv_rms1 = rsqrt((sg_sums[0] + sg_sums[1] + sg_sums[2] + sg_sums[3]) / (float)width + epsilon);
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    float e2 = 0.0f;
+    for (uint j = tid; j < width; j += 128u) {
+        ushort d_norm = bf16_rne(bf16_load(delta[base + j]) * inv_rms1 * bf16_load(post_scale[j]));
+        ushort h_bits = bf16_rne(bf16_load(residual[base + j]) + bf16_load(d_norm));
+        residual[base + j] = h_bits;
+        float hv = bf16_load(h_bits);
+        e2 += hv * hv;
+    }
+    e2 = simd_sum(e2);
+    if (lane == 0u) sg_sums[sg] = e2;
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    float inv_rms2 = rsqrt((sg_sums[0] + sg_sums[1] + sg_sums[2] + sg_sums[3]) / (float)width + epsilon);
+
+    for (uint j = tid; j < width; j += 128u) {
+        float v = bf16_load(residual[base + j]) * inv_rms2 * bf16_load(pre_scale[j]);
+        normed_out[base + j] = bf16_rne(v);
+    }
+}
+
+// ============================================================================
+// 8c. Fused Post-RMSNorm + Residual Add (in-place) + Optional Layer Scalar
+//     Bit-exact to rms_norm(delta, norm_scale) followed by residual_add_scale(residual, ., scalar).
+// ============================================================================
+kernel void fast_bf16_rms_norm_residual_add_scale(
+    device ushort* residual [[buffer(0)]],
+    device const ushort* delta [[buffer(1)]],
+    device const ushort* norm_scale [[buffer(2)]],
+    device const ushort* layer_scalar [[buffer(3)]],
+    constant uint& apply_scalar [[buffer(4)]],
+    constant uint& width [[buffer(5)]],
+    constant float& epsilon [[buffer(6)]],
+    uint row [[threadgroup_position_in_grid]],
+    uint tid [[thread_position_in_threadgroup]])
+{
+    threadgroup float sg_sums[4];
+    uint sg = tid >> 5;
+    uint lane = tid & 31u;
+    ulong base = (ulong)row * width;
+
+    float energy = 0.0f;
+    for (uint j = tid; j < width; j += 128u) {
+        float v = bf16_load(delta[base + j]);
+        energy += v * v;
+    }
+    energy = simd_sum(energy);
+    if (lane == 0u) sg_sums[sg] = energy;
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    float inv_rms = rsqrt((sg_sums[0] + sg_sums[1] + sg_sums[2] + sg_sums[3]) / (float)width + epsilon);
+    float scalar_v = (apply_scalar != 0u) ? bf16_load(layer_scalar[0]) : 1.0f;
+
+    for (uint j = tid; j < width; j += 128u) {
+        ushort d_norm = bf16_rne(bf16_load(delta[base + j]) * inv_rms * bf16_load(norm_scale[j]));
+        ushort sum_bits = bf16_rne(bf16_load(residual[base + j]) + bf16_load(d_norm));
+        if (apply_scalar != 0u) {
+            sum_bits = bf16_rne(bf16_load(sum_bits) * scalar_v);
+        }
+        residual[base + j] = sum_bits;
+    }
+}
+
+// ============================================================================
 // 9. Fused Q RMSNorm + Split-Half RoPE (in-place, 1 SIMD group per (m, head))
 // ============================================================================
 kernel void fast_bf16_q_norm_rope(
@@ -962,6 +1057,113 @@ kernel void fast_bf16_softcap_argmax(
         if (tid < stride) {
             float ov = sm_val[tid + stride];
             uint oi = sm_idx[tid + stride];
+            float cv = sm_val[tid];
+            uint ci = sm_idx[tid];
+            if (oi != 0xffffffffu && (ci == 0xffffffffu || ov > cv || (ov == cv && oi < ci))) {
+                sm_val[tid] = ov;
+                sm_idx[tid] = oi;
+            }
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+    }
+
+    if (tid == 0u) {
+        argmax_out[row] = sm_idx[0];
+    }
+}
+
+// ============================================================================
+// 14b. Parallel Multi-TG Softcap + Partial Argmax (64 TGs per row, 256 threads/TG)
+//      Spreads 262k tanh() evaluations across all GPU cores, followed by a
+//      single 64-lane final reduction per row.
+// ============================================================================
+kernel void fast_bf16_softcap_argmax_stage1(
+    device ushort* logits [[buffer(0)]],
+    device float* partial_vals [[buffer(1)]],
+    device uint* partial_idxs [[buffer(2)]],
+    device atomic_uint* error_flag [[buffer(3)]],
+    constant uint& vocab [[buffer(4)]],
+    constant float& cap [[buffer(5)]],
+    constant uint& blocks_per_row [[buffer(6)]],
+    uint2 tg_pos [[threadgroup_position_in_grid]],
+    uint tid [[thread_index_in_threadgroup]])
+{
+    threadgroup float sm_val[256];
+    threadgroup uint sm_idx[256];
+
+    uint block = tg_pos.x;
+    uint row = tg_pos.y;
+    ulong base = (ulong)row * vocab;
+
+    uint stride = blocks_per_row * 256u;
+    uint start = block * 256u + tid;
+    float best_val = -INFINITY;
+    uint best_idx = 0xffffffffu;
+
+    for (uint j = start; j < vocab; j += stride) {
+        ushort bits = logits[base + j];
+        if ((bits & 0x7f80u) == 0x7f80u) {
+            atomic_fetch_or_explicit(error_flag, 2u, memory_order_relaxed);
+            logits[base + j] = 0x7fc0u;
+            continue;
+        }
+        float val = bf16_load(bits);
+        float divided = bf16_load(bf16_rne(val / cap));
+        float hyperbolic = bf16_load(bf16_rne(tanh(divided)));
+        ushort capped = bf16_rne(hyperbolic * cap);
+        logits[base + j] = capped;
+        float f = bf16_load(capped);
+        if (best_idx == 0xffffffffu || f > best_val || (f == best_val && j < best_idx)) {
+            best_val = f;
+            best_idx = j;
+        }
+    }
+
+    sm_val[tid] = best_val;
+    sm_idx[tid] = best_idx;
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    for (uint s = 128u; s != 0u; s >>= 1) {
+        if (tid < s) {
+            float ov = sm_val[tid + s];
+            uint oi = sm_idx[tid + s];
+            float cv = sm_val[tid];
+            uint ci = sm_idx[tid];
+            if (oi != 0xffffffffu && (ci == 0xffffffffu || ov > cv || (ov == cv && oi < ci))) {
+                sm_val[tid] = ov;
+                sm_idx[tid] = oi;
+            }
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+    }
+
+    if (tid == 0u) {
+        ulong out_off = (ulong)row * blocks_per_row + block;
+        partial_vals[out_off] = sm_val[0];
+        partial_idxs[out_off] = sm_idx[0];
+    }
+}
+
+kernel void fast_bf16_softcap_argmax_stage2(
+    device const float* partial_vals [[buffer(0)]],
+    device const uint* partial_idxs [[buffer(1)]],
+    device uint* argmax_out [[buffer(2)]],
+    constant uint& blocks_per_row [[buffer(3)]],
+    uint row [[threadgroup_position_in_grid]],
+    uint tid [[thread_position_in_threadgroup]])
+{
+    threadgroup float sm_val[64];
+    threadgroup uint sm_idx[64];
+
+    ulong base = (ulong)row * blocks_per_row;
+    sm_val[tid] = (tid < blocks_per_row) ? partial_vals[base + tid] : -INFINITY;
+    sm_idx[tid] = (tid < blocks_per_row) ? partial_idxs[base + tid] : 0xffffffffu;
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    for (uint s = 32u; s != 0u; s >>= 1) {
+        if (tid < s) {
+            float ov = sm_val[tid + s];
+            uint oi = sm_idx[tid + s];
             float cv = sm_val[tid];
             uint ci = sm_idx[tid];
             if (oi != 0xffffffffu && (ci == 0xffffffffu || ov > cv || (ov == cv && oi < ci))) {

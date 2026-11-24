@@ -8,14 +8,176 @@
 
 use super::activation::GeluTable;
 use super::kv_pool::{KV_PAGE_TOKENS, PagedKvPool, PrefixCacheStats};
-use super::{Gemma4MetalWeights, bf16_f32, f32_value, metal_error, usize_to_f32};
+use super::{bf16_f32, f32_value, metal_error, usize_to_f32};
 use crate::{
     AttentionKind, Gemma4Config, Gemma4Error, Gemma4Source, LayerParameter, ParameterId,
     inverse_frequencies,
 };
 use engine_metal::{
-    MetalBf16Buffer, MetalBf16Executor, MetalDeviceBf16, MetalDeviceF32, MetalDeviceU32,
+    METAL_QUANT_GROUP_SIZE, MetalBf16Buffer, MetalBf16Executor, MetalDeviceBf16, MetalDeviceF32,
+    MetalDeviceU32, MetalFastSession, MetalQuantKind, MetalQuantWeight,
 };
+use std::collections::BTreeMap;
+
+/// Weight quantization policy for `Gemma4MetalModelWide`.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum Gemma4MetalQuant {
+    /// Full unconverted BF16 weights (exact BF16 reference precision).
+    #[default]
+    Bf16,
+    /// 8-bit affine group-64 quantization for all compatible 2D weights and embeddings.
+    Q8,
+    /// 4-bit affine group-64 quantization for all compatible 2D weights and embeddings.
+    Q4,
+}
+
+struct ModelWideWeights {
+    bf16: BTreeMap<ParameterId, MetalBf16Buffer>,
+    quant: BTreeMap<ParameterId, MetalQuantWeight>,
+    bytes: u64,
+    config: Gemma4Config,
+}
+
+impl ModelWideWeights {
+    fn load(
+        source: &Gemma4Source,
+        executor: &MetalBf16Executor,
+        quant_policy: Gemma4MetalQuant,
+    ) -> Result<Self, Gemma4Error> {
+        let quant_kind = match quant_policy {
+            Gemma4MetalQuant::Bf16 => None,
+            Gemma4MetalQuant::Q8 => Some(MetalQuantKind::Q8),
+            Gemma4MetalQuant::Q4 => Some(MetalQuantKind::Q4),
+        };
+        let mut bf16 = BTreeMap::new();
+        let mut quant = BTreeMap::new();
+        let mut bytes = 0_u64;
+
+        for (&id, parameter) in source.parameters() {
+            let spec = parameter.spec();
+            let can_quantize = quant_kind.is_some()
+                && spec.shape.len() == 2
+                && spec.shape[1].is_multiple_of(METAL_QUANT_GROUP_SIZE);
+            if let (Some(kind), true) = (quant_kind, can_quantize) {
+                let qw = executor
+                    .read_quantized_bf16(
+                        spec.shape[0],
+                        spec.shape[1],
+                        kind,
+                        &mut parameter.reader(),
+                    )
+                    .map_err(|error| Gemma4Error::new(&spec.name, error.to_string()))?;
+                let quant_bytes = u64::try_from(qw.bytes()).map_err(|_| {
+                    Gemma4Error::new("Metal weight", "quantized weight bytes exceed u64")
+                })?;
+                bytes = bytes
+                    .checked_add(quant_bytes)
+                    .ok_or_else(|| Gemma4Error::new("Metal weight", "total bytes overflow"))?;
+                quant.insert(id, qw);
+            } else {
+                let length = spec.byte_len()?;
+                let buffer = executor
+                    .read_bf16(length / 2, &mut parameter.reader())
+                    .map_err(|error| Gemma4Error::new(&spec.name, error.to_string()))?;
+                let entry_bytes = u64::try_from(length)
+                    .map_err(|_| Gemma4Error::new("Metal weight", "parameter bytes exceed u64"))?;
+                bytes = bytes
+                    .checked_add(entry_bytes)
+                    .ok_or_else(|| Gemma4Error::new("Metal weight", "total bytes overflow"))?;
+                bf16.insert(id, buffer);
+            }
+        }
+
+        if quant_policy == Gemma4MetalQuant::Bf16 {
+            let expected = u64::try_from(source.encoded_bytes())
+                .map_err(|_| Gemma4Error::new("Metal weight", "source bytes exceed u64"))?;
+            if bytes != expected {
+                return Err(Gemma4Error::new("Metal weight", "inventory bytes disagree"));
+            }
+        }
+
+        Ok(Self {
+            bf16,
+            quant,
+            bytes,
+            config: source.config().clone(),
+        })
+    }
+
+    const fn config(&self) -> &Gemma4Config {
+        &self.config
+    }
+
+    const fn bytes(&self) -> u64 {
+        self.bytes
+    }
+
+    fn bf16_param(&self, id: ParameterId) -> Result<&MetalBf16Buffer, Gemma4Error> {
+        self.bf16.get(&id).ok_or_else(|| {
+            Gemma4Error::new("Metal modelwide", format!("missing BF16 parameter {id:?}"))
+        })
+    }
+
+    fn layer_bf16(
+        &self,
+        layer: usize,
+        parameter: LayerParameter,
+    ) -> Result<&MetalBf16Buffer, Gemma4Error> {
+        self.bf16_param(ParameterId::Layer { layer, parameter })
+    }
+
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "dispatches BF16 or quantized linear projection over explicit session bindings"
+    )]
+    fn encode_linear(
+        &self,
+        session: &mut MetalFastSession<'_>,
+        input: &MetalDeviceBf16,
+        id: ParameterId,
+        output: &MetalDeviceBf16,
+        rows: usize,
+        columns: usize,
+        inner: usize,
+    ) -> Result<(), Gemma4Error> {
+        if let Some(qw) = self.quant.get(&id) {
+            session
+                .linear_quant(input, qw, output, rows, columns, inner)
+                .map_err(|e| metal_error(&e))
+        } else {
+            let w = self.bf16_param(id)?;
+            session
+                .linear(input, w, output, rows, columns, inner)
+                .map_err(|e| metal_error(&e))
+        }
+    }
+
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "dispatches BF16 or quantized embedding gather over explicit session bindings"
+    )]
+    fn encode_embed(
+        &self,
+        session: &mut MetalFastSession<'_>,
+        token_ids: &MetalDeviceU32,
+        id: ParameterId,
+        output: &MetalDeviceBf16,
+        rows: usize,
+        width: usize,
+        scale: f32,
+    ) -> Result<(), Gemma4Error> {
+        if let Some(qw) = self.quant.get(&id) {
+            session
+                .embed_gather_quant(token_ids, qw, output, rows, width, scale)
+                .map_err(|e| metal_error(&e))
+        } else {
+            let tbl = self.bf16_param(id)?;
+            session
+                .embed_gather(token_ids, tbl, output, rows, width, scale)
+                .map_err(|e| metal_error(&e))
+        }
+    }
+}
 
 /// Default serving bounds for model-wide Metal execution.
 ///
@@ -37,6 +199,8 @@ pub struct Gemma4MetalModelWideConfig {
     /// Number of physical `KV_PAGE_TOKENS`-token KV blocks in the shared pool.
     /// `0` auto-sizes from `max_sequences` and `max_positions` (capped at `DEFAULT_METAL_KV_BLOCKS`).
     pub num_kv_blocks: usize,
+    /// Weight quantization policy (`Bf16` default, or `Q8`/`Q4` affine group-64).
+    pub quant: Gemma4MetalQuant,
 }
 
 impl Default for Gemma4MetalModelWideConfig {
@@ -46,6 +210,7 @@ impl Default for Gemma4MetalModelWideConfig {
             max_positions: DEFAULT_METAL_MAX_POSITIONS,
             max_batch_tokens: DEFAULT_METAL_MAX_BATCH_TOKENS,
             num_kv_blocks: DEFAULT_METAL_KV_BLOCKS,
+            quant: Gemma4MetalQuant::Bf16,
         }
     }
 }
@@ -120,7 +285,7 @@ impl PackedStepOutput<'_> {
 /// Model-wide Gemma 4 Metal engine with paged KV pool, radix prefix caching, and continuous batching.
 pub struct Gemma4MetalModelWide {
     executor: MetalBf16Executor,
-    weights: Gemma4MetalWeights,
+    weights: ModelWideWeights,
     gelu_table: MetalBf16Buffer,
     inv_freqs: Vec<MetalDeviceF32>,
     kv_caches: Vec<Option<OwnerKv>>,
@@ -188,7 +353,7 @@ impl Gemma4MetalModelWide {
         let gelu_table = executor
             .upload(gelu.values())
             .map_err(|e| metal_error(&e))?;
-        let weights = Gemma4MetalWeights::load(source, &executor)?;
+        let weights = ModelWideWeights::load(source, &executor, limits.quant)?;
 
         let mut inv_freqs = Vec::with_capacity(config.layers().len());
         let mut kv_caches = Vec::with_capacity(config.layers().len());
@@ -655,22 +820,7 @@ impl Gemma4MetalModelWide {
         let epsilon = config.rms_norm_eps();
         let max_pages = self.max_pages_per_seq;
 
-        let token_embd = self
-            .weights
-            .parameter(ParameterId::TokenEmbedding)
-            .ok_or_else(|| Gemma4Error::new("Metal modelwide", "missing token embedding"))?;
-        let ple_embd = self
-            .weights
-            .parameter(ParameterId::PleEmbedding)
-            .ok_or_else(|| Gemma4Error::new("Metal modelwide", "missing PLE embedding"))?;
-        let ple_proj_w = self
-            .weights
-            .parameter(ParameterId::PleProjection)
-            .ok_or_else(|| Gemma4Error::new("Metal modelwide", "missing PLE projection"))?;
-        let ple_norm_w = self
-            .weights
-            .parameter(ParameterId::PleNorm)
-            .ok_or_else(|| Gemma4Error::new("Metal modelwide", "missing PLE norm"))?;
+        let ple_norm_w = self.weights.bf16_param(ParameterId::PleNorm)?;
 
         let embed_scale = f32_value(bf16_f32(usize_to_f32(hidden_size).sqrt()));
         let ple_scale = f32_value(bf16_f32(usize_to_f32(ple_dim).sqrt()));
@@ -682,36 +832,33 @@ impl Gemma4MetalModelWide {
             .map_err(|e| metal_error(&e))?;
 
         // 1. Embeddings + PLE projection/norm/combine/transpose
-        session
-            .embed_gather(
-                &self.scratch.token_ids,
-                token_embd,
-                &self.scratch.hidden,
-                total_tokens,
-                hidden_size,
-                embed_scale,
-            )
-            .map_err(|e| metal_error(&e))?;
-        session
-            .embed_gather(
-                &self.scratch.token_ids,
-                ple_embd,
-                &self.scratch.ple_id,
-                total_tokens,
-                packed_ple,
-                ple_scale,
-            )
-            .map_err(|e| metal_error(&e))?;
-        session
-            .linear(
-                &self.scratch.hidden,
-                ple_proj_w,
-                &self.scratch.ple_proj,
-                total_tokens,
-                packed_ple,
-                hidden_size,
-            )
-            .map_err(|e| metal_error(&e))?;
+        self.weights.encode_embed(
+            &mut session,
+            &self.scratch.token_ids,
+            ParameterId::TokenEmbedding,
+            &self.scratch.hidden,
+            total_tokens,
+            hidden_size,
+            embed_scale,
+        )?;
+        self.weights.encode_embed(
+            &mut session,
+            &self.scratch.token_ids,
+            ParameterId::PleEmbedding,
+            &self.scratch.ple_id,
+            total_tokens,
+            packed_ple,
+            ple_scale,
+        )?;
+        self.weights.encode_linear(
+            &mut session,
+            &self.scratch.hidden,
+            ParameterId::PleProjection,
+            &self.scratch.ple_proj,
+            total_tokens,
+            packed_ple,
+            hidden_size,
+        )?;
         session
             .ple_combine_transpose(
                 &self.scratch.ple_proj,
@@ -749,7 +896,7 @@ impl Gemma4MetalModelWide {
             session
                 .rms_norm(
                     active_hidden,
-                    Some(self.weights.layer(layer, LayerParameter::InputNorm)?),
+                    Some(self.weights.layer_bf16(layer, LayerParameter::InputNorm)?),
                     active_normed,
                     active_tokens,
                     hidden_size,
@@ -761,31 +908,35 @@ impl Gemma4MetalModelWide {
                 let owner_kv = self.kv_caches[layer]
                     .as_ref()
                     .ok_or_else(|| Gemma4Error::new("Metal modelwide", "missing KV owner cache"))?;
-                session
-                    .linear(
-                        active_normed,
-                        self.weights.layer(layer, LayerParameter::Key)?,
-                        &self.scratch.k_buf,
-                        active_tokens,
-                        kv_cols,
-                        hidden_size,
-                    )
-                    .map_err(|e| metal_error(&e))?;
-                session
-                    .linear(
-                        active_normed,
-                        self.weights.layer(layer, LayerParameter::Value)?,
-                        &self.scratch.v_buf,
-                        active_tokens,
-                        kv_cols,
-                        hidden_size,
-                    )
-                    .map_err(|e| metal_error(&e))?;
+                self.weights.encode_linear(
+                    &mut session,
+                    active_normed,
+                    ParameterId::Layer {
+                        layer,
+                        parameter: LayerParameter::Key,
+                    },
+                    &self.scratch.k_buf,
+                    active_tokens,
+                    kv_cols,
+                    hidden_size,
+                )?;
+                self.weights.encode_linear(
+                    &mut session,
+                    active_normed,
+                    ParameterId::Layer {
+                        layer,
+                        parameter: LayerParameter::Value,
+                    },
+                    &self.scratch.v_buf,
+                    active_tokens,
+                    kv_cols,
+                    hidden_size,
+                )?;
                 session
                     .kv_norm_rope_write(
                         &self.scratch.k_buf,
                         &self.scratch.v_buf,
-                        self.weights.layer(layer, LayerParameter::KeyNorm)?,
+                        self.weights.layer_bf16(layer, LayerParameter::KeyNorm)?,
                         &self.inv_freqs[layer],
                         active_slots,
                         active_pos,
@@ -837,20 +988,22 @@ impl Gemma4MetalModelWide {
                 }
             }
 
-            session
-                .linear(
-                    active_normed,
-                    self.weights.layer(layer, LayerParameter::Query)?,
-                    &self.scratch.q_buf,
-                    active_tokens,
-                    q_cols,
-                    hidden_size,
-                )
-                .map_err(|e| metal_error(&e))?;
+            self.weights.encode_linear(
+                &mut session,
+                active_normed,
+                ParameterId::Layer {
+                    layer,
+                    parameter: LayerParameter::Query,
+                },
+                &self.scratch.q_buf,
+                active_tokens,
+                q_cols,
+                hidden_size,
+            )?;
             session
                 .q_norm_rope(
                     &self.scratch.q_buf,
-                    self.weights.layer(layer, LayerParameter::QueryNorm)?,
+                    self.weights.layer_bf16(layer, LayerParameter::QueryNorm)?,
                     &self.inv_freqs[layer],
                     active_pos,
                     active_tokens,
@@ -885,35 +1038,26 @@ impl Gemma4MetalModelWide {
                 )
                 .map_err(|e| metal_error(&e))?;
 
+            self.weights.encode_linear(
+                &mut session,
+                &self.scratch.attn_out,
+                ParameterId::Layer {
+                    layer,
+                    parameter: LayerParameter::AttentionOutput,
+                },
+                &self.scratch.proj_out,
+                active_tokens,
+                hidden_size,
+                q_cols,
+            )?;
             session
-                .linear(
-                    &self.scratch.attn_out,
-                    self.weights.layer(layer, LayerParameter::AttentionOutput)?,
-                    &self.scratch.proj_out,
-                    active_tokens,
-                    hidden_size,
-                    q_cols,
-                )
-                .map_err(|e| metal_error(&e))?;
-            session
-                .rms_norm(
-                    &self.scratch.proj_out,
-                    Some(
-                        self.weights
-                            .layer(layer, LayerParameter::PostAttentionNorm)?,
-                    ),
-                    active_normed,
-                    active_tokens,
-                    hidden_size,
-                    epsilon,
-                )
-                .map_err(|e| metal_error(&e))?;
-            session
-                .add_rms_norm(
+                .post_norm_add_pre_norm(
                     active_hidden,
-                    active_normed,
+                    &self.scratch.proj_out,
                     self.weights
-                        .layer(layer, LayerParameter::PreFeedforwardNorm)?,
+                        .layer_bf16(layer, LayerParameter::PostAttentionNorm)?,
+                    self.weights
+                        .layer_bf16(layer, LayerParameter::PreFeedforwardNorm)?,
                     &self.scratch.proj_out,
                     active_tokens,
                     hidden_size,
@@ -921,26 +1065,30 @@ impl Gemma4MetalModelWide {
                 )
                 .map_err(|e| metal_error(&e))?;
 
-            session
-                .linear(
-                    &self.scratch.proj_out,
-                    self.weights.layer(layer, LayerParameter::Gate)?,
-                    &self.scratch.ffn_gate,
-                    active_tokens,
-                    intermediate,
-                    hidden_size,
-                )
-                .map_err(|e| metal_error(&e))?;
-            session
-                .linear(
-                    &self.scratch.proj_out,
-                    self.weights.layer(layer, LayerParameter::Up)?,
-                    &self.scratch.ffn_up,
-                    active_tokens,
-                    intermediate,
-                    hidden_size,
-                )
-                .map_err(|e| metal_error(&e))?;
+            self.weights.encode_linear(
+                &mut session,
+                &self.scratch.proj_out,
+                ParameterId::Layer {
+                    layer,
+                    parameter: LayerParameter::Gate,
+                },
+                &self.scratch.ffn_gate,
+                active_tokens,
+                intermediate,
+                hidden_size,
+            )?;
+            self.weights.encode_linear(
+                &mut session,
+                &self.scratch.proj_out,
+                ParameterId::Layer {
+                    layer,
+                    parameter: LayerParameter::Up,
+                },
+                &self.scratch.ffn_up,
+                active_tokens,
+                intermediate,
+                hidden_size,
+            )?;
             session
                 .geglu_table(
                     &self.scratch.ffn_gate,
@@ -952,48 +1100,43 @@ impl Gemma4MetalModelWide {
                     active_tokens * intermediate,
                 )
                 .map_err(|e| metal_error(&e))?;
+            self.weights.encode_linear(
+                &mut session,
+                &self.scratch.ffn_gate,
+                ParameterId::Layer {
+                    layer,
+                    parameter: LayerParameter::Down,
+                },
+                &self.scratch.proj_out,
+                active_tokens,
+                hidden_size,
+                intermediate,
+            )?;
             session
-                .linear(
-                    &self.scratch.ffn_gate,
-                    self.weights.layer(layer, LayerParameter::Down)?,
+                .rms_norm_residual_add_scale(
+                    active_hidden,
                     &self.scratch.proj_out,
-                    active_tokens,
-                    hidden_size,
-                    intermediate,
-                )
-                .map_err(|e| metal_error(&e))?;
-            session
-                .rms_norm(
-                    &self.scratch.proj_out,
-                    Some(
-                        self.weights
-                            .layer(layer, LayerParameter::PostFeedforwardNorm)?,
-                    ),
-                    active_normed,
+                    self.weights
+                        .layer_bf16(layer, LayerParameter::PostFeedforwardNorm)?,
+                    None,
                     active_tokens,
                     hidden_size,
                     epsilon,
                 )
                 .map_err(|e| metal_error(&e))?;
-            session
-                .residual_add_scale(
-                    active_hidden,
-                    active_normed,
-                    None,
-                    active_tokens * hidden_size,
-                )
-                .map_err(|e| metal_error(&e))?;
 
-            session
-                .linear(
-                    active_hidden,
-                    self.weights.layer(layer, LayerParameter::PleGate)?,
-                    &self.scratch.ple_gate,
-                    active_tokens,
-                    ple_dim,
-                    hidden_size,
-                )
-                .map_err(|e| metal_error(&e))?;
+            self.weights.encode_linear(
+                &mut session,
+                active_hidden,
+                ParameterId::Layer {
+                    layer,
+                    parameter: LayerParameter::PleGate,
+                },
+                &self.scratch.ple_gate,
+                active_tokens,
+                ple_dim,
+                hidden_size,
+            )?;
             let (ple_up, ple_up_offset) = if pruned {
                 session
                     .gather_rows(
@@ -1021,42 +1164,38 @@ impl Gemma4MetalModelWide {
                     active_tokens * ple_dim,
                 )
                 .map_err(|e| metal_error(&e))?;
+            self.weights.encode_linear(
+                &mut session,
+                &self.scratch.ple_gate,
+                ParameterId::Layer {
+                    layer,
+                    parameter: LayerParameter::PleProjection,
+                },
+                &self.scratch.proj_out,
+                active_tokens,
+                hidden_size,
+                ple_dim,
+            )?;
             session
-                .linear(
-                    &self.scratch.ple_gate,
-                    self.weights.layer(layer, LayerParameter::PleProjection)?,
+                .rms_norm_residual_add_scale(
+                    active_hidden,
                     &self.scratch.proj_out,
-                    active_tokens,
-                    hidden_size,
-                    ple_dim,
-                )
-                .map_err(|e| metal_error(&e))?;
-            session
-                .rms_norm(
-                    &self.scratch.proj_out,
-                    Some(self.weights.layer(layer, LayerParameter::PostPleNorm)?),
-                    active_normed,
+                    self.weights
+                        .layer_bf16(layer, LayerParameter::PostPleNorm)?,
+                    Some(
+                        self.weights
+                            .layer_bf16(layer, LayerParameter::LayerScalar)?,
+                    ),
                     active_tokens,
                     hidden_size,
                     epsilon,
-                )
-                .map_err(|e| metal_error(&e))?;
-            session
-                .residual_add_scale(
-                    active_hidden,
-                    active_normed,
-                    Some(self.weights.layer(layer, LayerParameter::LayerScalar)?),
-                    active_tokens * hidden_size,
                 )
                 .map_err(|e| metal_error(&e))?;
         }
 
         // 3. FinalNorm + Tied LM Head + Softcap + Argmax ONLY for output-producing rows
         if out_rows > 0 {
-            let final_norm = self
-                .weights
-                .parameter(ParameterId::FinalNorm)
-                .ok_or_else(|| Gemma4Error::new("Metal modelwide", "missing final norm"))?;
+            let final_norm = self.weights.bf16_param(ParameterId::FinalNorm)?;
             if pruned {
                 session
                     .rms_norm(
@@ -1082,16 +1221,15 @@ impl Gemma4MetalModelWide {
                     )
                     .map_err(|e| metal_error(&e))?;
             }
-            session
-                .linear(
-                    &self.scratch.final_normed,
-                    token_embd,
-                    &self.scratch.logits,
-                    out_rows,
-                    config.vocab_size(),
-                    hidden_size,
-                )
-                .map_err(|e| metal_error(&e))?;
+            self.weights.encode_linear(
+                &mut session,
+                &self.scratch.final_normed,
+                ParameterId::TokenEmbedding,
+                &self.scratch.logits,
+                out_rows,
+                config.vocab_size(),
+                hidden_size,
+            )?;
             session
                 .softcap_argmax(
                     &self.scratch.logits,
