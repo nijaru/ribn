@@ -29,17 +29,19 @@ subset, not a general OpenAI-compatible server.
 
 ## Requests
 
-POST JSON to `/v1/completions` or `/v1/chat/completions`.
+POST JSON to `/v1/completions` or `/v1/chat/completions`, or discover the loaded
+model via `GET /v1/models` and `GET /v1/models/{model}` (`503` while loading;
+`404` for unknown model IDs).
 
 | Field | Accepted input |
 | --- | --- |
 | `model` | Exact `--model-name` value (default `ribn`) |
 | `prompt` | One string, completions only; no template |
-| `messages` | 1–128 text messages; roles `system`, `user`, `assistant`; artifact template applies |
-| `max_tokens` | Positive integer, default 32; limited by server cap and remaining context |
+| `messages` | 1–128 text messages; roles `system`, `user`, `assistant`; `content` accepts a string or up to 64 `{"type":"text","text":"..."}` parts; artifact template applies |
+| `max_tokens` / `max_completion_tokens` | Positive integer, default 32; limited by server cap and remaining context. `max_completion_tokens` is accepted on `/v1/chat/completions` (specify one, not both) |
 | `stream`, `stream_options` | Default false; streaming optionally accepts `{"include_usage":true/false}` |
-| `temperature`, `top_p`, `top_k`, `n` | `n` must be `1`. On sampling-capable executors (Gemma 4 Metal model-wide), accepts finite `temperature >= 0`, `top_p` in `(0, 1]`, and optional `top_k`; on greedy-only executors, only `temperature = 0`, `top_p = 1`, and omitted/`0` `top_k` are accepted |
-| `repetition_penalty`, `logprobs` | Only 1 and null respectively |
+| `temperature`, `top_p`, `top_k`, `n` | `n` must be `1`. On sampling-capable executors (Gemma 4 Metal model-wide, Inkling 2), accepts finite `temperature >= 0`, `top_p` in `(0, 1]`, and optional `top_k`; on greedy-only executors, only `temperature = 0`, `top_p = 1`, and omitted/`0` `top_k` are accepted |
+| `repetition_penalty`, `presence_penalty`, `frequency_penalty`, `logprobs` | Only `1`, `0`, `0`, and `null` respectively |
 | `stop` | One string or up to four strings, 256 bytes total; matched against decoded text and excluded from output |
 | `seed` | Deterministic sampling seed when stochastic sampling is active; accepted with no effect on greedy decoding |
 | `ignore_eos` | Boolean; disables artifact/chat token stops, not explicit strings |
@@ -71,7 +73,8 @@ saturation returns 503 without reading the body.
 
 - `GET /health`: 200 while loading or serving; otherwise 503.
 - `GET /ready`: 200 only while serving. It does not promise admission capacity.
-- `GET /metrics`: Prometheus counters and gauges; successful terminal counts do
+- `GET /v1/models` and `GET /v1/models/{model}`: OpenAI model discovery (`503` while loading; `404` for unknown IDs).
+- `GET /metrics`: Prometheus counters, gauges, and latency sums/counts (`ribn_ttft_seconds_*`, `ribn_request_duration_seconds_*`); successful terminal counts do
   not imply that the client received the response.
 
 SIGINT/SIGTERM stop admission and abandon connections before model cleanup.

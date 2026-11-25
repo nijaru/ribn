@@ -548,12 +548,16 @@ fn executor_concurrent_continuation_cancellation_and_chat_preserve_isolation() {
         .unwrap();
     drop(stream_cancel);
 
-    // Two concurrent sequences filling max_sequences=2 across the sliding-window boundary
+    // Three concurrent sequences over max_sequences=2: third defers via Admission::Deferred
+    // and wakes automatically when an earlier slot releases!
     let stream_a = text_model
-        .stream_blocking(TextInput::Tokens(prompt_a), opts(4))
+        .stream_blocking(TextInput::Tokens(prompt_a.clone()), opts(4))
         .unwrap();
     let stream_b = text_model
         .stream_blocking(TextInput::Tokens(prompt_b), opts(4))
+        .unwrap();
+    let stream_c = text_model
+        .stream_blocking(TextInput::Tokens(prompt_a.clone()), opts(4))
         .unwrap();
 
     let collect_tokens = |mut stream: ribn_text::TextStream| -> Vec<u32> {
@@ -570,21 +574,52 @@ fn executor_concurrent_continuation_cancellation_and_chat_preserve_isolation() {
     };
     assert_eq!(collect_tokens(stream_a), expected_a);
     assert_eq!(collect_tokens(stream_b), expected_b);
+    assert_eq!(collect_tokens(stream_c), expected_a);
 
-    // Non-greedy sampling is rejected cleanly at admission without faulting the owner!
+    // Deterministic stochastic sampling through Inkling2Executor!
+    let stochastic_opts = GenerationOptions {
+        max_output_tokens: 4,
+        sampling: Sampling {
+            temperature: 0.8,
+            top_k: 8,
+            top_p: 0.9,
+            seed: Some(42),
+        },
+        stop_tokens: Vec::new(),
+    };
+    let s1 = collect_tokens(
+        text_model
+            .stream_blocking(TextInput::Tokens(prompt_a.clone()), stochastic_opts.clone())
+            .unwrap(),
+    );
+    let s2 = collect_tokens(
+        text_model
+            .stream_blocking(TextInput::Tokens(prompt_a), stochastic_opts)
+            .unwrap(),
+    );
+    assert_eq!(s1, s2, "same seed must produce identical sampled tokens");
+    assert!(!s1.is_empty());
+
+    // Invalid sampling parameters reject cleanly at enqueue without faulting the owner!
     let bad_opts = GenerationOptions {
         max_output_tokens: 2,
         sampling: Sampling {
-            temperature: 0.7,
+            temperature: -0.5,
             ..Sampling::default()
         },
         stop_tokens: Vec::new(),
     };
-    let rejected = text_model
-        .generate_blocking(TextInput::Prompt("Hi".into()), bad_opts)
+    assert!(
+        text_model
+            .generate_blocking(TextInput::Prompt("Hi".into()), bad_opts)
+            .is_err()
+    );
+    // Out-of-vocab token ID rejects at executor admission without faulting the owner!
+    let bad_tok = text_model
+        .generate_blocking(TextInput::Tokens(vec![999_999]), opts(2))
         .expect("request-local admission rejection returns a terminal response");
-    assert!(matches!(rejected.reason, FinishReason::Failed(_)));
-    assert_eq!(rejected.usage.completion_tokens, 0);
+    assert!(matches!(bad_tok.reason, FinishReason::Failed(_)));
+    assert_eq!(bad_tok.usage.completion_tokens, 0);
 
     // Chat path through real GgufProcessor using Inkling 2's {%- generation -%} chat template!
     let chat_resp = text_model

@@ -112,7 +112,6 @@ mod graph_tests;
 mod kv_pool;
 mod modelwide;
 mod modelwide_executor;
-mod sampling;
 use activation::GeluTable;
 use attention::attention_forward;
 use engine_metal::{

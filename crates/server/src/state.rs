@@ -1,5 +1,6 @@
 use std::sync::atomic::{AtomicU8, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, RwLock};
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use ribn_text::{TextModel, Usage};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
@@ -27,6 +28,7 @@ impl Readiness {
 
 pub(crate) struct State {
     phase: AtomicU8,
+    created_unix: u64,
     model: RwLock<Option<TextModel>>,
     pub slots: Arc<Semaphore>,
     pub metrics: Metrics,
@@ -34,12 +36,19 @@ pub(crate) struct State {
 
 impl State {
     pub fn new(requests: usize) -> Self {
+        let created_unix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_or(0, |d| d.as_secs());
         Self {
             phase: AtomicU8::new(Readiness::Loading as u8),
+            created_unix,
             model: RwLock::new(None),
             slots: Arc::new(Semaphore::new(requests)),
             metrics: Metrics::default(),
         }
+    }
+    pub const fn created_unix(&self) -> u64 {
+        self.created_unix
     }
     pub fn set_phase(&self, phase: Readiness) {
         self.phase.store(phase as u8, Ordering::SeqCst);
@@ -78,8 +87,18 @@ impl State {
     }
     pub fn metrics_text(&self) -> String {
         let m = &self.metrics;
+        #[expect(
+            clippy::cast_precision_loss,
+            reason = "Prometheus seconds sum exported as floating point"
+        )]
+        let ttft_seconds = m.ttft_nanos_sum.load(Ordering::Relaxed) as f64 / 1e9;
+        #[expect(
+            clippy::cast_precision_loss,
+            reason = "Prometheus seconds sum exported as floating point"
+        )]
+        let duration_seconds = m.request_duration_nanos_sum.load(Ordering::Relaxed) as f64 / 1e9;
         format!(
-            "ribn_ready {}\nribn_connections_active {}\nribn_connections_rejected_total {}\nribn_connection_deadlines_total {}\nribn_requests_active {}\nribn_requests_total {}\nribn_requests_rejected_total {}\nribn_requests_completed_total {}\nribn_requests_failed_total {}\nribn_requests_abandoned_total {}\nribn_prompt_tokens_total {}\nribn_completion_tokens_total {}\n",
+            "ribn_ready {}\nribn_connections_active {}\nribn_connections_rejected_total {}\nribn_connection_deadlines_total {}\nribn_requests_active {}\nribn_requests_total {}\nribn_requests_rejected_total {}\nribn_requests_completed_total {}\nribn_requests_failed_total {}\nribn_requests_abandoned_total {}\nribn_prompt_tokens_total {}\nribn_completion_tokens_total {}\nribn_ttft_seconds_sum {ttft_seconds:.6}\nribn_ttft_seconds_count {}\nribn_request_duration_seconds_sum {duration_seconds:.6}\nribn_request_duration_seconds_count {}\n",
             u8::from(self.readiness() == Readiness::Serving),
             m.connections.load(Ordering::Relaxed),
             m.connections_rejected.load(Ordering::Relaxed),
@@ -91,7 +110,9 @@ impl State {
             m.failed.load(Ordering::Relaxed),
             m.abandoned.load(Ordering::Relaxed),
             m.prompt_tokens.load(Ordering::Relaxed),
-            m.completion_tokens.load(Ordering::Relaxed)
+            m.completion_tokens.load(Ordering::Relaxed),
+            m.ttft_count.load(Ordering::Relaxed),
+            m.request_duration_count.load(Ordering::Relaxed),
         )
     }
 }
@@ -109,12 +130,18 @@ pub(crate) struct Metrics {
     pub abandoned: AtomicU64,
     pub prompt_tokens: AtomicU64,
     pub completion_tokens: AtomicU64,
+    pub ttft_nanos_sum: AtomicU64,
+    pub ttft_count: AtomicU64,
+    pub request_duration_nanos_sum: AtomicU64,
+    pub request_duration_count: AtomicU64,
 }
 
 /// Keeps transport admission charged through response consumption or abandonment.
 pub(crate) struct RequestGuard {
     pub state: Arc<State>,
     _permit: OwnedSemaphorePermit,
+    started_at: Instant,
+    ttft_recorded: bool,
     settled: bool,
     pub started: bool,
 }
@@ -125,11 +152,38 @@ impl RequestGuard {
         Self {
             state,
             _permit: permit,
+            started_at: Instant::now(),
+            ttft_recorded: false,
             settled: false,
             started: false,
         }
     }
+    pub fn record_ttft(&mut self) {
+        if self.ttft_recorded {
+            return;
+        }
+        self.ttft_recorded = true;
+        let nanos = u64::try_from(self.started_at.elapsed().as_nanos()).unwrap_or(u64::MAX);
+        self.state
+            .metrics
+            .ttft_nanos_sum
+            .fetch_add(nanos, Ordering::Relaxed);
+        self.state
+            .metrics
+            .ttft_count
+            .fetch_add(1, Ordering::Relaxed);
+    }
     pub fn complete(&mut self, usage: Usage) {
+        self.record_ttft();
+        let nanos = u64::try_from(self.started_at.elapsed().as_nanos()).unwrap_or(u64::MAX);
+        self.state
+            .metrics
+            .request_duration_nanos_sum
+            .fetch_add(nanos, Ordering::Relaxed);
+        self.state
+            .metrics
+            .request_duration_count
+            .fetch_add(1, Ordering::Relaxed);
         self.settled = true;
         self.state.metrics.completed.fetch_add(1, Ordering::Relaxed);
         self.state

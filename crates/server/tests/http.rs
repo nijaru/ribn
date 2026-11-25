@@ -675,3 +675,175 @@ async fn sampling_capable_executor_accepts_valid_params_and_rejects_invalid() {
     }
     assert!(running.stop().await.1.is_ok());
 }
+
+#[tokio::test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "end-to-end TCP test covering /v1/models lifecycle, chat compatibility fields, and /metrics latency counters"
+)]
+async fn openai_models_endpoint_chat_compat_and_latency_metrics() {
+    // 1. Verify /v1/models returns 503 while loading
+    let mut server = Server::bind(ServerConfig {
+        bind: "127.0.0.1:0".parse().unwrap(),
+        model_name: "demo-model".to_owned(),
+        ..ServerConfig::default()
+    })
+    .await
+    .unwrap();
+    let addr = server.local_addr();
+    let (load_tx, load_rx) = oneshot::channel();
+    let (stop_tx, stop_rx) = oneshot::channel();
+    let task = tokio::spawn(async move {
+        let res = server
+            .run(async move { load_rx.await.unwrap() }, async move {
+                let _ = stop_rx.await;
+            })
+            .await;
+        (server, res)
+    });
+
+    let loading_reply = exchange(
+        addr,
+        "GET /v1/models HTTP/1.1\r\nHost: local\r\nConnection: close\r\n\r\n",
+    )
+    .await;
+    assert_eq!(loading_reply.status, 503);
+
+    load_tx
+        .send(Ok(owner(Arc::new(Plan::default()), 2)))
+        .ok()
+        .unwrap();
+    wait_until(|| async {
+        exchange(
+            addr,
+            "GET /ready HTTP/1.1\r\nHost: local\r\nConnection: close\r\n\r\n",
+        )
+        .await
+        .status
+            == 200
+    })
+    .await;
+
+    // 2. GET /v1/models and GET /v1/models/{id}
+    let list_reply = exchange(
+        addr,
+        "GET /v1/models HTTP/1.1\r\nHost: local\r\nConnection: close\r\n\r\n",
+    )
+    .await;
+    assert_eq!(list_reply.status, 200);
+    let list: Value = serde_json::from_str(&list_reply.body).unwrap();
+    assert_eq!(list["object"], "list");
+    assert_eq!(list["data"][0]["id"], "demo-model");
+    assert_eq!(list["data"][0]["object"], "model");
+    assert_eq!(list["data"][0]["owned_by"], "ribn");
+
+    let one_reply = exchange(
+        addr,
+        "GET /v1/models/demo-model HTTP/1.1\r\nHost: local\r\nConnection: close\r\n\r\n",
+    )
+    .await;
+    assert_eq!(one_reply.status, 200);
+    let one: Value = serde_json::from_str(&one_reply.body).unwrap();
+    assert_eq!(one["id"], "demo-model");
+
+    let missing_reply = exchange(
+        addr,
+        "GET /v1/models/other HTTP/1.1\r\nHost: local\r\nConnection: close\r\n\r\n",
+    )
+    .await;
+    assert_eq!(missing_reply.status, 404);
+
+    let query_reply = exchange(
+        addr,
+        "GET /v1/models?x=1 HTTP/1.1\r\nHost: local\r\nConnection: close\r\n\r\n",
+    )
+    .await;
+    assert_eq!(query_reply.status, 400);
+
+    // 3. max_completion_tokens, zero presence/frequency penalties, and text-part arrays
+    let post = |path: &str, body: &str| {
+        let req = format!(
+            "POST {path} HTTP/1.1\r\nHost: local\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        async move { exchange(addr, &req).await }
+    };
+
+    let chat_ok = json!({
+        "model": "demo-model",
+        "messages": [
+            {"role": "user", "content": [{"type": "text", "text": "a"}, {"type": "text", "text": ""}]}
+        ],
+        "max_completion_tokens": 2,
+        "presence_penalty": 0.0,
+        "frequency_penalty": 0.0,
+    })
+    .to_string();
+    let ok_reply = post("/v1/chat/completions", &chat_ok).await;
+    assert_eq!(ok_reply.status, 200, "{}", ok_reply.body);
+    let ok_json: Value = serde_json::from_str(&ok_reply.body).unwrap();
+    assert_eq!(ok_json["choices"][0]["message"]["content"], "xx");
+
+    for (path, bad) in [
+        (
+            "/v1/completions",
+            r#"{"model":"demo-model","prompt":"a","max_completion_tokens":2}"#,
+        ),
+        (
+            "/v1/chat/completions",
+            r#"{"model":"demo-model","messages":[{"role":"user","content":"a"}],"max_tokens":2,"max_completion_tokens":2}"#,
+        ),
+        (
+            "/v1/completions",
+            r#"{"model":"demo-model","prompt":"a","presence_penalty":0.5}"#,
+        ),
+        (
+            "/v1/completions",
+            r#"{"model":"demo-model","prompt":"a","frequency_penalty":-0.1}"#,
+        ),
+        (
+            "/v1/chat/completions",
+            r#"{"model":"demo-model","messages":[{"role":"user","content":[]}]}"#,
+        ),
+        (
+            "/v1/chat/completions",
+            r#"{"model":"demo-model","messages":[{"role":"user","content":[{"type":"image_url","text":"x"}]}]}"#,
+        ),
+    ] {
+        assert_eq!(post(path, bad).await.status, 400, "{path} {bad}");
+    }
+
+    // 4. Latency telemetry in /metrics
+    let metrics = exchange(
+        addr,
+        "GET /metrics HTTP/1.1\r\nHost: local\r\nConnection: close\r\n\r\n",
+    )
+    .await;
+    assert_eq!(metrics.status, 200);
+    assert!(
+        metrics.body.contains("ribn_ttft_seconds_count 1\n"),
+        "{}",
+        metrics.body
+    );
+    assert!(
+        metrics.body.contains("ribn_ttft_seconds_sum "),
+        "{}",
+        metrics.body
+    );
+    assert!(
+        metrics
+            .body
+            .contains("ribn_request_duration_seconds_count 1\n"),
+        "{}",
+        metrics.body
+    );
+    assert!(
+        metrics.body.contains("ribn_request_duration_seconds_sum "),
+        "{}",
+        metrics.body
+    );
+
+    let _ = stop_tx.send(());
+    let (_, res) = task.await.unwrap();
+    assert!(res.is_ok(), "{res:?}");
+}

@@ -7,6 +7,7 @@ use crate::ServerConfig;
 use crate::response::ApiError;
 
 pub(crate) const MAX_MESSAGES: usize = 128;
+const MAX_CONTENT_PARTS: usize = 64;
 
 #[derive(Clone, Copy)]
 pub(crate) enum Operation {
@@ -24,11 +25,14 @@ pub(crate) struct Request {
     #[serde(default)]
     pub stream: bool,
     max_tokens: Option<u32>,
+    max_completion_tokens: Option<u32>,
     temperature: Option<f32>,
     top_p: Option<f32>,
     top_k: Option<u32>,
     n: Option<u32>,
     repetition_penalty: Option<f32>,
+    presence_penalty: Option<f32>,
+    frequency_penalty: Option<f32>,
     logprobs: Option<u32>,
     stop: Option<StopSequence>,
     ignore_eos: Option<bool>,
@@ -52,9 +56,71 @@ struct StreamOptions {
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
+struct TextPart {
+    #[serde(rename = "type")]
+    kind: String,
+    text: String,
+}
+
+/// `OpenAI` chat message content: plain text string or bounded text-part array.
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum MessageContent {
+    Text(String),
+    Parts(#[serde(deserialize_with = "content_parts")] Vec<TextPart>),
+}
+
+impl MessageContent {
+    fn into_text(self) -> Result<String, ApiError> {
+        match self {
+            Self::Text(text) => Ok(text),
+            Self::Parts(parts) => {
+                if parts.is_empty() {
+                    return Err(ApiError::bad("message content parts must not be empty"));
+                }
+                let mut total_len = 0_usize;
+                for part in &parts {
+                    if part.kind != "text" {
+                        return Err(ApiError::bad("only text content parts are supported"));
+                    }
+                    total_len = total_len.saturating_add(part.text.len());
+                }
+                let mut out = String::with_capacity(total_len);
+                for part in parts {
+                    out.push_str(&part.text);
+                }
+                Ok(out)
+            }
+        }
+    }
+}
+
+fn content_parts<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Vec<TextPart>, D::Error> {
+    struct Parts;
+    impl<'de> Visitor<'de> for Parts {
+        type Value = Vec<TextPart>;
+        fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str("an array of at most 64 text content parts")
+        }
+        fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<Self::Value, A::Error> {
+            let mut result = Vec::new();
+            while let Some(part) = seq.next_element()? {
+                if result.len() == MAX_CONTENT_PARTS {
+                    return Err(de::Error::custom("too many content parts"));
+                }
+                result.push(part);
+            }
+            Ok(result)
+        }
+    }
+    d.deserialize_seq(Parts)
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct ChatMessage {
     role: String,
-    content: String,
+    content: MessageContent,
 }
 
 /// Stop large arrays while parsing, rather than after retaining every message.
@@ -93,10 +159,16 @@ impl Request {
             || self
                 .repetition_penalty
                 .is_some_and(|n| n.to_bits() != 1.0_f32.to_bits())
+            || self
+                .presence_penalty
+                .is_some_and(|n| !n.is_finite() || n != 0.0)
+            || self
+                .frequency_penalty
+                .is_some_and(|n| !n.is_finite() || n != 0.0)
             || self.logprobs.is_some()
         {
             return Err(ApiError::bad(
-                "only n=1, repetition_penalty=1 and logprobs=null are supported",
+                "only n=1, repetition_penalty=1, zero presence/frequency penalties and logprobs=null are supported",
             ));
         }
         let temperature = self.temperature.unwrap_or(0.0);
@@ -118,7 +190,19 @@ impl Request {
         if self.stream_options.is_some() && !self.stream {
             return Err(ApiError::bad("stream_options requires stream=true"));
         }
-        let max_tokens = self.max_tokens.unwrap_or(32);
+        let max_tokens = match (operation, self.max_tokens, self.max_completion_tokens) {
+            (Operation::Completion, _, Some(_)) => {
+                return Err(ApiError::bad(
+                    "max_completion_tokens is only supported for chat completions",
+                ));
+            }
+            (Operation::Chat, Some(_), Some(_)) => {
+                return Err(ApiError::bad(
+                    "specify either max_tokens or max_completion_tokens, not both",
+                ));
+            }
+            (_, max_t, max_c) => max_c.or(max_t).unwrap_or(32),
+        };
         if max_tokens == 0 || max_tokens > config.max_output_tokens {
             return Err(ApiError::bad("max_tokens exceeds the supported range"));
         }
@@ -133,12 +217,11 @@ impl Request {
                         "only system, user and assistant roles are supported",
                     ));
                 }
-                TextInput::Chat(
-                    messages
-                        .into_iter()
-                        .map(|m| Message::new(m.role, m.content))
-                        .collect(),
-                )
+                let mut parsed = Vec::with_capacity(messages.len());
+                for m in messages {
+                    parsed.push(Message::new(m.role, m.content.into_text()?));
+                }
+                TextInput::Chat(parsed)
             }
             _ => {
                 return Err(ApiError::bad(

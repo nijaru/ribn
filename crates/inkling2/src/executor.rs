@@ -12,7 +12,8 @@ use std::sync::Arc;
 
 use ribn::{
     Admission, BatchItem, BatchPreparation, ExecutionError, ExecutorInfo, GenerationExecutor,
-    GenerationLimits, RequestId, SequenceId, StepCompletion, StepKind, SubmissionId, TokenRequest,
+    GenerationLimits, Readiness, RequestId, Sampling, SequenceId, StepCompletion, StepKind,
+    SubmissionId, TokenRequest, init_rng_state, sample_f32_logits,
 };
 
 use crate::Inkling2Error;
@@ -45,6 +46,8 @@ impl BoundRow {
 struct SequenceState {
     logical: LogicalSequence,
     cpu: Inkling2CpuState,
+    sampling: Sampling,
+    rng_state: u64,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -56,13 +59,15 @@ enum Phase {
     Closed,
 }
 
-/// Greedy autoregressive `GenerationExecutor` backed by [`Inkling2CpuModel`].
+/// Autoregressive `GenerationExecutor` backed by [`Inkling2CpuModel`] with slot-capacity
+/// deferral (`Admission::Deferred`) and deterministic greedy/stochastic sampling.
 pub struct Inkling2Executor {
     info: ExecutorInfo,
     model: Arc<Inkling2CpuModel>,
     kv_precision: KvCachePrecision,
     states: HashMap<SequenceId, SequenceState>,
     rows: Vec<BoundRow>,
+    readiness: Readiness,
     phase: Phase,
     next_submission: u64,
 }
@@ -111,6 +116,7 @@ impl Inkling2Executor {
             kv_precision,
             states: HashMap::with_capacity(max_sequences),
             rows: Vec::with_capacity(max_sequences),
+            readiness: Readiness::default(),
             phase: Phase::Idle,
             next_submission: 0,
         })
@@ -205,32 +211,18 @@ impl Inkling2Executor {
     }
 }
 
-fn greedy_argmax(logits: &[f32]) -> Result<u32, ExecutionError> {
-    if logits.is_empty() {
-        return Err(ExecutionError::new("empty logit row"));
-    }
-    let mut best_idx = 0_usize;
-    let mut best_val = f32::NEG_INFINITY;
-    for (idx, &val) in logits.iter().enumerate() {
-        if !val.is_finite() {
-            return Err(ExecutionError::new("non-finite logit produced"));
-        }
-        if val > best_val {
-            best_val = val;
-            best_idx = idx;
-        }
-    }
-    u32::try_from(best_idx).map_err(|_| ExecutionError::new("argmax token ID exceeds u32"))
-}
-
 impl GenerationExecutor for Inkling2Executor {
     fn info(&self) -> &ExecutorInfo {
         &self.info
     }
 
+    fn supports_sampling(&self) -> bool {
+        true
+    }
+
     fn admit(
         &mut self,
-        _request_id: RequestId,
+        request_id: RequestId,
         sequence: SequenceId,
         request: &TokenRequest,
     ) -> Result<Admission, ExecutionError> {
@@ -242,14 +234,15 @@ impl GenerationExecutor for Inkling2Executor {
         if self.states.contains_key(&sequence) {
             return Err(ExecutionError::new("sequence is already admitted"));
         }
-        if self.states.len() >= self.info.limits.max_sequences {
+        let sampling = request.options.sampling;
+        if !sampling.temperature.is_finite() || sampling.temperature < 0.0 {
             return Ok(Admission::Rejected(ExecutionError::new(
-                "sequence capacity is exhausted",
+                "sampling temperature must be finite and nonnegative",
             )));
         }
-        if request.options.sampling.temperature != 0.0 {
+        if !sampling.top_p.is_finite() || sampling.top_p <= 0.0 || sampling.top_p > 1.0 {
             return Ok(Admission::Rejected(ExecutionError::new(
-                "Inkling 2 executor currently supports greedy sampling only",
+                "sampling top_p must be in (0, 1]",
             )));
         }
         let Ok(prompt_len) = u32::try_from(request.tokens.len()) else {
@@ -281,6 +274,12 @@ impl GenerationExecutor for Inkling2Executor {
             )));
         }
 
+        // Register before testing transient slot capacity (zero lost-wakeup window).
+        let wait = self.readiness.register();
+        if self.states.len() >= self.info.limits.max_sequences {
+            return Ok(Admission::Deferred(wait));
+        }
+
         let cpu = self.model.new_state(self.kv_precision);
         self.states.insert(
             sequence,
@@ -292,6 +291,8 @@ impl GenerationExecutor for Inkling2Executor {
                     remaining: output_budget,
                 },
                 cpu,
+                sampling,
+                rng_state: init_rng_state(sampling.seed, request_id),
             },
         );
         Ok(Admission::Ready)
@@ -373,7 +374,13 @@ impl GenerationExecutor for Inkling2Executor {
                 ));
             }
             let tokens = match logits {
-                Some(row_logits) => vec![greedy_argmax(&row_logits)?],
+                Some(row_logits) => {
+                    vec![sample_f32_logits(
+                        &row_logits,
+                        state.sampling,
+                        &mut state.rng_state,
+                    )?]
+                }
                 None => Vec::new(),
             };
             completions.push(StepCompletion {
@@ -408,7 +415,9 @@ impl GenerationExecutor for Inkling2Executor {
                 "cannot release prepared, submitted, or faulted sequence state",
             ));
         }
-        self.states.remove(&sequence);
+        if self.states.remove(&sequence).is_some() {
+            self.readiness.publish();
+        }
         Ok(())
     }
 
@@ -416,6 +425,7 @@ impl GenerationExecutor for Inkling2Executor {
         self.rows.clear();
         self.states.clear();
         self.phase = Phase::Closed;
+        self.readiness.publish();
         Ok(())
     }
 }

@@ -162,6 +162,73 @@ fn cpu_forward_matches_pinned_oracle_prefix_checkpoints() {
 }
 
 #[test]
+#[ignore = "requires local Inkling-2-Mini-IQ4_NL.gguf and all 10 oracle checkpoints (~17 GiB RAM)"]
+fn cpu_forward_matches_all_ten_pinned_oracle_checkpoints_across_swa_boundary() {
+    let gguf_path = env_path("RIBN_INKLING_GGUF");
+    let oracle_dir = env_path("RIBN_INKLING_ORACLE");
+
+    let source = Inkling2Source::open(&gguf_path).expect("preflight");
+    let oracle_tokens = read_oracle_tokens(&oracle_dir);
+    assert_eq!(oracle_tokens.len(), 1036);
+
+    let t0 = std::time::Instant::now();
+    let model = Inkling2CpuModel::load_from_source(&source).expect("load CPU model");
+    eprintln!(
+        "loaded Inkling2CpuModel in {:.2}s",
+        t0.elapsed().as_secs_f64()
+    );
+
+    let mut state = model.new_state(KvCachePrecision::F16);
+    let checkpoints: &[(usize, &str)] = &[
+        (8, "64-8.f32"),
+        (32, "64-32.f32"),
+        (1023, "64-1023.f32"),
+        (1024, "64-1024.f32"),
+        (1025, "64-1025.f32"),
+        (1032, "64-1032.f32"),
+        (1033, "64-1033.f32"),
+        (1034, "64-1034.f32"),
+        (1035, "64-1035.f32"),
+        (1036, "64-1036.f32"),
+    ];
+
+    let mut cursor = 0_usize;
+    for &(target, oracle_file) in checkpoints {
+        let step_t0 = std::time::Instant::now();
+        let mut last_logits = None;
+        while cursor < target {
+            let chunk_end = (cursor + 64).min(target);
+            let want_logits = chunk_end == target;
+            last_logits = model
+                .forward_tokens(&mut state, &oracle_tokens[cursor..chunk_end], want_logits)
+                .expect("forward chunk");
+            cursor = chunk_end;
+        }
+        let logits = last_logits.expect("checkpoint logits");
+        let elapsed = step_t0.elapsed().as_secs_f64();
+
+        assert_eq!(logits.len(), 200_058);
+        assert!(logits.iter().all(|v| v.is_finite()), "non-finite logits");
+
+        let oracle = read_oracle_logits(&oracle_dir, oracle_file);
+        let got_top = argmax(&logits);
+        let ref_top = argmax(&oracle);
+        let (c_rmse, max_abs, max_centered) = centered_rmse_and_max_abs(&logits, &oracle);
+        eprintln!(
+            "checkpoint {target:4} ({elapsed:.2}s): argmax got={got_top} ref={ref_top} | centered_rmse={c_rmse:.5} max_abs={max_abs:.5} max_centered={max_centered:.5}"
+        );
+        assert_eq!(
+            got_top, ref_top,
+            "argmax mismatch at checkpoint {target}: got {got_top} vs ref {ref_top}"
+        );
+        assert!(
+            c_rmse < 0.25,
+            "centered logit RMSE {c_rmse} too large at checkpoint {target}"
+        );
+    }
+}
+
+#[test]
 #[ignore = "requires local HF thinkingmachines/Inkling-2-Mini snapshot and oracle tokens.txt"]
 #[allow(clippy::too_many_lines)]
 fn hf_tokenizer_and_chat_template_match_pinned_oracle_on_host() {

@@ -16,6 +16,7 @@ mod error;
 mod executor;
 mod output;
 mod request;
+mod sampling;
 
 pub use config::{EngineConfig, PrefillScheduling, SchedulePolicy};
 pub use engine::{Engine, EngineStatus, StepStatus};
@@ -28,3 +29,4 @@ pub use request::{
     Event, FinishReason, GenerationOptions, RequestId, Sampling, TokenRequest, Usage,
 };
 pub use ribn_foundation::{Readiness, ReadinessWait};
+pub use sampling::{init_rng_state, sample_bf16_logits, sample_f32_logits};

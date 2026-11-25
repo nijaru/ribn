@@ -167,6 +167,7 @@ pub(crate) fn streaming(
             match events.next_async().await {
                 Some(Ok(TextEvent::Delta { text, .. })) => {
                     if text.is_empty() { continue; }
+                    guard.record_ttft();
                     match serialize(&output.chunk(&text, None), frame_limit, true) {
                         Ok(bytes) => yield Ok(Frame::data(bytes)),
                         Err(e) => error = Some(e),
@@ -224,6 +225,9 @@ pub(crate) async fn collected(
     while let Some(event) = events.next_async().await {
         match event {
             Ok(TextEvent::Delta { text: delta, .. }) => {
+                if !delta.is_empty() {
+                    guard.record_ttft();
+                }
                 if delta.len() > limit - text.len() {
                     guard.fail();
                     return Err(ApiError::large());

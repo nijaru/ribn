@@ -2,13 +2,12 @@
 
 use super::kv_pool::KV_PAGE_TOKENS;
 use super::modelwide::{Gemma4MetalModelWide, PackedStepItem};
-use super::sampling::sample_bf16_logits;
 use crate::Gemma4Error;
 use crate::generation::{BoundRow, LogicalSequence, RowInput, bind_batch};
 use ribn::{
     Admission, BatchItem, BatchPreparation, ExecutionError, ExecutorInfo, GenerationExecutor,
     GenerationLimits, Readiness, RequestId, Sampling, SequenceId, StepCompletion, SubmissionId,
-    TokenRequest,
+    TokenRequest, init_rng_state, sample_bf16_logits,
 };
 use std::collections::HashMap;
 use std::mem::ManuallyDrop;
@@ -208,11 +207,7 @@ impl GenerationExecutor for Gemma4MetalModelWideExecutor {
         };
         logical.cursor = u32::try_from(matched_prefix)
             .map_err(|_| ExecutionError::new("cached prefix exceeds u32"))?;
-        let seed = request
-            .options
-            .sampling
-            .seed
-            .unwrap_or_else(|| request_id.get().wrapping_mul(0x517c_c1b7_2722_0a95));
+        let seed = init_rng_state(request.options.sampling.seed, request_id);
         owner.states.insert(
             sequence,
             SequenceEntry {
@@ -373,8 +368,7 @@ impl GenerationExecutor for Gemma4MetalModelWideExecutor {
                             output.logits_row(out_idx),
                             entry.sampling,
                             &mut entry.rng_state,
-                        )
-                        .map_err(|error| execution_error(&error))?
+                        )?
                     };
                     out_idx += 1;
                     vec![token]

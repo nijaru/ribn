@@ -41,6 +41,10 @@ pub(crate) async fn route(
             "text/plain; version=0.0.4",
             Full::new(Bytes::from(state.metrics_text())).boxed_unsync(),
         ),
+        (&Method::GET, "/v1/models") => models_list(&request, &state, &config),
+        (&Method::GET, path) if path.starts_with("/v1/models/") => {
+            model_retrieve(&request, path, &state, &config)
+        }
         (&Method::POST, "/v1/completions" | "/v1/chat/completions") => {
             let operation = if request.uri().path() == "/v1/completions" {
                 Operation::Completion
@@ -60,6 +64,58 @@ pub(crate) async fn route(
             &json!({"error": {"message": "unsupported route"}}),
         ),
     })
+}
+
+fn model_card(config: &ServerConfig, state: &State) -> serde_json::Value {
+    json!({
+        "id": config.model_name,
+        "object": "model",
+        "created": state.created_unix(),
+        "owned_by": "ribn",
+    })
+}
+
+fn models_list(
+    request: &Request<Incoming>,
+    state: &State,
+    config: &ServerConfig,
+) -> Response<Body> {
+    if request.uri().query().is_some() {
+        return ApiError::bad("query parameters are unsupported").response();
+    }
+    if state.readiness() != Readiness::Serving {
+        return ApiError::unavailable().response();
+    }
+    response::json_response(
+        StatusCode::OK,
+        &json!({
+            "object": "list",
+            "data": [model_card(config, state)],
+        }),
+    )
+}
+
+fn model_retrieve(
+    request: &Request<Incoming>,
+    path: &str,
+    state: &State,
+    config: &ServerConfig,
+) -> Response<Body> {
+    if request.uri().query().is_some() {
+        return ApiError::bad("query parameters are unsupported").response();
+    }
+    if state.readiness() != Readiness::Serving {
+        return ApiError::unavailable().response();
+    }
+    let id = path.trim_start_matches("/v1/models/");
+    if id == config.model_name {
+        response::json_response(StatusCode::OK, &model_card(config, state))
+    } else {
+        response::json_response(
+            StatusCode::NOT_FOUND,
+            &json!({"error": {"message": "unknown model", "type": "model_not_found", "code": "model_not_found", "param": "model"}}),
+        )
+    }
 }
 
 async fn generation(
