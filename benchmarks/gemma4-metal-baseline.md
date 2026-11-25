@@ -2933,3 +2933,23 @@ Same-day serialized live HTTP SSE head-to-head on the **identical 3.94 GiB pre-q
 Scope limits: single-process-per-server M3 Max observation on identical 4-bit MLX checkpoints; does not
 replace formal multi-process randomized quality-matched external serving cohorts, quantized task QA, or
 CUDA/4090 packed-batch parity.
+
+### Partial-envelope device requalification (2026-11-24)
+
+On the M3 Max at `fbb8c9a`, the non-ignored suites below passed, including
+`kv_pool_partial_envelope_batches_preempts_and_replays_bit_identically`. That
+fixture exercises pressure and replay on a small Metal pool through the AR engine.
+
+```sh
+cargo test -p engine-metal --locked -- --test-threads=1
+cargo test -p engine-gemma4 -p ribn-text -p ribn-cli --features metal --locked -- --test-threads=1
+```
+
+A release `serve-gemma` process on loopback loaded the pinned BF16 E4B snapshot
+(`ee0ef6023621cff504d758262d4e04895a5af4a2`). After `/ready`, both model discovery
+routes returned the configured model ID. Two identical greedy streaming chat
+requests using a text-part array and `max_completion_tokens: 8` each returned
+content and `[DONE]`. `/metrics` reported two TTFT observations and 208 prefix
+hit tokens after the repeat, with 13 cached and zero pinned KV blocks at idle.
+The server exited cleanly on SIGTERM. This HTTP smoke did not force pool pressure
+or rerun the ignored real-model oracle sweeps.
