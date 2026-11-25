@@ -73,7 +73,7 @@ impl Engine {
                     StepKind::Prefill => {
                         advance > 0
                             && advance <= item.token_budget
-                            && if row.prefix == sequence.prompt_tokens {
+                            && if row.prefix == sequence.replay_tokens {
                                 outputs == 1 && outputs <= item.output_budget
                             } else {
                                 outputs == 0
@@ -102,12 +102,16 @@ impl Engine {
             self.terminate(index, FinishReason::Cancelled);
             return;
         }
+        let track_history = self.capabilities.preemption;
         let mut reason = None;
         for token in row.tokens {
             sequence.generated += 1;
             if sequence.options.stop_tokens.contains(&token) {
                 reason = Some(FinishReason::Stop);
                 break;
+            }
+            if track_history {
+                sequence.history.push(token);
             }
             self.output.push_to(
                 sequence.output,
@@ -123,7 +127,7 @@ impl Engine {
         }
         if let Some(reason) = reason {
             self.terminate(index, reason);
-        } else if sequence.prefix < sequence.prompt_tokens {
+        } else if sequence.prefix < sequence.replay_tokens {
             self.prefill.push_back(index);
         } else {
             self.decode.push_back(index);

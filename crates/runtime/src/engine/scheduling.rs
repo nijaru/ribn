@@ -57,12 +57,12 @@ impl Engine {
             let credits = self.output.credits(sequence.output);
             let (tokens, outputs) = match kind {
                 StepKind::Prefill => {
-                    let tokens = (sequence.prompt_tokens - sequence.prefix)
+                    let tokens = (sequence.replay_tokens - sequence.prefix)
                         .min(prefill_cap)
                         .min(*budget);
                     (
                         tokens,
-                        u32::from(sequence.prefix + tokens == sequence.prompt_tokens),
+                        u32::from(sequence.prefix + tokens == sequence.replay_tokens),
                     )
                 }
                 StepKind::Decode => {

@@ -103,8 +103,8 @@ impl Engine {
                     };
                     match item.kind {
                         StepKind::Prefill => {
-                            end <= sequence.prompt_tokens
-                                && item.output_budget == u32::from(end == sequence.prompt_tokens)
+                            end <= sequence.replay_tokens
+                                && item.output_budget == u32::from(end == sequence.replay_tokens)
                         }
                         StepKind::Decode => item.output_budget == item.token_budget,
                     }
@@ -132,7 +132,7 @@ impl Engine {
                 continue;
             }
             sequence.resource_wait = None;
-            if sequence.prefix < sequence.prompt_tokens {
+            if sequence.prefix < sequence.replay_tokens {
                 self.prefill.push_back(index);
             } else {
                 self.decode.push_back(index);

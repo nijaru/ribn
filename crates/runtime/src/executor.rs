@@ -178,6 +178,14 @@ pub trait GenerationExecutor: Send {
         false
     }
 
+    /// Whether this executor opts into runtime-managed recomputation preemption
+    /// (retaining bounded prompt+generated history so the engine can completion-safely
+    /// release and later replay a victim sequence on all-active-growth or consumer-stall
+    /// pressure). Defaults to `false`.
+    fn supports_preemption(&self) -> bool {
+        false
+    }
+
     /// Exact cached prompt prefix already materialized by `admit` for `sequence`.
     /// Must be strictly less than `prompt_tokens` so at least one prompt token
     /// runs to produce output. Defaults to `0`.

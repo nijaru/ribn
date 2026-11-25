@@ -12,6 +12,7 @@ use crate::config::validate_policy;
 use crate::output::{Output, OutputId};
 
 mod completion;
+mod preemption;
 mod preparation;
 mod scheduling;
 
@@ -51,7 +52,14 @@ struct Sequence {
     request: RequestId,
     id: SequenceId,
     input: Option<TokenRequest>,
+    /// Bounded prompt + committed generated history retained only when the
+    /// executor opts into recomputation preemption (`supports_preemption`).
+    history: Vec<u32>,
+    /// Original user prompt length (immutable; used for external `Usage`).
     prompt_tokens: u32,
+    /// Current physical prefill length (`prompt_tokens` initially; `history.len()`
+    /// after preemption so replay continues without duplicating output or usage).
+    replay_tokens: u32,
     options: crate::GenerationOptions,
     output: OutputId,
     prefix: u32,
@@ -63,6 +71,12 @@ struct Sequence {
     notified: bool,
 }
 
+#[derive(Clone, Copy)]
+struct ExecutorFlags {
+    sampling: bool,
+    preemption: bool,
+}
+
 /// One model-neutral scheduling and request owner. Physical sequence resources
 /// belong to the prepared model, including resources retained after a fault.
 ///
@@ -72,17 +86,20 @@ struct Sequence {
 pub struct Engine {
     model: Option<Box<dyn GenerationExecutor>>,
     info: ExecutorInfo,
-    supports_sampling: bool,
+    capabilities: ExecutorFlags,
     config: EngineConfig,
     policy: SchedulePolicy,
     slots: Vec<Option<Sequence>>,
     free: Vec<usize>,
     requests: HashMap<RequestId, usize>,
     waiting: VecDeque<usize>,
+    preempted: VecDeque<usize>,
     parked: VecDeque<usize>,
     prefill: VecDeque<usize>,
     decode: VecDeque<usize>,
     terminal: VecDeque<usize>,
+    protected_survivor: Option<usize>,
+    preemptions: u64,
     active: usize,
     queued_prompt_tokens: u64,
     output: Output,
@@ -104,7 +121,10 @@ impl Engine {
         policy: SchedulePolicy,
     ) -> Result<Self, EngineError> {
         let info = model.info().clone();
-        let supports_sampling = model.supports_sampling();
+        let capabilities = ExecutorFlags {
+            sampling: model.supports_sampling(),
+            preemption: model.supports_preemption(),
+        };
         info.limits.validate()?;
         validate_policy(policy, &info)?;
         let capacity = config
@@ -122,17 +142,20 @@ impl Engine {
         Ok(Self {
             model: Some(Box::new(model)),
             info,
-            supports_sampling,
+            capabilities,
             config,
             policy,
             slots: Vec::with_capacity(capacity),
             free: Vec::with_capacity(capacity),
             requests: HashMap::with_capacity(capacity),
             waiting: VecDeque::with_capacity(capacity),
+            preempted: VecDeque::with_capacity(config.max_active_requests),
             parked: VecDeque::with_capacity(config.max_active_requests),
             prefill: VecDeque::with_capacity(config.max_active_requests),
             decode: VecDeque::with_capacity(config.max_active_requests),
             terminal: VecDeque::with_capacity(capacity),
+            protected_survivor: None,
+            preemptions: 0,
             active: 0,
             queued_prompt_tokens: 0,
             output: Output::new(
@@ -183,7 +206,13 @@ impl Engine {
 
     #[must_use]
     pub const fn supports_sampling(&self) -> bool {
-        self.supports_sampling
+        self.capabilities.sampling
+    }
+
+    /// Total completion-safe recomputation preemptions executed by this engine.
+    #[must_use]
+    pub const fn preemptions(&self) -> u64 {
+        self.preemptions
     }
 
     /// Optional paged KV-pool and prefix-cache telemetry from the underlying executor.
@@ -199,7 +228,7 @@ impl Engine {
         EngineStatus {
             requests: self.requests.len(),
             active_sequences: self.active,
-            waiting: self.waiting.len() + self.parked.len(),
+            waiting: self.waiting.len() + self.preempted.len() + self.parked.len(),
             buffered_events: self.output.len(),
             in_flight: self.pending.is_some(),
             faulted: self.fault.is_some(),
@@ -281,7 +310,9 @@ impl Engine {
             id,
             options: input.options.clone(),
             input: Some(input),
+            history: Vec::new(),
             prompt_tokens,
+            replay_tokens: prompt_tokens,
             prefix: 0,
             generated: 0,
             admitted: false,
@@ -315,6 +346,7 @@ impl Engine {
         }
         if sequence.work == WorkState::Idle {
             self.waiting.retain(|&slot| slot != index);
+            self.preempted.retain(|&slot| slot != index);
             self.parked.retain(|&slot| slot != index);
             self.prefill.retain(|&slot| slot != index);
             self.decode.retain(|&slot| slot != index);
@@ -376,6 +408,12 @@ impl Engine {
         loop {
             self.build_batch();
             if self.batch.is_empty() {
+                if self.try_preempt_for_progress()? {
+                    let admission = self.admit_waiters();
+                    self.flush_terminals()?;
+                    admission?;
+                    continue;
+                }
                 return Ok(StepStatus {
                     completed,
                     output_blocked: !self.prefill.is_empty() || !self.decode.is_empty(),
@@ -387,8 +425,8 @@ impl Engine {
             }
             // An all-omitted offer parks or rejects every selected row. Rebuild
             // before sleeping so unoffered healthy peers cannot be stranded.
-            // Parked rows reactivate only on the next step, bounding this loop
-            // by the runnable rows present at entry, without resource retries.
+            // Parked rows reactivate only on the next step (or after preemption),
+            // bounding this loop without resource retries.
             self.flush_terminals()?;
         }
         self.record_scheduled_batch();
@@ -434,9 +472,11 @@ impl Engine {
         self.batch.clear();
         self.batch_slots.clear();
         self.waiting.clear();
+        self.preempted.clear();
         self.parked.clear();
         self.prefill.clear();
         self.decode.clear();
+        self.protected_survivor = None;
         for index in 0..self.slots.len() {
             if self.slots[index].is_none() {
                 continue;
@@ -458,7 +498,12 @@ impl Engine {
     }
 
     pub(crate) fn arm_resource_waits(&mut self, waker: &std::task::Waker) {
-        for &index in self.waiting.iter().chain(&self.parked) {
+        for &index in self
+            .waiting
+            .iter()
+            .chain(&self.preempted)
+            .chain(&self.parked)
+        {
             if let Some(wait) = self.slots[index]
                 .as_mut()
                 .and_then(|slot| slot.resource_wait.as_mut())
@@ -469,6 +514,22 @@ impl Engine {
     }
 
     fn admit_waiters(&mut self) -> Result<(), EngineError> {
+        // Survivor growth takes precedence over victim/newcomer readmission.
+        if self.protected_survivor.is_some() {
+            return Ok(());
+        }
+        // Admit preempted victims first (aged/oldest-first) so fresh arrivals
+        // cannot repeatedly displace or starve preempted work.
+        self.admit_preempted()?;
+        // Never let fresh arrivals jump ahead of an output-ready preempted victim.
+        let has_ready_preempted = self.preempted.iter().any(|&idx| {
+            self.slots[idx]
+                .as_ref()
+                .is_some_and(|seq| self.output.credits(seq.output) >= 2)
+        });
+        if has_ready_preempted {
+            return Ok(());
+        }
         for _ in 0..self.waiting.len() {
             if self.active >= self.config.max_active_requests {
                 break;
@@ -495,16 +556,16 @@ impl Engine {
             match admitted {
                 Ok(Admission::Ready) => {
                     let seq_id = self.slots[index].as_ref().expect("waiting slot exists").id;
-                    let prompt_tokens = self.slots[index]
+                    let replay_tokens = self.slots[index]
                         .as_ref()
                         .expect("waiting slot exists")
-                        .prompt_tokens;
+                        .replay_tokens;
                     let cached = self
                         .model
                         .as_ref()
                         .expect("engine owns model")
                         .admitted_prefix(seq_id);
-                    if cached >= prompt_tokens {
+                    if cached >= replay_tokens {
                         let error = ExecutionError::new(
                             "executor reported an admitted prefix at or past prompt end",
                         );
@@ -512,6 +573,12 @@ impl Engine {
                         return Err(EngineError::Faulted(error));
                     }
                     let sequence = self.slots[index].as_mut().expect("waiting slot exists");
+                    if self.capabilities.preemption
+                        && let Some(req) = &sequence.input
+                    {
+                        sequence.history.clear();
+                        sequence.history.extend_from_slice(&req.tokens);
+                    }
                     sequence.prefix = cached;
                     sequence.admitted = true;
                     sequence.resource_wait = None;
@@ -539,7 +606,89 @@ impl Engine {
         Ok(())
     }
 
+    fn admit_preempted(&mut self) -> Result<(), EngineError> {
+        for _ in 0..self.preempted.len() {
+            if self.active >= self.config.max_active_requests {
+                break;
+            }
+            let index = self
+                .preempted
+                .pop_front()
+                .expect("preempted queue was nonempty");
+            let sequence = self.slots[index].as_ref().expect("preempted slot exists");
+            // Keep consumer-stalled victims parked until their mailbox drains.
+            if self.output.credits(sequence.output) < 2 {
+                self.preempted.push_back(index);
+                continue;
+            }
+            if sequence
+                .resource_wait
+                .as_ref()
+                .is_some_and(|wait| !wait.changed())
+            {
+                self.preempted.push_back(index);
+                continue;
+            }
+            let mut replay_options = sequence.options.clone();
+            replay_options.max_output_tokens = sequence
+                .options
+                .max_output_tokens
+                .saturating_sub(sequence.generated);
+            let replay_request = TokenRequest::new(sequence.history.clone(), replay_options);
+            let admitted = self.model.as_mut().expect("engine owns model").admit(
+                sequence.request,
+                sequence.id,
+                &replay_request,
+            );
+            match admitted {
+                Ok(Admission::Ready) => {
+                    let seq_id = self.slots[index].as_ref().expect("preempted slot").id;
+                    let replay_tokens = self.slots[index]
+                        .as_ref()
+                        .expect("preempted slot")
+                        .replay_tokens;
+                    let cached = self
+                        .model
+                        .as_ref()
+                        .expect("engine owns model")
+                        .admitted_prefix(seq_id);
+                    if cached >= replay_tokens {
+                        let error = ExecutionError::new(
+                            "executor reported an admitted prefix at or past replay end",
+                        );
+                        self.fault_all(&error);
+                        return Err(EngineError::Faulted(error));
+                    }
+                    let sequence = self.slots[index].as_mut().expect("preempted slot");
+                    sequence.prefix = cached;
+                    sequence.admitted = true;
+                    sequence.resource_wait = None;
+                    self.active += 1;
+                    self.prefill.push_back(index);
+                }
+                Ok(Admission::Deferred(wait)) => {
+                    self.slots[index]
+                        .as_mut()
+                        .expect("preempted slot")
+                        .resource_wait = Some(wait);
+                    self.preempted.push_back(index);
+                }
+                Ok(Admission::Rejected(error)) => {
+                    self.terminate(index, FinishReason::Failed(error));
+                }
+                Err(error) => {
+                    self.fault_all(&error);
+                    return Err(EngineError::Faulted(error));
+                }
+            }
+        }
+        Ok(())
+    }
+
     fn terminate(&mut self, index: usize, reason: FinishReason) {
+        if self.protected_survivor == Some(index) {
+            self.protected_survivor = None;
+        }
         let sequence = self.slots[index].as_mut().expect("terminal slot exists");
         if sequence.terminal.is_some() {
             return;
@@ -547,6 +696,7 @@ impl Engine {
         if sequence.input.take().is_some() {
             self.queued_prompt_tokens -= u64::from(sequence.prompt_tokens);
         }
+        sequence.history.clear();
         sequence.resource_wait = None;
         sequence.terminal = Some(reason);
         sequence.work = WorkState::Idle;
@@ -615,9 +765,11 @@ impl Engine {
         self.pending = None;
         self.release_output_reservations();
         self.waiting.clear();
+        self.preempted.clear();
         self.parked.clear();
         self.prefill.clear();
         self.decode.clear();
+        self.protected_survivor = None;
         self.batch.clear();
         self.batch_slots.clear();
         for index in 0..self.slots.len() {

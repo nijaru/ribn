@@ -59,8 +59,13 @@ wake channel before parking; only device completion retains timed polling.
 Direct `Engine` use remains channel-free. It owns one in-flight batch and negotiates
 aggregate work before launch. It validates the whole preparation report, refunds omitted
 or shortened output credits and parks deferred rows outside runnable queues. All-omitted
-offers rebuild for healthy unoffered peers before sleeping. Completion rows still validate
-before any logical prefix or output commitment.
+offers rebuild for healthy unoffered peers before sleeping. For executors opting into
+recomputation preemption (`GenerationExecutor::supports_preemption`), the engine retains
+each admitted sequence's bounded prompt+committed history, completion-safely preempts
+victims (or consumer-stalled survivors) when `pending.is_none()`, protects an
+output-ready survivor from newcomer/victim readmission until completion or stall, and
+replays preempted victims ahead of fresh arrivals without duplicating tokens or `Usage`.
+Completion rows still validate before any logical prefix or output commitment.
 Cancellation is intent, not completion. Executor uncertainty faults the owner and
 retains retirement ownership. Mailboxes can outlive execution slots; runtime-owned
 discard works across that boundary, without frontend orphan queues.
