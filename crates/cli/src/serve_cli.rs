@@ -53,7 +53,7 @@ pub(crate) enum ModelLoad {
         max_sequences: Option<usize>,
     },
     Gemma {
-        quant: GemmaQuantArg,
+        quant: Option<GemmaQuantArg>,
     },
 }
 
@@ -81,9 +81,7 @@ pub(crate) fn parse(arguments: &[String], kind: ServeModel) -> Result<ServeOptio
                 context_length: 4096,
                 max_sequences: None,
             },
-            ServeModel::Gemma => ModelLoad::Gemma {
-                quant: GemmaQuantArg::Bf16,
-            },
+            ServeModel::Gemma => ModelLoad::Gemma { quant: None },
         },
         bind: "127.0.0.1:8000".parse().expect("constant loopback address"),
         model_name: "ribn".to_owned(),
@@ -141,7 +139,7 @@ pub(crate) fn parse(arguments: &[String], kind: ServeModel) -> Result<ServeOptio
                 let ModelLoad::Gemma { quant } = &mut options.load else {
                     return Err(format!("--quantize is not supported by serve; {usage}"));
                 };
-                *quant = GemmaQuantArg::parse(value)?;
+                *quant = Some(GemmaQuantArg::parse(value)?);
             }
             "--max-connections" => options.max_connections = Some(positive(value, name)? as usize),
             "--max-requests" => options.max_requests = Some(positive(value, name)? as usize),
@@ -206,12 +204,7 @@ mod tests {
                         context_length: 4096,
                         max_sequences: None
                     }
-                ) | (
-                    ServeModel::Gemma,
-                    ModelLoad::Gemma {
-                        quant: GemmaQuantArg::Bf16
-                    }
-                )
+                ) | (ServeModel::Gemma, ModelLoad::Gemma { quant: None })
             ));
         }
         for (flag, expected) in [
@@ -220,7 +213,10 @@ mod tests {
             ("q4", GemmaQuantArg::Q4),
         ] {
             let options = parse(&args(&["pkg", "--quantize", flag]), ServeModel::Gemma).unwrap();
-            assert!(matches!(options.load, ModelLoad::Gemma { quant } if quant == expected));
+            assert!(matches!(
+                options.load,
+                ModelLoad::Gemma { quant: Some(q) } if q == expected
+            ));
         }
         assert!(parse(&args(&["pkg", "--quantize", "q3"]), ServeModel::Gemma).is_err());
         assert!(parse(&args(&["m.gguf", "--quantize", "q4"]), ServeModel::Qwen).is_err());

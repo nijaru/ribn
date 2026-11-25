@@ -268,6 +268,43 @@ fn checked_u32(value: usize, label: &str) -> Result<u32, MetalBf16Error> {
     u32::try_from(value).map_err(|_| MetalBf16Error::Shape(format!("{label} exceeds u32")))
 }
 
+fn quant_layout(
+    rows: usize,
+    cols: usize,
+    kind: MetalQuantKind,
+) -> Result<(usize, usize, usize, usize, usize), MetalBf16Error> {
+    if rows == 0 || cols == 0 || !cols.is_multiple_of(METAL_QUANT_GROUP_SIZE) {
+        return Err(MetalBf16Error::Shape(format!(
+            "quantized weight [{rows}, {cols}] requires positive rows and cols divisible by {METAL_QUANT_GROUP_SIZE}"
+        )));
+    }
+    let groups_per_row = cols / METAL_QUANT_GROUP_SIZE;
+    let total_groups = rows
+        .checked_mul(groups_per_row)
+        .ok_or_else(|| MetalBf16Error::Shape("quantized groups overflow".into()))?;
+    let packed_bytes = match kind {
+        MetalQuantKind::Q4 => rows
+            .checked_mul(cols / 2)
+            .ok_or_else(|| MetalBf16Error::Shape("Q4 packed bytes overflow".into()))?,
+        MetalQuantKind::Q8 => rows
+            .checked_mul(cols)
+            .ok_or_else(|| MetalBf16Error::Shape("Q8 packed bytes overflow".into()))?,
+    };
+    let sb_bytes = total_groups
+        .checked_mul(4)
+        .ok_or_else(|| MetalBf16Error::Shape("quantized scale/bias bytes overflow".into()))?;
+    let total_bytes = packed_bytes
+        .checked_add(sb_bytes)
+        .ok_or_else(|| MetalBf16Error::Shape("quantized total bytes overflow".into()))?;
+    Ok((
+        groups_per_row,
+        total_groups,
+        packed_bytes,
+        sb_bytes,
+        total_bytes,
+    ))
+}
+
 impl MetalBf16Executor {
     /// Stream a BF16 `[rows, cols]` matrix from `reader` and quantize into an immutable
     /// shared-storage `MetalQuantWeight` (`Q4` or `Q8`, group size 64) using bounded
@@ -286,29 +323,8 @@ impl MetalBf16Executor {
         kind: MetalQuantKind,
         reader: &mut dyn Read,
     ) -> Result<MetalQuantWeight, MetalBf16Error> {
-        if rows == 0 || cols == 0 || !cols.is_multiple_of(METAL_QUANT_GROUP_SIZE) {
-            return Err(MetalBf16Error::Shape(format!(
-                "quantized weight [{rows}, {cols}] requires positive rows and cols divisible by {METAL_QUANT_GROUP_SIZE}"
-            )));
-        }
-        let groups_per_row = cols / METAL_QUANT_GROUP_SIZE;
-        let total_groups = rows
-            .checked_mul(groups_per_row)
-            .ok_or_else(|| MetalBf16Error::Shape("quantized groups overflow".into()))?;
-        let packed_bytes = match kind {
-            MetalQuantKind::Q4 => rows
-                .checked_mul(cols / 2)
-                .ok_or_else(|| MetalBf16Error::Shape("Q4 packed bytes overflow".into()))?,
-            MetalQuantKind::Q8 => rows
-                .checked_mul(cols)
-                .ok_or_else(|| MetalBf16Error::Shape("Q8 packed bytes overflow".into()))?,
-        };
-        let sb_bytes = total_groups
-            .checked_mul(4)
-            .ok_or_else(|| MetalBf16Error::Shape("quantized scale/bias bytes overflow".into()))?;
-        let total_bytes = packed_bytes
-            .checked_add(sb_bytes)
-            .ok_or_else(|| MetalBf16Error::Shape("quantized total bytes overflow".into()))?;
+        let (groups_per_row, total_groups, packed_bytes, sb_bytes, total_bytes) =
+            quant_layout(rows, cols, kind)?;
 
         let packed = self.allocate_shared(packed_bytes)?;
         let scales_biases = self.allocate_shared(sb_bytes)?;
@@ -413,6 +429,108 @@ impl MetalBf16Executor {
         if reader.read(&mut trailing).map_err(MetalBf16Error::Read)? != 0 {
             return Err(MetalBf16Error::Invalid(
                 "trailing bytes after quantized BF16 weight",
+            ));
+        }
+
+        Ok(MetalQuantWeight {
+            kind,
+            rows,
+            cols,
+            packed,
+            scales_biases,
+            bytes: total_bytes,
+        })
+    }
+
+    /// Stream a pre-quantized affine group-64 `[rows, cols]` weight matrix (`Q4` or `Q8`,
+    /// MLX little-endian `U32` packed weights + separate BF16 `scales` and `biases`)
+    /// directly into immutable shared-storage Metal buffers with bounded staging.
+    /// # Errors
+    /// Rejects non-positive/unaligned dimensions, non-finite scales or biases,
+    /// short/trailing reads on any stream, or GPU allocation failure.
+    pub fn read_prequantized(
+        &self,
+        rows: usize,
+        cols: usize,
+        kind: MetalQuantKind,
+        packed_reader: &mut dyn Read,
+        scales_reader: &mut dyn Read,
+        biases_reader: &mut dyn Read,
+    ) -> Result<MetalQuantWeight, MetalBf16Error> {
+        let (_groups_per_row, total_groups, packed_bytes, sb_bytes, total_bytes) =
+            quant_layout(rows, cols, kind)?;
+
+        let packed = self.allocate_shared(packed_bytes)?;
+        let scales_biases = self.allocate_shared(sb_bytes)?;
+
+        // SAFETY: `packed` is freshly allocated and exclusively owned with `packed_bytes` bytes.
+        let packed_dst =
+            unsafe { std::slice::from_raw_parts_mut(packed.contents().cast::<u8>(), packed_bytes) };
+        packed_reader
+            .read_exact(packed_dst)
+            .map_err(MetalBf16Error::Read)?;
+        let mut trailing = [0_u8; 1];
+        if packed_reader
+            .read(&mut trailing)
+            .map_err(MetalBf16Error::Read)?
+            != 0
+        {
+            return Err(MetalBf16Error::Invalid(
+                "trailing bytes after pre-quantized packed weight",
+            ));
+        }
+
+        // SAFETY: `scales_biases` is freshly allocated and exclusively owned with `total_groups * 4` bytes.
+        let sb_dst = unsafe {
+            std::slice::from_raw_parts_mut(
+                scales_biases.contents().cast::<[u16; 2]>(),
+                total_groups,
+            )
+        };
+        let chunk_groups = (STAGING_TARGET_BYTES / 4).clamp(1, total_groups);
+        let mut scale_buf = vec![0_u8; chunk_groups * 2];
+        let mut bias_buf = vec![0_u8; chunk_groups * 2];
+
+        let mut cursor = 0_usize;
+        while cursor < total_groups {
+            let take = (total_groups - cursor).min(chunk_groups);
+            let byte_len = take * 2;
+            scales_reader
+                .read_exact(&mut scale_buf[..byte_len])
+                .map_err(MetalBf16Error::Read)?;
+            biases_reader
+                .read_exact(&mut bias_buf[..byte_len])
+                .map_err(MetalBf16Error::Read)?;
+            let out_slice = &mut sb_dst[cursor..cursor + take];
+            for (i, slot) in out_slice.iter_mut().enumerate() {
+                let s_bits = u16::from_le_bytes([scale_buf[i * 2], scale_buf[i * 2 + 1]]);
+                let b_bits = u16::from_le_bytes([bias_buf[i * 2], bias_buf[i * 2 + 1]]);
+                if (s_bits & 0x7f80) == 0x7f80 || (b_bits & 0x7f80) == 0x7f80 {
+                    return Err(MetalBf16Error::Invalid(
+                        "non-finite BF16 scale or bias in pre-quantized weight",
+                    ));
+                }
+                *slot = [s_bits, b_bits];
+            }
+            cursor += take;
+        }
+
+        if scales_reader
+            .read(&mut trailing)
+            .map_err(MetalBf16Error::Read)?
+            != 0
+        {
+            return Err(MetalBf16Error::Invalid(
+                "trailing bytes after pre-quantized scales",
+            ));
+        }
+        if biases_reader
+            .read(&mut trailing)
+            .map_err(MetalBf16Error::Read)?
+            != 0
+        {
+            return Err(MetalBf16Error::Invalid(
+                "trailing bytes after pre-quantized biases",
             ));
         }
 
@@ -580,7 +698,7 @@ impl MetalFastSession<'_> {
             encoder.set_bytes(6, 4, (&raw const k_u32).cast());
             let gx = u64::from(m_u32).div_ceil(bm);
             let gy = u64::from(n_u32).div_ceil(4);
-            encoder.dispatch_thread_groups(MTLSize::new(gx, gy, 1), MTLSize::new(64, 1, 1));
+            encoder.dispatch_thread_groups(MTLSize::new(gx, gy, 1), MTLSize::new(128, 1, 1));
         } else if rows <= 16 {
             let (pipeline, bm) = match (weight.kind, rows) {
                 (MetalQuantKind::Q4, 5..=8) => (&quant.q4_gemm_m8, 8_u64),
@@ -1046,6 +1164,147 @@ mod tests {
             assert_eq!(dual_up.as_slice(cols), up_ref.as_slice(cols));
             assert_eq!(geglu_fused.as_slice(cols), geglu_ref.as_slice(cols));
             assert_eq!(lin_geglu_fused.as_slice(cols), geglu_ref.as_slice(cols));
+        }
+    }
+
+    #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "verifies Q4 and Q8 pre-quantized parity plus truncation, trailing, and non-finite rejections"
+    )]
+    fn read_prequantized_matches_online_quantized_bit_for_bit_and_rejects_bad_inputs() {
+        let exec = MetalBf16Executor::new().expect("Metal device");
+        let rows = 19_usize;
+        let cols = 128_usize;
+        let m = 4_usize;
+        let w_bf16: Vec<u16> = (0..rows * cols)
+            .map(|i| {
+                #[expect(clippy::cast_precision_loss, reason = "small test index")]
+                let v = ((i * 29 + 5) % 91) as f32 * 0.025 - 1.1;
+                f32_to_bf16_rne(v)
+            })
+            .collect();
+        let x_bf16: Vec<u16> = (0..m * cols)
+            .map(|i| {
+                #[expect(clippy::cast_precision_loss, reason = "small test index")]
+                let v = ((i * 17 + 3) % 79) as f32 * 0.02 - 0.78;
+                f32_to_bf16_rne(v)
+            })
+            .collect();
+        let mut x_dev = exec.alloc_bf16(m * cols).unwrap();
+        x_dev.write(&x_bf16).unwrap();
+
+        let src_bytes: Vec<u8> = w_bf16.iter().flat_map(|b| b.to_le_bytes()).collect();
+        let total_groups = rows * (cols / METAL_QUANT_GROUP_SIZE);
+
+        for kind in [MetalQuantKind::Q4, MetalQuantKind::Q8] {
+            let online = exec
+                .upload_quantized_bf16(rows, cols, kind, &w_bf16)
+                .unwrap();
+            let mut sb = vec![[0_u16; 2]; total_groups];
+            let packed_bytes: Vec<u8> = match kind {
+                MetalQuantKind::Q4 => {
+                    let mut words = vec![0_u32; rows * (cols / 8)];
+                    quantize_rows_q4(&src_bytes, cols, &mut words, &mut sb).unwrap();
+                    words.iter().flat_map(|w| w.to_le_bytes()).collect()
+                }
+                MetalQuantKind::Q8 => {
+                    let mut bytes = vec![0_u8; rows * cols];
+                    quantize_rows_q8(&src_bytes, cols, &mut bytes, &mut sb).unwrap();
+                    bytes
+                }
+            };
+            let scale_bytes: Vec<u8> = sb.iter().flat_map(|pair| pair[0].to_le_bytes()).collect();
+            let bias_bytes: Vec<u8> = sb.iter().flat_map(|pair| pair[1].to_le_bytes()).collect();
+
+            let preq = exec
+                .read_prequantized(
+                    rows,
+                    cols,
+                    kind,
+                    &mut packed_bytes.as_slice(),
+                    &mut scale_bytes.as_slice(),
+                    &mut bias_bytes.as_slice(),
+                )
+                .unwrap();
+            assert_eq!(preq.bytes(), online.bytes());
+
+            let out_online = exec.alloc_bf16(m * rows).unwrap();
+            let out_preq = exec.alloc_bf16(m * rows).unwrap();
+            let mut session = exec.begin_fast_session().unwrap();
+            session
+                .linear_quant(&x_dev, &online, &out_online, m, rows, cols)
+                .unwrap();
+            session
+                .linear_quant(&x_dev, &preq, &out_preq, m, rows, cols)
+                .unwrap();
+            session.submit("test prequantized parity").unwrap();
+            assert_eq!(out_preq.as_slice(m * rows), out_online.as_slice(m * rows));
+
+            // Reject truncated packed/scales/biases
+            assert!(
+                exec.read_prequantized(
+                    rows,
+                    cols,
+                    kind,
+                    &mut &packed_bytes[..packed_bytes.len() - 1],
+                    &mut scale_bytes.as_slice(),
+                    &mut bias_bytes.as_slice(),
+                )
+                .is_err()
+            );
+            assert!(
+                exec.read_prequantized(
+                    rows,
+                    cols,
+                    kind,
+                    &mut packed_bytes.as_slice(),
+                    &mut &scale_bytes[..scale_bytes.len() - 2],
+                    &mut bias_bytes.as_slice(),
+                )
+                .is_err()
+            );
+            // Reject trailing bytes
+            let mut extra = packed_bytes.clone();
+            extra.push(0);
+            assert!(
+                exec.read_prequantized(
+                    rows,
+                    cols,
+                    kind,
+                    &mut extra.as_slice(),
+                    &mut scale_bytes.as_slice(),
+                    &mut bias_bytes.as_slice(),
+                )
+                .is_err()
+            );
+            // Reject non-finite scale and non-finite bias
+            let mut bad_scales = scale_bytes.clone();
+            bad_scales[0..2].copy_from_slice(&0x7f80_u16.to_le_bytes());
+            assert!(
+                exec.read_prequantized(
+                    rows,
+                    cols,
+                    kind,
+                    &mut packed_bytes.as_slice(),
+                    &mut bad_scales.as_slice(),
+                    &mut bias_bytes.as_slice(),
+                )
+                .is_err()
+            );
+            let mut bad_biases = bias_bytes.clone();
+            bad_biases[0..2].copy_from_slice(&0x7fc0_u16.to_le_bytes());
+            assert!(
+                exec.read_prequantized(
+                    rows,
+                    cols,
+                    kind,
+                    &mut packed_bytes.as_slice(),
+                    &mut scale_bytes.as_slice(),
+                    &mut bad_biases.as_slice(),
+                )
+                .is_err()
+            );
         }
     }
 }

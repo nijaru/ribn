@@ -50,22 +50,27 @@ pub(crate) fn run(arguments: &[String]) -> Result<(), String> {
 #[cfg(all(feature = "metal", target_os = "macos"))]
 pub(crate) fn load_model(
     path: PathBuf,
-    quant: GemmaQuantArg,
+    quant: Option<GemmaQuantArg>,
 ) -> Result<(TextOwner, ribn_text::GemmaLoadReport), ribn_text::TextError> {
-    let policy = match quant {
-        GemmaQuantArg::Bf16 => ribn_text::Gemma4MetalQuant::Bf16,
-        GemmaQuantArg::Q8 => ribn_text::Gemma4MetalQuant::Q8,
-        GemmaQuantArg::Q4 => ribn_text::Gemma4MetalQuant::Q4,
-    };
-    TextOwner::load_gemma_with_quant(path, ribn_text::Gemma4MetalFfn::Native, policy)
+    match quant {
+        None => TextOwner::load_gemma(path, ribn_text::Gemma4MetalFfn::Native),
+        Some(q) => {
+            let policy = match q {
+                GemmaQuantArg::Bf16 => ribn_text::Gemma4MetalQuant::Bf16,
+                GemmaQuantArg::Q8 => ribn_text::Gemma4MetalQuant::Q8,
+                GemmaQuantArg::Q4 => ribn_text::Gemma4MetalQuant::Q4,
+            };
+            TextOwner::load_gemma_with_quant(path, ribn_text::Gemma4MetalFfn::Native, policy)
+        }
+    }
 }
 
 #[cfg(all(feature = "cuda", not(all(feature = "metal", target_os = "macos"))))]
 pub(crate) fn load_model(
     path: PathBuf,
-    quant: GemmaQuantArg,
+    quant: Option<GemmaQuantArg>,
 ) -> Result<(TextOwner, ribn_text::GemmaLoadReport), ribn_text::TextError> {
-    if quant != GemmaQuantArg::Bf16 {
+    if matches!(quant, Some(GemmaQuantArg::Q8 | GemmaQuantArg::Q4)) {
         return Err(ribn_text::TextError::InvalidInput(
             "--quantize q8/q4 is currently supported only on Metal",
         ));
@@ -73,13 +78,13 @@ pub(crate) fn load_model(
     TextOwner::load_gemma_cuda(path)
 }
 
-fn parse(arguments: &[String]) -> Result<(RunOptions, GemmaQuantArg), String> {
+fn parse(arguments: &[String]) -> Result<(RunOptions, Option<GemmaQuantArg>), String> {
     let mut model = None;
     let mut prompt = None;
     let mut file = None;
     let mut raw = false;
     let mut max_tokens = 32_u32;
-    let mut quant = GemmaQuantArg::Bf16;
+    let mut quant = None;
     let mut index = 0;
     while index < arguments.len() {
         let name = &arguments[index];
@@ -96,7 +101,7 @@ fn parse(arguments: &[String]) -> Result<(RunOptions, GemmaQuantArg), String> {
             match name.as_str() {
                 "--prompt" => prompt = Some(value.clone()),
                 "--file" => file = Some(PathBuf::from(value)),
-                "--quantize" => quant = GemmaQuantArg::parse(value)?,
+                "--quantize" => quant = Some(GemmaQuantArg::parse(value)?),
                 _ => {
                     max_tokens = value
                         .parse()

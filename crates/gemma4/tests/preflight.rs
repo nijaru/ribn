@@ -112,7 +112,11 @@ fn single_and_sharded_sources_preserve_ties_encoding_and_explicit_exclusions() {
             // The fixture numbers payloads independently within each shard.
             let ordinal = if sharded { ordinal / 2 } else { ordinal };
             let mut data = Vec::new();
-            parameter.reader().read_to_end(&mut data).unwrap();
+            parameter
+                .bf16_reader()
+                .unwrap()
+                .read_to_end(&mut data)
+                .unwrap();
             let expected = (0x3f80_u16 + u16::try_from(ordinal).unwrap()).to_le_bytes();
             let (words, tail) = data.as_chunks::<2>();
             assert!(tail.is_empty());
@@ -120,7 +124,11 @@ fn single_and_sharded_sources_preserve_ties_encoding_and_explicit_exclusions() {
             assert_eq!(data.len(), spec.byte_len().unwrap());
             total += data.len();
             let mut again = Vec::new();
-            parameter.reader().read_to_end(&mut again).unwrap();
+            parameter
+                .bf16_reader()
+                .unwrap()
+                .read_to_end(&mut again)
+                .unwrap();
             assert_eq!(data, again, "prototype cursors never advance");
         }
         assert_eq!(source.encoded_bytes(), total);
@@ -166,14 +174,18 @@ fn source_readers_survive_package_drop_and_pathname_replacement() {
     drop(p);
     let selected = source.parameter(ParameterId::TokenEmbedding).unwrap();
     let mut expected = Vec::new();
-    selected.reader().read_to_end(&mut expected).unwrap();
+    selected
+        .bf16_reader()
+        .unwrap()
+        .read_to_end(&mut expected)
+        .unwrap();
     std::fs::rename(
         dir.0.join("model.safetensors"),
         dir.0.join("old.safetensors"),
     )
     .unwrap();
     std::fs::write(dir.0.join("model.safetensors"), b"not the selected source").unwrap();
-    let mut reader = selected.reader();
+    let mut reader = selected.bf16_reader().unwrap();
     drop(source);
     let mut actual = Vec::new();
     reader.read_to_end(&mut actual).unwrap();

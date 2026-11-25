@@ -162,7 +162,8 @@ fn model_norms_bind_direct_scales_grouping_and_unscaled_owner_values() {
     ] {
         let mut bytes = Vec::new();
         source.parameters()[&role]
-            .reader()
+            .bf16_reader()
+            .unwrap()
             .read_to_end(&mut bytes)
             .unwrap();
         let scale: Vec<_> = bytes

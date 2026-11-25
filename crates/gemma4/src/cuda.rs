@@ -145,6 +145,9 @@ impl Gemma4CudaWeights {
         source: &Gemma4Source,
         allocate: impl FnOnce(Vec<WeightTensorSpec>) -> Result<CudaBf16Weights, CudaBf16Error>,
     ) -> Result<Self, Gemma4CudaLoadError> {
+        source
+            .require_bf16("CUDA weight")
+            .map_err(Gemma4CudaLoadError::model)?;
         let mut slots = BTreeMap::new();
         let mut specs = Vec::with_capacity(source.parameters().len());
         for (&id, parameter) in source.parameters() {
@@ -172,7 +175,10 @@ impl Gemma4CudaWeights {
         let mut storage =
             Box::new(allocate(specs).map_err(|e| Gemma4CudaLoadError::backend(e, None))?);
         for (slot, parameter) in source.parameters().values().enumerate() {
-            if let Err(error) = storage.upload(slot, &mut parameter.reader()) {
+            let mut reader = parameter
+                .bf16_reader()
+                .map_err(Gemma4CudaLoadError::model)?;
+            if let Err(error) = storage.upload(slot, &mut reader) {
                 return Err(Gemma4CudaLoadError::backend(error, Some(storage)));
             }
         }

@@ -63,21 +63,24 @@ Neither workload establishes a clean competitive ranking.
    post-norm/residual and `M=1` decode kernels (`Gate+Up+GeGLU`, `PleGate+GeGLU`,
    `K+V`), parallel softcap/argmax, capability-gated HTTP stochastic sampling,
    and opt-in affine group-64 weight quantization (`--quantize bf16|q8|q4`,
-   default `bf16`). On M3 Max E4B, BF16 matches 12/12 archived CPU BF16 oracle
-   winners (`2,100+ tok/s` direct 512-token prefill, `361+ tok/s` `M=16` decode)
-   and beats `mlx-lm==0.32.2` across all 10 tested BF16 HTTP SSE cohorts on TTFT
-   and batched throughput; opt-in `q8` (`7.39 GiB` weights / `9.58 GiB` RSS) and
-   `q4` (`3.91 GiB` weights / `6.14 GiB` RSS) also match 12/12 BF16 oracle
-   winners with bit-exact 512-token prefix caching. In same-day head-to-head
-   live HTTP SSE against `mlx-lm==0.32.2` 4-bit group-64, `ribn --quantize q4`
-   reaches `79.6` vs `80.7 tok/s` at `c=1` (`19.7` vs `27.6 ms` TTFT), beats MLX
-   at `c=16` (`474.5` vs `375.2 tok/s`, +26.5%) and `c=32` burst deferral
-   (`478.8` vs `346.6 tok/s`, +38.1%, `32/32 ok`), and leads `Prefix burst c=8`
-   (`281.2` vs `87.5 tok/s`) and `Mixed c=8` (`271.1` vs `71.6 tok/s`; see
-   [Metal baseline](../benchmarks/gemma4-metal-baseline.md#kv-pool-admission-backpressure-fused-m1-decode-kernels-and-q4-head-to-head-vs-mlx-lm0322-2026-11-24)).
+   default `bf16` for BF16 packages) plus direct native loading of pre-quantized
+   MLX affine group-64 Q4/Q8 safetensors packages (zero `--quantize` flag needed;
+   mismatched overrides reject explicitly). On M3 Max E4B, BF16 matches 12/12
+   archived CPU BF16 oracle winners (`2,100+ tok/s` direct 512-token prefill,
+   `364+ tok/s` `M=16` decode) and beats `mlx-lm==0.32.2` across all 10 tested
+   BF16 HTTP SSE cohorts on TTFT and batched throughput; both online and
+   pre-quantized `q8` (`7.39 GiB` weights, `0.90 s` pre-quantized load) and `q4`
+   (`3.91 GiB` weights, `0.60 s` pre-quantized load) match 12/12 BF16 oracle
+   winners with bit-exact 512-token prefix caching. With unpack-once `M=2..4`
+   GEMV (`Q4 M=4` `251.8 tok/s` direct) and native pre-quantized loading,
+   same-day serialized live HTTP SSE on the identical 3.94 GiB MLX Q4 package
+   beats `mlx-lm==0.32.2` Q4 across all concurrent cohorts (`c=4`: `217.9` vs
+   `171.2 tok/s`; `c=8`: `307.2` vs `189.3 tok/s`; `c=16`: `444.3` vs
+   `285.2 tok/s`; `c=32` burst: `449.9` vs `223.1 tok/s`; `Prefix burst c=8`:
+   `258.5` vs `157.5 tok/s`; `Mixed c=8`: `263.0` vs `179.8 tok/s`; see
+   [Metal baseline](../benchmarks/gemma4-metal-baseline.md#unpack-once-m24-gemv-and-native-pre-quantized-mlx-safetensors-loading-2026-11-24)).
    Formal multi-process matched-quality external serving cohorts, quantized task
-   QA, pre-quantized checkpoint loading, multi-model Metal expansion, and
-   CUDA/4090 packed-batch parity remain open.
+   QA, multi-model Metal expansion, and CUDA/4090 packed-batch parity remain open.
 3. **Native versus externally prepared executor, concurrently.**
    Test a pinned Gemma model and at least two contexts/shapes through
    a truly Rust-invocable prepared program; compare full numerical/

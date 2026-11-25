@@ -1,11 +1,27 @@
 //! Actual local-package preflight, optionally hashing every active encoded source.
 //! No model execution, device allocation or whole-weight host materialization.
 
-use engine_gemma4::{Exclusion, Gemma4Source};
+use engine_gemma4::{Exclusion, Gemma4Source, ParameterPayload};
 use ribn_hf::LocalModelPackage;
 use serde_json::json;
 use sha2::{Digest, Sha256};
 use std::io::{self, Read};
+
+fn hash_reader(
+    reader: &mut dyn Read,
+    buffer: &mut [u8],
+    hash: &mut Sha256,
+) -> Result<usize, io::Error> {
+    let mut total = 0;
+    loop {
+        let n = reader.read(buffer)?;
+        if n == 0 {
+            return Ok(total);
+        }
+        hash.update(&buffer[..n]);
+        total += n;
+    }
+}
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<_> = std::env::args_os().skip(1).collect();
@@ -18,19 +34,26 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut buffer = vec![0; 1024 * 1024];
     for parameter in source.parameters().values() {
         let spec = parameter.spec();
+        let dtype = match parameter.payload() {
+            ParameterPayload::Bf16(_) => "BF16".to_owned(),
+            ParameterPayload::AffineGroup64 { bits, .. } => format!("AFFINE_Q{bits}_G64"),
+        };
         let digest = if args.len() == 2 {
-            let mut reader = parameter.reader();
             let mut hash = Sha256::new();
-            let mut total = 0;
-            loop {
-                let n = reader.read(&mut buffer)?;
-                if n == 0 {
-                    break;
+            let total = match parameter.payload() {
+                ParameterPayload::Bf16(r) => hash_reader(&mut r.clone(), &mut buffer, &mut hash)?,
+                ParameterPayload::AffineGroup64 {
+                    packed,
+                    scales,
+                    biases,
+                    ..
+                } => {
+                    hash_reader(&mut packed.clone(), &mut buffer, &mut hash)?
+                        + hash_reader(&mut scales.clone(), &mut buffer, &mut hash)?
+                        + hash_reader(&mut biases.clone(), &mut buffer, &mut hash)?
                 }
-                hash.update(&buffer[..n]);
-                total += n;
-            }
-            if total != spec.byte_len()? {
+            };
+            if total != parameter.encoded_bytes() {
                 return Err("incomplete parameter read".into());
             }
             Some(format!("{:x}", hash.finalize()))
@@ -40,7 +63,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         parameters.insert(
             spec.name.clone(),
             json!({"role": format!("{:?}",spec.id),
-            "shape": spec.shape, "dtype": "BF16", "bytes": spec.byte_len()?, "sha256": digest}),
+            "shape": spec.shape, "dtype": dtype, "bytes": parameter.encoded_bytes(), "sha256": digest}),
         );
     }
     let layers: Vec<_> = source.config().layers().iter().enumerate().map(|(i,g)| json!({

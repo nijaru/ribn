@@ -14,6 +14,7 @@ pub(super) struct HostLookups {
 
 impl HostLookups {
     pub(super) fn load(source: &Gemma4Source) -> Result<Self, Gemma4Error> {
+        source.require_bf16("CUDA host lookup")?;
         let token_embedding = read(source, ParameterId::TokenEmbedding)?;
         let ple_embedding = read(source, ParameterId::PleEmbedding)?;
         let layer_scalars = (0..source.config().layers().len())
@@ -50,7 +51,7 @@ fn read(source: &Gemma4Source, id: ParameterId) -> Result<CpuParameter, Gemma4Er
     let parameter = source
         .parameter(id)
         .ok_or_else(|| Gemma4Error::new("CUDA host lookup", format!("missing parameter {id:?}")))?;
-    CpuParameter::read(&parameter.spec().shape, parameter.reader())
+    CpuParameter::read(&parameter.spec().shape, parameter.bf16_reader()?)
 }
 
 #[cfg(test)]

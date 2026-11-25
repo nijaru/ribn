@@ -4,22 +4,83 @@ use crate::{Gemma4Config, Gemma4Error, ParameterId, ParameterSpec};
 use ribn_foundation::ScalarType;
 use ribn_hf::{LocalModelPackage, WeightLayout};
 use ribn_safetensors::{ArtifactReader, SafeTensorArtifact};
+use serde_json::Value;
 use std::collections::BTreeMap;
 
-/// Logical parameter plus its selected BF16 encoding. No decoded/device storage.
+const AFFINE_GROUP_SIZE: usize = 64;
+const HF_TEXT_PREFIX: &str = "model.language_model.";
+const MLX_TEXT_PREFIX: &str = "language_model.model.";
+
+/// Native weight encoding of a validated Gemma 4 package.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Gemma4SourceEncoding {
+    /// Full unconverted BF16 checkpoint.
+    Bf16,
+    /// Pre-quantized 8-bit affine group-64 checkpoint (MLX layout).
+    AffineQ8G64,
+    /// Pre-quantized 4-bit affine group-64 checkpoint (MLX layout).
+    AffineQ4G64,
+}
+
+impl Gemma4SourceEncoding {
+    /// Quantization bit width for pre-quantized affine packages, or `None` for BF16.
+    #[must_use]
+    pub const fn affine_bits(self) -> Option<u8> {
+        match self {
+            Self::Bf16 => None,
+            Self::AffineQ8G64 => Some(8),
+            Self::AffineQ4G64 => Some(4),
+        }
+    }
+}
+
+/// Encoded storage for one validated Gemma 4 parameter.
+#[derive(Clone)]
+pub enum ParameterPayload {
+    /// Uncompressed BF16 tensor bytes.
+    Bf16(ArtifactReader),
+    /// Pre-quantized affine group-64 weight (`U32` packed weights + BF16 `scales` + BF16 `biases`).
+    AffineGroup64 {
+        bits: u8,
+        packed: ArtifactReader,
+        scales: ArtifactReader,
+        biases: ArtifactReader,
+    },
+}
+
+/// Logical parameter plus its validated encoded storage. No decoded/device storage.
 pub struct StoredParameter {
     spec: ParameterSpec,
-    reader: ArtifactReader,
+    payload: ParameterPayload,
+    encoded_bytes: usize,
 }
 impl StoredParameter {
     #[must_use]
     pub const fn spec(&self) -> &ParameterSpec {
         &self.spec
     }
-    /// A fresh bounded reader of the exact source validated by preflight.
+    /// Exact encoded storage bytes for this parameter (`BF16` or `packed + scales + biases`).
     #[must_use]
-    pub fn reader(&self) -> ArtifactReader {
-        self.reader.clone()
+    pub const fn encoded_bytes(&self) -> usize {
+        self.encoded_bytes
+    }
+    /// Validated encoded payload (`Bf16` or `AffineGroup64`).
+    #[must_use]
+    pub const fn payload(&self) -> &ParameterPayload {
+        &self.payload
+    }
+    /// A fresh bounded BF16 reader for uncompressed parameters.
+    ///
+    /// # Errors
+    /// Rejects pre-quantized parameters rather than exposing packed integer words as BF16.
+    pub fn bf16_reader(&self) -> Result<ArtifactReader, Gemma4Error> {
+        match &self.payload {
+            ParameterPayload::Bf16(reader) => Ok(reader.clone()),
+            ParameterPayload::AffineGroup64 { bits, .. } => Err(Gemma4Error::new(
+                &self.spec.name,
+                format!("parameter is pre-quantized ({bits}-bit affine); BF16 reader unavailable"),
+            )),
+        }
     }
 }
 
@@ -41,11 +102,12 @@ pub struct ExcludedParameter {
 /// while readers live. This is not an atomic package or executable GPU snapshot.
 pub struct Gemma4Source {
     config: Gemma4Config,
+    encoding: Gemma4SourceEncoding,
     parameters: BTreeMap<ParameterId, StoredParameter>,
     excluded: Vec<ExcludedParameter>,
     encoded_bytes: usize,
     media: Inventory,
-    vision_config: Option<serde_json::Value>,
+    vision_config: Option<Value>,
 }
 
 pub(crate) struct Inventory {
@@ -99,25 +161,147 @@ impl Inventory {
     }
 }
 
+fn parse_quant_object(
+    obj: &serde_json::Map<String, Value>,
+) -> Result<Gemma4SourceEncoding, Gemma4Error> {
+    if let Some(method) = obj.get("quant_method") {
+        return Err(Gemma4Error::new(
+            "quantization",
+            format!(
+                "unsupported quantization method {method}; only MLX affine group-64 Q4/Q8 is supported"
+            ),
+        ));
+    }
+    if let Some(mode) = obj.get("mode")
+        && mode.as_str() != Some("affine")
+    {
+        return Err(Gemma4Error::new(
+            "quantization.mode",
+            format!("unsupported quantization mode {mode}; expected \"affine\""),
+        ));
+    }
+    let group_size = obj
+        .get("group_size")
+        .and_then(Value::as_u64)
+        .ok_or_else(|| Gemma4Error::new("quantization.group_size", "missing integer group_size"))?;
+    if group_size != AFFINE_GROUP_SIZE as u64 {
+        return Err(Gemma4Error::new(
+            "quantization.group_size",
+            format!(
+                "unsupported group_size {group_size}; only group_size {AFFINE_GROUP_SIZE} is supported"
+            ),
+        ));
+    }
+    let bits = obj
+        .get("bits")
+        .and_then(Value::as_u64)
+        .ok_or_else(|| Gemma4Error::new("quantization.bits", "missing integer bits"))?;
+    match bits {
+        4 => Ok(Gemma4SourceEncoding::AffineQ4G64),
+        8 => Ok(Gemma4SourceEncoding::AffineQ8G64),
+        other => Err(Gemma4Error::new(
+            "quantization.bits",
+            format!(
+                "unsupported bit width {other}; only 4-bit and 8-bit affine quantization are supported"
+            ),
+        )),
+    }
+}
+
+fn parse_source_encoding(config: &Value) -> Result<Gemma4SourceEncoding, Gemma4Error> {
+    let parse_opt = |key: &str| -> Result<Option<Gemma4SourceEncoding>, Gemma4Error> {
+        let Some(raw) = config.get(key) else {
+            return Ok(None);
+        };
+        if raw.is_null() {
+            return Ok(None);
+        }
+        let obj = raw
+            .as_object()
+            .ok_or_else(|| Gemma4Error::new(key, "must be a JSON object"))?;
+        parse_quant_object(obj).map(Some)
+    };
+    let q1 = parse_opt("quantization")?;
+    let q2 = parse_opt("quantization_config")?;
+    match (q1, q2) {
+        (None, None) => Ok(Gemma4SourceEncoding::Bf16),
+        (Some(enc), None) | (None, Some(enc)) => Ok(enc),
+        (Some(a), Some(b)) if a == b => Ok(a),
+        (Some(a), Some(b)) => Err(Gemma4Error::new(
+            "quantization",
+            format!("quantization ({a:?}) and quantization_config ({b:?}) disagree"),
+        )),
+    }
+}
+
+fn detect_text_prefix(inventory: &BTreeMap<String, usize>) -> Result<&'static str, Gemma4Error> {
+    let has_hf = inventory.contains_key("model.language_model.embed_tokens.weight");
+    let has_mlx = inventory.contains_key("language_model.model.embed_tokens.weight");
+    match (has_hf, has_mlx) {
+        (true, true) => Err(Gemma4Error::new(
+            "weights",
+            "ambiguous text namespace (both model.language_model. and language_model.model. present)",
+        )),
+        (false, true) => Ok(MLX_TEXT_PREFIX),
+        _ => Ok(HF_TEXT_PREFIX),
+    }
+}
+
+fn is_known_non_text(name: &str, text_prefix: &str) -> bool {
+    if text_prefix == MLX_TEXT_PREFIX {
+        [
+            "vision_tower.",
+            "audio_tower.",
+            "embed_vision.",
+            "embed_audio.",
+        ]
+        .iter()
+        .any(|p| name.starts_with(p))
+            || ["model.audio_tower.", "model.vision_tower."]
+                .iter()
+                .any(|p| name.starts_with(p))
+            || name == "model.embed_audio.embedding_projection.weight"
+            || name == "model.embed_vision.embedding_projection.weight"
+    } else {
+        ["model.audio_tower.", "model.vision_tower."]
+            .iter()
+            .any(|p| name.starts_with(p))
+            || name == "model.embed_audio.embedding_projection.weight"
+            || name == "model.embed_vision.embedding_projection.weight"
+    }
+}
+
 impl Gemma4Source {
     /// Resolve all shards and validate the entire text inventory before returning
     /// any selected parameter. Inactive stored tail K/V/K-norm is optional; all
     /// active parameters are mandatory. Unknown text parameters reject. Known
     /// media namespaces are explicitly excluded, not claimed as supported.
     ///
+    /// Supports both uncompressed BF16 HF checkpoints (`model.language_model.*`) and
+    /// pre-quantized MLX affine group-64 Q4/Q8 checkpoints (`language_model.model.*`
+    /// or `model.language_model.*`).
+    ///
     /// # Errors
-    /// Rejects unsupported config, missing/duplicate/misindexed parameters, wrong
-    /// shapes/dtypes, unknown namespaces, or unreadable/malformed artifacts.
+    /// Rejects unsupported config/quantization, missing/duplicate/misindexed parameters,
+    /// wrong shapes/dtypes, unknown namespaces, or unreadable/malformed artifacts.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "whole-inventory BF16 and pre-quantized affine group-64 validation"
+    )]
     pub fn open(package: &LocalModelPackage) -> Result<Self, Gemma4Error> {
         let config = Gemma4Config::from_json(package.config())?;
+        let encoding = parse_source_encoding(package.config())?;
         let Inventory {
             files,
             mut inventory,
         } = Inventory::open(package)?;
+        let text_prefix = detect_text_prefix(&inventory)?;
         let mut parameters = BTreeMap::new();
         let mut excluded = Vec::new();
         let mut encoded_bytes = 0_usize;
-        for spec in crate::parameters::specifications(&config) {
+        let mut quantized_count = 0_usize;
+
+        for spec in crate::parameters::specifications_with_prefix(&config, text_prefix) {
             let inactive = match spec.id {
                 ParameterId::Layer { layer, parameter } => {
                     parameter.needs_owner() && config.layers[layer].kv_owner != layer
@@ -136,6 +320,112 @@ impl Gemma4Source {
             let tensor = files[index]
                 .tensor(&spec.name)
                 .map_err(|e| Gemma4Error::new(&spec.name, e.to_string()))?;
+
+            let quant_stem = if encoding.affine_bits().is_some()
+                && spec.shape.len() == 2
+                && spec.shape[1].is_multiple_of(AFFINE_GROUP_SIZE)
+            {
+                spec.name.strip_suffix(".weight")
+            } else {
+                None
+            };
+
+            if let (Some(bits), Some(stem)) = (encoding.affine_bits(), quant_stem)
+                && tensor.scalar_type() == &ScalarType::U32
+            {
+                let rows = spec.shape[0];
+                let cols = spec.shape[1];
+                let pack_factor = usize::from(32 / bits);
+                let expected_packed = [rows, cols / pack_factor];
+                if tensor.shape() != expected_packed {
+                    return Err(Gemma4Error::new(
+                        &spec.name,
+                        format!(
+                            "expected U32 {expected_packed:?} for {bits}-bit affine weight, found U32 {:?}",
+                            tensor.shape()
+                        ),
+                    ));
+                }
+                let scales_name = format!("{stem}.scales");
+                let biases_name = format!("{stem}.biases");
+                let scales_idx = inventory.remove(&scales_name).ok_or_else(|| {
+                    Gemma4Error::new(&scales_name, "missing affine quantization scales tensor")
+                })?;
+                let biases_idx = inventory.remove(&biases_name).ok_or_else(|| {
+                    Gemma4Error::new(&biases_name, "missing affine quantization biases tensor")
+                })?;
+                let scales = files[scales_idx]
+                    .tensor(&scales_name)
+                    .map_err(|e| Gemma4Error::new(&scales_name, e.to_string()))?;
+                let biases = files[biases_idx]
+                    .tensor(&biases_name)
+                    .map_err(|e| Gemma4Error::new(&biases_name, e.to_string()))?;
+                let expected_sb = [rows, cols / AFFINE_GROUP_SIZE];
+                if scales.scalar_type() != &ScalarType::Bf16 || scales.shape() != expected_sb {
+                    return Err(Gemma4Error::new(
+                        &scales_name,
+                        format!(
+                            "expected BF16 {expected_sb:?}, found {:?} {:?}",
+                            scales.scalar_type(),
+                            scales.shape()
+                        ),
+                    ));
+                }
+                if biases.scalar_type() != &ScalarType::Bf16 || biases.shape() != expected_sb {
+                    return Err(Gemma4Error::new(
+                        &biases_name,
+                        format!(
+                            "expected BF16 {expected_sb:?}, found {:?} {:?}",
+                            biases.scalar_type(),
+                            biases.shape()
+                        ),
+                    ));
+                }
+
+                if inactive {
+                    for name in [spec.name, scales_name, biases_name] {
+                        excluded.push(ExcludedParameter {
+                            name,
+                            reason: Exclusion::SharedTailProjection,
+                        });
+                    }
+                } else {
+                    let packed_bytes = expected_packed[0]
+                        .checked_mul(expected_packed[1])
+                        .and_then(|n| n.checked_mul(4))
+                        .ok_or_else(|| {
+                            Gemma4Error::new(&spec.name, "packed weight byte size overflows")
+                        })?;
+                    let sb_bytes = expected_sb[0]
+                        .checked_mul(expected_sb[1])
+                        .and_then(|n| n.checked_mul(4))
+                        .ok_or_else(|| {
+                            Gemma4Error::new(&spec.name, "scale/bias byte size overflows")
+                        })?;
+                    let param_bytes = packed_bytes.checked_add(sb_bytes).ok_or_else(|| {
+                        Gemma4Error::new(&spec.name, "quantized parameter byte size overflows")
+                    })?;
+                    encoded_bytes = encoded_bytes.checked_add(param_bytes).ok_or_else(|| {
+                        Gemma4Error::new("weights", "aggregate encoded byte size overflows")
+                    })?;
+                    quantized_count += 1;
+                    parameters.insert(
+                        spec.id,
+                        StoredParameter {
+                            spec,
+                            payload: ParameterPayload::AffineGroup64 {
+                                bits,
+                                packed: tensor.reader(),
+                                scales: scales.reader(),
+                                biases: biases.reader(),
+                            },
+                            encoded_bytes: param_bytes,
+                        },
+                    );
+                }
+                continue;
+            }
+
             if tensor.scalar_type() != &ScalarType::Bf16 || tensor.shape() != spec.shape {
                 return Err(Gemma4Error::new(
                     &spec.name,
@@ -153,25 +443,32 @@ impl Gemma4Source {
                     reason: Exclusion::SharedTailProjection,
                 });
             } else {
-                encoded_bytes = encoded_bytes.checked_add(spec.byte_len()?).ok_or_else(|| {
+                let param_bytes = spec.byte_len()?;
+                encoded_bytes = encoded_bytes.checked_add(param_bytes).ok_or_else(|| {
                     Gemma4Error::new("weights", "aggregate encoded byte size overflows")
                 })?;
                 parameters.insert(
                     spec.id,
                     StoredParameter {
                         spec,
-                        reader: tensor.reader(),
+                        payload: ParameterPayload::Bf16(tensor.reader()),
+                        encoded_bytes: param_bytes,
                     },
                 );
             }
         }
+
+        if encoding != Gemma4SourceEncoding::Bf16 && quantized_count == 0 {
+            return Err(Gemma4Error::new(
+                "quantization",
+                format!(
+                    "config declares {encoding:?} quantization, but no quantized U32 tensors were found"
+                ),
+            ));
+        }
+
         for name in inventory.keys() {
-            if !["model.audio_tower.", "model.vision_tower."]
-                .iter()
-                .any(|p| name.starts_with(p))
-                && name != "model.embed_audio.embedding_projection.weight"
-                && name != "model.embed_vision.embedding_projection.weight"
-            {
+            if !is_known_non_text(name, text_prefix) {
                 return Err(Gemma4Error::new(
                     name,
                     "unexpected parameter (including untied output heads)",
@@ -184,12 +481,37 @@ impl Gemma4Source {
         }
         Ok(Self {
             config,
+            encoding,
             parameters,
             excluded,
             encoded_bytes,
             media: Inventory { files, inventory },
             vision_config: package.config().get("vision_config").cloned(),
         })
+    }
+
+    /// Native weight encoding of this validated source package.
+    #[must_use]
+    pub const fn encoding(&self) -> Gemma4SourceEncoding {
+        self.encoding
+    }
+
+    /// Reject pre-quantized sources cleanly on BF16-only backends.
+    ///
+    /// # Errors
+    /// Returns [`Gemma4Error`] when this source is pre-quantized.
+    pub fn require_bf16(&self, backend: &str) -> Result<(), Gemma4Error> {
+        if self.encoding == Gemma4SourceEncoding::Bf16 {
+            Ok(())
+        } else {
+            Err(Gemma4Error::new(
+                backend,
+                format!(
+                    "pre-quantized {:?} package requires the Metal model-wide backend",
+                    self.encoding
+                ),
+            ))
+        }
     }
 
     /// Select vision parameters from the same retained files as the text source.

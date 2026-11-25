@@ -13,11 +13,15 @@ For a Gemma 4 package, use `serve-gemma /path/to/gemma-package` with
 `--features metal` on macOS or `--features cuda` on NVIDIA. Gemma uses its
 prepared context (16K paged KV with automatic exact prefix caching on Metal;
 4K on CUDA) and default device; omit `--device`, `--context-length` and
-`--max-sequences` for `serve-gemma`. On Metal, optional `--quantize bf16|q8|q4`
-(default `bf16`; also available on `run-gemma`) streams weights directly into
-affine group-64 quantized GPU storage on load (`q8`: ~7.4 GiB weights / ~9.6 GiB
-RSS; `q4`: ~3.9 GiB weights / ~6.1 GiB RSS on Gemma 4 E4B). Non-`bf16` values
-are rejected on non-Metal builds.
+`--max-sequences` for `serve-gemma`. On Metal, pre-quantized MLX affine
+group-64 4-bit/8-bit packages (`mlx_lm convert -q --q-bits 4|8 --q-group-size 64`)
+load directly at their native precision without `--quantize` (`~0.60 s` / `~0.90 s`
+weight load on Gemma 4 E4B). For BF16 packages on Metal, optional
+`--quantize bf16|q8|q4` (default `bf16`; also available on `run-gemma`) streams
+weights directly into affine group-64 quantized GPU storage on load (`q8`: ~7.4 GiB
+weights / ~9.6 GiB RSS; `q4`: ~3.9 GiB weights / ~6.1 GiB RSS on Gemma 4 E4B).
+Mismatched `--quantize` overrides on pre-quantized packages and non-`bf16` values
+on non-Metal builds are rejected explicitly.
 
 The adapter binds only to loopback. It has no authentication, TLS or authorization
 boundary; do not expose it through a proxy. This is an experimental OpenAI-style

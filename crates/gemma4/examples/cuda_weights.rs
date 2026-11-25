@@ -45,7 +45,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut records = Vec::with_capacity(source.parameters().len());
     let mut expected = vec![0; staging];
     for (&id, parameter) in source.parameters() {
-        let mut reader = parameter.reader();
+        let mut reader = parameter.bf16_reader()?;
         let mut source_hash = Sha256::new();
         let mut device_hash = Sha256::new();
         let mut offset = 0;

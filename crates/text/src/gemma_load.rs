@@ -27,6 +27,8 @@ const CUDA_SCRATCH_ENTRIES: usize = 1 << 20;
 impl TextOwner {
     /// Load one unchanged Gemma 4 package with an explicit model-local FFN policy.
     ///
+    /// Automatically uses the package's native weight precision (`Bf16` for BF16
+    /// packages; native `Q4`/`Q8` for pre-quantized MLX affine group-64 packages).
     /// `Gemma4MetalFfn::Native` is the default policy. `ExperimentalGraph` opts
     /// into the bounded M3 Max/E4B lane; unsupported preparation rejects before
     /// weight loading. CLI/HTTP loading continues to choose native execution.
@@ -39,14 +41,17 @@ impl TextOwner {
         path: impl Into<std::path::PathBuf>,
         ffn: engine_gemma4::Gemma4MetalFfn,
     ) -> Result<(Self, GemmaLoadReport), TextError> {
-        Self::load_gemma_with_quant(path, ffn, engine_gemma4::Gemma4MetalQuant::Bf16)
+        Self::load_gemma_metal(path, ffn, None)
     }
 
     /// Load one unchanged Gemma 4 package on Metal with an explicit FFN policy and
     /// weight quantization policy (`Bf16`, `Q8`, or `Q4` affine group-64).
     ///
-    /// Quantized execution requires the model-wide `Native` path (`head_dim <= 512`)
-    /// and fails explicitly instead of silently falling back to BF16.
+    /// On a BF16 package, `Q8`/`Q4` performs streaming load-time quantization. On a
+    /// pre-quantized affine group-64 package, `quant` must match the package's native
+    /// precision or loading rejects explicitly. Quantized execution requires the
+    /// model-wide `Native` path (`head_dim <= 512`) and fails explicitly instead of
+    /// silently falling back to BF16.
     ///
     /// # Errors
     /// Rejects invalid package assets, unsupported quantization/FFN combinations,
@@ -57,8 +62,20 @@ impl TextOwner {
         ffn: engine_gemma4::Gemma4MetalFfn,
         quant: engine_gemma4::Gemma4MetalQuant,
     ) -> Result<(Self, GemmaLoadReport), TextError> {
+        Self::load_gemma_metal(path, ffn, Some(quant))
+    }
+
+    #[cfg(all(feature = "metal", target_os = "macos"))]
+    fn load_gemma_metal(
+        path: impl Into<std::path::PathBuf>,
+        ffn: engine_gemma4::Gemma4MetalFfn,
+        requested_quant: Option<engine_gemma4::Gemma4MetalQuant>,
+    ) -> Result<(Self, GemmaLoadReport), TextError> {
         let package = LocalModelPackage::open(path).map_err(TextError::processor)?;
         let source = Gemma4Source::open(&package).map_err(TextError::processor)?;
+        let quant =
+            engine_gemma4::Gemma4MetalQuant::resolve_for_source(requested_quant, source.encoding())
+                .map_err(TextError::processor)?;
         let model_bytes = u64::try_from(source.encoded_bytes()).map_err(TextError::processor)?;
         let modelwide_eligible = ffn == engine_gemma4::Gemma4MetalFfn::Native
             && source.config().layers().iter().all(|l| l.head_dim <= 512);

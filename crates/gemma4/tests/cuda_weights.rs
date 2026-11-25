@@ -55,7 +55,7 @@ fn materializes_pinned_readers_bitwise_with_tied_identity_and_retirement() {
         assert_ne!(previous, Some(allocation));
         previous = Some(allocation);
         for (&id, parameter) in source.parameters() {
-            let mut reader = parameter.reader();
+            let mut reader = parameter.bf16_reader().unwrap();
             let mut expected = [0; 5];
             let mut offset = 0;
             while offset < parameter.spec().byte_len().unwrap() {

@@ -163,8 +163,9 @@ kernel void fast_q4_gemv_m1(
 
 // ============================================================================
 // 2. Q4 Batched GEMV (M = 2..=4)
-//    2D grid (gx = ceil(M/BM), gy = ceil(N/4)), 2 SGs (64 threads), 2 cols/SG.
-//    4 lanes per 64-weight group (uint2 = 16 weights per lane).
+//    2D grid (gx = ceil(M/BM), gy = ceil(N/4)), 4 SGs (128 threads), 1 col/SG.
+//    4 lanes per 64-weight group (uint2 = 16 weights per lane), dequantizing
+//    each 16-weight chunk ONCE into registers and reusing across all M rows.
 // ============================================================================
 template <uint BM_MAX>
 inline void q4_gemv_batch_impl(
@@ -181,9 +182,8 @@ inline void q4_gemv_batch_impl(
     uint sg = tid >> 5;
     uint lane = tid & 31u;
     uint m0 = tg_pos.x * BM_MAX;
-    uint n0 = tg_pos.y * 4u + sg * 2u;
-    if (m0 >= M || n0 >= N) return;
-    bool has_second = (n0 + 1u) < N;
+    uint n = tg_pos.y * 4u + sg;
+    if (m0 >= M || n >= N) return;
     uint m_rem = min(BM_MAX, M - m0);
 
     uint num_groups = K >> 6;
@@ -192,65 +192,49 @@ inline void q4_gemv_batch_impl(
     uint sub_g = lane >> 2;
     uint sub_l = lane & 3u;
 
-    device const uint2* w_base = (device const uint2*)packed;
-    device const uint2* w0 = w_base + (ulong)n0 * k_u64;
-    device const uint2* w1 = has_second ? (w0 + k_u64) : w0;
-    device const bfloat2* sb0 = scales_biases + (ulong)n0 * num_groups;
-    device const bfloat2* sb1 = has_second ? (sb0 + num_groups) : sb0;
-
+    device const uint2* w0 = (device const uint2*)packed + (ulong)n * k_u64;
+    device const bfloat2* sb0 = scales_biases + (ulong)n * num_groups;
     const float4 nib_scale = float4(1.0f, 1.0f / 16.0f, 1.0f / 256.0f, 1.0f / 4096.0f);
 
-    float acc0[BM_MAX];
-    float acc1[BM_MAX];
+    float acc[BM_MAX];
     for (uint m = 0u; m < BM_MAX; ++m) {
-        acc0[m] = 0.0f;
-        acc1[m] = 0.0f;
+        acc[m] = 0.0f;
     }
 
     for (uint g0 = 0u; g0 < num_groups; g0 += 8u) {
         uint g = g0 + sub_g;
         if (g < num_groups) {
-            uint idx = g * 4u + sub_l;
-            uint2 p0 = w0[idx];
+            uint2 p0 = w0[g * 4u + sub_l];
             bfloat2 s0 = sb0[g];
-            float sv0 = float(s0.x);
-            float bv0 = float(s0.y);
+            float4 sv = float(s0.x) * nib_scale;
+            float bv = float(s0.y);
 
-            uint2 p1 = has_second ? w1[idx] : uint2(0u);
-            bfloat2 s1 = has_second ? sb1[g] : bfloat2(0.0bf);
-            float sv1 = float(s1.x);
-            float bv1 = float(s1.y);
+            ushort a = ushort(p0.x & 0xFFFFu);
+            ushort b = ushort(p0.x >> 16);
+            ushort c = ushort(p0.y & 0xFFFFu);
+            ushort d = ushort(p0.y >> 16);
+            float4 wt0 = float4(float(a & 0x000Fu), float(a & 0x00F0u), float(a & 0x0F00u), float(a & 0xF000u)) * sv + bv;
+            float4 wt1 = float4(float(b & 0x000Fu), float(b & 0x00F0u), float(b & 0x0F00u), float(b & 0xF000u)) * sv + bv;
+            float4 wt2 = float4(float(c & 0x000Fu), float(c & 0x00F0u), float(c & 0x0F00u), float(c & 0xF000u)) * sv + bv;
+            float4 wt3 = float4(float(d & 0x000Fu), float(d & 0x00F0u), float(d & 0x0F00u), float(d & 0xF000u)) * sv + bv;
 
             uint x_off = g * 16u + sub_l * 4u;
+            #pragma unroll
             for (uint m = 0u; m < BM_MAX; ++m) {
                 uint row = m0 + min(m, m_rem - 1u);
                 device const bfloat4* xr = (device const bfloat4*)(input) + (ulong)row * k4;
-                float4 r0 = float4(xr[x_off + 0u]);
-                float4 r1 = float4(xr[x_off + 1u]);
-                float4 r2 = float4(xr[x_off + 2u]);
-                float4 r3 = float4(xr[x_off + 3u]);
-                float xsum = ((r0.x + r0.y) + (r0.z + r0.w))
-                           + ((r1.x + r1.y) + (r1.z + r1.w))
-                           + ((r2.x + r2.y) + (r2.z + r2.w))
-                           + ((r3.x + r3.y) + (r3.z + r3.w));
-                float4 x0 = r0 * nib_scale;
-                float4 x1 = r1 * nib_scale;
-                float4 x2 = r2 * nib_scale;
-                float4 x3 = r3 * nib_scale;
-                acc0[m] += q4_dot16(p0, x0, x1, x2, x3) * sv0 + xsum * bv0;
-                if (has_second) {
-                    acc1[m] += q4_dot16(p1, x0, x1, x2, x3) * sv1 + xsum * bv1;
-                }
+                acc[m] += dot(float4(xr[x_off + 0u]), wt0)
+                        + dot(float4(xr[x_off + 1u]), wt1)
+                        + dot(float4(xr[x_off + 2u]), wt2)
+                        + dot(float4(xr[x_off + 3u]), wt3);
             }
         }
     }
 
     for (uint m = 0u; m < BM_MAX; ++m) {
-        float o0 = simd_sum(acc0[m]);
-        float o1 = has_second ? simd_sum(acc1[m]) : 0.0f;
+        float o = simd_sum(acc[m]);
         if (lane == 0u && m < m_rem) {
-            output[(ulong)(m0 + m) * N + n0] = q_bf16_rne(o0);
-            if (has_second) output[(ulong)(m0 + m) * N + n0 + 1u] = q_bf16_rne(o1);
+            output[(ulong)(m0 + m) * N + n] = q_bf16_rne(o);
         }
     }
 }
@@ -725,6 +709,7 @@ kernel void fast_q8_gemv_m1(
 
 // ============================================================================
 // 7. Q8 Batched GEMV (M = 2..=4)
+//    4 SGs (128 threads), 1 col/SG, unpacking each 16-weight chunk ONCE.
 // ============================================================================
 template <uint BM_MAX>
 inline void q8_gemv_batch_impl(
@@ -741,9 +726,8 @@ inline void q8_gemv_batch_impl(
     uint sg = tid >> 5;
     uint lane = tid & 31u;
     uint m0 = tg_pos.x * BM_MAX;
-    uint n0 = tg_pos.y * 4u + sg * 2u;
-    if (m0 >= M || n0 >= N) return;
-    bool has_second = (n0 + 1u) < N;
+    uint n = tg_pos.y * 4u + sg;
+    if (m0 >= M || n >= N) return;
     uint m_rem = min(BM_MAX, M - m0);
 
     uint num_groups = K >> 6;
@@ -752,59 +736,43 @@ inline void q8_gemv_batch_impl(
     uint sub_g = lane >> 2;
     uint sub_l = lane & 3u;
 
-    device const uint4* w_base = (device const uint4*)packed;
-    device const uint4* w0 = w_base + (ulong)n0 * k_u128;
-    device const uint4* w1 = has_second ? (w0 + k_u128) : w0;
-    device const bfloat2* sb0 = scales_biases + (ulong)n0 * num_groups;
-    device const bfloat2* sb1 = has_second ? (sb0 + num_groups) : sb0;
+    device const uint4* w0 = (device const uint4*)packed + (ulong)n * k_u128;
+    device const bfloat2* sb0 = scales_biases + (ulong)n * num_groups;
 
-    float acc0[BM_MAX];
-    float acc1[BM_MAX];
+    float acc[BM_MAX];
     for (uint m = 0u; m < BM_MAX; ++m) {
-        acc0[m] = 0.0f;
-        acc1[m] = 0.0f;
+        acc[m] = 0.0f;
     }
 
     for (uint g0 = 0u; g0 < num_groups; g0 += 8u) {
         uint g = g0 + sub_g;
         if (g < num_groups) {
-            uint idx = g * 4u + sub_l;
-            uint4 p0 = w0[idx];
+            uint4 p0 = w0[g * 4u + sub_l];
             bfloat2 s0 = sb0[g];
-            float sv0 = float(s0.x);
-            float bv0 = float(s0.y);
-
-            uint4 p1 = has_second ? w1[idx] : uint4(0u);
-            bfloat2 s1 = has_second ? sb1[g] : bfloat2(0.0bf);
-            float sv1 = float(s1.x);
-            float bv1 = float(s1.y);
+            float sv = float(s0.x);
+            float bv = float(s0.y);
+            float4 wt0 = float4(as_type<uchar4>(p0.x)) * sv + bv;
+            float4 wt1 = float4(as_type<uchar4>(p0.y)) * sv + bv;
+            float4 wt2 = float4(as_type<uchar4>(p0.z)) * sv + bv;
+            float4 wt3 = float4(as_type<uchar4>(p0.w)) * sv + bv;
 
             uint x_off = g * 16u + sub_l * 4u;
+            #pragma unroll
             for (uint m = 0u; m < BM_MAX; ++m) {
                 uint row = m0 + min(m, m_rem - 1u);
                 device const bfloat4* xr = (device const bfloat4*)(input) + (ulong)row * k4;
-                float4 r0 = float4(xr[x_off + 0u]);
-                float4 r1 = float4(xr[x_off + 1u]);
-                float4 r2 = float4(xr[x_off + 2u]);
-                float4 r3 = float4(xr[x_off + 3u]);
-                float xsum = ((r0.x + r0.y) + (r0.z + r0.w))
-                           + ((r1.x + r1.y) + (r1.z + r1.w))
-                           + ((r2.x + r2.y) + (r2.z + r2.w))
-                           + ((r3.x + r3.y) + (r3.z + r3.w));
-                acc0[m] += q8_dot16(p0, r0, r1, r2, r3) * sv0 + xsum * bv0;
-                if (has_second) {
-                    acc1[m] += q8_dot16(p1, r0, r1, r2, r3) * sv1 + xsum * bv1;
-                }
+                acc[m] += dot(float4(xr[x_off + 0u]), wt0)
+                        + dot(float4(xr[x_off + 1u]), wt1)
+                        + dot(float4(xr[x_off + 2u]), wt2)
+                        + dot(float4(xr[x_off + 3u]), wt3);
             }
         }
     }
 
     for (uint m = 0u; m < BM_MAX; ++m) {
-        float o0 = simd_sum(acc0[m]);
-        float o1 = has_second ? simd_sum(acc1[m]) : 0.0f;
+        float o = simd_sum(acc[m]);
         if (lane == 0u && m < m_rem) {
-            output[(ulong)(m0 + m) * N + n0] = q_bf16_rne(o0);
-            if (has_second) output[(ulong)(m0 + m) * N + n0 + 1u] = q_bf16_rne(o1);
+            output[(ulong)(m0 + m) * N + n] = q_bf16_rne(o);
         }
     }
 }

@@ -10,8 +10,8 @@ use super::activation::GeluTable;
 use super::kv_pool::{KV_PAGE_TOKENS, PagedKvPool, PrefixCacheStats};
 use super::{bf16_f32, f32_value, metal_error, usize_to_f32};
 use crate::{
-    AttentionKind, Gemma4Config, Gemma4Error, Gemma4Source, LayerParameter, ParameterId,
-    inverse_frequencies,
+    AttentionKind, Gemma4Config, Gemma4Error, Gemma4Source, Gemma4SourceEncoding, LayerParameter,
+    ParameterId, ParameterPayload, inverse_frequencies,
 };
 use engine_metal::{
     METAL_QUANT_GROUP_SIZE, MetalBf16Buffer, MetalBf16Executor, MetalDeviceBf16, MetalDeviceF32,
@@ -31,6 +31,41 @@ pub enum Gemma4MetalQuant {
     Q4,
 }
 
+impl Gemma4MetalQuant {
+    /// Resolve an optional explicit quantization override against a validated source's
+    /// native encoding.
+    ///
+    /// - When `requested` is `None`, matches the package's native precision (`Bf16` for
+    ///   BF16 packages, `Q8` for pre-quantized 8-bit packages, `Q4` for pre-quantized 4-bit).
+    /// - When `requested` is `Some(q)` on a BF16 package, allows `Bf16` or online `Q8`/`Q4`.
+    /// - When `requested` is `Some(q)` on a pre-quantized package, accepts only the matching
+    ///   native precision and rejects mismatches explicitly rather than re-quantizing.
+    ///
+    /// # Errors
+    /// Returns [`Gemma4Error`] when `requested` conflicts with a pre-quantized source.
+    pub fn resolve_for_source(
+        requested: Option<Self>,
+        source: Gemma4SourceEncoding,
+    ) -> Result<Self, Gemma4Error> {
+        let native = match source {
+            Gemma4SourceEncoding::Bf16 => Self::Bf16,
+            Gemma4SourceEncoding::AffineQ8G64 => Self::Q8,
+            Gemma4SourceEncoding::AffineQ4G64 => Self::Q4,
+        };
+        match (source, requested) {
+            (_, None) => Ok(native),
+            (Gemma4SourceEncoding::Bf16, Some(q)) => Ok(q),
+            (_, Some(q)) if q == native => Ok(q),
+            (_, Some(q)) => Err(Gemma4Error::new(
+                "quantize",
+                format!(
+                    "pre-quantized {source:?} package cannot be loaded with --quantize {q:?}; omit --quantize or match the package's native precision ({native:?})"
+                ),
+            )),
+        }
+    }
+}
+
 struct ModelWideWeights {
     bf16: BTreeMap<ParameterId, MetalBf16Buffer>,
     quant: BTreeMap<ParameterId, MetalQuantWeight>,
@@ -44,6 +79,7 @@ impl ModelWideWeights {
         executor: &MetalBf16Executor,
         quant_policy: Gemma4MetalQuant,
     ) -> Result<Self, Gemma4Error> {
+        Gemma4MetalQuant::resolve_for_source(Some(quant_policy), source.encoding())?;
         let quant_kind = match quant_policy {
             Gemma4MetalQuant::Bf16 => None,
             Gemma4MetalQuant::Q8 => Some(MetalQuantKind::Q8),
@@ -55,40 +91,81 @@ impl ModelWideWeights {
 
         for (&id, parameter) in source.parameters() {
             let spec = parameter.spec();
-            let can_quantize = quant_kind.is_some()
-                && spec.shape.len() == 2
-                && spec.shape[1].is_multiple_of(METAL_QUANT_GROUP_SIZE);
-            if let (Some(kind), true) = (quant_kind, can_quantize) {
-                let qw = executor
-                    .read_quantized_bf16(
-                        spec.shape[0],
-                        spec.shape[1],
-                        kind,
-                        &mut parameter.reader(),
-                    )
-                    .map_err(|error| Gemma4Error::new(&spec.name, error.to_string()))?;
-                let quant_bytes = u64::try_from(qw.bytes()).map_err(|_| {
-                    Gemma4Error::new("Metal weight", "quantized weight bytes exceed u64")
-                })?;
-                bytes = bytes
-                    .checked_add(quant_bytes)
-                    .ok_or_else(|| Gemma4Error::new("Metal weight", "total bytes overflow"))?;
-                quant.insert(id, qw);
-            } else {
-                let length = spec.byte_len()?;
-                let buffer = executor
-                    .read_bf16(length / 2, &mut parameter.reader())
-                    .map_err(|error| Gemma4Error::new(&spec.name, error.to_string()))?;
-                let entry_bytes = u64::try_from(length)
-                    .map_err(|_| Gemma4Error::new("Metal weight", "parameter bytes exceed u64"))?;
-                bytes = bytes
-                    .checked_add(entry_bytes)
-                    .ok_or_else(|| Gemma4Error::new("Metal weight", "total bytes overflow"))?;
-                bf16.insert(id, buffer);
+            match parameter.payload() {
+                ParameterPayload::AffineGroup64 {
+                    bits,
+                    packed,
+                    scales,
+                    biases,
+                } => {
+                    let kind = match bits {
+                        4 => MetalQuantKind::Q4,
+                        8 => MetalQuantKind::Q8,
+                        other => {
+                            return Err(Gemma4Error::new(
+                                &spec.name,
+                                format!("unsupported pre-quantized bit width {other}"),
+                            ));
+                        }
+                    };
+                    let qw = executor
+                        .read_prequantized(
+                            spec.shape[0],
+                            spec.shape[1],
+                            kind,
+                            &mut packed.clone(),
+                            &mut scales.clone(),
+                            &mut biases.clone(),
+                        )
+                        .map_err(|error| Gemma4Error::new(&spec.name, error.to_string()))?;
+                    let quant_bytes = u64::try_from(qw.bytes()).map_err(|_| {
+                        Gemma4Error::new("Metal weight", "quantized weight bytes exceed u64")
+                    })?;
+                    bytes = bytes
+                        .checked_add(quant_bytes)
+                        .ok_or_else(|| Gemma4Error::new("Metal weight", "total bytes overflow"))?;
+                    quant.insert(id, qw);
+                }
+                ParameterPayload::Bf16(reader) => {
+                    let online_quantize = source.encoding() == Gemma4SourceEncoding::Bf16
+                        && quant_kind.is_some()
+                        && spec.shape.len() == 2
+                        && spec.shape[1].is_multiple_of(METAL_QUANT_GROUP_SIZE);
+                    if let (Some(kind), true) = (quant_kind, online_quantize) {
+                        let qw = executor
+                            .read_quantized_bf16(
+                                spec.shape[0],
+                                spec.shape[1],
+                                kind,
+                                &mut reader.clone(),
+                            )
+                            .map_err(|error| Gemma4Error::new(&spec.name, error.to_string()))?;
+                        let quant_bytes = u64::try_from(qw.bytes()).map_err(|_| {
+                            Gemma4Error::new("Metal weight", "quantized weight bytes exceed u64")
+                        })?;
+                        bytes = bytes.checked_add(quant_bytes).ok_or_else(|| {
+                            Gemma4Error::new("Metal weight", "total bytes overflow")
+                        })?;
+                        quant.insert(id, qw);
+                    } else {
+                        let length = spec.byte_len()?;
+                        let buffer = executor
+                            .read_bf16(length / 2, &mut reader.clone())
+                            .map_err(|error| Gemma4Error::new(&spec.name, error.to_string()))?;
+                        let entry_bytes = u64::try_from(length).map_err(|_| {
+                            Gemma4Error::new("Metal weight", "parameter bytes exceed u64")
+                        })?;
+                        bytes = bytes.checked_add(entry_bytes).ok_or_else(|| {
+                            Gemma4Error::new("Metal weight", "total bytes overflow")
+                        })?;
+                        bf16.insert(id, buffer);
+                    }
+                }
             }
         }
 
-        if quant_policy == Gemma4MetalQuant::Bf16 {
+        if source.encoding() != Gemma4SourceEncoding::Bf16 || quant_policy == Gemma4MetalQuant::Bf16
+        {
             let expected = u64::try_from(source.encoded_bytes())
                 .map_err(|_| Gemma4Error::new("Metal weight", "source bytes exceed u64"))?;
             if bytes != expected {

@@ -6,7 +6,8 @@ mod weights;
 
 use engine_gemma4::{
     Gemma4CpuDecoder, Gemma4CpuWeights, Gemma4MetalModelWide, Gemma4MetalModelWideConfig,
-    Gemma4MetalModelWideExecutor, Gemma4MetalQuant, Gemma4Source, PackedStepItem, argmax,
+    Gemma4MetalModelWideExecutor, Gemma4MetalQuant, Gemma4MetalWeights, Gemma4Source,
+    Gemma4SourceEncoding, PackedStepItem, argmax,
 };
 use ribn::driver::{Driver, DriverConfig};
 use ribn::{
@@ -899,5 +900,591 @@ fn e4b_modelwide_quantized_q8_and_q4_oracle_and_benchmarks() {
                 "{quant:?} decode_M={batch_size:2}: min={min_ms:.2} ms mean={mean_ms:.2} ms agg={agg_tok_s:.1} tok/s"
             );
         }
+    }
+}
+
+fn f32_to_bf16_rne(value: f32) -> u16 {
+    let mut bits = value.to_bits();
+    if (bits & 0x7f80_0000) == 0x7f80_0000 {
+        #[expect(clippy::cast_possible_truncation, reason = "top 16 bits fit in u16")]
+        return if (bits & 0x007f_ffff) != 0 {
+            ((bits >> 16) | 0x0040) as u16
+        } else {
+            (bits >> 16) as u16
+        };
+    }
+    bits = bits.wrapping_add(0x7fff + ((bits >> 16) & 1));
+    (bits >> 16) as u16
+}
+
+fn write_safetensors_raw(path: &std::path::Path, entries: &[(&str, &str, Vec<usize>, Vec<u8>)]) {
+    let mut header = serde_json::Map::new();
+    let mut payload = Vec::new();
+    for (name, dtype, shape, bytes) in entries {
+        let start = payload.len();
+        payload.extend_from_slice(bytes);
+        let end = payload.len();
+        header.insert(
+            (*name).to_owned(),
+            serde_json::json!({
+                "dtype": dtype,
+                "shape": shape,
+                "data_offsets": [start, end],
+            }),
+        );
+    }
+    let mut header_bytes = serde_json::to_vec(&Value::Object(header)).unwrap();
+    while !header_bytes.len().is_multiple_of(8) {
+        header_bytes.push(b' ');
+    }
+    let mut artifact = Vec::with_capacity(8 + header_bytes.len() + payload.len());
+    artifact.extend_from_slice(&u64::try_from(header_bytes.len()).unwrap().to_le_bytes());
+    artifact.extend_from_slice(&header_bytes);
+    artifact.extend_from_slice(&payload);
+    std::fs::write(path, artifact).unwrap();
+}
+
+fn quantize_bf16_matrix_for_mlx(
+    rows: usize,
+    cols: usize,
+    bits: u8,
+    bf16_vals: &[u16],
+) -> (Vec<u8>, Vec<u8>, Vec<u8>) {
+    let groups = cols / 64;
+    let q_max = if bits == 4 { 15.0_f32 } else { 255.0_f32 };
+    let mut packed_u32 = Vec::with_capacity(rows * (cols / usize::from(32 / bits)));
+    let mut scales_u16 = Vec::with_capacity(rows * groups);
+    let mut biases_u16 = Vec::with_capacity(rows * groups);
+    for r in 0..rows {
+        for g in 0..groups {
+            let base = r * cols + g * 64;
+            let mut lo = f32::INFINITY;
+            let mut hi = f32::NEG_INFINITY;
+            for i in 0..64 {
+                let v = f32_from_bf16(bf16_vals[base + i]);
+                lo = lo.min(v);
+                hi = hi.max(v);
+            }
+            let span = hi - lo;
+            let s_bits = f32_to_bf16_rne(if span == 0.0 { 0.0 } else { span / q_max });
+            let b_bits = f32_to_bf16_rne(lo);
+            scales_u16.push(s_bits);
+            biases_u16.push(b_bits);
+            let s = f32_from_bf16(s_bits);
+            let b = f32_from_bf16(b_bits);
+            let inv_s = if s == 0.0 { 0.0 } else { 1.0 / s };
+            if bits == 4 {
+                for w in 0..8 {
+                    let mut word = 0_u32;
+                    for nib in 0..8 {
+                        let v = f32_from_bf16(bf16_vals[base + w * 8 + nib]);
+                        #[expect(
+                            clippy::cast_possible_truncation,
+                            clippy::cast_sign_loss,
+                            reason = "clamped to [0, 15]"
+                        )]
+                        let q = ((v - b) * inv_s).round().clamp(0.0, 15.0) as u32;
+                        word |= q << (nib * 4);
+                    }
+                    packed_u32.push(word);
+                }
+            } else {
+                for w in 0..16 {
+                    let mut word = 0_u32;
+                    for byte in 0..4 {
+                        let v = f32_from_bf16(bf16_vals[base + w * 4 + byte]);
+                        #[expect(
+                            clippy::cast_possible_truncation,
+                            clippy::cast_sign_loss,
+                            reason = "clamped to [0, 255]"
+                        )]
+                        let q = ((v - b) * inv_s).round().clamp(0.0, 255.0) as u32;
+                        word |= q << (byte * 8);
+                    }
+                    packed_u32.push(word);
+                }
+            }
+        }
+    }
+    let packed_bytes = packed_u32.iter().flat_map(|w| w.to_le_bytes()).collect();
+    let scale_bytes = scales_u16.iter().flat_map(|w| w.to_le_bytes()).collect();
+    let bias_bytes = biases_u16.iter().flat_map(|w| w.to_le_bytes()).collect();
+    (packed_bytes, scale_bytes, bias_bytes)
+}
+
+#[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "builds synthetic 64-aligned BF16 and MLX pre-quantized Q4/Q8 packages and verifies parity and rejections"
+)]
+fn synthetic_prequantized_mlx_q4_and_q8_match_online_quant_and_reject_mismatches() {
+    let mut base_config = weights::tiny();
+    let t = &mut base_config["text_config"];
+    for (key, val) in [
+        ("vocab_size", 32),
+        ("vocab_size_per_layer_input", 32),
+        ("hidden_size", 64),
+        ("hidden_size_per_layer_input", 64),
+        ("intermediate_size", 128),
+        ("head_dim", 64),
+        ("global_head_dim", 64),
+    ] {
+        t[key] = serde_json::json!(val);
+    }
+
+    // Build deterministic BF16 parameters for all specs
+    let parsed_cfg = engine_gemma4::Gemma4Config::from_json(&base_config).unwrap();
+    let mut specs_and_vals: Vec<(String, Vec<usize>, Vec<u16>)> = Vec::new();
+    let add = |list: &mut Vec<(String, Vec<usize>, Vec<u16>)>, suffix: &str, shape: Vec<usize>| {
+        let count: usize = shape.iter().product();
+        let seed = suffix.bytes().fold(17_usize, |acc, b| {
+            acc.wrapping_mul(31).wrapping_add(usize::from(b))
+        });
+        let vals: Vec<u16> = if shape.len() == 1 && count == 1 {
+            vec![f32_to_bf16_rne(0.95)]
+        } else if shape.len() == 1 {
+            (0..count)
+                .map(|i| {
+                    #[expect(clippy::cast_precision_loss, reason = "small fixture index")]
+                    let v = 0.8 + ((seed + i * 7) % 19) as f32 * 0.02;
+                    f32_to_bf16_rne(v)
+                })
+                .collect()
+        } else {
+            (0..count)
+                .map(|i| {
+                    #[expect(clippy::cast_precision_loss, reason = "small fixture index")]
+                    let v = ((seed + i * 13) % 89) as f32 * 0.01 - 0.44;
+                    f32_to_bf16_rne(v)
+                })
+                .collect()
+        };
+        list.push((suffix.to_owned(), shape, vals));
+    };
+
+    let h = parsed_cfg.hidden_size();
+    let ple = 64_usize;
+    let packed_ple = parsed_cfg.layers().len() * ple;
+    add(&mut specs_and_vals, "embed_tokens.weight", vec![32, h]);
+    add(
+        &mut specs_and_vals,
+        "embed_tokens_per_layer.weight",
+        vec![32, packed_ple],
+    );
+    add(
+        &mut specs_and_vals,
+        "per_layer_model_projection.weight",
+        vec![packed_ple, h],
+    );
+    add(
+        &mut specs_and_vals,
+        "per_layer_projection_norm.weight",
+        vec![ple],
+    );
+    add(&mut specs_and_vals, "norm.weight", vec![h]);
+    for layer in 0..4 {
+        let base = format!("layers.{layer}");
+        add(
+            &mut specs_and_vals,
+            &format!("{base}.self_attn.q_proj.weight"),
+            vec![128, h],
+        );
+        add(
+            &mut specs_and_vals,
+            &format!("{base}.self_attn.k_proj.weight"),
+            vec![64, h],
+        );
+        add(
+            &mut specs_and_vals,
+            &format!("{base}.self_attn.v_proj.weight"),
+            vec![64, h],
+        );
+        add(
+            &mut specs_and_vals,
+            &format!("{base}.self_attn.o_proj.weight"),
+            vec![h, 128],
+        );
+        add(
+            &mut specs_and_vals,
+            &format!("{base}.self_attn.q_norm.weight"),
+            vec![64],
+        );
+        add(
+            &mut specs_and_vals,
+            &format!("{base}.self_attn.k_norm.weight"),
+            vec![64],
+        );
+        add(
+            &mut specs_and_vals,
+            &format!("{base}.input_layernorm.weight"),
+            vec![h],
+        );
+        add(
+            &mut specs_and_vals,
+            &format!("{base}.post_attention_layernorm.weight"),
+            vec![h],
+        );
+        add(
+            &mut specs_and_vals,
+            &format!("{base}.pre_feedforward_layernorm.weight"),
+            vec![h],
+        );
+        add(
+            &mut specs_and_vals,
+            &format!("{base}.post_feedforward_layernorm.weight"),
+            vec![h],
+        );
+        add(
+            &mut specs_and_vals,
+            &format!("{base}.mlp.gate_proj.weight"),
+            vec![128, h],
+        );
+        add(
+            &mut specs_and_vals,
+            &format!("{base}.mlp.up_proj.weight"),
+            vec![128, h],
+        );
+        add(
+            &mut specs_and_vals,
+            &format!("{base}.mlp.down_proj.weight"),
+            vec![h, 128],
+        );
+        add(
+            &mut specs_and_vals,
+            &format!("{base}.per_layer_input_gate.weight"),
+            vec![ple, h],
+        );
+        add(
+            &mut specs_and_vals,
+            &format!("{base}.per_layer_projection.weight"),
+            vec![h, ple],
+        );
+        add(
+            &mut specs_and_vals,
+            &format!("{base}.post_per_layer_input_norm.weight"),
+            vec![h],
+        );
+        add(
+            &mut specs_and_vals,
+            &format!("{base}.layer_scalar"),
+            vec![1],
+        );
+    }
+
+    // 1. Write standard BF16 HF package
+    let bf16_dir = weights::Dir::new();
+    std::fs::write(
+        bf16_dir.0.join("config.json"),
+        serde_json::to_vec(&base_config).unwrap(),
+    )
+    .unwrap();
+    let bf16_entries: Vec<(String, Vec<usize>, Vec<u8>)> = specs_and_vals
+        .iter()
+        .map(|(suffix, shape, vals)| {
+            (
+                format!("model.language_model.{suffix}"),
+                shape.clone(),
+                vals.iter().flat_map(|v| v.to_le_bytes()).collect(),
+            )
+        })
+        .collect();
+    let bf16_refs: Vec<(&str, &str, Vec<usize>, Vec<u8>)> = bf16_entries
+        .iter()
+        .map(|(n, s, b)| (n.as_str(), "BF16", s.clone(), b.clone()))
+        .collect();
+    write_safetensors_raw(&bf16_dir.0.join("model.safetensors"), &bf16_refs);
+    let bf16_pkg = LocalModelPackage::open(&bf16_dir.0).unwrap();
+    let bf16_source = Gemma4Source::open(&bf16_pkg).unwrap();
+    assert_eq!(bf16_source.encoding(), Gemma4SourceEncoding::Bf16);
+
+    let prompt = vec![2_u32, 5, 9, 13, 17, 21];
+
+    // 2. For both Q4 and Q8, write MLX-format pre-quantized package (with index + single shard +
+    //    language_model.model.* prefix + inactive shared-tail quantized tensors + vision exclusion)
+    for (bits, quant_enum, expected_enc, wrong_quant) in [
+        (
+            4_u8,
+            Gemma4MetalQuant::Q4,
+            Gemma4SourceEncoding::AffineQ4G64,
+            Gemma4MetalQuant::Q8,
+        ),
+        (
+            8_u8,
+            Gemma4MetalQuant::Q8,
+            Gemma4SourceEncoding::AffineQ8G64,
+            Gemma4MetalQuant::Q4,
+        ),
+    ] {
+        let mlx_dir = weights::Dir::new();
+        let mut mlx_cfg = base_config.clone();
+        let q_obj = serde_json::json!({"group_size": 64, "bits": bits, "mode": "affine"});
+        mlx_cfg["quantization"] = q_obj.clone();
+        mlx_cfg["quantization_config"] = q_obj;
+        std::fs::write(
+            mlx_dir.0.join("config.json"),
+            serde_json::to_vec(&mlx_cfg).unwrap(),
+        )
+        .unwrap();
+
+        let mut owned_entries: Vec<(String, String, Vec<usize>, Vec<u8>)> = Vec::new();
+        for (suffix, shape, vals) in &specs_and_vals {
+            let full_name = format!("language_model.model.{suffix}");
+            if shape.len() == 2 && shape[1].is_multiple_of(64) && full_name.ends_with(".weight") {
+                let (packed, scales, biases) =
+                    quantize_bf16_matrix_for_mlx(shape[0], shape[1], bits, vals);
+                let stem = full_name.strip_suffix(".weight").unwrap();
+                let pack_factor = usize::from(32 / bits);
+                owned_entries.push((
+                    full_name.clone(),
+                    "U32".to_owned(),
+                    vec![shape[0], shape[1] / pack_factor],
+                    packed,
+                ));
+                owned_entries.push((
+                    format!("{stem}.scales"),
+                    "BF16".to_owned(),
+                    vec![shape[0], shape[1] / 64],
+                    scales,
+                ));
+                owned_entries.push((
+                    format!("{stem}.biases"),
+                    "BF16".to_owned(),
+                    vec![shape[0], shape[1] / 64],
+                    biases,
+                ));
+            } else {
+                owned_entries.push((
+                    full_name,
+                    "BF16".to_owned(),
+                    shape.clone(),
+                    vals.iter().flat_map(|v| v.to_le_bytes()).collect(),
+                ));
+            }
+        }
+        // Add an excluded MLX vision tensor to verify non-text exclusion
+        owned_entries.push((
+            "vision_tower.dummy.weight".to_owned(),
+            "BF16".to_owned(),
+            vec![2],
+            vec![0_u8; 4],
+        ));
+
+        let mut weight_map = serde_json::Map::new();
+        for (name, _, _, _) in &owned_entries {
+            weight_map.insert(name.clone(), Value::String("model.safetensors".to_owned()));
+        }
+        std::fs::write(
+            mlx_dir.0.join("model.safetensors.index.json"),
+            serde_json::to_vec(&serde_json::json!({"weight_map": weight_map})).unwrap(),
+        )
+        .unwrap();
+        let entry_refs: Vec<(&str, &str, Vec<usize>, Vec<u8>)> = owned_entries
+            .iter()
+            .map(|(n, d, s, b)| (n.as_str(), d.as_str(), s.clone(), b.clone()))
+            .collect();
+        write_safetensors_raw(&mlx_dir.0.join("model.safetensors"), &entry_refs);
+
+        let mlx_pkg = LocalModelPackage::open(&mlx_dir.0).unwrap();
+        let mlx_source = Gemma4Source::open(&mlx_pkg).unwrap();
+        assert_eq!(mlx_source.encoding(), expected_enc);
+
+        // BF16-only loaders reject pre-quantized sources cleanly
+        assert!(Gemma4CpuWeights::load(&mlx_source).is_err());
+        let metal_exec = engine_metal::MetalBf16Executor::new().unwrap();
+        assert!(Gemma4MetalWeights::load(&mlx_source, &metal_exec).is_err());
+
+        // Mismatched quant policy rejects cleanly
+        for bad_q in [Gemma4MetalQuant::Bf16, wrong_quant] {
+            let bad_cfg = Gemma4MetalModelWideConfig {
+                max_sequences: 4,
+                max_positions: 32,
+                max_batch_tokens: 32,
+                num_kv_blocks: 16,
+                quant: bad_q,
+            };
+            assert!(
+                Gemma4MetalModelWide::load(&mlx_source, bad_cfg).is_err(),
+                "must reject {bad_q:?} on {expected_enc:?} package"
+            );
+        }
+
+        // Native pre-quantized load matches online-quantized BF16 load BIT-FOR-BIT!
+        let resolved = Gemma4MetalQuant::resolve_for_source(None, mlx_source.encoding()).unwrap();
+        assert_eq!(resolved, quant_enum);
+        let cfg = Gemma4MetalModelWideConfig {
+            max_sequences: 4,
+            max_positions: 32,
+            max_batch_tokens: 32,
+            num_kv_blocks: 16,
+            quant: resolved,
+        };
+        let mut online_model = Gemma4MetalModelWide::load(&bf16_source, cfg).unwrap();
+        let mut preq_model = Gemma4MetalModelWide::load(&mlx_source, cfg).unwrap();
+        assert_eq!(preq_model.weights_bytes(), online_model.weights_bytes());
+
+        let s_on = online_model.allocate_slot().unwrap();
+        let s_pre = preq_model.allocate_slot().unwrap();
+        let l_on = online_model
+            .prefill_slot(s_on, &prompt, true)
+            .unwrap()
+            .unwrap();
+        let l_pre = preq_model
+            .prefill_slot(s_pre, &prompt, true)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            l_pre, l_on,
+            "{quant_enum:?} prefill logits must be bit-identical"
+        );
+
+        let next_tok = argmax(&l_on).unwrap();
+        let d_on = online_model.decode_slot(s_on, next_tok).unwrap();
+        let d_pre = preq_model.decode_slot(s_pre, next_tok).unwrap();
+        assert_eq!(
+            d_pre, d_on,
+            "{quant_enum:?} decode logits must be bit-identical"
+        );
+    }
+
+    // 3. Reject unsupported quantization configs (group_size=128, bits=3, quant_method=awq, disagree)
+    for bad_q in [
+        serde_json::json!({"group_size": 128, "bits": 4, "mode": "affine"}),
+        serde_json::json!({"group_size": 64, "bits": 3, "mode": "affine"}),
+        serde_json::json!({"group_size": 64, "bits": 4, "mode": "mxfp4"}),
+        serde_json::json!({"quant_method": "awq", "group_size": 64, "bits": 4}),
+    ] {
+        let dir = weights::Dir::new();
+        let mut cfg = base_config.clone();
+        cfg["quantization"] = bad_q;
+        std::fs::write(dir.0.join("config.json"), serde_json::to_vec(&cfg).unwrap()).unwrap();
+        write_safetensors_raw(&dir.0.join("model.safetensors"), &bf16_refs);
+        let pkg = LocalModelPackage::open(&dir.0).unwrap();
+        assert!(Gemma4Source::open(&pkg).is_err());
+    }
+}
+
+#[test]
+#[ignore = "loads a real pre-quantized MLX affine group-64 Gemma 4 E4B package from RIBN_GEMMA_PREQUANT_PACKAGE; use --release -- --nocapture"]
+#[expect(
+    clippy::too_many_lines,
+    reason = "real-model pre-quantized oracle, load-time, prefix-cache, and rejection gate"
+)]
+fn e4b_prequantized_mlx_oracle_and_prefix_gate() {
+    let pkg_path = PathBuf::from(
+        std::env::var_os("RIBN_GEMMA_PREQUANT_PACKAGE").expect("RIBN_GEMMA_PREQUANT_PACKAGE"),
+    );
+    let ref_path =
+        PathBuf::from(std::env::var_os("RIBN_GEMMA_REFERENCE").expect("RIBN_GEMMA_REFERENCE"));
+    let tensors_path = ref_path.with_file_name("tensors.safetensors");
+
+    let t_open = Instant::now();
+    let package = LocalModelPackage::open(&pkg_path).unwrap();
+    let source = Gemma4Source::open(&package).unwrap();
+    let open_ms = t_open.elapsed().as_secs_f64() * 1e3;
+    assert_ne!(
+        source.encoding(),
+        Gemma4SourceEncoding::Bf16,
+        "RIBN_GEMMA_PREQUANT_PACKAGE must be pre-quantized"
+    );
+    let quant = Gemma4MetalQuant::resolve_for_source(None, source.encoding()).unwrap();
+    assert!(
+        Gemma4MetalQuant::resolve_for_source(Some(Gemma4MetalQuant::Bf16), source.encoding())
+            .is_err()
+    );
+
+    let t_load = Instant::now();
+    let limits = Gemma4MetalModelWideConfig {
+        max_sequences: 16,
+        max_positions: 2048,
+        max_batch_tokens: 512,
+        num_kv_blocks: 512,
+        quant,
+    };
+    let mut model = Gemma4MetalModelWide::load(&source, limits).unwrap();
+    let load_ms = t_load.elapsed().as_secs_f64() * 1e3;
+    #[expect(clippy::cast_precision_loss, reason = "display GiB")]
+    let weight_gib = model.weights_bytes() as f64 / (1024.0 * 1024.0 * 1024.0);
+    println!(
+        "\n================ PRE-QUANTIZED E4B ({:?}) ================\nopen_ms={open_ms:.1} load_ms={load_ms:.1} total_ms={:.1} weight_bytes={} ({weight_gib:.2} GiB)",
+        source.encoding(),
+        open_ms + load_ms,
+        model.weights_bytes(),
+    );
+
+    let reference: Value = serde_json::from_slice(&std::fs::read(&ref_path).unwrap()).unwrap();
+    let ref_tensors = SafeTensorArtifact::open(&tensors_path).unwrap();
+    let slot = model.allocate_slot().unwrap();
+    let mut total_rows = 0_usize;
+    let mut matched_winners = 0_usize;
+    let mut worst_kl = 0.0_f64;
+    let mut worst_rel_l2 = 0.0_f64;
+    let mut window_513_cold: Option<(Vec<u32>, Vec<u16>, f64)> = None;
+
+    for case in reference["cases"].as_array().unwrap() {
+        let name = case["name"].as_str().unwrap();
+        let prompt: Vec<u32> = case["prompt_ids"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| u32::try_from(v.as_u64().unwrap()).unwrap())
+            .collect();
+        let steps = case["steps"].as_array().unwrap();
+        model.reset_slot(slot).unwrap();
+
+        let t0 = Instant::now();
+        let mut logits = model.prefill_slot(slot, &prompt, true).unwrap().unwrap();
+        let prefill_ms = t0.elapsed().as_secs_f64() * 1e3;
+        if name == "window_513" {
+            window_513_cold = Some((prompt.clone(), logits.clone(), prefill_ms));
+        }
+        for (step_idx, step) in steps.iter().enumerate() {
+            if step_idx > 0 {
+                let input_tok = u32::try_from(step["input_ids"][0].as_u64().unwrap()).unwrap();
+                logits = model.decode_slot(slot, input_tok).unwrap();
+            }
+            let expected = u32::try_from(step["chosen"].as_u64().unwrap()).unwrap();
+            let actual = argmax(&logits).unwrap();
+            total_rows += 1;
+            if actual == expected {
+                matched_winners += 1;
+            }
+            let tensor_key = format!("{name}.{step_idx}.logits");
+            let ref_logits = read_bf16_tensor(&ref_tensors, &tensor_key);
+            let (_rmse, rel_l2, kl, max_abs) = logit_metrics(&logits, &ref_logits);
+            worst_kl = worst_kl.max(kl);
+            worst_rel_l2 = worst_rel_l2.max(rel_l2);
+            println!(
+                "PREQUANT-{quant:?} {name}[{step_idx}]: actual={actual} expected={expected} rel_l2={rel_l2:.5} kl={kl:.6} max_abs={max_abs:.3}"
+            );
+        }
+    }
+    println!(
+        "PREQUANT-{quant:?} ORACLE SUMMARY: matched={matched_winners}/{total_rows}, worst_rel_l2={worst_rel_l2:.5}, worst_kl={worst_kl:.6}"
+    );
+    if quant == Gemma4MetalQuant::Q8 {
+        assert_eq!(matched_winners, total_rows);
+        assert!(worst_kl <= 0.02, "worst_kl {worst_kl} exceeded 0.02");
+    } else {
+        assert!(
+            matched_winners >= 10,
+            "matched only {matched_winners}/{total_rows} BF16 oracle winners"
+        );
+    }
+
+    if let Some((prompt_513, cold_logits, cold_ms)) = window_513_cold {
+        let (cached_slot, matched) = model.allocate_slot_with_prefix(&prompt_513).unwrap();
+        assert_eq!(matched, 512);
+        let t_hit = Instant::now();
+        let cached_logits = model
+            .prefill_slot(cached_slot, &prompt_513[matched..], true)
+            .unwrap()
+            .unwrap();
+        let cached_ms = t_hit.elapsed().as_secs_f64() * 1e3;
+        assert_eq!(cached_logits, cold_logits);
+        println!(
+            "PREQUANT-{quant:?} PREFIX CACHE (len=513, hit=512): cold={cold_ms:.2} ms -> cached={cached_ms:.2} ms ({:.1}x)",
+            cold_ms / cached_ms
+        );
+        model.free_slot(cached_slot).unwrap();
     }
 }

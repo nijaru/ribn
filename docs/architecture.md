@@ -142,9 +142,9 @@ OS page cache or upload staging. The [host comparison](../benchmarks/loader-memo
 and full E4B artifact probe qualify this I/O path, not Gemma execution or device peaks.
 
 `engine-gemma4` owns dense causal Gemma 4 text configuration, logical parameter
-mapping and canonical HF text processing. Its host source preflight validates the whole HF-resolved inventory, retains
-BF16 parameter readers, aliases the output head to the input embedding and explicitly
-excludes inactive shared-tail projections and non-text weights. Its optional CUDA loader
+mapping and canonical HF text processing. Its host source preflight validates the whole HF-resolved inventory (supporting both uncompressed HF BF16 `model.language_model.*` packages and pre-quantized MLX affine group-64 Q4/Q8 `language_model.model.*` packages), retains
+validated parameter readers (`ParameterPayload::{Bf16, AffineGroup64}`), aliases the output head to the input embedding and explicitly
+excludes inactive shared-tail projections and non-text weights; BF16-only backends (CPU, legacy Metal, CUDA) reject pre-quantized sources cleanly before allocation. Its optional CUDA loader
 materializes native BF16 weights through one charged NVIDIA allocation, preserving tied
 head identity and retaining partial-load cleanup ownership. All 665 real parameters pass
 full byte readback and explicit unload at `1d4a7fb`; this is not an executable decoder.
@@ -306,10 +306,11 @@ with exact content-addressed radix prefix caching (`GenerationExecutor::admitted
 exact pinned+reserved KV-pool and slot admission backpressure (`Admission::Deferred`
 with `Readiness` wakeups on release/deduplication), exact shared-KV tail pruning,
 bit-exact fused norm/residual and `M=1` decode kernels (`Gate+Up+GeGLU`,
-`PleGate+GeGLU`, `K+V`), capability-gated stochastic sampling
-(`GenerationExecutor::supports_sampling`), and opt-in affine group-64 weight
-quantization (`Gemma4MetalQuant::{Bf16, Q8, Q4}`, backed by `engine-metal`'s
-`quant_fast.metal` and `bf16/quant.rs`, defaulting to `Bf16`). Explicit
+`PleGate+GeGLU`, `K+V`), unpack-once `M=2..4` quantized GEMV, capability-gated
+stochastic sampling (`GenerationExecutor::supports_sampling`), and both streaming
+online and direct pre-quantized MLX affine group-64 weight loading
+(`Gemma4MetalQuant::{Bf16, Q8, Q4}`, backed by `engine-metal`'s
+`quant_fast.metal` and `bf16/quant.rs`, defaulting to native package precision). Explicit
 `ExperimentalGraph`, wider heads, and out-of-scope CUDA configurations
 retain the serial `Gemma4Executor` (and reject non-`Bf16` quantization). Failed continuation cannot resume, but teardown can succeed:
 paired model creation/completion ownership and explicit sequence close establish when

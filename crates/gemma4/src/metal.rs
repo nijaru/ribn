@@ -21,6 +21,7 @@ impl Gemma4MetalWeights {
     /// Rejects allocation/read failures and short/trailing sources. No partial
     /// set is published and no CPU inventory or parameter-sized staging is retained.
     pub fn load(source: &Gemma4Source, executor: &MetalBf16Executor) -> Result<Self, Gemma4Error> {
+        source.require_bf16("Metal weight")?;
         let expected = u64::try_from(source.encoded_bytes())
             .map_err(|_| Gemma4Error::new("Metal weight", "source bytes exceed u64"))?;
         let mut parameters = BTreeMap::new();
@@ -28,7 +29,7 @@ impl Gemma4MetalWeights {
         for (&id, parameter) in source.parameters() {
             let length = parameter.spec().byte_len()?;
             let buffer = executor
-                .read_bf16(length / 2, &mut parameter.reader())
+                .read_bf16(length / 2, &mut parameter.bf16_reader()?)
                 .map_err(|error| Gemma4Error::new(&parameter.spec().name, error.to_string()))?;
             bytes =
                 bytes

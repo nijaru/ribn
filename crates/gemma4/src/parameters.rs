@@ -104,6 +104,10 @@ impl ParameterSpec {
 }
 
 pub(crate) fn specifications(c: &Gemma4Config) -> Vec<ParameterSpec> {
+    specifications_with_prefix(c, "model.language_model.")
+}
+
+pub(crate) fn specifications_with_prefix(c: &Gemma4Config, prefix: &str) -> Vec<ParameterSpec> {
     let mut specs = [
         (
             ParameterId::TokenEmbedding,
@@ -130,7 +134,7 @@ pub(crate) fn specifications(c: &Gemma4Config) -> Vec<ParameterSpec> {
     .into_iter()
     .map(|(id, name, shape)| ParameterSpec {
         id,
-        name: format!("model.language_model.{name}"),
+        name: format!("{prefix}{name}"),
         shape,
     })
     .collect::<Vec<_>>();
@@ -151,7 +155,7 @@ pub(crate) fn specifications(c: &Gemma4Config) -> Vec<ParameterSpec> {
             };
             specs.push(ParameterSpec {
                 id: ParameterId::Layer { layer, parameter },
-                name: format!("model.language_model.layers.{layer}.{}", parameter.suffix()),
+                name: format!("{prefix}layers.{layer}.{}", parameter.suffix()),
                 shape,
             });
         }

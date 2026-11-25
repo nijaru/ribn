@@ -2881,3 +2881,55 @@ prompt), Ribn's radix prefix cache shared immutable prefix blocks across distinc
 throughput (`258.9` vs `199.8 tok/s`) and lower RSS (`5.00` vs `6.14 GiB`, since Ribn retains a 16K
 shared KV pool of ~1.84 GiB). Scope limits remain single-process M3 Max observation without formal
 multi-process randomized quality-matched external cohorts or CUDA/4090 parity.
+
+### Unpack-once `M=2..4` GEMV and native pre-quantized MLX safetensors loading (2026-11-24)
+
+Two follow-up improvements closed the remaining `M=2..4` decode gap and eliminated the 15 GiB BF16
+checkpoint / load-time quantization requirement:
+1. **Unpack-once `M=2..4` `Q4`/`Q8` GEMV (`crates/metal/src/quant_fast.metal`, `bf16/quant.rs`):**
+   Replaced the 2-SG re-unpacking `q4_gemv_batch_impl` / `q8_gemv_batch_impl` with 4-SG (128-thread,
+   1 col/SG) kernels that dequantize each 16-weight chunk once into registers before the `m = 0..BM_MAX`
+   row loop. On M3 Max E4B direct `--release` sweep: `Q4 decode M=2` improved `13.01 → 12.30 ms`
+   (`161.8 tok/s`), `Q4 decode M=4` improved `17.86 → 15.84 ms` (**`251.8 tok/s`, +13%**), and
+   `Q8 decode M=4` improved `19.96 → 18.98 ms`, with all 12/12 BF16 oracle winners unchanged.
+2. **Native pre-quantized MLX affine group-64 safetensors loading (`engine-metal`, `engine-gemma4`,
+   `ribn-text`, `ribn-cli`):**
+   Added `MetalBf16Executor::read_prequantized`, `Gemma4SourceEncoding::{Bf16, AffineQ8G64, AffineQ4G64}`,
+   `ParameterPayload::AffineGroup64`, `language_model.model.*` namespace validation, and
+   `Gemma4MetalQuant::resolve_for_source`. `ribn serve-gemma <mlx-dir>` / `ribn run-gemma <mlx-dir>`
+   automatically loads pre-quantized MLX group-64 4-bit/8-bit packages (`mlx_lm convert -q --q-bits 4|8
+   --q-group-size 64`) at native precision without requiring `--quantize`, while keeping `bf16` default
+   for BF16 packages and explicitly rejecting mismatched `--quantize` overrides, unsupported quantization
+   formats, or BF16-only backends (CPU / legacy Metal / CUDA).
+
+Real-artifact qualification on `google/gemma-4-E4B-it` converted via `mlx_lm convert -q --q-group-size 64`
+(`e4b_prequantized_mlx_oracle_and_prefix_gate`):
+- **Pre-quantized Q4 (`3.94 GiB` on disk, `3.91 GiB` GPU weights):** `open = 28.9 ms`, `load = 566.8 ms`
+  (**`595.7 ms` total** vs `2.74 s` online quant), **12/12 BF16 oracle winners** (`worst_rel_l2 = 0.45932`,
+  `worst_kl = 0.391364`), bit-identical 512-token prefix cache (`262.88 → 15.60 ms`, `16.9×`).
+- **Pre-quantized Q8 (`7.42 GiB` on disk, `7.39 GiB` GPU weights):** `open = 14.0 ms`, `load = 888.0 ms`
+  (**`902.0 ms` total** vs `2.81 s` online quant), **12/12 BF16 oracle winners** (`worst_rel_l2 = 0.05542`,
+  `worst_kl = 0.005627`), bit-identical 512-token prefix cache (`270.07 → 22.07 ms`, `12.2×`).
+
+Same-day serialized live HTTP SSE head-to-head on the **identical 3.94 GiB pre-quantized MLX Q4 checkpoint**
+(`ribn serve-gemma <mlx-q4-dir> --max-requests 64` with zero `--quantize` flag vs `mlx_lm.server`
+`--decode-concurrency 16 --prompt-concurrency 8 --temp 0.0 --chat-template-args '{"enable_thinking":false}'`,
+`max_tokens = 64`, `stream = true`, identical `1,203`-token long prompts and identical warmup text):
+
+| Live HTTP SSE Q4 workload (same 3.94 GiB MLX Q4 dir) | `ribn serve-gemma <mlx-q4>` | `mlx-lm 0.32.2` Q4 (`c=16/p=8`) |
+| --- | ---: | ---: |
+| Full HTTP server startup to ready | `1.86 s` (vs `4.08 s` online quant) | `1.32 s` |
+| Short `c = 1` (`out=64`) | **`71.6 tok/s`** · p95 TTFT **`35.7 ms`** · ITL **`13.6 ms`** | `43.4 tok/s` · p95 TTFT `351.7 ms` · ITL `17.8 ms` |
+| Short `c = 4` (`out=256`) | **`217.9 tok/s`** · p95 TTFT **`100.0 ms`** · ITL **`17.6 ms`** | `171.2 tok/s` · p95 TTFT `214.8 ms` · ITL `20.3 ms` |
+| Short `c = 8` (`out=512`) | **`307.2 tok/s`** · p95 TTFT **`116.6 ms`** · ITL **`24.6 ms`** | `189.3 tok/s` · p95 TTFT `729.3 ms` · ITL `31.3 ms` |
+| Short `c = 16` (`out=1024`) | **`444.3 tok/s`** · p95 TTFT **`184.8 ms`** · ITL **`33.6 ms`** | `285.2 tok/s` · p95 TTFT `980.6 ms` · ITL `42.1 ms` |
+| Short `c = 32` burst (`32/32 ok`) | **`449.9 tok/s`** · p95 TTFT **`2,433 ms`** · ITL **`33.7 ms`** | `223.1 tok/s` · p95 TTFT `6,260 ms` · ITL `56.0 ms` |
+| Long `c = 1` (`in=1203`) | `36.9 tok/s` · TTFT **`643.2 ms`** · ITL `17.3 ms` | **`37.0 tok/s`** · TTFT `672.4 ms` · ITL **`16.7 ms`** |
+| Prefix `c = 1` cold → warm (`in=1203`) | `656.2 →` **`40.7 ms`** (**`16.1×`**) · **`56.9 tok/s`** | `700.1 → 103.7 ms` (`6.8×`) · `47.9 tok/s` |
+| Prefix burst `c = 8` (`in=1203`) | **`258.5 tok/s`** · p95 TTFT **`197.9 ms`** · ITL **`28.3 ms`** | `157.5 tok/s` · p95 TTFT `777.2 ms` · ITL `39.1 ms` |
+| Mixed `c = 8` (4 warm-prefix + 4 short) | **`263.0 tok/s`** · p95 TTFT **`173.1 ms`** · ITL **`28.1 ms`** | `179.8 tok/s` · p95 TTFT `796.5 ms` · ITL `34.1 ms` |
+| Steady-state RSS | `6.14 GiB` | `~5.0 GiB` (worker child; `uv` wrapper `0.04 GiB`) |
+
+Scope limits: single-process-per-server M3 Max observation on identical 4-bit MLX checkpoints; does not
+replace formal multi-process randomized quality-matched external serving cohorts, quantized task QA, or
+CUDA/4090 packed-batch parity.

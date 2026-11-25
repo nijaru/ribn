@@ -41,7 +41,11 @@ fn logical_projections_use_selected_native_weights_including_the_tied_head() {
         let shape = &selected.spec().shape;
         let (n, k) = (shape[0], shape[1]);
         let mut encoded = Vec::new();
-        selected.reader().read_to_end(&mut encoded).unwrap();
+        selected
+            .bf16_reader()
+            .unwrap()
+            .read_to_end(&mut encoded)
+            .unwrap();
         let reference: Vec<_> = encoded
             .as_chunks::<2>()
             .0

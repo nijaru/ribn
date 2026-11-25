@@ -95,12 +95,13 @@ impl Gemma4CpuWeights {
     /// # Errors
     /// Rejects length overflow, short sources, trailing bytes and allocation failures.
     pub fn load(source: &Gemma4Source) -> Result<Self, Gemma4Error> {
+        source.require_bf16("CPU weight")?;
         let mut parameters = BTreeMap::new();
         let mut bytes = 0_u64;
         for (id, stored) in source.parameters() {
             let spec = stored.spec();
             let length = spec.byte_len()?;
-            parameters.insert(*id, CpuParameter::read(&spec.shape, stored.reader())?);
+            parameters.insert(*id, CpuParameter::read(&spec.shape, stored.bf16_reader()?)?);
             bytes =
                 bytes
                     .checked_add(u64::try_from(length).map_err(|_| {
