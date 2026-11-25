@@ -9,14 +9,15 @@ use crate::serve_cli::{self, ModelLoad, ServeModel};
 
 pub(crate) fn run(arguments: &[String], kind: ServeModel) -> Result<(), String> {
     if matches!(arguments, [help] if matches!(help.as_str(), "-h" | "--help")) {
-        let model = match kind {
-            ServeModel::Qwen => "Qwen GGUF/CUDA",
-            ServeModel::Gemma => {
-                "Gemma 4 package, using the same Metal/CUDA selection as run-gemma"
-            }
+        let (model, decoding) = match kind {
+            ServeModel::Qwen => ("Qwen GGUF/CUDA", "Greedy decoding only."),
+            ServeModel::Gemma => (
+                "Gemma 4 package, using the same Metal/CUDA selection as run-gemma",
+                "Sampling is available with the Metal model-wide executor.",
+            ),
         };
         println!(
-            "{}\n\nExperimental {model} HTTP server; loopback only, greedy decoding.\nSee docs/serving.md for the supported completion/chat subset and bounds.",
+            "{}\n\nExperimental {model} HTTP server; loopback only.\n{decoding}\nSee docs/serving.md for the supported completion/chat subset and bounds.",
             kind.usage()
         );
         return Ok(());
