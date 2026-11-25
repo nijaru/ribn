@@ -345,7 +345,7 @@ pub enum StepOutcome<C> {
     Blocked(BlockReason<C>),
     /// The head request was rejected, and its terminal entry was delivered.
     Rejected { request: RequestId },
-    /// The head request was cancelled before it ran, and its terminal entry was
+    /// A queued request was cancelled before it ran, and its terminal entry was
     /// delivered.
     Cancelled { request: RequestId },
 }
@@ -448,13 +448,11 @@ struct Queued<I> {
     request: RequestId,
     input: I,
     parameter_version: ParameterVersion,
-    /// Cancellation intent. A cancelled request stays in place so it keeps its FIFO
-    /// position and no second cleanup list is needed; it is reported instead of
-    /// executed once it reaches the head.
+    /// Cancellation intent, settled before runnable selection when delivery has room.
     cancelled: bool,
 }
 
-/// What the queue head resolved to before any execution or reservation happened.
+/// What the queue resolved to before any execution or reservation happened.
 ///
 /// `Ready` stays separate from `Blocked` so the capacity checks that follow can
 /// block on the runtime's own retained budget without confusing it with an
@@ -582,7 +580,7 @@ impl<E: BatchExecutor> BatchRuntime<E> {
         CancelOutcome::Discarded
     }
 
-    /// Resolve what to do with the queue head, then execute at most one batch.
+    /// Settle the first queued cancellation, or select and execute at most one batch.
     ///
     /// A [`StepOutcome::Blocked`] result is a wakeup contract rather than a
     /// failure: retry only after the named condition changes. Consuming retained
@@ -595,7 +593,7 @@ impl<E: BatchExecutor> BatchRuntime<E> {
     /// previous version, a malformed executor batch selection, malformed executor
     /// output, an internal queue invariant failure, or an executor failure.
     pub fn step(&mut self) -> Result<StepOutcome<E::Constraint>, RuntimeError<E::Error>> {
-        let mut accepted = match self.resolve_head()? {
+        let mut accepted = match self.resolve_queue()? {
             Resolved::Idle => return Ok(StepOutcome::Idle),
             Resolved::Blocked(reason) => return Ok(StepOutcome::Blocked(reason)),
             Resolved::Rejected { request } => return Ok(StepOutcome::Rejected { request }),
@@ -661,20 +659,17 @@ impl<E: BatchExecutor> BatchRuntime<E> {
         Ok(StepOutcome::Executed { results })
     }
 
-    /// Resolve the queue head without executing anything.
-    fn resolve_head(&mut self) -> Result<Resolved<E::Constraint>, RuntimeError<E::Error>> {
-        let version = self.executor.parameter_version();
-        // Cancellation intent is resolved before any shape, capacity or selection work:
-        // a cancelled request must not reserve capacity, wait for a pool, or be offered
-        // to the executor as runnable work.
-        if self.queue.front().is_some_and(|front| front.cancelled) {
+    /// Resolve cancellation or the runnable head without executing anything.
+    fn resolve_queue(&mut self) -> Result<Resolved<E::Constraint>, RuntimeError<E::Error>> {
+        // Cancellation is independent of runnable head pressure or executor state.
+        if let Some(index) = self.queue.iter().position(|queued| queued.cancelled) {
             if self.terminal.len() >= self.config.max_retained_results {
                 // The terminal count bound applies to cancellations exactly as it does
                 // to rejections: the intent is already recorded, so consuming one entry
                 // delivers it.
                 return Ok(Resolved::Blocked(BlockReason::RetainedResults));
             }
-            let Some(cancelled) = self.queue.pop_front() else {
+            let Some(cancelled) = self.queue.remove(index) else {
                 return Err(RuntimeError::QueueInvariant);
             };
             self.terminal.push_back(Completed {
@@ -687,6 +682,7 @@ impl<E: BatchExecutor> BatchRuntime<E> {
                 request: cancelled.request,
             });
         }
+        let version = self.executor.parameter_version();
         let head_retention = match self.queue.front() {
             None => return Ok(Resolved::Idle),
             Some(front) => {
@@ -712,7 +708,7 @@ impl<E: BatchExecutor> BatchRuntime<E> {
             .queue
             .iter()
             .take(self.executor.max_batch_items())
-            .take_while(|queued| queued.parameter_version == version && !queued.cancelled)
+            .take_while(|queued| queued.parameter_version == version)
             .map(|queued| &queued.input)
             .collect::<Vec<_>>();
         match self.executor.select_batch(&candidates) {

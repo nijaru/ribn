@@ -228,41 +228,66 @@ fn cancellation_is_deliverable_while_the_terminal_bound_is_full() {
 }
 
 #[test]
-fn a_cancelled_request_stops_its_accepted_range_and_never_runs() {
+fn a_cancelled_peer_settles_before_selection_and_never_runs() {
     let pool = BytePool::new(8 * ENVELOPE).shared();
     let mut runtime = runtime(&pool);
     let first = runtime.submit(1).expect("first request");
     let cancelled = runtime.submit(2).expect("second request");
     let third = runtime.submit(3).expect("third request");
 
-    // `max_batch_items` is two, so without the cancellation the first step would run
-    // the first two requests as one batch.
     assert_eq!(runtime.cancel(cancelled), CancelOutcome::Queued);
-    assert_eq!(
-        runtime.step().expect("step"),
-        StepOutcome::Executed { results: 1 },
-        "the accepted range stops before a cancelled request"
-    );
-    assert_eq!(runtime.executor().batches, vec![vec![1]]);
-
     assert_eq!(
         runtime.step().expect("cancelling step"),
         StepOutcome::Cancelled { request: cancelled }
     );
+    assert!(runtime.executor().batches.is_empty());
     assert_eq!(
         runtime.step().expect("step"),
-        StepOutcome::Executed { results: 1 }
+        StepOutcome::Executed { results: 2 }
     );
-    assert_eq!(runtime.executor().batches, vec![vec![1], vec![3]]);
+    assert_eq!(runtime.executor().batches, vec![vec![1, 3]]);
     let mut requests = Vec::new();
     while let Some(entry) = runtime.pop_completed() {
         requests.push((entry.request(), entry.is_cancelled()));
     }
     assert_eq!(
         requests,
-        vec![(first, false), (cancelled, true), (third, false)],
-        "every request still reports exactly one terminal outcome, in order"
+        vec![(cancelled, true), (first, false), (third, false)],
+        "each request reports exactly one terminal outcome in settlement order"
     );
+}
+
+#[test]
+fn cancelled_peer_settles_while_head_waits_on_a_sibling_pool_lease() {
+    let pool = BytePool::new(ENVELOPE).shared();
+    let held = pool.reserve(ENVELOPE).expect("sibling lease");
+    let mut runtime = runtime(&pool);
+    let first = runtime.submit(1).expect("head");
+    let peer = runtime.submit(2).expect("peer");
+    assert!(matches!(
+        runtime.step().unwrap(),
+        StepOutcome::Blocked(BlockReason::Pool { .. })
+    ));
+    assert_eq!(runtime.cancel(peer), CancelOutcome::Queued);
+    assert_eq!(
+        runtime.step().unwrap(),
+        StepOutcome::Cancelled { request: peer }
+    );
+    let entry = runtime.pop_completed().unwrap();
+    assert_eq!(entry.request(), peer);
+    assert!(entry.is_cancelled());
+    assert_eq!(runtime.queued(), 1);
+    assert_eq!(pool.granted(), ENVELOPE);
+    assert!(matches!(
+        runtime.step().unwrap(),
+        StepOutcome::Blocked(BlockReason::Pool { .. })
+    ));
+    drop(held);
+    assert_eq!(
+        runtime.step().unwrap(),
+        StepOutcome::Executed { results: 1 }
+    );
+    assert_eq!(runtime.pop_completed().unwrap().request(), first);
 }
 
 #[test]

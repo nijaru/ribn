@@ -299,7 +299,9 @@ currently bounds waiting/result counts, accepts executor-defined inputs without 
 input-byte budget, selects a FIFO prefix and has no model-local close/shutdown surface.
 Pool waits have `capacity_wait`; `BatchSelection::Blocked(C)` supplies no general
 executor readiness registration. Temporary head pressure can strand feasible later
-requests and postpone a cancelled peer's terminal delivery.
+requests. On a drive step, queued cancellation settles before runnable selection,
+oldest cancelled request first, subject to the same terminal count bound as results.
+Terminal entries are delivered in settlement order, not submission order.
 
 Before exposing owned encoder access, establish these contracts through the real runtime:
 

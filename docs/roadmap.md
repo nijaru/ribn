@@ -185,8 +185,10 @@ Source audits at `093cd28` and `70e5586` found gaps that passing fixtures do not
 2. **Non-AR application access.** `BatchRuntime` in `crates/batch/src/lib.rs` bounds counts,
    not submitted input bytes, selects FIFO prefixes and lacks local close/shutdown.
    Executor `Blocked(C)` has no general readiness registration. Add retained-input
-   admission, bounded feasible-peer selection/aging, cancellation settlement behind a
-   blocked head and local retryable shutdown without closing sibling pools. The BERT
+   admission, bounded feasible-peer selection/aging and local retryable shutdown
+   without closing sibling pools. Queued cancellation now settles before runnable
+   selection even when the head is blocked on a sibling lease (host regression in
+   `crates/batch/tests/cancellation.rs`); the terminal count bound still applies. The BERT
    sequence-limit preparation defect is repaired and [host-qualified](../benchmarks/encoder-qualification.md#host-sequence-limit-repair):
    one immutable preparation binds model geometry to the backend-owned 4096-token
    attention limit, rejecting oversized requests locally before accepting a range.
