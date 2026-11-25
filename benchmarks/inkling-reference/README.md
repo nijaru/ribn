@@ -58,10 +58,17 @@ second core pass. At 32 tokens, it was 0.56% at layer 0's attention output and
 17.05% at logical layer 44's residual output. These CPU-to-CPU taps show
 short-history drift before the window boundary; they do not separate
 quantized projection arithmetic from model semantics or explain the failed
-1,023-token CUDA-oracle comparison. Next compare layer 0 Q/K/V and the first
-expert projections with shared operands before extending the replay. Raw rows
-and disposable probe sources: `benchmarks/results/qualification/inkling-layer-taps/`
-(local).
+1,023-token CUDA-oracle comparison.
+
+A disposable CPU intervention rounded only the inputs of `IQ4_NL` and `Q8_0`
+matvecs to decoded Q8_0 (32 values per block, F16 scale), while retaining the
+existing Rust accumulation. Compared with the same llama.cpp CPU taps, layer 0
+attention relative L2 fell from 0.480% to 0.141% at 8 tokens and from 0.555% to
+0.054% at 32 tokens. Centered logit RMSE fell from 0.17692 to 0.13736 and from
+0.22287 to 0.15173. Activation rounding accounts for part of the observed drift,
+not all of it. This is not a bit-exact substitute for GGML's integer dot or a
+production change. Raw rows and disposable probes:
+`benchmarks/results/qualification/inkling-layer-taps/` (local).
 
 ```sh
 RIBN_INKLING_GGUF="$MODEL" RIBN_INKLING_ORACLE=/tmp/inkling-logits \
