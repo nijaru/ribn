@@ -2958,4 +2958,8 @@ The ignored release BF16 gate on the same code and artifact
 matched all 12 archived BF16 CPU oracle winners, with worst relative L2 0.03108
 and worst KL 0.006894. The 513-token prefix replay hit 512 tokens and remained
 bit-identical. The ignored `gemma_metal` real-artifact text facade test also
-passed. The quantized real-model oracle sweeps were not rerun.
+passed. The online Q8 and Q4 real-artifact gate also matched all 12 winners
+and preserved bit-identical prefix replay at each precision. Worst relative L2
+and KL were 0.06316 and 0.013561 for Q8, and 0.43213 and 0.605768 for Q4;
+argmax agreement on these histories does not establish task-quality parity.
+The real pre-quantized package gate was not rerun.
