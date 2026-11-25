@@ -151,6 +151,10 @@ impl BatchExecutor for PackageEncoder {
         }
     }
 
+    fn waiting_input_bytes(&self, input: &Self::Input) -> usize {
+        input.capacity() * size_of::<u32>()
+    }
+
     fn retained_bytes(&self, _input: &Self::Input) -> u64 {
         u64::try_from(self.width)
             .unwrap_or(u64::MAX)

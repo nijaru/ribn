@@ -185,6 +185,10 @@ impl BatchExecutor for ArtifactEncoder {
         BatchSelection::Ready { items }
     }
 
+    fn waiting_input_bytes(&self, input: &Self::Input) -> usize {
+        input.capacity() * size_of::<u32>()
+    }
+
     fn retained_bytes(&self, _input: &Self::Input) -> u64 {
         // The pooled output holds one float per embedding column.
         u64::try_from(self.width)

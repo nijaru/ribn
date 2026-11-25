@@ -7,7 +7,7 @@ use engine_bert::{
 };
 use ribn_batch::{
     BatchConfig, BatchExecutor, BatchRuntime, BatchSelection, EnqueueError, Job, JobOutput,
-    Rejection, StepOutcome, Terminal,
+    Rejection, RuntimeError, StepOutcome, Terminal,
 };
 use ribn_foundation::{BytePool, ParameterVersion};
 
@@ -32,6 +32,10 @@ impl BatchExecutor for HostEncoder {
 
     fn select_batch(&self, candidates: &[&EncoderRequest]) -> BatchSelection<EncoderConstraint> {
         self.preparation.select(candidates)
+    }
+
+    fn waiting_input_bytes(&self, input: &Self::Input) -> usize {
+        input.retained_heap_bytes()
     }
 
     fn retained_bytes(&self, input: &EncoderRequest) -> u64 {
@@ -62,8 +66,7 @@ impl BatchExecutor for HostEncoder {
     }
 }
 
-#[test]
-fn a_backend_infeasible_request_does_not_fail_accepted_or_later_peers() {
+fn host_encoder() -> HostEncoder {
     let config = BertConfig {
         vocab_size: 8,
         hidden_size: 12,
@@ -74,17 +77,79 @@ fn a_backend_infeasible_request_does_not_fail_accepted_or_later_peers() {
         type_vocab_size: 2,
         layer_norm_eps: 1.0e-12,
     };
-    let encoder = HostEncoder {
+    HostEncoder {
         preparation: EncoderPreparation::new(config, NonZeroUsize::new(4).unwrap()).unwrap(),
         executed: vec![],
+    }
+}
+
+#[test]
+fn waiting_budget_counts_all_bert_buffers_and_releases_on_queue_removal() {
+    let pool = BytePool::new(1 << 20).shared();
+    let make_input = || {
+        let mut input = EncoderRequest::single_segment(vec![1; 4]);
+        input.token_type_ids.reserve_exact(9);
+        input.attention_mask.reserve_exact(17);
+        input
     };
+    let input = make_input();
+    let limit = (input.token_ids.capacity()
+        + input.token_type_ids.capacity()
+        + input.attention_mask.capacity())
+        * size_of::<u32>();
+    let mut runtime = BatchRuntime::new(
+        host_encoder(),
+        Arc::clone(&pool),
+        BatchConfig {
+            max_waiting_input_bytes: limit,
+            ..BatchConfig::default()
+        },
+    )
+    .unwrap();
+    let mut oversized = make_input();
+    oversized.attention_mask.reserve_exact(limit);
+    assert!(
+        matches!(runtime.submit(oversized), Err(RuntimeError::WaitingInputTooLarge { limit: actual, .. }) if actual == limit)
+    );
+    assert_eq!(runtime.queued(), 0);
+
+    let cancelled = runtime.submit(input).unwrap();
+    assert!(
+        matches!(runtime.submit(make_input()), Err(RuntimeError::WaitingInputCapacityExhausted { requested, available: 0 }) if requested == limit)
+    );
+    runtime.cancel(cancelled);
+    assert_eq!(
+        runtime.step().unwrap(),
+        StepOutcome::Cancelled { request: cancelled }
+    );
+    assert_eq!(pool.granted(), 0);
+
+    let mut malformed = make_input();
+    malformed.token_ids.clear();
+    let bad = runtime.submit(malformed).unwrap();
+    assert_eq!(
+        runtime.step().unwrap(),
+        StepOutcome::Rejected { request: bad }
+    );
+    runtime.submit(make_input()).unwrap();
+    assert_eq!(
+        runtime.step().unwrap(),
+        StepOutcome::Executed { results: 1 }
+    );
+    assert!(pool.granted() > 0, "retained result has a separate lease");
+    runtime.submit(make_input()).unwrap();
+}
+
+#[test]
+fn a_backend_infeasible_request_does_not_fail_accepted_or_later_peers() {
     let pool = BytePool::new(1 << 20).shared();
     let mut runtime = BatchRuntime::new(
-        encoder,
+        host_encoder(),
         Arc::clone(&pool),
         BatchConfig {
             max_waiting_requests: 4,
             max_retained_results: 3,
+            ..BatchConfig::default()
         },
     )
     .unwrap();

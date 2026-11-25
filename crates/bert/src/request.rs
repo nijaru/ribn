@@ -33,6 +33,14 @@ impl EncoderRequest {
         }
     }
 
+    /// Heap capacity retained by the token, segment and mask buffers.
+    #[must_use]
+    pub fn retained_heap_bytes(&self) -> usize {
+        self.token_ids.capacity() * size_of::<u32>()
+            + self.token_type_ids.capacity() * size_of::<u32>()
+            + self.attention_mask.capacity() * size_of::<i32>()
+    }
+
     /// Positions this request occupies.
     #[must_use]
     pub fn sequence(&self) -> usize {

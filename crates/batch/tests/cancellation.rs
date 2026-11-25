@@ -80,6 +80,10 @@ impl BatchExecutor for CancellableEncoder {
         }
     }
 
+    fn waiting_input_bytes(&self, _input: &Self::Input) -> usize {
+        0
+    }
+
     fn retained_bytes(&self, _input: &Self::Input) -> u64 {
         ENVELOPE
     }
@@ -109,6 +113,7 @@ fn config() -> BatchConfig {
     BatchConfig {
         max_waiting_requests: 8,
         max_retained_results: 4,
+        ..BatchConfig::default()
     }
 }
 
@@ -191,6 +196,7 @@ fn cancellation_is_deliverable_while_the_terminal_bound_is_full() {
         BatchConfig {
             max_waiting_requests: 8,
             max_retained_results: 1,
+            ..BatchConfig::default()
         },
     )
     .expect("runtime");

@@ -182,10 +182,12 @@ Source audits at `093cd28` and `70e5586` found gaps that passing fixtures do not
    [Stop-boundary regressions](../benchmarks/runtime-contract.md#text-stop-ownership-repair-2026-10-22)
    exercise these gaps on the actual facade with GGUF/Gemma processors.
    This does not qualify allocator overhead, arbitrary processor workspace or process RSS.
-2. **Non-AR application access.** `BatchRuntime` in `crates/batch/src/lib.rs` bounds counts,
-   not submitted input bytes, selects FIFO prefixes and lacks local close/shutdown.
-   Executor `Blocked(C)` has no general readiness registration. Add retained-input
-   admission, bounded feasible-peer selection/aging and local retryable shutdown
+2. **Non-AR application access.** `BatchRuntime` in `crates/batch/src/lib.rs` bounds counts
+   and queued input heap capacity before admission. The BERT host gate checks spare
+   capacity in all three input buffers and verifies that cancellation, rejection
+   and execution return the budget independently of result retention.
+   Runtime selection is still FIFO and executor `Blocked(C)` has no general readiness
+   registration. Add bounded feasible-peer selection/aging and local retryable shutdown
    without closing sibling pools. Queued cancellation now settles before runnable
    selection even when the head is blocked on a sibling lease (host regression in
    `crates/batch/tests/cancellation.rs`); the terminal count bound still applies. The BERT

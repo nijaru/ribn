@@ -57,6 +57,10 @@ impl BatchExecutor for CudaBertEncoder {
     ///
     /// An infeasible head is rejected by [`Self::select_batch`] before any
     /// reservation is attempted, so the zero here never covers executing work.
+    fn waiting_input_bytes(&self, input: &Self::Input) -> usize {
+        input.retained_heap_bytes()
+    }
+
     fn retained_bytes(&self, input: &Self::Input) -> u64 {
         self.request_bytes(input.sequence()).unwrap_or(0)
     }

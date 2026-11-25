@@ -295,8 +295,12 @@ not authorize host-buffer reclamation while a device copy can still access it.
 ### Non-AR application lifecycle
 
 Status: accepted target, not qualified by the current direct BERT fixture. `BatchRuntime`
-currently bounds waiting/result counts, accepts executor-defined inputs without an
-input-byte budget, selects a FIFO prefix and has no model-local close/shutdown surface.
+bounds waiting/result counts and aggregate heap capacity retained by queued inputs.
+Executors report queued input allocation capacity before admission; the runtime rejects
+an input exceeding the entire limit or temporarily refuses admission if queued inputs
+occupy the remaining budget. This queue-local budget ends on removal for execution,
+rejection, or cancellation settlement; it is separate from device/result leases.
+The runtime selects a FIFO runnable prefix and has no model-local close/shutdown surface.
 Pool waits have `capacity_wait`; `BatchSelection::Blocked(C)` supplies no general
 executor readiness registration. Temporary head pressure can strand feasible later
 requests. On a drive step, queued cancellation settles before runnable selection,

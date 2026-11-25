@@ -22,6 +22,7 @@ fn config() -> BatchConfig {
     BatchConfig {
         max_waiting_requests: 8,
         max_retained_results: 4,
+        ..BatchConfig::default()
     }
 }
 

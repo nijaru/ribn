@@ -142,6 +142,10 @@ impl BatchExecutor for ReferenceEncoder {
         BatchSelection::Ready { items }
     }
 
+    fn waiting_input_bytes(&self, input: &Self::Input) -> usize {
+        input.capacity() * size_of::<u32>()
+    }
+
     fn retained_bytes(&self, _input: &Self::Input) -> u64 {
         u64::try_from(std::mem::size_of::<[f32; 3]>()).expect("fixed pooling width fits u64")
     }

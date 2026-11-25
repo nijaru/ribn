@@ -830,6 +830,12 @@ impl BatchExecutor for BertReference {
         BatchSelection::Ready { items: selected }
     }
 
+    fn waiting_input_bytes(&self, input: &Self::Input) -> usize {
+        input.token_ids.capacity() * size_of::<u32>()
+            + input.token_type_ids.as_ref().map_or(0, Vec::capacity) * size_of::<u32>()
+            + input.attention_mask.as_ref().map_or(0, Vec::capacity)
+    }
+
     fn retained_bytes(&self, input: &Self::Input) -> u64 {
         let hidden = u64::try_from(self.config.hidden_size).unwrap_or(u64::MAX);
         let sequence = u64::try_from(input.token_ids.len()).unwrap_or(u64::MAX);

@@ -48,6 +48,10 @@ impl BatchExecutor for Envelope {
             items: candidates.len(),
         }
     }
+    fn waiting_input_bytes(&self, _input: &Self::Input) -> usize {
+        0
+    }
+
     fn retained_bytes(&self, input: &Self::Input) -> u64 {
         *input
     }
@@ -74,6 +78,7 @@ fn runtime(pool: &Arc<BytePool>) -> BatchRuntime<Envelope> {
         BatchConfig {
             max_waiting_requests: 8,
             max_retained_results: 4,
+            ..BatchConfig::default()
         },
     )
     .expect("runtime")

@@ -4,16 +4,15 @@
 //! decode, or chat semantics. Its batching policy is intentionally minimal until
 //! real encoder/pooling models provide shape and memory evidence.
 //!
-//! The runtime accounts for two different quantities. Waiting work is bounded by
-//! [`BatchConfig::max_waiting_requests`]. Terminal results the caller has not
+//! Waiting work is bounded by [`BatchConfig::max_waiting_requests`] and
+//! [`BatchConfig::max_waiting_input_bytes`]. Terminal results the caller has not
 //! consumed are bounded by [`BatchConfig::max_retained_results`] and by a shared
 //! [`BytePool`], because a caller that stops draining results would otherwise grow
 //! memory without limit, and because encoder or media outputs can own substantial
 //! host and device allocations.
 //!
-//! The pool is the single byte authority for every runtime drawing on it, so one
-//! constraint binds siblings instead of each runtime enforcing a private byte
-//! budget. Reserving a request's retained output yields an owning [`PoolLease`]
+//! The pool is the shared byte authority for retained results, so one constraint
+//! binds siblings independently of their local waiting input budgets. Reserving a request's retained output yields an owning [`PoolLease`]
 //! that travels with the entry, so a completed result keeps its charge until the
 //! caller takes responsibility for the storage it covers.
 //!
@@ -76,18 +75,20 @@ impl RequestId {
 
 /// Bounds for waiting work and for terminal results that are still retained.
 ///
-/// The count bound applies to every terminal entry. The byte bound is not here: it
-/// belongs to the shared [`BytePool`] the runtime reserves from, so sibling
-/// runtimes cannot each spend the same capacity. Rejections hold no bulk payload,
+/// Queued input bytes have a local bound. Output bytes are instead charged to the
+/// shared [`BytePool`], so sibling runtimes cannot each spend the same capacity.
+/// The count bound applies to every terminal entry. Rejections hold no bulk payload,
 /// so they are bounded by [`Self::max_retained_results`] alone and stay
 /// deliverable while the pool is exhausted.
 ///
-/// Both counts are deliberately placeholder defaults. A deployment sizes them from
+/// Defaults are placeholders. A deployment sizes the limits from
 /// its own admission policy, not from the physical pool.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct BatchConfig {
     /// Requests that may wait for execution.
     pub max_waiting_requests: usize,
+    /// Heap bytes retained by accepted inputs still in the waiting queue.
+    pub max_waiting_input_bytes: usize,
     /// Terminal entries that may be retained before the caller consumes them.
     pub max_retained_results: usize,
 }
@@ -96,6 +97,7 @@ impl Default for BatchConfig {
     fn default() -> Self {
         Self {
             max_waiting_requests: 1024,
+            max_waiting_input_bytes: 16 * 1024 * 1024,
             max_retained_results: 1024,
         }
     }
@@ -379,6 +381,11 @@ pub trait BatchExecutor {
     /// additional scheduling complexity belongs in this runtime.
     fn select_batch(&self, candidates: &[&Self::Input]) -> BatchSelection<Self::Constraint>;
 
+    /// Heap bytes the input keeps alive while queued, including allocation spare
+    /// capacity and nested allocations. The request count bounds inline storage.
+    /// Report a conservative upper bound; inputs must not grow after acceptance.
+    fn waiting_input_bytes(&self, input: &Self::Input) -> usize;
+
     /// Bytes this request's completed output will retain until the caller
     /// consumes it.
     ///
@@ -447,6 +454,7 @@ impl<E> EnqueueError<E> {
 struct Queued<I> {
     request: RequestId,
     input: I,
+    waiting_bytes: usize,
     parameter_version: ParameterVersion,
     /// Cancellation intent, settled before runnable selection when delivery has room.
     cancelled: bool,
@@ -477,6 +485,7 @@ pub struct BatchRuntime<E: BatchExecutor> {
     pool: Arc<BytePool>,
     config: BatchConfig,
     queue: VecDeque<Queued<E::Input>>,
+    waiting_input_bytes: usize,
     terminal: VecDeque<Completed<E::Output, E::Constraint>>,
 }
 
@@ -495,6 +504,7 @@ impl<E: BatchExecutor> BatchRuntime<E> {
         config: BatchConfig,
     ) -> Result<Self, RuntimeError<E::Error>> {
         if config.max_waiting_requests == 0
+            || config.max_waiting_input_bytes == 0
             || config.max_retained_results == 0
             || executor.max_batch_items() == 0
         {
@@ -505,18 +515,34 @@ impl<E: BatchExecutor> BatchRuntime<E> {
             pool,
             config,
             queue: VecDeque::with_capacity(config.max_waiting_requests),
+            waiting_input_bytes: 0,
             terminal: VecDeque::new(),
         })
     }
 
     /// # Errors
-    /// Rejects a closed pool, a full waiting queue or identity exhaustion.
+    /// Rejects a closed pool, an over-budget input, a full waiting queue or identity exhaustion.
     pub fn submit(&mut self, input: E::Input) -> Result<RequestId, RuntimeError<E::Error>> {
         if self.pool.is_closed() {
             return Err(RuntimeError::PoolClosed);
         }
         if self.queue.len() >= self.config.max_waiting_requests {
             return Err(RuntimeError::WaitingCapacityExhausted);
+        }
+        let waiting_bytes = self.executor.waiting_input_bytes(&input);
+        let limit = self.config.max_waiting_input_bytes;
+        if waiting_bytes > limit {
+            return Err(RuntimeError::WaitingInputTooLarge {
+                requested: waiting_bytes,
+                limit,
+            });
+        }
+        let available = limit - self.waiting_input_bytes;
+        if waiting_bytes > available {
+            return Err(RuntimeError::WaitingInputCapacityExhausted {
+                requested: waiting_bytes,
+                available,
+            });
         }
         let request = RequestId(
             NEXT_REQUEST_ID
@@ -528,10 +554,18 @@ impl<E: BatchExecutor> BatchRuntime<E> {
         self.queue.push_back(Queued {
             request,
             input,
+            waiting_bytes,
             parameter_version: self.executor.parameter_version(),
             cancelled: false,
         });
+        self.waiting_input_bytes += waiting_bytes;
         Ok(request)
+    }
+
+    fn remove_queued(&mut self, index: usize) -> Option<Queued<E::Input>> {
+        let entry = self.queue.remove(index)?;
+        self.waiting_input_bytes -= entry.waiting_bytes;
+        Some(entry)
     }
 
     /// Cancel one live request.
@@ -669,7 +703,7 @@ impl<E: BatchExecutor> BatchRuntime<E> {
                 // delivers it.
                 return Ok(Resolved::Blocked(BlockReason::RetainedResults));
             }
-            let Some(cancelled) = self.queue.remove(index) else {
+            let Some(cancelled) = self.remove_queued(index) else {
                 return Err(RuntimeError::QueueInvariant);
             };
             self.terminal.push_back(Completed {
@@ -738,7 +772,7 @@ impl<E: BatchExecutor> BatchRuntime<E> {
         if self.terminal.len() >= self.config.max_retained_results {
             return Ok(Resolved::Blocked(BlockReason::RetainedResults));
         }
-        let Some(rejected) = self.queue.pop_front() else {
+        let Some(rejected) = self.remove_queued(0) else {
             return Err(RuntimeError::QueueInvariant);
         };
         self.terminal.push_back(Completed {
@@ -766,7 +800,7 @@ impl<E: BatchExecutor> BatchRuntime<E> {
     ) -> Result<Vec<JobOutput<E::Output>>, RuntimeError<E::Error>> {
         let mut queued = Vec::with_capacity(items);
         while queued.len() < items {
-            let Some(next) = self.queue.pop_front() else {
+            let Some(next) = self.remove_queued(0) else {
                 return Err(RuntimeError::QueueInvariant);
             };
             queued.push(next);
@@ -901,6 +935,14 @@ pub enum CancelOutcome {
 pub enum RuntimeError<E> {
     InvalidConfig,
     WaitingCapacityExhausted,
+    WaitingInputTooLarge {
+        requested: usize,
+        limit: usize,
+    },
+    WaitingInputCapacityExhausted {
+        requested: usize,
+        available: usize,
+    },
     IdentityExhausted,
     ParameterVersionChanged {
         queued: ParameterVersion,
@@ -947,6 +989,17 @@ impl<E: fmt::Display> fmt::Display for RuntimeError<E> {
             Self::WaitingCapacityExhausted => {
                 f.write_str("batch runtime waiting capacity is exhausted")
             }
+            Self::WaitingInputTooLarge { requested, limit } => write!(
+                f,
+                "batch input retains {requested} bytes, exceeding the waiting input limit of {limit}"
+            ),
+            Self::WaitingInputCapacityExhausted {
+                requested,
+                available,
+            } => write!(
+                f,
+                "batch input retains {requested} bytes, but only {available} waiting input bytes are available"
+            ),
             Self::IdentityExhausted => {
                 f.write_str("batch runtime request identity space is exhausted")
             }
@@ -1082,6 +1135,10 @@ mod tests {
             BatchSelection::Ready { items }
         }
 
+        fn waiting_input_bytes(&self, input: &Self::Input) -> usize {
+            input.capacity() * size_of::<u32>()
+        }
+
         fn retained_bytes(&self, input: &Self::Input) -> u64 {
             u64::try_from(input.len())
                 .unwrap_or(u64::MAX)
@@ -1164,6 +1221,10 @@ mod tests {
             BatchSelection::Ready { items: 1 }
         }
 
+        fn waiting_input_bytes(&self, input: &Self::Input) -> usize {
+            input.capacity() * size_of::<u32>()
+        }
+
         fn retained_bytes(&self, _input: &Self::Input) -> u64 {
             1
         }
@@ -1196,6 +1257,7 @@ mod tests {
         BatchConfig {
             max_waiting_requests: 8,
             max_retained_results: 4,
+            ..BatchConfig::default()
         }
     }
 
