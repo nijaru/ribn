@@ -92,6 +92,18 @@ RIBN_INKLING_GGUF="$MODEL" RIBN_INKLING_ORACLE=/tmp/inkling-logits \
   -- --ignored --exact --nocapture --test-threads=1
 ```
 
+### CUDA boundary capture (2026-11-25)
+
+The pinned CUDA replay captured the last-token Q/K/V and relative-query rows,
+attention outputs and residual outputs for all 48 logical layers at 1,023,
+1,024 and 1,025 tokens. The instrumented run's logits were bit-identical to the
+archived width-64 reference at all five checkpoints through 1,025, and its
+1,025 input token IDs matched the original history. This validates the tapped
+reference, not Rust parity. The taps contain current-token projections before
+cache storage, not historical KV rows. Keep that distinction when localizing
+any difference. Logs, tensor rows and the disposable driver are in the local
+`benchmarks/results/qualification/inkling-layer-taps/` directory.
+
 ## Native port boundary
 
 The checkpoint has 24 physical layers with core `[6,18)` run three times:
