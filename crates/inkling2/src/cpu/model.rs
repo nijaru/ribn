@@ -1333,6 +1333,53 @@ mod tests {
     }
 
     #[test]
+    fn only_sliding_slots_stop_reading_the_oldest_value_at_window_transition() {
+        let model = synthetic_loop_model(3, 5);
+        let window = model.config().sliding_window();
+        let tokens = [1, 5, 3, 12, 0, 7];
+        let attention = |state: &mut Inkling2CpuState, slot, token| {
+            let mut row = Vec::new();
+            let mut tap = |_, tapped_slot, _, stage: &str, data: &[f32]| {
+                if tapped_slot == slot && stage == "attn_out" {
+                    row.extend(data.iter().map(|value| value.to_bits()));
+                }
+            };
+            model
+                .forward_tokens_with_tap(state, &[token], false, Some(&mut tap))
+                .unwrap();
+            assert!(!row.is_empty());
+            row
+        };
+        let mut prefix = model.new_state(KvCachePrecision::F16);
+        for len in [window - 1, window] {
+            let start = prefix.position;
+            model
+                .forward_tokens(&mut prefix, &tokens[start..len], false)
+                .unwrap();
+            for slot in 0..model.config().state_slot_count() {
+                let geom = model.config().slot_geometry(slot).unwrap();
+                let mut perturbed = prefix.clone();
+                let KvStorage::F16 { v, .. } = &mut perturbed.slots[slot].kv else {
+                    unreachable!("fixture uses F16 KV");
+                };
+                // Touch only the stored value at absolute position zero in this slot;
+                // every other cache entry, convolution history and token stays fixed.
+                for value in &mut v[..geom.kv_dim()] {
+                    *value = f32_to_f16(f16_to_f32(*value) + 32.0);
+                }
+                let clean = attention(&mut prefix.clone(), slot, tokens[len]);
+                let changed = attention(&mut perturbed, slot, tokens[len]);
+                let should_read_oldest = geom.kind == AttentionKind::Full || len < window;
+                assert_eq!(
+                    clean != changed,
+                    should_read_oldest,
+                    "slot {slot}, query position {len}"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn loop_passes_keep_independent_kv_and_conv_state_slots() {
         let model = synthetic_loop_model(3, 8);
         let mut st = model.new_state(KvCachePrecision::F32);

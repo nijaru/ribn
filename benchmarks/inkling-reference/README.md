@@ -74,7 +74,11 @@ improved from 0.40711 to 0.23070 centered logit RMSE at 1,023 tokens and passed
 at 1,024 (0.18948). It failed at the first token that drops the oldest key,
 1,025 (0.38878 vs `< 0.25`); all three argmaxes matched. The Rust window-start
 expression agrees with the pinned llama.cpp standard mask (`q - k >= window`
-excludes a key), so this does not establish an off-by-one error. The two stock
+excludes a key), so this does not establish an off-by-one error. A synthetic
+F16 cache test independently perturbs the oldest stored value in each logical
+slot: it affects attention on both layer types at the last in-window query,
+then only on full-attention slots at the next query. This checks Rust mask
+behavior, not real-artifact parity. The two stock
 CUDA schedules themselves differ by 0.20854 at 1,025; that is context for
 investigation, not a new tolerance. Capture matched operands and attention
 state around the transition before changing runtime arithmetic. Raw rows and
