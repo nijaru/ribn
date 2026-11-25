@@ -81,7 +81,11 @@ impl LogicalSequence {
         })
     }
 
-    fn bind(&self, item: BatchItem, context_tokens: u32) -> Result<BoundRow, ExecutionError> {
+    pub(crate) fn bind(
+        &self,
+        item: BatchItem,
+        context_tokens: u32,
+    ) -> Result<BoundRow, ExecutionError> {
         let end = item
             .prefix
             .checked_add(item.token_budget)

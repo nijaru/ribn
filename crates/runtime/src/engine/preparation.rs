@@ -132,8 +132,15 @@ impl Engine {
                 continue;
             }
             sequence.resource_wait = None;
+            let is_survivor = self.protected_survivor == Some(index);
             if sequence.prefix < sequence.replay_tokens {
-                self.prefill.push_back(index);
+                if is_survivor {
+                    self.prefill.push_front(index);
+                } else {
+                    self.prefill.push_back(index);
+                }
+            } else if is_survivor {
+                self.decode.push_front(index);
             } else {
                 self.decode.push_back(index);
             }

@@ -9,6 +9,7 @@
 use super::activation::GeluTable;
 use super::kv_pool::{KV_PAGE_TOKENS, PagedKvPool, PrefixCacheStats};
 use super::{bf16_f32, f32_value, metal_error, usize_to_f32};
+pub use crate::paged_executor::{PackedStepItem, PackedStepOutput};
 use crate::{
     AttentionKind, Gemma4Config, Gemma4Error, Gemma4Source, Gemma4SourceEncoding, LayerParameter,
     ParameterId, ParameterPayload, inverse_frequencies,
@@ -17,6 +18,7 @@ use engine_metal::{
     METAL_QUANT_GROUP_SIZE, MetalBf16Buffer, MetalBf16Executor, MetalDeviceBf16, MetalDeviceF32,
     MetalDeviceU32, MetalFastSession, MetalQuantKind, MetalQuantWeight,
 };
+use ribn_foundation::BlockPoolError;
 use std::collections::BTreeMap;
 
 /// Weight quantization policy for `Gemma4MetalModelWide`.
@@ -484,30 +486,6 @@ struct BatchScratch {
     error_flag: MetalDeviceU32,
 }
 
-/// One packed sequence slice in a batched model-wide forward pass.
-#[derive(Clone, Copy, Debug)]
-pub struct PackedStepItem<'a> {
-    pub slot: usize,
-    pub tokens: &'a [u32],
-    pub need_logits: bool,
-}
-
-/// Zero-copy view over the completed outputs of a packed forward pass.
-pub struct PackedStepOutput<'a> {
-    pub argmax: &'a [u32],
-    pub logits: &'a [u16],
-    pub vocab_size: usize,
-}
-
-impl PackedStepOutput<'_> {
-    /// Borrow the soft-capped BF16 logits row for the `index`-th output-producing item.
-    #[must_use]
-    pub fn logits_row(&self, index: usize) -> &[u16] {
-        let start = index * self.vocab_size;
-        &self.logits[start..start + self.vocab_size]
-    }
-}
-
 /// Model-wide Gemma 4 Metal engine with paged KV pool, radix prefix caching, and continuous batching.
 pub struct Gemma4MetalModelWide {
     executor: MetalBf16Executor,
@@ -796,6 +774,82 @@ impl Gemma4MetalModelWide {
     #[must_use]
     pub const fn kv_pool_pinned_blocks(&self) -> usize {
         self.kv_pool.pinned_blocks()
+    }
+
+    /// Physical KV pages currently available for new allocation (free plus evictable cached).
+    #[must_use]
+    pub const fn kv_pool_available_blocks(&self) -> usize {
+        self.kv_pool.available_blocks()
+    }
+
+    /// Reserve enough physical KV pages for `slot` to reach `end_pos` during pre-submit
+    /// preparation.
+    ///
+    /// Returns `Ok(Some(prev_block_len))` when pages are reserved (with `prev_block_len`
+    /// identifying the rollback boundary for [`Self::rollback_slot_blocks`]), or `Ok(None)`
+    /// on transient KV-pool exhaustion (rolling back any partial page allocations cleanly).
+    ///
+    /// # Errors
+    /// Rejects faulted model, unoccupied/out-of-range slot, or position past prepared capacity.
+    pub fn try_reserve_slot_blocks(
+        &mut self,
+        slot: usize,
+        end_pos: usize,
+    ) -> Result<Option<usize>, Gemma4Error> {
+        self.check_healthy()?;
+        if end_pos > self.limits.max_positions {
+            return Err(Gemma4Error::new(
+                "Metal modelwide",
+                "sequence exceeds prepared KV capacity",
+            ));
+        }
+        let state = self
+            .slots
+            .get_mut(slot)
+            .and_then(Option::as_mut)
+            .ok_or_else(|| Gemma4Error::new("Metal modelwide", "slot is not occupied"))?;
+        let old_len = state.blocks.len();
+        match self
+            .kv_pool
+            .ensure_blocks_for_range(&mut state.blocks, end_pos)
+        {
+            Ok(()) => Ok(Some(old_len)),
+            Err(BlockPoolError::Exhausted) => Ok(None),
+            Err(error) => Err(Gemma4Error::new("KV pool", error.to_string())),
+        }
+    }
+
+    /// Roll back uncommitted KV pages reserved during preparation without disturbing
+    /// committed continuation pages.
+    ///
+    /// # Errors
+    /// Rejects faulted model, unoccupied/out-of-range slot, or rollback past committed pages.
+    pub fn rollback_slot_blocks(
+        &mut self,
+        slot: usize,
+        prev_len: usize,
+    ) -> Result<(), Gemma4Error> {
+        self.check_healthy()?;
+        let state = self
+            .slots
+            .get_mut(slot)
+            .and_then(Option::as_mut)
+            .ok_or_else(|| Gemma4Error::new("Metal modelwide", "slot is not occupied"))?;
+        let committed_pages = state
+            .position
+            .div_ceil(KV_PAGE_TOKENS)
+            .max(state.cached_pages);
+        if prev_len < committed_pages || prev_len > state.blocks.len() {
+            return Err(Gemma4Error::new(
+                "Metal modelwide",
+                "invalid KV block rollback boundary",
+            ));
+        }
+        if prev_len < state.blocks.len() {
+            let extra: Vec<usize> = state.blocks.drain(prev_len..).collect();
+            self.kv_pool.release_slot_blocks(extra);
+        }
+        Ok(())
     }
 
     /// Non-mutating check of cached prefix pages matching `prompt`, returning

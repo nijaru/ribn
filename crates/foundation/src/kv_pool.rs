@@ -127,6 +127,13 @@ impl<const PAGE_TOKENS: usize> PagedBlockPool<PAGE_TOKENS> {
         self.pinned_blocks
     }
 
+    /// Physical blocks currently available for new allocation (free blocks plus
+    /// unpinned cached blocks evictable via LRU).
+    #[must_use]
+    pub const fn available_blocks(&self) -> usize {
+        self.blocks.len().saturating_sub(self.pinned_blocks)
+    }
+
     #[must_use]
     pub const fn stats(&self) -> PrefixCacheStats {
         PrefixCacheStats {
@@ -431,6 +438,7 @@ mod tests {
         assert_eq!(blocks_b.len(), 3);
         assert_eq!(pool.stats().free_blocks, 0);
         assert_eq!(pool.stats().pinned_blocks, 4);
+        assert_eq!(pool.available_blocks(), 0);
 
         // Exhaustion rolls back cleanly without leaking
         let mut blocks_c = Vec::new();
@@ -446,6 +454,7 @@ mod tests {
         assert_eq!(pool.stats().free_blocks, 2);
         assert_eq!(pool.stats().cached_blocks, 2);
         assert_eq!(pool.stats().pinned_blocks, 0);
+        assert_eq!(pool.available_blocks(), 4);
         // Peeking now shows 2 matched pages and 2 newly pinned
         assert_eq!(pool.peek_prefix_match(&prompt_b), (2, 2));
 

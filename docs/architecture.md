@@ -309,8 +309,11 @@ multi-sequence prefill/decode batches into one `MTLCommandBuffer` over a shared
 16-token paged KV pool (`ribn_foundation::PagedBlockPool<16>`, default 16K context / 2,048 blocks)
 with exact content-addressed radix prefix caching (`GenerationExecutor::admitted_prefix`
 and live lock-free `PrefixCacheStats` exposed on `GET /metrics`),
-exact pinned+reserved KV-pool and slot admission backpressure (`Admission::Deferred`
-with `Readiness` wakeups on release/deduplication), exact shared-KV tail pruning,
+partial-envelope prompt-budget admission, pre-submit KV page growth negotiation with
+positive prefill shortening and rollback on `abandon_preparation`, and runtime-managed
+completion-safe recomputation preemption (`GenerationExecutor::supports_preemption` via
+`crates/gemma4/src/paged_executor.rs`, host-qualified over `PagedBlockPool<16>`; Metal GPU
+requalification pending), exact shared-KV tail pruning,
 bit-exact fused norm/residual and `M=1` decode kernels (`Gate+Up+GeGLU`,
 `PleGate+GeGLU`, `K+V`), unpack-once `M=2..4` quantized GEMV, capability-gated
 stochastic sampling (`GenerationExecutor::supports_sampling`, backed by shared

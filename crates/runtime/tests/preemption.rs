@@ -708,3 +708,71 @@ fn cancelled_preempted_victim_failed_preemption_release_and_impossible_request_p
         assert_eq!(pool.granted(), 0, "shutdown retry releases all charges");
     }
 }
+
+#[test]
+fn protected_survivor_is_scheduled_ahead_of_older_parked_peers_after_preemption() {
+    // Pool holds 9 bytes across 3 concurrent requests (prompt=1, out=4 -> 1 base + 1 prefill + 3 decode = 5 bytes each):
+    // - Step 1: all 3 admit (3 base) + prefill (3 bytes -> 6 total).
+    // - Step 2: all 3 decode once (3 bytes -> 9 total = FULL!).
+    // - Step 3: all 3 park -> Engine protects A, preempts C (frees 3 bytes -> 3 free).
+    // - Step 4: A, B wake up -> A gets 1 byte, B gets 1 byte (8 total, 1 free).
+    // - Step 5: A gets last 1 byte (9 total, FULL!), B parks first in `self.parked`.
+    // - Step 6: A needs 1 more byte -> A parks BEHIND B in `self.parked = [B, A]`!
+    //   Engine keeps protected_survivor = Some(A), preempts B (or if 4 requests, preempts C/D).
+    // With 4 concurrent requests in a 10-byte pool, after C is preempted while `parked = [B, C, A]`,
+    // survivor A MUST be prioritized ahead of B so B cannot steal A's freed bytes!
+    let pool = BytePool::new(10).shared();
+    let trace = Arc::new(Mutex::new(Trace::default()));
+    let model = PreemptibleModel::new(Arc::clone(&pool), Arc::clone(&trace), 4);
+    let mut engine = Engine::new(
+        model,
+        EngineConfig {
+            max_active_requests: 4,
+            max_queued_requests: 4,
+            max_queued_input_tokens: 64,
+            max_buffered_events: 64,
+            max_events_per_request: 16,
+        },
+        test_policy(),
+    )
+    .unwrap();
+
+    let req_a = engine.enqueue(req(1, 1, 5)).unwrap();
+    let req_b = engine.enqueue(req(2, 1, 5)).unwrap();
+    let req_c = engine.enqueue(req(3, 1, 5)).unwrap();
+    let req_d = engine.enqueue(req(4, 1, 5)).unwrap();
+
+    let mut finish_order = Vec::new();
+    let mut outputs: HashMap<RequestId, Vec<u32>> = HashMap::new();
+    for _ in 0..120 {
+        engine.step().unwrap();
+        while let Some(ev) = engine.pop_event() {
+            match ev {
+                Event::Token { request, token } => {
+                    outputs.entry(request).or_default().push(token);
+                }
+                Event::Finished {
+                    request, reason, ..
+                } => {
+                    assert_eq!(reason, FinishReason::Length);
+                    finish_order.push(request);
+                }
+            }
+        }
+        if engine.status().requests == 0 {
+            break;
+        }
+    }
+
+    assert_eq!(finish_order.len(), 4);
+    assert_eq!(
+        finish_order[0], req_a,
+        "protected survivor A must finish first without peer block stealing"
+    );
+    assert_eq!(outputs[&req_a], vec![101, 102, 103, 104, 105]);
+    assert_eq!(outputs[&req_b], vec![201, 202, 203, 204, 205]);
+    assert_eq!(outputs[&req_c], vec![301, 302, 303, 304, 305]);
+    assert_eq!(outputs[&req_d], vec![401, 402, 403, 404, 405]);
+    assert!(engine.preemptions() >= 2);
+    assert_eq!(pool.granted(), 0);
+}

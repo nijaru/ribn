@@ -7,9 +7,15 @@
 
 #[cfg(feature = "cuda")]
 mod cuda;
-#[cfg(all(test, feature = "cuda"))]
+#[cfg(test)]
+#[allow(
+    dead_code,
+    reason = "shared test identity fixture across CPU, Metal, and CUDA tests"
+)]
 #[path = "../tests/support/modelwide_ids.rs"]
-mod cuda_test_support;
+mod modelwide_ids;
+#[cfg(all(test, feature = "cuda"))]
+use modelwide_ids as cuda_test_support;
 #[cfg(all(feature = "metal", target_os = "macos"))]
 mod metal;
 #[cfg(feature = "cuda")]
@@ -43,6 +49,8 @@ pub use config::{AttentionKind, Gemma4Config, LayerGeometry, Rope};
 pub use continuation::{AttentionSpan, KvOwnerStep, KvStep, RetainedSpan};
 mod executor;
 mod generation;
+#[cfg(any(test, all(feature = "metal", target_os = "macos")))]
+mod paged_executor;
 pub use cpu::{
     AttentionConfig, CpuParameter, Gemma4CpuDecoder, Gemma4CpuWeights, add, apply_rotary, argmax,
     attention, attention_with_weights, bf16, factors, gelu_tanh, inverse_frequencies, linear,

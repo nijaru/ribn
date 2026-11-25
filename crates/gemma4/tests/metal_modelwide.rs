@@ -445,6 +445,147 @@ fn kv_pool_and_slot_pressure_defer_wake_and_reject_impossibly_large_requests() {
     driver.shutdown().unwrap();
 }
 
+#[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "end-to-end Metal partial-envelope admission, growth preemption, and bit-exact CPU oracle replay"
+)]
+fn kv_pool_partial_envelope_batches_preempts_and_replays_bit_identically() {
+    let dir = weights::Dir::new();
+    let pkg = weights::package(&dir, &weights::inventory(), false);
+    let source = Gemma4Source::open(&pkg).unwrap();
+
+    // Two 20-token prompts (2 pages each) generating 22 tokens each (reach = 41 tokens = 3 pages).
+    // Pool holds 4 blocks (64 tokens): partial-envelope admission admits BOTH concurrently
+    // (2 + 2 = 4 <= 4), batches them at M=2 through position 32, then triggers completion-safe
+    // recomputation preemption on page-3 growth and replays the victim with exact CPU parity.
+    let prompt_a: Vec<u32> = (0_u32..20).map(|i| 2 + (i % 5)).collect();
+    let prompt_b: Vec<u32> = (0_u32..20).map(|i| 2 + ((i + 3) % 5)).collect();
+    let cpu_weights = Arc::new(Gemma4CpuWeights::load(&source).unwrap());
+    let run_cpu = |prompt: &[u32], count: usize| -> Vec<u32> {
+        let mut dec = Gemma4CpuDecoder::shared(Arc::clone(&cpu_weights)).unwrap();
+        let mut logits = dec.prefill(prompt).unwrap();
+        let mut out = Vec::with_capacity(count);
+        for step in 0..count {
+            let tok = argmax(&logits).unwrap();
+            out.push(tok);
+            if step + 1 < count {
+                logits = dec.decode(tok).unwrap();
+            }
+        }
+        out
+    };
+    let expected_a = run_cpu(&prompt_a, 22);
+    let expected_b = run_cpu(&prompt_b, 22);
+
+    let pool_cfg = Gemma4MetalModelWideConfig {
+        max_sequences: 2,
+        max_positions: 64,
+        max_batch_tokens: 64,
+        num_kv_blocks: 4,
+        quant: Gemma4MetalQuant::Bf16,
+    };
+    let model = Gemma4MetalModelWide::load(&source, pool_cfg).unwrap();
+    let exec = Gemma4MetalModelWideExecutor::new(model).unwrap();
+    let mut engine = Engine::new(
+        exec,
+        EngineConfig {
+            max_active_requests: 2,
+            max_queued_requests: 4,
+            max_buffered_events: 128,
+            max_events_per_request: 64,
+            ..EngineConfig::default()
+        },
+        SchedulePolicy {
+            max_batch_tokens: 64,
+            prefill_chunk_tokens: 64,
+            ..SchedulePolicy::default()
+        },
+    )
+    .unwrap();
+
+    let req_a = engine
+        .enqueue(TokenRequest::new(
+            prompt_a,
+            GenerationOptions {
+                max_output_tokens: 22,
+                ..GenerationOptions::default()
+            },
+        ))
+        .unwrap();
+    let req_b = engine
+        .enqueue(TokenRequest::new(
+            prompt_b,
+            GenerationOptions {
+                max_output_tokens: 22,
+                ..GenerationOptions::default()
+            },
+        ))
+        .unwrap();
+
+    let mut out_a = Vec::new();
+    let mut out_b = Vec::new();
+    let mut done_a = None;
+    let mut done_b = None;
+    let mut saw_both_active = false;
+    for _ in 0..256 {
+        engine.step().unwrap();
+        if engine.status().active_sequences == 2 {
+            saw_both_active = true;
+        }
+        while let Some(ev) = engine.pop_event() {
+            match ev {
+                Event::Token { request, token } if request == req_a => out_a.push(token),
+                Event::Token { request, token } if request == req_b => out_b.push(token),
+                Event::Finished {
+                    request,
+                    reason,
+                    usage,
+                } if request == req_a => done_a = Some((reason, usage)),
+                Event::Finished {
+                    request,
+                    reason,
+                    usage,
+                } if request == req_b => done_b = Some((reason, usage)),
+                _ => {}
+            }
+        }
+        if done_a.is_some() && done_b.is_some() {
+            break;
+        }
+    }
+
+    assert!(saw_both_active, "both requests must batch concurrently");
+    assert!(
+        engine.preemptions() >= 1,
+        "KV pool saturation must trigger recomputation preemption"
+    );
+    assert_eq!(out_a, expected_a);
+    assert_eq!(out_b, expected_b);
+    assert_eq!(
+        done_a,
+        Some((
+            FinishReason::Length,
+            ribn::Usage {
+                prompt_tokens: 20,
+                completion_tokens: 22,
+            }
+        ))
+    );
+    assert_eq!(
+        done_b,
+        Some((
+            FinishReason::Length,
+            ribn::Usage {
+                prompt_tokens: 20,
+                completion_tokens: 22,
+            }
+        ))
+    );
+    assert_eq!(engine.prefix_cache_stats().unwrap().pinned_blocks, 0);
+    engine.shutdown().unwrap();
+}
+
 fn assert_close_logits(actual: &[u16], expected: &[u16], label: &str) {
     assert_eq!(actual.len(), expected.len());
     for (i, (&a, &e)) in actual.iter().zip(expected).enumerate() {
