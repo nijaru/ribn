@@ -4,8 +4,8 @@
 logical 48-slot continuation accounting, a pure-Rust CPU reference forward, and
 a greedy `ribn::GenerationExecutor` (host-verified on synthetic mixed-encoding
 GGUFs plus exact 1,036-token oracle tokenization and real chat-template rendering);
-full-checkpoint GGUF numerical qualification against this oracle and GPU serving
-remain pending. This oracle pins the text execution of
+the full-checkpoint GGUF numerical gate below did not pass. GPU serving remains
+unqualified. This oracle pins the text execution of
 `ggml-org/Inkling-2-Mini-GGUF` snapshot `db61c5b492a6a034d986328d28274af0a439aa6c`,
 file `Inkling-2-Mini-IQ4_NL.gguf`, SHA-256
 `cbdf3fa9dc50a4124977980f37da4f1fa764b0cfe800d275cd43d26ce2a81af4`.
@@ -36,6 +36,25 @@ These are reference observations, not acceptance tolerances. Match the exact
 chunk schedule and cache precision first; use layer taps to localize drift
 before attributing differences to chunk arithmetic or state. Raw qualification:
 `benchmarks/results/qualification/inkling-oracle-e6d624b/`.
+
+## Rust CPU numerical gate (2026-11-24)
+
+On Fedora at `fbb8c9a`, the real-artifact GGUF preflight found 704 tensors and
+48 state slots and matched all 1,036 oracle token IDs. The CPU forward used F16
+KV and the width-64 checkpoint schedule from `replay.cpp`. The 8- and 32-token
+checkpoints passed (centered logit RMSE 0.13521 and 0.22549). At 1,023 tokens,
+argmax still matched (368), but centered RMSE was 0.40711 against the existing
+`< 0.25` bound; max absolute logit error was 2.17214. The test stopped there,
+so the 1,024-token boundary and later checkpoints remain untested. Do not
+raise the bound on this evidence. Compare matched-history layer/state taps
+before attributing the drift to a specific operation.
+
+```sh
+RIBN_INKLING_GGUF="$MODEL" RIBN_INKLING_ORACLE=/tmp/inkling-logits \
+  cargo test -p engine-inkling2 --locked --release --test real_artifact \
+  cpu_forward_matches_all_ten_pinned_oracle_checkpoints_across_swa_boundary \
+  -- --ignored --exact --nocapture --test-threads=1
+```
 
 ## Native port boundary
 
