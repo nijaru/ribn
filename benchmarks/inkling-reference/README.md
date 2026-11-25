@@ -49,6 +49,20 @@ so the 1,024-token boundary and later checkpoints remain untested. Do not
 raise the bound on this evidence. Compare matched-history layer/state taps
 before attributing the drift to a specific operation.
 
+A follow-up compared last-token layer rows at lengths 8 and 32 against the
+same pinned llama.cpp revision on **CPU**, using the same tokens and F16 KV.
+All 48 attention-output and layer-output rows per checkpoint were finite and
+shape-matched. At 8 tokens, relative L2 was already 0.48% at layer 0's attention
+output, then reached 20.73% at the attention output of logical layer 32 on the
+second core pass. At 32 tokens, it was 0.56% at layer 0's attention output and
+17.05% at logical layer 44's residual output. These CPU-to-CPU taps show
+short-history drift before the window boundary; they do not separate
+quantized projection arithmetic from model semantics or explain the failed
+1,023-token CUDA-oracle comparison. Next compare layer 0 Q/K/V and the first
+expert projections with shared operands before extending the replay. Raw rows
+and disposable probe sources: `benchmarks/results/qualification/inkling-layer-taps/`
+(local).
+
 ```sh
 RIBN_INKLING_GGUF="$MODEL" RIBN_INKLING_ORACLE=/tmp/inkling-logits \
   cargo test -p engine-inkling2 --locked --release --test real_artifact \
