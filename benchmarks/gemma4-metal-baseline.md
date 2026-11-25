@@ -2951,5 +2951,11 @@ routes returned the configured model ID. Two identical greedy streaming chat
 requests using a text-part array and `max_completion_tokens: 8` each returned
 content and `[DONE]`. `/metrics` reported two TTFT observations and 208 prefix
 hit tokens after the repeat, with 13 cached and zero pinned KV blocks at idle.
-The server exited cleanly on SIGTERM. This HTTP smoke did not force pool pressure
-or rerun the ignored real-model oracle sweeps.
+The server exited cleanly on SIGTERM. This HTTP smoke did not force pool pressure.
+
+The ignored release BF16 gate on the same code and artifact
+(`metal_modelwide::e4b_modelwide_matches_12_row_bf16_oracle_and_benchmarks`)
+matched all 12 archived BF16 CPU oracle winners, with worst relative L2 0.03108
+and worst KL 0.006894. The 513-token prefix replay hit 512 tokens and remained
+bit-identical. The ignored `gemma_metal` real-artifact text facade test also
+passed. The quantized real-model oracle sweeps were not rerun.
