@@ -117,6 +117,12 @@ impl TextModel {
         self.handle.supports_sampling()
     }
 
+    /// Lock-free snapshot of paged KV-pool and prefix-cache telemetry, if supported.
+    #[must_use]
+    pub fn prefix_cache_stats(&self) -> Option<ribn::PrefixCacheStats> {
+        self.handle.prefix_cache_stats()
+    }
+
     /// Total application request permits, including preprocessing, queued work and
     /// retained delivery/retirement. Not the active sequence or physical batch count,
     /// and not a snapshot of currently available permits.

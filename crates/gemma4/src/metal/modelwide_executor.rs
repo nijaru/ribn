@@ -138,6 +138,12 @@ impl GenerationExecutor for Gemma4MetalModelWideExecutor {
         true
     }
 
+    fn prefix_cache_stats(&self) -> Option<ribn::PrefixCacheStats> {
+        self.execution
+            .as_ref()
+            .map(|owner| owner.model.prefix_cache_stats())
+    }
+
     fn admitted_prefix(&self, sequence: SequenceId) -> u32 {
         self.execution
             .as_ref()

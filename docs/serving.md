@@ -74,7 +74,7 @@ saturation returns 503 without reading the body.
 - `GET /health`: 200 while loading or serving; otherwise 503.
 - `GET /ready`: 200 only while serving. It does not promise admission capacity.
 - `GET /v1/models` and `GET /v1/models/{model}`: OpenAI model discovery (`503` while loading; `404` for unknown IDs).
-- `GET /metrics`: Prometheus counters, gauges, and latency sums/counts (`ribn_ttft_seconds_*`, `ribn_request_duration_seconds_*`); successful terminal counts do
+- `GET /metrics`: Prometheus counters, gauges, latency sums/counts (`ribn_ttft_seconds_*`, `ribn_request_duration_seconds_*`), and—on paged-KV executors—live KV-pool and prefix-cache telemetry (`ribn_kv_blocks_{total,free,cached,pinned}`, `ribn_prefix_cache_{hit_tokens,miss_tokens,evictions}_total`); successful terminal counts do
   not imply that the client received the response.
 
 SIGINT/SIGTERM stop admission and abandon connections before model cleanup.

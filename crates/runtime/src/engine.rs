@@ -186,6 +186,14 @@ impl Engine {
         self.supports_sampling
     }
 
+    /// Optional paged KV-pool and prefix-cache telemetry from the underlying executor.
+    #[must_use]
+    pub fn prefix_cache_stats(&self) -> Option<crate::PrefixCacheStats> {
+        self.model
+            .as_deref()
+            .and_then(GenerationExecutor::prefix_cache_stats)
+    }
+
     #[must_use]
     pub fn status(&self) -> EngineStatus {
         EngineStatus {

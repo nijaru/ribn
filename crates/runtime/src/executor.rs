@@ -1,6 +1,6 @@
 use std::fmt;
 
-use crate::{ReadinessWait, RequestId, TokenRequest};
+use crate::{PrefixCacheStats, ReadinessWait, RequestId, TokenRequest};
 
 /// Engine-issued logical identity, not an allocation pointer or a cache layout.
 /// Models must not infer state contents from this value or from its prefix.
@@ -183,6 +183,12 @@ pub trait GenerationExecutor: Send {
     /// runs to produce output. Defaults to `0`.
     fn admitted_prefix(&self, _sequence: SequenceId) -> u32 {
         0
+    }
+
+    /// Optional snapshot of paged KV-pool and prefix-cache telemetry for observability.
+    /// Defaults to `None`.
+    fn prefix_cache_stats(&self) -> Option<PrefixCacheStats> {
+        None
     }
 
     /// Validate request semantics and reserve a coherent initial continuation

@@ -28,5 +28,5 @@ pub use executor::{
 pub use request::{
     Event, FinishReason, GenerationOptions, RequestId, Sampling, TokenRequest, Usage,
 };
-pub use ribn_foundation::{Readiness, ReadinessWait};
+pub use ribn_foundation::{PrefixCacheStats, Readiness, ReadinessWait};
 pub use sampling::{init_rng_state, sample_bf16_logits, sample_f32_logits};

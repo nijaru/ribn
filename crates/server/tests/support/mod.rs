@@ -7,8 +7,8 @@ use engine_gguf::{GgufTokenizer, MetadataValue, byte_token_symbol};
 use ribn::driver::{Driver, DriverConfig};
 use ribn::{
     Admission, BatchItem, BatchPreparation, Engine, EngineConfig, ExecutionError, ExecutorInfo,
-    GenerationExecutor, GenerationLimits, RequestId, SchedulePolicy, SequenceId, StepCompletion,
-    StepKind, SubmissionId, TokenRequest,
+    GenerationExecutor, GenerationLimits, PrefixCacheStats, RequestId, SchedulePolicy, SequenceId,
+    StepCompletion, StepKind, SubmissionId, TokenRequest,
 };
 use ribn_server::{Server, ServerConfig};
 use ribn_text::{GgufProcessor, ProcessorLimits, TextConfig, TextOwner};
@@ -30,6 +30,7 @@ pub struct Plan {
     pub live: AtomicUsize,
     pub produced: AtomicUsize,
     pub supports_sampling: bool,
+    pub prefix_cache_stats: Option<PrefixCacheStats>,
 }
 
 struct Fixture {
@@ -46,6 +47,9 @@ impl GenerationExecutor for Fixture {
     }
     fn supports_sampling(&self) -> bool {
         self.plan.supports_sampling
+    }
+    fn prefix_cache_stats(&self) -> Option<PrefixCacheStats> {
+        self.plan.prefix_cache_stats
     }
     fn admit(
         &mut self,

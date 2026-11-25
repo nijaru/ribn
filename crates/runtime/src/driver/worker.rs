@@ -125,6 +125,7 @@ fn drive(
             }
         };
         progress |= deliver(engine, &mut routes);
+        shared.prefix_cache.publish(engine.prefix_cache_stats());
         if progress || step.submitted || step.completed {
             continue;
         }

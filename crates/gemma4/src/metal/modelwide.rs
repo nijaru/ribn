@@ -648,7 +648,8 @@ impl Gemma4MetalModelWide {
             error_flag: alloc_u32(1)?,
         };
 
-        let kv_pool = PagedKvPool::new(limits.num_kv_blocks)?;
+        let kv_pool = PagedKvPool::new(limits.num_kv_blocks)
+            .map_err(|error| Gemma4Error::new("KV pool", error.to_string()))?;
         let mut slots = Vec::with_capacity(limits.max_sequences);
         slots.resize_with(limits.max_sequences, || None);
 
@@ -966,7 +967,7 @@ impl Gemma4MetalModelWide {
                         self.kv_pool.release_slot_blocks(extra);
                     }
                 }
-                return Err(error);
+                return Err(Gemma4Error::new("KV pool", error.to_string()));
             }
             prev_block_lens.push((item.slot, old_len));
         }

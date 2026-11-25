@@ -97,7 +97,7 @@ impl State {
             reason = "Prometheus seconds sum exported as floating point"
         )]
         let duration_seconds = m.request_duration_nanos_sum.load(Ordering::Relaxed) as f64 / 1e9;
-        format!(
+        let mut text = format!(
             "ribn_ready {}\nribn_connections_active {}\nribn_connections_rejected_total {}\nribn_connection_deadlines_total {}\nribn_requests_active {}\nribn_requests_total {}\nribn_requests_rejected_total {}\nribn_requests_completed_total {}\nribn_requests_failed_total {}\nribn_requests_abandoned_total {}\nribn_prompt_tokens_total {}\nribn_completion_tokens_total {}\nribn_ttft_seconds_sum {ttft_seconds:.6}\nribn_ttft_seconds_count {}\nribn_request_duration_seconds_sum {duration_seconds:.6}\nribn_request_duration_seconds_count {}\n",
             u8::from(self.readiness() == Readiness::Serving),
             m.connections.load(Ordering::Relaxed),
@@ -113,7 +113,22 @@ impl State {
             m.completion_tokens.load(Ordering::Relaxed),
             m.ttft_count.load(Ordering::Relaxed),
             m.request_duration_count.load(Ordering::Relaxed),
-        )
+        );
+        if let Some(stats) = self.model().and_then(|model| model.prefix_cache_stats()) {
+            use std::fmt::Write as _;
+            let _ = write!(
+                text,
+                "ribn_kv_blocks_total {}\nribn_kv_blocks_free {}\nribn_kv_blocks_cached {}\nribn_kv_blocks_pinned {}\nribn_prefix_cache_hit_tokens_total {}\nribn_prefix_cache_miss_tokens_total {}\nribn_prefix_cache_evictions_total {}\n",
+                stats.num_blocks,
+                stats.free_blocks,
+                stats.cached_blocks,
+                stats.pinned_blocks,
+                stats.prefix_hit_tokens,
+                stats.prefix_miss_tokens,
+                stats.evictions,
+            );
+        }
+        text
     }
 }
 

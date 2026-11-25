@@ -19,13 +19,15 @@
 //! ```
 
 use std::fmt;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use flume::{Receiver, Sender};
 
-use crate::{Engine, EngineError, Event, GenerationOptions, RequestId, TokenRequest};
+use crate::{
+    Engine, EngineError, Event, GenerationOptions, PrefixCacheStats, RequestId, TokenRequest,
+};
 
 #[cfg(test)]
 mod tests;
@@ -122,11 +124,59 @@ impl std::error::Error for DriverError {
     }
 }
 
+#[derive(Default)]
+struct PrefixCacheTelemetry {
+    enabled: AtomicBool,
+    num_blocks: AtomicUsize,
+    free_blocks: AtomicUsize,
+    cached_blocks: AtomicUsize,
+    pinned_blocks: AtomicUsize,
+    prefix_hit_tokens: AtomicU64,
+    prefix_miss_tokens: AtomicU64,
+    evictions: AtomicU64,
+}
+
+impl PrefixCacheTelemetry {
+    fn publish(&self, stats: Option<PrefixCacheStats>) {
+        let Some(stats) = stats else {
+            return;
+        };
+        self.num_blocks.store(stats.num_blocks, Ordering::Relaxed);
+        self.free_blocks.store(stats.free_blocks, Ordering::Relaxed);
+        self.cached_blocks
+            .store(stats.cached_blocks, Ordering::Relaxed);
+        self.pinned_blocks
+            .store(stats.pinned_blocks, Ordering::Relaxed);
+        self.prefix_hit_tokens
+            .store(stats.prefix_hit_tokens, Ordering::Relaxed);
+        self.prefix_miss_tokens
+            .store(stats.prefix_miss_tokens, Ordering::Relaxed);
+        self.evictions.store(stats.evictions, Ordering::Relaxed);
+        self.enabled.store(true, Ordering::Release);
+    }
+
+    fn snapshot(&self) -> Option<PrefixCacheStats> {
+        if !self.enabled.load(Ordering::Acquire) {
+            return None;
+        }
+        Some(PrefixCacheStats {
+            num_blocks: self.num_blocks.load(Ordering::Relaxed),
+            free_blocks: self.free_blocks.load(Ordering::Relaxed),
+            cached_blocks: self.cached_blocks.load(Ordering::Relaxed),
+            pinned_blocks: self.pinned_blocks.load(Ordering::Relaxed),
+            prefix_hit_tokens: self.prefix_hit_tokens.load(Ordering::Relaxed),
+            prefix_miss_tokens: self.prefix_miss_tokens.load(Ordering::Relaxed),
+            evictions: self.evictions.load(Ordering::Relaxed),
+        })
+    }
+}
+
 struct Shared {
     failure: Mutex<Option<DriverError>>,
     exit: Mutex<Option<Result<(), DriverError>>>,
     final_stop: AtomicBool,
     wake: Sender<()>,
+    prefix_cache: PrefixCacheTelemetry,
     #[cfg(test)]
     before_wait: Mutex<Option<(Sender<()>, Receiver<()>)>>,
 }
@@ -276,12 +326,16 @@ impl Driver {
         {
             return Err(DriverError::InvalidConfig);
         }
+        let initial_prefix_cache = engine.prefix_cache_stats();
         let (wake, wake_rx) = flume::bounded(1);
+        let prefix_cache = PrefixCacheTelemetry::default();
+        prefix_cache.publish(initial_prefix_cache);
         let shared = Arc::new(Shared {
             failure: Mutex::new(None),
             exit: Mutex::new(None),
             final_stop: AtomicBool::new(false),
             wake,
+            prefix_cache,
             #[cfg(test)]
             before_wait: Mutex::new(None),
         });
@@ -445,6 +499,12 @@ impl GenerationHandle {
     #[must_use]
     pub const fn supports_sampling(&self) -> bool {
         self.supports_sampling
+    }
+
+    /// Lock-free snapshot of paged KV-pool and prefix-cache telemetry, if supported.
+    #[must_use]
+    pub fn prefix_cache_stats(&self) -> Option<PrefixCacheStats> {
+        self.shared.prefix_cache.snapshot()
     }
     /// Observe owner availability without reserving request capacity.
     ///

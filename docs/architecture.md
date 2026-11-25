@@ -301,13 +301,15 @@ commits logical cursor/input/output state only after all synchronous rows succee
 default `Gemma4MetalFfn::Native` path (`head_dim <= 512`) selects
 `Gemma4MetalModelWide` + `Gemma4MetalModelWideExecutor`, which encodes packed
 multi-sequence prefill/decode batches into one `MTLCommandBuffer` over a shared
-16-token paged KV pool (`metal/kv_pool.rs`, default 16K context / 2,048 blocks)
-with exact content-addressed radix prefix caching (`GenerationExecutor::admitted_prefix`),
+16-token paged KV pool (`ribn_foundation::PagedBlockPool<16>`, default 16K context / 2,048 blocks)
+with exact content-addressed radix prefix caching (`GenerationExecutor::admitted_prefix`
+and live lock-free `PrefixCacheStats` exposed on `GET /metrics`),
 exact pinned+reserved KV-pool and slot admission backpressure (`Admission::Deferred`
 with `Readiness` wakeups on release/deduplication), exact shared-KV tail pruning,
 bit-exact fused norm/residual and `M=1` decode kernels (`Gate+Up+GeGLU`,
 `PleGate+GeGLU`, `K+V`), unpack-once `M=2..4` quantized GEMV, capability-gated
-stochastic sampling (`GenerationExecutor::supports_sampling`), and both streaming
+stochastic sampling (`GenerationExecutor::supports_sampling`, backed by shared
+`ribn::sampling`), and both streaming
 online and direct pre-quantized MLX affine group-64 weight loading
 (`Gemma4MetalQuant::{Bf16, Q8, Q4}`, backed by `engine-metal`'s
 `quant_fast.metal` and `bf16/quant.rs`, defaulting to native package precision). Explicit

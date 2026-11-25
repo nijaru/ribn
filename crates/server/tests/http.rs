@@ -847,3 +847,39 @@ async fn openai_models_endpoint_chat_compat_and_latency_metrics() {
     let (_, res) = task.await.unwrap();
     assert!(res.is_ok(), "{res:?}");
 }
+
+#[tokio::test]
+async fn metrics_exports_live_prefix_cache_and_kv_pool_stats_when_supported() {
+    let plan = Arc::new(Plan {
+        prefix_cache_stats: Some(ribn::PrefixCacheStats {
+            num_blocks: 2048,
+            free_blocks: 1900,
+            cached_blocks: 140,
+            pinned_blocks: 12,
+            prefix_hit_tokens: 4096,
+            prefix_miss_tokens: 512,
+            evictions: 3,
+        }),
+        ..Plan::default()
+    });
+    let running = Running::start(ServerConfig::default(), plan, 2).await;
+    let body = running.get("/metrics").await.body;
+    for expected in [
+        "ribn_kv_blocks_total 2048\n",
+        "ribn_kv_blocks_free 1900\n",
+        "ribn_kv_blocks_cached 140\n",
+        "ribn_kv_blocks_pinned 12\n",
+        "ribn_prefix_cache_hit_tokens_total 4096\n",
+        "ribn_prefix_cache_miss_tokens_total 512\n",
+        "ribn_prefix_cache_evictions_total 3\n",
+    ] {
+        assert!(body.contains(expected), "missing {expected:?} in:\n{body}");
+    }
+    assert!(running.stop().await.1.is_ok());
+
+    // Without prefix-cache support, KV metrics are omitted cleanly.
+    let unpaged = Running::start(ServerConfig::default(), Arc::new(Plan::default()), 2).await;
+    let unpaged_body = unpaged.get("/metrics").await.body;
+    assert!(!unpaged_body.contains("ribn_kv_blocks_total"));
+    assert!(unpaged.stop().await.1.is_ok());
+}
