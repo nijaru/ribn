@@ -1709,6 +1709,24 @@ common histories with the candidate inserted only at this projection shape.
 Local sources and logs: `benchmarks/results/qualification/qwen-mmvq-real/`;
 the captured F32 inputs remain on desktop.
 
+**Full-model MMVQ screen (2026-11-24).** On the same RTX 4090 and pinned
+Qwen GGUF, a disposable `fbb8c9a` test changed only eight-row IQ4_XS FFN
+`down` projection to the pinned `6050b467c` MMVQ shim. The shim used the same
+`GGML_CUDA_USE_GRAPHS` layout define as the linked library; a first build without
+it crashed in the GGML context destructor and is excluded from comparisons.
+Both modes replayed the same 24 prompt tokens and eight forced continuation
+tokens (`17, 42, 988, 369, 1017, 11, 260, 13`) on a non-default stream.
+
+Unchanged Warp matched the serial reference with zero hidden residual error at
+all 32 positions, and serial reference logits were bit-identical across runs.
+MMVQ failed the existing `max_abs < 0.005` hidden residual bound on all 24 prompt
+rows and all eight continuation rows; worst errors were 1.1857 and 0.6230,
+respectively. All eight continuation argmaxes agreed with Warp; centered logit
+RMSE ranged from 0.00260 to 0.00623 and forward KL (Warp‖MMVQ) from 3.61e-6 to
+4.63e-5. These output observations do not override the residual gate. Keep
+Warp selected; no serving timing or promotion. Preregistered screen, patch,
+shim and raw pair: `benchmarks/results/qualification/qwen-mmvq-model/` (local).
+
 ### Current-source equal-artifact endpoint diagnostic (2026-11-04)
 
 One fixed 32-request episode per engine establishes issued-request latency, usage
