@@ -45,7 +45,9 @@ pub fn f32_to_f16(value: f32) -> u16 {
     if unbiased > 15 {
         return sign | 0x7c00;
     }
-    if unbiased < -24 {
+    // Half the smallest F16 subnormal is 2^-25. Values in that exponent
+    // bin still need the tie-to-even rounding performed below.
+    if unbiased < -25 {
         return sign;
     }
     if unbiased < -14 {
@@ -617,6 +619,18 @@ mod tests {
         }
         assert!(f16_to_f32(f32_to_f16(f32::INFINITY)).is_infinite());
         assert!(f16_to_f32(f32_to_f16(f32::NAN)).is_nan());
+    }
+
+    #[test]
+    fn f16_rounds_across_the_zero_to_subnormal_midpoint() {
+        let midpoint = 2_f32.powi(-25);
+        let below = f32::from_bits(midpoint.to_bits() - 1);
+        let above = f32::from_bits(midpoint.to_bits() + 1);
+        for (sign, bits) in [(1.0, 0), (-1.0, 0x8000)] {
+            assert_eq!(f32_to_f16(sign * below), bits);
+            assert_eq!(f32_to_f16(sign * midpoint), bits);
+            assert_eq!(f32_to_f16(sign * above), bits | 1);
+        }
     }
 
     #[test]
