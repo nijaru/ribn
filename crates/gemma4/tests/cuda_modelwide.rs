@@ -5,7 +5,7 @@ use engine_gemma4::{
     Gemma4CudaDecoder, Gemma4CudaExecutor, Gemma4CudaModel, Gemma4CudaModelWide, Gemma4Source,
     GemmaDecode, argmax,
 };
-use ribn::{Admission, Engine, Event, FinishReason, GenerationOptions, TokenRequest};
+use ribn::{Admission, Engine, Event, FinishReason, GenerationOptions, SequenceId, TokenRequest};
 use ribn_foundation::BytePool;
 use ribn_hf::LocalModelPackage;
 use serde_json::Value;
@@ -69,6 +69,29 @@ use identities::issued_ids;
 
 #[path = "cuda_modelwide/prefill.rs"]
 mod prefill;
+
+/// Match the serial control's 16/8/1 schedule on the model-wide owner.
+/// The default all-width schedule is tested separately against archived winners.
+fn prefill_like_serial(
+    model: &mut Gemma4CudaModelWide,
+    id: SequenceId,
+    mut tokens: &[u32],
+    serial_width: usize,
+) -> Vec<u16> {
+    while !tokens.is_empty() {
+        let width = [16, 8, 1]
+            .into_iter()
+            .find(|&width| width <= serial_width && width <= tokens.len())
+            .unwrap();
+        let (chunk, remaining) = tokens.split_at(width);
+        let logits = model.prefill(id, chunk, remaining.is_empty()).unwrap();
+        if remaining.is_empty() {
+            return logits.unwrap();
+        }
+        tokens = remaining;
+    }
+    unreachable!("control prompt must not be empty");
+}
 
 fn exercise_runtime(model: Gemma4CudaModelWide, case: &Case) {
     assert_eq!(case.name, "chat");
@@ -149,12 +172,13 @@ fn full_model_pairs_preserve_archived_winners_unequal_histories_and_reordered_me
     let pool = BytePool::new(20_u64 << 30).shared();
     // Do not keep two device weight inventories alive on the 4090. Preserve
     // complete scalar/qualified-prefill rows on host, then unload the control.
-    let controls: Vec<Vec<Vec<u16>>> = {
+    let (controls, serial_width) = {
         let stream = context.new_stream().unwrap();
         let model = Arc::new(Mutex::new(
             Gemma4CudaModel::load(&source, stream, &pool, capacity, scratch).unwrap(),
         ));
-        cases
+        let serial_width = model.lock().unwrap().prefill_rows();
+        let rows: Vec<Vec<Vec<u16>>> = cases
             .iter()
             .map(|case| {
                 let mut decoder = Gemma4CudaDecoder::shared(&model).unwrap();
@@ -169,7 +193,8 @@ fn full_model_pairs_preserve_archived_winners_unequal_histories_and_reordered_me
                 decoder.close().unwrap();
                 rows
             })
-            .collect()
+            .collect();
+        (rows, serial_width)
     };
     assert_eq!(pool.granted(), 0, "control unload before candidate load");
     let mut model = Gemma4CudaModelWide::load(&source, &context, &pool, capacity, scratch).unwrap();
@@ -188,13 +213,26 @@ fn full_model_pairs_preserve_archived_winners_unequal_histories_and_reordered_me
                     .unwrap(),
                 Admission::Ready
             ));
-            let logits = model
-                .prefill(ids[member], &cases[case].prompt, true)
-                .unwrap()
-                .unwrap();
+            let prompt = &cases[case].prompt;
+            let aligned = prefill_like_serial(&mut model, ids[member], prompt, serial_width);
+            assert!(
+                aligned == controls[case][0],
+                "matched-width prefill {}",
+                cases[case].name
+            );
+            model.release(ids[member]).unwrap();
+            assert!(matches!(
+                model
+                    .admit(ids[member], prompt.len() + cases[case].chosen.len())
+                    .unwrap(),
+                Admission::Ready
+            ));
+            let logits = model.prefill(ids[member], prompt, true).unwrap().unwrap();
+            finite(&logits, width);
             assert_eq!(
-                logits, controls[case][0],
-                "qualified fallback {}",
+                argmax(&logits),
+                Some(cases[case].chosen[0]),
+                "default model-wide prefill {}",
                 cases[case].name
             );
         }
@@ -294,12 +332,13 @@ fn paired_decode_reaches_the_service_context_boundary_without_overrunning_either
     let width = source.config().vocab_size();
     let context = CudaContext::new(0).unwrap();
     let pool = BytePool::new(20_u64 << 30).shared();
-    let controls: Vec<Vec<Vec<u16>>> = {
+    let (controls, serial_width) = {
         let stream = context.new_stream().unwrap();
         let model = Arc::new(Mutex::new(
             Gemma4CudaModel::load(&source, stream, &pool, capacity, scratch).unwrap(),
         ));
-        prompts
+        let serial_width = model.lock().unwrap().prefill_rows();
+        let rows: Vec<Vec<Vec<u16>>> = prompts
             .iter()
             .map(|prompt| {
                 let mut decoder = Gemma4CudaDecoder::shared(&model).unwrap();
@@ -313,7 +352,8 @@ fn paired_decode_reaches_the_service_context_boundary_without_overrunning_either
                 decoder.close().unwrap();
                 rows
             })
-            .collect()
+            .collect();
+        (rows, serial_width)
     };
     assert_eq!(pool.granted(), 0, "control unload before candidate load");
     let mut model = Gemma4CudaModelWide::load(&source, &context, &pool, capacity, scratch).unwrap();
@@ -326,9 +366,10 @@ fn paired_decode_reaches_the_service_context_boundary_without_overrunning_either
                 .unwrap(),
             Admission::Ready
         ));
-        assert_eq!(
-            model.prefill(ids[member], prompt, true).unwrap().unwrap(),
-            controls[member][0]
+        let logits = prefill_like_serial(&mut model, ids[member], prompt, serial_width);
+        assert!(
+            logits == controls[member][0],
+            "matched-width 4K prefill member {member}"
         );
     }
     for (step, token) in inputs.into_iter().enumerate() {
