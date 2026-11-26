@@ -127,6 +127,28 @@ the end-to-end Rust run, changed the MoE output by 36.15% relative L2 against
 the same Rust computation with the CUDA route. This shows the swap can amplify
 upstream drift. It does not establish why the inputs diverged or justify
 forcing routes in production.
+
+A full-model counterfactual branched from the same committed Rust cache at
+1,024 tokens and replaced only expert 37 with 33 in logical layer 8 on the next
+token. The unmodified branch reproduced previous Rust logits bit-for-bit;
+layer 7 output and layer 8 attention output were identical across branches.
+The swap reduced layer 8 output error from 11.94% to 2.43% relative L2, but
+final centered logit RMSE only moved from 0.38878 to 0.38134 (bound `< 0.25`,
+argmax unchanged). Correcting that single route is not sufficient to recover
+end-to-end parity.
+
+A pinned 4090 A/B held width 64, F16 KV, artifact, token histories and library
+revision fixed and changed only llama.cpp's Flash Attention setting. The
+Flash-enabled control was bit-identical to the archived oracle at all ten
+checkpoints. Flash-disabled preserved all ten argmaxes, but the two CUDA
+paths differed by 0.17239–0.38463 centered logit RMSE on the eight long
+checkpoints. At 1,025 the Rust packed-activation probe was closer to
+Flash-disabled than Flash-enabled (0.22269 vs 0.38878); at 1,023 the ordering
+reversed (0.31139 vs 0.23070). Switching or selecting the closer reference
+per checkpoint would not qualify the Rust implementation. The observed
+sensitivity includes downstream expert routing; it is not a direct attention
+kernel error bound. No acceptance threshold changed.
+
 Logs, tensor rows and the disposable driver are in the local
 `benchmarks/results/qualification/inkling-layer-taps/` directory.
 
