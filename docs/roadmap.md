@@ -186,8 +186,9 @@ Source audits at `093cd28` and `70e5586` found gaps that passing fixtures do not
    and queued input heap capacity before admission. The BERT host gate checks spare
    capacity in all three input buffers and verifies that cancellation, rejection
    and execution return the budget independently of result retention.
-   Runtime selection is still FIFO and executor `Blocked(C)` has no general readiness
-   registration. Add bounded feasible-peer selection/aging and local retryable shutdown
+   Executor contention now carries a pre-check readiness registration through `step`;
+   a host regression verifies publication before the caller arms its wake transport.
+   Runnable selection is still FIFO. Add bounded feasible-peer selection/aging and local retryable shutdown
    without closing sibling pools. Queued cancellation now settles before runnable
    selection even when the head is blocked on a sibling lease (host regression in
    `crates/batch/tests/cancellation.rs`); the terminal count bound still applies. The BERT

@@ -301,8 +301,10 @@ an input exceeding the entire limit or temporarily refuses admission if queued i
 occupy the remaining budget. This queue-local budget ends on removal for execution,
 rejection, or cancellation settlement; it is separate from device/result leases.
 The runtime selects a FIFO runnable prefix and has no model-local close/shutdown surface.
-Pool waits have `capacity_wait`; `BatchSelection::Blocked(C)` supplies no general
-executor readiness registration. Temporary head pressure can strand feasible later
+Pool waits have `capacity_wait`. An executor that reports temporary contention
+returns a `ReadinessWait` registered before checking its resource. `step` returns
+that same wait to the caller, which arms it before parking and retries on change.
+Publication means retry, not reservation; a fresh step must check capacity again. Temporary head pressure can strand feasible later
 requests. On a drive step, queued cancellation settles before runnable selection,
 oldest cancelled request first, subject to the same terminal count bound as results.
 Terminal entries are delivered in settlement order, not submission order.

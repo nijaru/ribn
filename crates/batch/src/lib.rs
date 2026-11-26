@@ -201,7 +201,11 @@ pub enum BatchSelection<C> {
     ///
     /// The queue is left untouched. This is temporary contention, not an
     /// executor invariant failure, and it must not be reported as an error.
-    Blocked(C),
+    Blocked {
+        reason: C,
+        /// Registration taken before checking the condition reported in `reason`.
+        wait: ReadinessWait,
+    },
     /// The oldest candidate cannot execute under this executor's limits, and no
     /// amount of waiting changes that.
     ///
@@ -232,9 +236,9 @@ pub enum BlockReason<C> {
         /// Bytes the pool had available when the reservation failed.
         available: u64,
     },
-    /// The executor reports that its own resources are not available yet. The
-    /// caller that owns those resources decides what releases them.
-    Executor(C),
+    /// The executor reports temporary contention. Arm `wait` before parking;
+    /// a change is a signal to retry, not a reservation.
+    Executor { reason: C, wait: ReadinessWait },
 }
 
 /// Why a request was refused before any work was submitted for it.
@@ -746,8 +750,8 @@ impl<E: BatchExecutor> BatchRuntime<E> {
             .map(|queued| &queued.input)
             .collect::<Vec<_>>();
         match self.executor.select_batch(&candidates) {
-            BatchSelection::Blocked(constraint) => {
-                Ok(Resolved::Blocked(BlockReason::Executor(constraint)))
+            BatchSelection::Blocked { reason, wait } => {
+                Ok(Resolved::Blocked(BlockReason::Executor { reason, wait }))
             }
             BatchSelection::Rejected(constraint) => {
                 self.reject_head(Rejection::Executor(constraint))
@@ -1066,6 +1070,7 @@ mod tests {
         batches: Vec<Vec<usize>>,
         token_budget: Option<usize>,
         busy: bool,
+        workspace_readiness: ribn_foundation::Readiness,
         bytes_per_token: u64,
         over_select: bool,
         /// Return fewer results than the runtime submitted.
@@ -1082,6 +1087,7 @@ mod tests {
                 batches: Vec::new(),
                 token_budget: None,
                 busy: false,
+                workspace_readiness: ribn_foundation::Readiness::default(),
                 bytes_per_token: 1,
                 over_select: false,
                 short_return: false,
@@ -1119,8 +1125,12 @@ mod tests {
                     tokens: head.len(),
                 });
             }
+            let wait = self.workspace_readiness.register();
             if self.busy {
-                return BatchSelection::Blocked(Constraint::WorkspaceBusy);
+                return BatchSelection::Blocked {
+                    reason: Constraint::WorkspaceBusy,
+                    wait,
+                };
             }
             let mut items = 0_usize;
             let mut tokens = 0_usize;
@@ -1522,20 +1532,37 @@ mod tests {
     }
 
     #[test]
-    fn blocked_selection_is_not_a_runtime_failure() {
+    fn blocked_selection_carries_the_original_readiness_registration() {
+        struct Notify(std::sync::mpsc::Sender<()>);
+        impl std::task::Wake for Notify {
+            fn wake(self: Arc<Self>) {
+                self.0.send(()).unwrap();
+            }
+        }
+
         let mut runtime = runtime();
         runtime.submit(vec![1]).expect("first request");
         runtime.submit(vec![2]).expect("second request");
         runtime.executor_mut().busy = true;
 
-        assert_eq!(
-            runtime.step().expect("blocked step"),
-            StepOutcome::Blocked(BlockReason::Executor(Constraint::WorkspaceBusy))
-        );
+        let StepOutcome::Blocked(BlockReason::Executor {
+            reason: Constraint::WorkspaceBusy,
+            mut wait,
+        }) = runtime.step().expect("blocked step")
+        else {
+            panic!("expected workspace pressure")
+        };
         assert_eq!(runtime.queued(), 2);
         assert!(runtime.executor().batches.is_empty());
+        assert!(!wait.changed());
 
+        // Release before arming. The original registration must retain the change.
         runtime.executor_mut().busy = false;
+        runtime.executor().workspace_readiness.publish();
+        assert!(wait.changed());
+        let (tx, rx) = std::sync::mpsc::channel();
+        wait.wake_on_change(&std::task::Waker::from(Arc::new(Notify(tx))));
+        assert_eq!(rx.try_recv(), Ok(()));
         assert_eq!(
             runtime.step().expect("step after wakeup"),
             StepOutcome::Executed { results: 2 }
