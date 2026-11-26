@@ -171,8 +171,25 @@ previous Q/K/V, mask and output captures reproduced bit-for-bit. Replaying the
 same Q/K/V and sink with only the mask precision changed perturbed the FP64
 attention output by 7.07e-5 and 7.22e-5 relative L2, respectively. This measures
 the direct layer-0 contribution of that cast, not how it accumulates across
-layers. Historical-cache and query differences still need a matched-input
-comparison. This capture only verifies the fused path.
+layers. This capture only verifies the fused path.
+
+The cache comparison verified that all 1,023 retained CUDA rows were bitwise
+unchanged across the boundary; Rust also kept its prefix unchanged. In a
+layer-0-only Rust replay, the rounded-activation probe reproduced all 15 prior
+layer-0 taps bit-for-bit across 1,023–1,025. In the same FP64 attention
+calculation, with CUDA bias and sink held fixed, replacing only the historical
+K/V rows with stock Rust's changed the output by 1.81e-3 and 2.14e-3 relative
+L2 at 1,024 and 1,025. With the disposable rounded-activation path, those
+changes fell to 8.17e-5 and 1.02e-4. Swapping just the rounded path's current
+K/V changed the output by less than 1e-6 at either position. The retained rows
+carry more error than the current row, but neither path showed a cache boundary
+shift in this layer.
+
+At 1,025, the rounded path's raw attention error from swapping all Q/K/V was
+1.02e-4, while the prior end-to-end layer-0 tap after the output gate,
+projection, and convolution differed by 1.16e-3. These are different tensors,
+not additive error terms. Capture those intervening stages on shared inputs
+before attributing the larger downstream gap to any one operator.
 
 Logs, tensor rows and the disposable driver are in the local
 `benchmarks/results/qualification/inkling-layer-taps/` directory.
