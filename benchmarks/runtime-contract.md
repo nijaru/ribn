@@ -2668,7 +2668,13 @@ passed in separate processes: archived winners and reordered paired histories,
 4K continuation and overrun rejection, all prefill-width workspace/progress
 and late-construction retirement, and partial-cache failure/cancellation reuse.
 Raw logs on the device host: `benchmarks/results/qualification/gemma4-cuda-recheck-20261126T001533Z/`.
-This recheck did not measure serving or run CUDA sanitizers.
+A second window at `5f80394` passed the ignored ordinary CUDA loader test:
+four concurrent archived-history callers recovered after stream abandonment,
+and an overreach rejection left the next request healthy. A release `serve-gemma`
+loopback smoke passed model discovery and four concurrent greedy SSE requests
+with matching content, length terminals, `[DONE]`, four TTFT observations and
+clean SIGTERM. Raw logs: `benchmarks/results/qualification/gemma4-cuda-loader-recheck-20261126T012810Z/`
+on desktop. Neither recheck measured competitive serving or ran CUDA sanitizers.
 
 ### State-only prefill Metal fallback (2026-10-30)
 
