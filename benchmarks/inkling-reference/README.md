@@ -118,6 +118,15 @@ layers at 1,023, 1,024 and 1,025 tokens, respectively. At 1,025 the first set
 change is in layer 8 (7/8 overlap); its output relative L2 rises to 11.94%,
 from 1.69% at the preceding layer. That makes layer 8 a useful intervention
 point, not proof of a router defect: the router operands already differ.
+
+With the captured CUDA layer-8 input at 1,025 tokens, the Rust router recovered
+all eight CUDA expert IDs in order (router logit max absolute error 1.43e-6).
+The Rust MoE output with decoded Q8_0 activation rounding differed from CUDA by
+0.0186% relative L2 on that same input. Replacing only expert 33 with 37, as in
+the end-to-end Rust run, changed the MoE output by 36.15% relative L2 against
+the same Rust computation with the CUDA route. This shows the swap can amplify
+upstream drift. It does not establish why the inputs diverged or justify
+forcing routes in production.
 Logs, tensor rows and the disposable driver are in the local
 `benchmarks/results/qualification/inkling-layer-taps/` directory.
 
