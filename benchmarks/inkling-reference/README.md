@@ -228,8 +228,40 @@ Applying only the measured scale choice to layer-0 K and V in the disposable
 rounded Rust replay cut the historical K/V discrepancy from 2.84e-4 to 1.34e-4
 for K and from 1.99e-4 to 9.51e-5 for V at 1,025. The layer-0 post-attention
 error fell from 9.94e-4 to 5.04e-4 at 1,024 and from 1.16e-3 to 5.10e-4 at
-1,025. Nothing changed in production. This layer-local comparison does not
-establish whether the improvement survives the full ten-checkpoint gate.
+1,025. The improvement did not carry through the model: the unchanged gate
+passed 8 and 32 tokens, then failed at 1,023 with centered RMSE **0.56313**
+(previous all-F16-scale probe: **0.23070**). The argmax still matched, but
+later checkpoints were not reached. Layer-0 post-attention at that same
+checkpoint improved from 1.08e-3 to 9.18e-4 relative L2. Do not promote the
+K/V-only intervention or infer end-to-end improvement from the early layer.
+
+### Layer-0 expert projections on shared operands (2026-11-26)
+
+Another capture matched all five archived logit rows and saved the inputs,
+selected expert IDs and outputs of the layer-0 IQ4_NL gate/up and down
+projections. The CPU replay used the recorded routes rather than rerouting.
+For each projection, it checked all eight selected experts on three positions
+per multi-token chunk and one position at width 1. With the captured inputs,
+F16 activation scales matched at widths 1 and 8, and F32 scales matched at
+24, 31 and 64. The matching replay was within 1.9e-7 relative L2 on every
+sampled row. At width 8, changing only the normalization used to form integer
+codes (`x / d` versus `x * (127 / peak)`) left one down row above 2.8e-4,
+even though both arms rounded their scale to F16. Match the packing path as
+well as its scale; these samples do not establish dispatch for other shapes.
+
+On the captured gate/up rows, Rust's SiTU and an independent FP64 evaluation
+both differed from CUDA by up to about 9e-6 relative L2. At width 64, using
+Rust's SiTU flipped 56 of 589,824 activation codes before the down projection.
+Swapping only SiTU on rows with changed codes moved a down output by up to
+1.39e-3 relative L2. One width-64 row was excluded from that swap because the
+baseline still differed from CUDA by 7.84e-4 on its original input; the
+packing replay is not exact on all rows.
+
+In the layer-0 replay, correcting expert packing on top of the K/V-only probe
+left the final layer output error nearly unchanged (for example, 3.8808e-3 →
+3.8815e-3 at 1,025). Neither intervention was promoted. Next isolate the
+remaining FFN difference with matched pre-FFN inputs and convolution history,
+rather than spend another full gate on the packing change alone.
 
 Logs, tensor rows and the disposable driver are in the local
 `benchmarks/results/qualification/inkling-layer-taps/` directory.
