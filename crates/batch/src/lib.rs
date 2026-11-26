@@ -344,8 +344,11 @@ impl<O, C> Completed<O, C> {
 /// What one [`BatchRuntime::step`] call did.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum StepOutcome<C> {
-    /// No queued work.
+    /// Admission is open, but there is no queued work.
     Idle,
+    /// Admission is closed and the waiting queue is empty. Terminal entries
+    /// are still deliverable; this does not establish device completion.
+    AdmissionDrained,
     /// A batch executed and its results are retained until consumed.
     Executed { results: usize },
     /// Nothing executed; the reason names the wakeup condition.
@@ -493,6 +496,7 @@ pub struct BatchRuntime<E: BatchExecutor> {
     waiting_input_bytes: usize,
     terminal: VecDeque<Completed<E::Output, E::Constraint>>,
     local_readiness: Readiness,
+    admission_closed: bool,
 }
 
 impl<E: BatchExecutor> BatchRuntime<E> {
@@ -524,12 +528,27 @@ impl<E: BatchExecutor> BatchRuntime<E> {
             waiting_input_bytes: 0,
             terminal: VecDeque::new(),
             local_readiness: Readiness::default(),
+            admission_closed: false,
         })
     }
 
+    /// Permanently stop accepting new inputs on this runtime. Requests already
+    /// accepted can still run or settle cancellation, and retained results stay
+    /// available. This does not close the shared pool or synchronize the executor.
+    pub fn close_admission(&mut self) {
+        if !self.admission_closed {
+            self.admission_closed = true;
+            self.publish_local_change();
+        }
+    }
+
     /// # Errors
-    /// Rejects a closed pool, an over-budget input, a full waiting queue or identity exhaustion.
+    /// Rejects closed admission or pool, an over-budget input, a full waiting
+    /// queue or identity exhaustion.
     pub fn submit(&mut self, input: E::Input) -> Result<RequestId, RuntimeError<E::Error>> {
+        if self.admission_closed {
+            return Err(RuntimeError::AdmissionClosed);
+        }
         if self.pool.is_closed() {
             return Err(RuntimeError::PoolClosed);
         }
@@ -646,6 +665,7 @@ impl<E: BatchExecutor> BatchRuntime<E> {
     /// output, an internal queue invariant failure, or an executor failure.
     pub fn step(&mut self) -> Result<StepOutcome<E::Constraint>, RuntimeError<E::Error>> {
         let mut accepted = match self.resolve_queue()? {
+            Resolved::Idle if self.admission_closed => return Ok(StepOutcome::AdmissionDrained),
             Resolved::Idle => return Ok(StepOutcome::Idle),
             Resolved::Blocked(reason) => return Ok(StepOutcome::Blocked(reason)),
             Resolved::Rejected { request } => return Ok(StepOutcome::Rejected { request }),
@@ -881,8 +901,8 @@ impl<E: BatchExecutor> BatchRuntime<E> {
         Some(entry)
     }
 
-    /// Register before stepping. A successful submission, new queued
-    /// cancellation, or terminal dequeue publishes after updating local state.
+    /// Register before stepping. Successful submission, new queued cancellation,
+    /// terminal dequeue and the first admission closure publish after updating state.
     /// This does not watch the byte pool or executor; arm those waits too when
     /// their resources block the step. Use a waker that schedules the driver
     /// without synchronously reentering the caller's lock. An unwinding callback
@@ -1009,6 +1029,8 @@ pub enum RuntimeError<E> {
         requests: Vec<RequestId>,
         source: E,
     },
+    /// This runtime no longer accepts new submissions.
+    AdmissionClosed,
     /// The shared byte pool is closed, so no new submission is accepted.
     PoolClosed,
 }
@@ -1060,6 +1082,7 @@ impl<E: fmt::Display> fmt::Display for RuntimeError<E> {
                 f,
                 "batch executor failed after reaching the device and retains the work: {source}"
             ),
+            Self::AdmissionClosed => f.write_str("batch runtime admission is closed"),
             Self::PoolClosed => f.write_str("shared byte pool is closed"),
         }
     }

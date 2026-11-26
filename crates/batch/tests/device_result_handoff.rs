@@ -20,8 +20,8 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use ribn_batch::{
-    BatchConfig, BatchExecutor, BatchRuntime, BatchSelection, BlockReason, EnqueueError, Job,
-    JobOutput, RuntimeError, StepOutcome, Terminal,
+    BatchConfig, BatchExecutor, BatchRuntime, BatchSelection, BlockReason, CancelOutcome,
+    EnqueueError, Job, JobOutput, RuntimeError, StepOutcome, Terminal,
 };
 use ribn_foundation::{BytePool, ParameterVersion};
 
@@ -287,6 +287,54 @@ fn an_asynchronous_result_is_charged_until_its_consumer_releases_it() {
         runtime.step().expect("step after release"),
         StepOutcome::Executed { results: 1 }
     );
+}
+
+#[test]
+fn closing_admission_preserves_accepted_work_and_does_not_drain_the_device() {
+    let pool = BytePool::new(2 * ENVELOPE).shared();
+    let mut closing = runtime(&pool);
+    let mut sibling = runtime(&pool);
+    let run = closing.submit(1).unwrap();
+    let cancel = closing.submit(2).unwrap();
+    closing.close_admission();
+    assert!(matches!(
+        closing.submit(3),
+        Err(RuntimeError::AdmissionClosed)
+    ));
+    assert_eq!(closing.cancel(cancel), CancelOutcome::Queued);
+    assert_eq!(
+        closing.step().unwrap(),
+        StepOutcome::Cancelled { request: cancel }
+    );
+    assert_eq!(
+        closing.step().unwrap(),
+        StepOutcome::Executed { results: 1 }
+    );
+    assert_eq!(closing.step().unwrap(), StepOutcome::AdmissionDrained);
+    assert_eq!(closing.retained_results(), 2);
+    assert_eq!(pool.granted(), ENVELOPE);
+
+    sibling.submit(7).unwrap();
+    assert_eq!(
+        sibling.step().unwrap(),
+        StepOutcome::Executed { results: 1 }
+    );
+    assert_eq!(pool.granted(), 2 * ENVELOPE);
+    let cancelled = closing.pop_completed().unwrap();
+    assert_eq!(cancelled.request(), cancel);
+    assert!(matches!(cancelled.outcome(), Terminal::Cancelled));
+    let entry = closing.pop_completed().unwrap();
+    assert_eq!(entry.request(), run);
+    let result = entry.output().unwrap();
+    assert!(!result.is_complete());
+    assert_eq!(pool.granted(), 2 * ENVELOPE);
+    closing.executor().complete_pending();
+    assert_eq!(result.read().unwrap(), [1.0; 4]);
+    drop(entry);
+    assert_eq!(pool.granted(), ENVELOPE);
+    sibling.executor().complete_pending();
+    drop(sibling.pop_completed().unwrap());
+    assert_eq!(pool.granted(), 0);
 }
 
 #[test]

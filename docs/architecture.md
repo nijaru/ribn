@@ -385,11 +385,12 @@ Dequeue does not refund the charge. Cancellation and malformed handoff return st
 through the executor's retirement path; uncertain enqueue quarantines storage and its
 charge until a drain proves completion. Partial construction and normal result/quarantine
 teardown still lack qualified charge retention through allocator-safe reuse/backing release;
-post-enqueue tests do not prove a hard physical-memory bound. `ribn-batch` bounds waiting
-and result counts, not accepted input bytes, selects FIFO prefixes and lacks model-local
-close/shutdown. Pool readiness exists; generic executor blocking has no corresponding
-registration. Temporary head pressure can stall otherwise feasible peers. These limitations
-are owned by the [repair gates](roadmap.md#immediate-bounds-and-lifecycle-repairs).
+post-enqueue tests do not prove a hard physical-memory bound. `ribn-batch` bounds
+waiting input bytes and waiting/result counts, and carries pool, executor, and local
+readiness. Its admission can close without affecting sibling runtimes using the same
+pool; this does not drain the executor. Retryable shutdown and bypass of temporarily
+infeasible FIFO heads remain open in the
+[repair gates](roadmap.md#immediate-bounds-and-lifecycle-repairs).
 
 `ribn-foundation` owns `BytePool`/`PoolLease`/`AllocationId`, shared readiness,
 parameter version labels and scalar metadata. Unused topology/materialization/placement

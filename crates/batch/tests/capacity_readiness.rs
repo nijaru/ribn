@@ -120,6 +120,33 @@ fn submit_after_idle_notifies_only_this_runtime() {
 }
 
 #[test]
+fn admission_closure_before_arming_wakes_an_idle_driver_once() {
+    let pool = BytePool::new(64).shared();
+    let mut owner = runtime(&pool);
+    let sibling = runtime(&pool);
+    let mut wait = owner.local_wait();
+    let sibling_wait = sibling.local_wait();
+    let capacity = owner.capacity_wait();
+    assert_eq!(owner.step().unwrap(), StepOutcome::Idle);
+    owner.close_admission();
+    let (waker, receiver) = notification();
+    wait.wake_on_change(&waker);
+    notified(&receiver);
+    let mut closed = owner.local_wait();
+    closed.wake_on_change(&waker);
+    owner.close_admission();
+    assert_eq!(owner.step().unwrap(), StepOutcome::AdmissionDrained);
+    assert!(matches!(
+        owner.submit(64),
+        Err(RuntimeError::AdmissionClosed)
+    ));
+    assert!(!closed.changed());
+    assert!(!sibling_wait.changed());
+    assert!(!capacity.changed());
+    assert!(receiver.try_recv().is_err());
+}
+
+#[test]
 fn queued_cancellation_before_arming_wakes_a_pool_block_without_a_release() {
     let pool = BytePool::new(64).shared();
     let _held = pool.reserve(64).unwrap();

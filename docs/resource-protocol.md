@@ -300,13 +300,19 @@ Executors report queued input allocation capacity before admission; the runtime 
 an input exceeding the entire limit or temporarily refuses admission if queued inputs
 occupy the remaining budget. This queue-local budget ends on removal for execution,
 rejection, or cancellation settlement; it is separate from device/result leases.
-The runtime selects a FIFO runnable prefix and has no model-local close/shutdown surface.
+The runtime selects a FIFO runnable prefix. `close_admission` permanently refuses
+new submissions to this runtime without closing the shared pool or discarding
+accepted work. Existing requests can still execute or settle cancellation.
+Once the waiting queue is empty, `step` reports `AdmissionDrained` instead of
+`Idle`; terminal entries remain deliverable. This is not evidence of device
+completion, retirement, or release of output leases.
 Before driving, callers register `local_wait` and, for a possible pool block,
 `capacity_wait`. Idle and retained-result waits arm the local registration;
 pool and executor blocks arm both the local registration and the resource wait.
 An executor registers its own `ReadinessWait` before checking its resource;
 `step` returns it unchanged. The local source publishes after successful
-submission, first queued cancellation, or terminal dequeue. Dequeue returns a
+submission, first queued cancellation, terminal dequeue, or admission closure.
+Dequeue returns a
 delivery slot without releasing the output's byte lease. Publication means
 retry, not reservation; a fresh step must check capacity again. Temporary head
 pressure can strand feasible later requests. On a drive step, queued
@@ -321,11 +327,11 @@ Before exposing owned encoder access, establish these contracts through the real
   contract, not as a compulsory execution FIFO. Cancelled queued work must settle without
   waiting for an unrelated head to become feasible, subject to delivery backpressure.
 - Every temporary wait carries registration/recheck or an explicit completion dependency.
-  A reason enum alone is insufficient. Local submission, cancellation and delivery-slot
-  release have registrations; extend local wakeup to model closure when it is added.
-- Close this model's admission without closing a shared pool used by siblings. The execution
-  owner retains submitted work, abandoned results, charges and retry/quarantine cleanup.
-  Dequeued device results retain their own safe-retirement owner after model shutdown.
+  A reason enum alone is insufficient. Local wakeups cover submission, cancellation,
+  delivery-slot release and admission closure.
+- Extend admission closure with explicit, retryable shutdown. The execution owner must retain
+  submitted work, abandoned results, charges and retry/quarantine cleanup. Dequeued device
+  results retain their own safe-retirement owner after model shutdown.
 - Output dequeue returns delivery capacity, not physical bytes. Charges release only when
   backing is safely reusable within its charged arena or proven released to the byte pool.
 
