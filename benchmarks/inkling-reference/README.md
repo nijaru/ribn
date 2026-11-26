@@ -149,6 +149,26 @@ per checkpoint would not qualify the Rust implementation. The observed
 sensitivity includes downstream expert routing; it is not a direct attention
 kernel error bound. No acceptance threshold changed.
 
+### Shared-operand attention check (2026-11-26)
+
+The pinned Flash-enabled replay captured layer 0's actual fused input tensors
+at 1,024 and 1,025 tokens: F32 queries, historical F16 K/V, the combined F16
+bias/mask (including the sink-logit shift), and the zero-logit sink. The capture
+reproduced archived width-64 logits bit-for-bit at all five checked positions.
+Both sides of the transition had exactly 1,024 visible keys per query head even
+though the physical KV span grew to 1,280 rows at 1,025 tokens.
+
+An independent FP64 dot/softmax/value calculation used the saved operands. A
+standalone Rust replay mirrored the CPU attention loop but consumed the same
+already-combined bias/mask instead of recomputing it. Against FP64, CUDA
+relative L2 was 8.34e-8 and 7.22e-8; scalar Rust F32 was 5.06e-7 and 6.51e-7.
+This isolates the final attention calculation on shared operands: it is not
+large enough to account for the end-to-end gap in this layer. It does not test
+how the two paths produce their queries, caches, or relative-bias operands.
+Next separate the F16 bias/mask cast from historical-cache differences in a
+matched-input comparison. The Flash-disabled path must be inspected separately;
+this capture only verifies the fused path.
+
 Logs, tensor rows and the disposable driver are in the local
 `benchmarks/results/qualification/inkling-layer-taps/` directory.
 
