@@ -23,8 +23,8 @@
 //! every blocking outcome names the condition that must change before
 //! [`BatchRuntime::step`] can progress, so a caller never has to retry blindly.
 //!
-//! Retained capacity is reserved before a batch executes and released when the
-//! caller consumes the result, so an executor cannot overshoot the budget by
+//! Retained bytes are reserved before a batch executes and remain charged while
+//! the result owns its lease, so an executor cannot overshoot the budget by
 //! running first and accounting afterwards. When the pool cannot cover the whole
 //! selected batch, the runtime runs the largest prefix it can reserve instead of
 //! blocking: batching is an optimization, so a shorter batch produces the same
@@ -32,10 +32,11 @@
 //! [`BlockReason::Pool`] only when not even one request fits, which is the caller's
 //! signal to consume retained entries or wait for capacity to come back.
 //!
-//! Capacity waiting shares [`ReadinessWait`] with other resource owners. Register
-//! with [`BatchRuntime::capacity_wait`] before attempting and arm a wake transport
-//! before parking. Releases and closure notify the caller; publication before arming
-//! is not lost. The caller still owns parking and retry; this runtime adds no worker.
+//! Take a [`BatchRuntime::local_wait`] and a [`BatchRuntime::capacity_wait`] before
+//! the step. When idle or blocked, arm the local registration before parking. Also
+//! arm the capacity registration for a pool block, or the returned registration for
+//! an executor block. Publication before arming is not lost. The caller owns
+//! parking and retry; this runtime adds no worker.
 //!
 //! Output is executor-defined and may be device-resident. A result that completes
 //! asynchronously carries its own producer completion dependency
@@ -58,7 +59,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use ribn_foundation::{
-    AllocationId, BytePool, ParameterVersion, PoolLease, ReadinessWait, ReserveError,
+    AllocationId, BytePool, ParameterVersion, PoolLease, Readiness, ReadinessWait, ReserveError,
 };
 
 static NEXT_REQUEST_ID: AtomicU64 = AtomicU64::new(1);
@@ -491,6 +492,7 @@ pub struct BatchRuntime<E: BatchExecutor> {
     queue: VecDeque<Queued<E::Input>>,
     waiting_input_bytes: usize,
     terminal: VecDeque<Completed<E::Output, E::Constraint>>,
+    local_readiness: Readiness,
 }
 
 impl<E: BatchExecutor> BatchRuntime<E> {
@@ -521,6 +523,7 @@ impl<E: BatchExecutor> BatchRuntime<E> {
             queue: VecDeque::with_capacity(config.max_waiting_requests),
             waiting_input_bytes: 0,
             terminal: VecDeque::new(),
+            local_readiness: Readiness::default(),
         })
     }
 
@@ -563,7 +566,16 @@ impl<E: BatchExecutor> BatchRuntime<E> {
             cancelled: false,
         });
         self.waiting_input_bytes += waiting_bytes;
+        self.publish_local_change();
         Ok(request)
+    }
+
+    fn publish_local_change(&self) {
+        // A notifier must not prevent returning an accepted identity or a
+        // dequeued output and its lease. The publisher notifies other waiters
+        // before rethrowing, so a broken transport cannot strand them either.
+        let readiness = &self.local_readiness;
+        let _ = std::panic::catch_unwind(|| readiness.publish());
     }
 
     fn remove_queued(&mut self, index: usize) -> Option<Queued<E::Input>> {
@@ -587,7 +599,10 @@ impl<E: BatchExecutor> BatchRuntime<E> {
             .iter_mut()
             .find(|queued| queued.request == request)
         {
-            queued.cancelled = true;
+            if !queued.cancelled {
+                queued.cancelled = true;
+                self.publish_local_change();
+            }
             return CancelOutcome::Queued;
         }
         let Some(index) = self
@@ -621,10 +636,9 @@ impl<E: BatchExecutor> BatchRuntime<E> {
     /// Settle the first queued cancellation, or select and execute at most one batch.
     ///
     /// A [`StepOutcome::Blocked`] result is a wakeup contract rather than a
-    /// failure: retry only after the named condition changes. Consuming retained
-    /// entries with [`Self::pop_completed`] releases their reservation, which is
-    /// the wakeup for [`BlockReason::RetainedResults`]. A sibling runtime's release
-    /// publishes capacity readiness for [`BlockReason::Pool`] after releasing its lease.
+    /// failure. Arm the pre-step [`Self::local_wait`] when idle or blocked.
+    /// For a pool block, also arm the pre-step [`Self::capacity_wait`]; for an
+    /// executor block, arm the returned executor wait alongside the local one.
     ///
     /// # Errors
     /// Rejects a parameter-version change while queued work still targets the
@@ -862,7 +876,20 @@ impl<E: BatchExecutor> BatchRuntime<E> {
     /// because the storage it covers travels too.
     #[must_use]
     pub fn pop_completed(&mut self) -> Option<Completed<E::Output, E::Constraint>> {
-        self.terminal.pop_front()
+        let entry = self.terminal.pop_front()?;
+        self.publish_local_change();
+        Some(entry)
+    }
+
+    /// Register before stepping. A successful submission, new queued
+    /// cancellation, or terminal dequeue publishes after updating local state.
+    /// This does not watch the byte pool or executor; arm those waits too when
+    /// their resources block the step. Use a waker that schedules the driver
+    /// without synchronously reentering the caller's lock. An unwinding callback
+    /// does not undo the mutation or prevent returning the request or output.
+    #[must_use]
+    pub fn local_wait(&self) -> ReadinessWait {
+        self.local_readiness.register()
     }
 
     #[must_use]

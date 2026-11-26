@@ -5,8 +5,8 @@ use std::task::{Wake, Waker};
 use std::time::Duration;
 
 use ribn_batch::{
-    BatchConfig, BatchExecutor, BatchRuntime, BatchSelection, BlockReason, EnqueueError, Job,
-    JobOutput, RuntimeError, StepOutcome,
+    BatchConfig, BatchExecutor, BatchRuntime, BatchSelection, BlockReason, CancelOutcome,
+    EnqueueError, Job, JobOutput, RuntimeError, StepOutcome,
 };
 use ribn_foundation::{BytePool, ParameterVersion};
 
@@ -97,6 +97,108 @@ fn executed(runtime: &mut BatchRuntime<Envelope>) {
         runtime.step().unwrap(),
         StepOutcome::Executed { results: 1 }
     );
+}
+
+#[test]
+fn submit_after_idle_notifies_only_this_runtime() {
+    let pool = BytePool::new(64).shared();
+    let mut owner = runtime(&pool);
+    let mut sibling = runtime(&pool);
+    let mut wait = owner.local_wait();
+    let sibling_wait = sibling.local_wait();
+    assert_eq!(owner.step().unwrap(), StepOutcome::Idle);
+    sibling.submit(1).unwrap();
+    assert!(sibling_wait.changed());
+    assert!(!wait.changed());
+    assert!(owner.pop_completed().is_none());
+    assert!(!wait.changed());
+    let (waker, receiver) = notification();
+    wait.wake_on_change(&waker);
+    owner.submit(64).unwrap();
+    notified(&receiver);
+    executed(&mut owner);
+}
+
+#[test]
+fn queued_cancellation_before_arming_wakes_a_pool_block_without_a_release() {
+    let pool = BytePool::new(64).shared();
+    let _held = pool.reserve(64).unwrap();
+    let mut owner = runtime(&pool);
+    let request = owner.submit(64).unwrap();
+    let mut local = owner.local_wait();
+    let pool_wait = owner.capacity_wait();
+    blocked(&mut owner);
+    assert_eq!(owner.cancel(request), CancelOutcome::Queued);
+    let unchanged = owner.local_wait();
+    assert_eq!(owner.cancel(request), CancelOutcome::Queued);
+    assert!(!unchanged.changed(), "duplicate intent changes no state");
+    assert!(!pool_wait.changed());
+    let (waker, receiver) = notification();
+    local.wake_on_change(&waker);
+    notified(&receiver);
+    assert_eq!(owner.step().unwrap(), StepOutcome::Cancelled { request });
+    assert_eq!(pool.granted(), 64);
+}
+
+#[test]
+fn dequeuing_notifies_local_delivery_without_refunding_the_live_output() {
+    let pool = BytePool::new(128).shared();
+    let mut owner = BatchRuntime::new(
+        Envelope,
+        Arc::clone(&pool),
+        BatchConfig {
+            max_retained_results: 1,
+            ..BatchConfig::default()
+        },
+    )
+    .unwrap();
+    owner.submit(64).unwrap();
+    executed(&mut owner);
+    owner.submit(64).unwrap();
+    let mut local = owner.local_wait();
+    let capacity = owner.capacity_wait();
+    assert_eq!(
+        owner.step().unwrap(),
+        StepOutcome::Blocked(BlockReason::RetainedResults)
+    );
+    let (waker, receiver) = notification();
+    local.wake_on_change(&waker);
+    let output = owner.pop_completed().unwrap();
+    notified(&receiver);
+    assert!(!capacity.changed());
+    assert_eq!(pool.granted(), 64);
+    executed(&mut owner);
+    assert_eq!(pool.granted(), 128);
+    drop(output);
+    assert!(capacity.changed());
+}
+
+#[test]
+fn broken_local_waker_cannot_hide_an_accepted_request_or_drop_a_dequeued_lease() {
+    struct Panicker;
+    impl Wake for Panicker {
+        fn wake(self: Arc<Self>) {
+            panic!("injected notification failure");
+        }
+    }
+    let pool = BytePool::new(64).shared();
+    let mut owner = runtime(&pool);
+    let panic_waker = Waker::from(Arc::new(Panicker));
+    let (waker, receiver) = notification();
+    let mut broken = owner.local_wait();
+    let mut healthy = owner.local_wait();
+    broken.wake_on_change(&panic_waker);
+    healthy.wake_on_change(&waker);
+    let request = owner.submit(64).unwrap();
+    notified(&receiver);
+    executed(&mut owner);
+    let mut broken = owner.local_wait();
+    broken.wake_on_change(&panic_waker);
+    let output = owner.pop_completed().unwrap();
+    assert_eq!(output.request(), request);
+    assert_eq!(pool.granted(), 64);
+    drop(output);
+    assert_eq!(pool.granted(), 0);
 }
 
 #[test]

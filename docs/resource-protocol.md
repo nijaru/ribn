@@ -301,11 +301,16 @@ an input exceeding the entire limit or temporarily refuses admission if queued i
 occupy the remaining budget. This queue-local budget ends on removal for execution,
 rejection, or cancellation settlement; it is separate from device/result leases.
 The runtime selects a FIFO runnable prefix and has no model-local close/shutdown surface.
-Pool waits have `capacity_wait`. An executor that reports temporary contention
-returns a `ReadinessWait` registered before checking its resource. `step` returns
-that same wait to the caller, which arms it before parking and retries on change.
-Publication means retry, not reservation; a fresh step must check capacity again. Temporary head pressure can strand feasible later
-requests. On a drive step, queued cancellation settles before runnable selection,
+Before driving, callers register `local_wait` and, for a possible pool block,
+`capacity_wait`. Idle and retained-result waits arm the local registration;
+pool and executor blocks arm both the local registration and the resource wait.
+An executor registers its own `ReadinessWait` before checking its resource;
+`step` returns it unchanged. The local source publishes after successful
+submission, first queued cancellation, or terminal dequeue. Dequeue returns a
+delivery slot without releasing the output's byte lease. Publication means
+retry, not reservation; a fresh step must check capacity again. Temporary head
+pressure can strand feasible later requests. On a drive step, queued
+cancellation settles before runnable selection,
 oldest cancelled request first, subject to the same terminal count bound as results.
 Terminal entries are delivered in settlement order, not submission order.
 
@@ -316,7 +321,8 @@ Before exposing owned encoder access, establish these contracts through the real
   contract, not as a compulsory execution FIFO. Cancelled queued work must settle without
   waiting for an unrelated head to become feasible, subject to delivery backpressure.
 - Every temporary wait carries registration/recheck or an explicit completion dependency.
-  A reason enum alone is insufficient. Wake local cancellation, closure and output release.
+  A reason enum alone is insufficient. Local submission, cancellation and delivery-slot
+  release have registrations; extend local wakeup to model closure when it is added.
 - Close this model's admission without closing a shared pool used by siblings. The execution
   owner retains submitted work, abandoned results, charges and retry/quarantine cleanup.
   Dequeued device results retain their own safe-retirement owner after model shutdown.
