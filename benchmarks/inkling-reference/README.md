@@ -185,11 +185,34 @@ K/V changed the output by less than 1e-6 at either position. The retained rows
 carry more error than the current row, but neither path showed a cache boundary
 shift in this layer.
 
-At 1,025, the rounded path's raw attention error from swapping all Q/K/V was
-1.02e-4, while the prior end-to-end layer-0 tap after the output gate,
-projection, and convolution differed by 1.16e-3. These are different tensors,
-not additive error terms. Capture those intervening stages on shared inputs
-before attributing the larger downstream gap to any one operator.
+### Layer-0 output projection on shared operands (2026-11-26)
+
+The post-attention capture also reproduced all five archived logit rows
+bit-for-bit. With the same CUDA inputs, the stock CPU gate and output
+projections (both Q8_0 weights) agreed with an FP64 dot product on decoded
+weights within 2.2e-7 relative L2, but differed from CUDA by 0.30–0.35% and
+0.71–0.86%, respectively. The disposable activation-rounding path matched
+CUDA within 2.0e-7 for both projections. An independent FP64 replay of the
+CUDA sigmoid/multiply and depthwise convolution also agreed within 6e-8.
+
+With each backend's own inputs, the rounded CPU path still differed just
+before the output projection by 2.67e-4 and 2.77e-4 at 1,024 and 1,025. Feeding
+those two pairs of gated rows through a single output projection without
+activation rounding gave differences of 2.73e-4 and 2.55e-4. With rounding,
+the same pairs changed 36 and 23 of 3,072 activation codes and the projection
+outputs differed by 2.07e-3 and 2.03e-3. Convolution replays on captured inputs
+reproduced the post-attention taps and showed the current projected row
+contributed more error than the three stored rows at both positions. This
+identifies an early amplification mechanism, not a full-model fix.
+
+A layer-0 follow-up applied the sink shift and F16 bias/mask cast to Rust's
+own attention operands. It lowered the pre-gate error at both positions, but
+post-attention error moved in opposite directions: 9.94e-4 → 1.08e-3 at 1,024
+and 1.16e-3 → 1.13e-3 at 1,025. We did not promote the cast or rerun the full
+numerical gate for it. Next compare matched K/V projection inputs from a width-64
+prefill chunk and a one-token step. The pinned source's Q8_0 MMQ `D4` layout
+stores F32 activation scales; the disposable probe uses F16 scales at every
+width. The dispatch and effect on real historical K/V still need measurement.
 
 Logs, tensor rows and the disposable driver are in the local
 `benchmarks/results/qualification/inkling-layer-taps/` directory.
