@@ -165,9 +165,14 @@ relative L2 was 8.34e-8 and 7.22e-8; scalar Rust F32 was 5.06e-7 and 6.51e-7.
 This isolates the final attention calculation on shared operands: it is not
 large enough to account for the end-to-end gap in this layer. It does not test
 how the two paths produce their queries, caches, or relative-bias operands.
-Next separate the F16 bias/mask cast from historical-cache differences in a
-matched-input comparison. The Flash-disabled path must be inspected separately;
-this capture only verifies the fused path.
+A second capture took the F32 bias/mask immediately before its F16 cast.
+The cast output matched host IEEE F16 rounding for every element, and the
+previous Q/K/V, mask and output captures reproduced bit-for-bit. Replaying the
+same Q/K/V and sink with only the mask precision changed perturbed the FP64
+attention output by 7.07e-5 and 7.22e-5 relative L2, respectively. This measures
+the direct layer-0 contribution of that cast, not how it accumulates across
+layers. Historical-cache and query differences still need a matched-input
+comparison. This capture only verifies the fused path.
 
 Logs, tensor rows and the disposable driver are in the local
 `benchmarks/results/qualification/inkling-layer-taps/` directory.
