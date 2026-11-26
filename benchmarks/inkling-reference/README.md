@@ -108,6 +108,11 @@ and 0.116%, respectively. The largest layer-output relative L2 was 16.62%,
 (physical layer 14, second core pass). The increase is already present by
 that pass, not confined to the head or layer-0 mask. These are end-to-end taps
 with diverging activations, not shared-operand evidence of a fault in layer 32.
+A separate CUDA capture recorded biased router scores and selected expert IDs
+for the same 144 layer/checkpoint pairs. Its logits also matched the archived
+replay bit-for-bit. Re-ranking the captured scores reproduced each selected
+set; the smallest eighth-to-ninth score gap was 8.87e-5. This establishes the
+reference for a Rust router comparison, not that a route change caused drift.
 Logs, tensor rows and the disposable driver are in the local
 `benchmarks/results/qualification/inkling-layer-taps/` directory.
 
