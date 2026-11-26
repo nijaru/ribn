@@ -112,7 +112,12 @@ A separate CUDA capture recorded biased router scores and selected expert IDs
 for the same 144 layer/checkpoint pairs. Its logits also matched the archived
 replay bit-for-bit. Re-ranking the captured scores reproduced each selected
 set; the smallest eighth-to-ninth score gap was 8.87e-5. This establishes the
-reference for a Rust router comparison, not that a route change caused drift.
+reference for the Rust router comparison. The Rust replay reproduced its prior
+logits bit-for-bit. The two top-eight sets agree in 37/48, 38/48 and 9/48 logical
+layers at 1,023, 1,024 and 1,025 tokens, respectively. At 1,025 the first set
+change is in layer 8 (7/8 overlap); its output relative L2 rises to 11.94%,
+from 1.69% at the preceding layer. That makes layer 8 a useful intervention
+point, not proof of a router defect: the router operands already differ.
 Logs, tensor rows and the disposable driver are in the local
 `benchmarks/results/qualification/inkling-layer-taps/` directory.
 
