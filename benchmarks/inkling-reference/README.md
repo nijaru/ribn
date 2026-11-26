@@ -209,10 +209,27 @@ A layer-0 follow-up applied the sink shift and F16 bias/mask cast to Rust's
 own attention operands. It lowered the pre-gate error at both positions, but
 post-attention error moved in opposite directions: 9.94e-4 → 1.08e-3 at 1,024
 and 1.16e-3 → 1.13e-3 at 1,025. We did not promote the cast or rerun the full
-numerical gate for it. Next compare matched K/V projection inputs from a width-64
-prefill chunk and a one-token step. The pinned source's Q8_0 MMQ `D4` layout
-stores F32 activation scales; the disposable probe uses F16 scales at every
-width. The dispatch and effect on real historical K/V still need measurement.
+numerical gate for it.
+
+### Layer-0 K/V projection scales by chunk width (2026-11-26)
+
+We captured the layer-0 Q8_0 K and V projections before convolution and
+cache conversion at widths 1, 8, 24, 31, and 64. The tapped CUDA replay matched
+all five archived logit rows bit-for-bit. On identical captured inputs, an
+FP64 host projection matched CUDA with F16 activation scales at widths 1 and 8,
+and F32 scales at widths 24, 31, and 64. The matching precision was within
+1.1e-7 relative L2 per row; the other precision differed by 1.09e-4 to 1.67e-4
+in aggregate. Holding the activation codes fixed and changing scale precision
+was sufficient to distinguish the paths. This agrees with the pinned source's
+F16-scale MMVQ and F32-scale MMQ `D4` layouts; it does not establish a global
+cutoff for other weight shapes, expert dispatches, or devices.
+
+Applying only the measured scale choice to layer-0 K and V in the disposable
+rounded Rust replay cut the historical K/V discrepancy from 2.84e-4 to 1.34e-4
+for K and from 1.99e-4 to 9.51e-5 for V at 1,025. The layer-0 post-attention
+error fell from 9.94e-4 to 5.04e-4 at 1,024 and from 1.16e-3 to 5.10e-4 at
+1,025. Nothing changed in production. This layer-local comparison does not
+establish whether the improvement survives the full ten-checkpoint gate.
 
 Logs, tensor rows and the disposable driver are in the local
 `benchmarks/results/qualification/inkling-layer-taps/` directory.
