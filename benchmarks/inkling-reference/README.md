@@ -101,7 +101,14 @@ archived width-64 reference at all five checkpoints through 1,025, and its
 1,025 input token IDs matched the original history. This validates the tapped
 reference, not Rust parity. The taps contain current-token projections before
 cache storage, not historical KV rows. Keep that distinction when localizing
-any difference. Logs, tensor rows and the disposable driver are in the local
+any difference. The matching Rust CPU capture with the disposable Q8_0
+activation intervention showed layer-0 attention relative L2 of 0.108%, 0.099%
+and 0.116%, respectively. The largest layer-output relative L2 was 16.62%,
+15.37% and 86.71%, respectively; at 1,025 it occurred in logical layer 32
+(physical layer 14, second core pass). The increase is already present by
+that pass, not confined to the head or layer-0 mask. These are end-to-end taps
+with diverging activations, not shared-operand evidence of a fault in layer 32.
+Logs, tensor rows and the disposable driver are in the local
 `benchmarks/results/qualification/inkling-layer-taps/` directory.
 
 ## Native port boundary

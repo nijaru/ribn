@@ -2657,6 +2657,19 @@ The additional boundary/access source/ELF/controller archive contains 20 scopes,
 including all three failed/incomplete attempts, and nine actual release test ELFs.
 Its SHA-256 is `a8b1f42791a78e0e3a48cb7467dccef249d2dfa24c0fcf4d86c94fd47a37371d`.
 
+#### Current-source CUDA recheck (2026-11-25)
+
+On RTX 4090, the earlier test compared the default all-width model-wide prefill
+with the serial 16/8/1 control and failed bit equality at the first chat row.
+The rerun at `303ea49` compares exact rows only with matched lane schedules;
+its default all-width archived-history path still has an independent greedy
+winner gate. No kernel or production selection changed. Four release tests
+passed in separate processes: archived winners and reordered paired histories,
+4K continuation and overrun rejection, all prefill-width workspace/progress
+and late-construction retirement, and partial-cache failure/cancellation reuse.
+Raw logs on the device host: `benchmarks/results/qualification/gemma4-cuda-recheck-20261126T001533Z/`.
+This recheck did not measure serving or run CUDA sanitizers.
+
 ### State-only prefill Metal fallback (2026-10-30)
 
 The required state-only operation added at `448a3a0` omits the CPU readout, but
