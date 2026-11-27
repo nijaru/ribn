@@ -259,9 +259,33 @@ packing replay is not exact on all rows.
 
 In the layer-0 replay, correcting expert packing on top of the K/V-only probe
 left the final layer output error nearly unchanged (for example, 3.8808e-3 →
-3.8815e-3 at 1,025). Neither intervention was promoted. Next isolate the
-remaining FFN difference with matched pre-FFN inputs and convolution history,
-rather than spend another full gate on the packing change alone.
+3.8815e-3 at 1,025). Neither intervention was promoted.
+
+### Layer-0 FFN and history on shared operands (2026-11-26)
+
+A convolution-only tap reproduced the five archived logit rows bit-for-bit.
+A broader router and reduction tap changed the long rows and was discarded.
+Ribn's FFN convolution matched CUDA within 4.2e-8 relative L2 on identical
+current MoE values and history at 1,023–1,025.
+
+At 1,023 and 1,025, substituting only CUDA's post-attention residual into
+Ribn's depth mix and FFN RMSNorm reduced the normalized-input error from
+1.73e-3 and 8.30e-4 to 5.06e-7 and 3.14e-7, respectively. On the shared
+normalized input, the router chose the same eight experts in order. At
+1,023, the router logits still differed by 3.22e-5; reusing CUDA's logits
+instead of Rust's reduced the error of the weighted sum of captured down
+outputs from 2.11e-5 to 1.02e-7. This attributes that difference to the
+logits, not to the aggregation; it does not identify the CUDA matmul's
+arithmetic mode. The width-matched CPU MoE on shared normalized inputs
+matched within 2.13e-4 at both positions.
+
+With each backend's own inputs, swapping just the current MoE value in an
+otherwise CUDA convolution and residual reproduced most of the layer-output
+error at all three positions. At 1,025 the current value alone changed the
+layer output by 3.84e-3 relative L2, versus 6.06e-4 from swapping history and
+3.88e-3 from all differences together. These effects are not additive.
+The next candidate should target the remaining post-attention input error
+rather than change FFN history or rerun the full gate on expert packing alone.
 
 Logs, tensor rows and the disposable driver are in the local
 `benchmarks/results/qualification/inkling-layer-taps/` directory.
