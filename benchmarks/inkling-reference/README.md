@@ -284,8 +284,27 @@ otherwise CUDA convolution and residual reproduced most of the layer-output
 error at all three positions. At 1,025 the current value alone changed the
 layer output by 3.84e-3 relative L2, versus 6.06e-4 from swapping history and
 3.88e-3 from all differences together. These effects are not additive.
-The next candidate should target the remaining post-attention input error
-rather than change FFN history or rerun the full gate on expert packing alone.
+### Remaining layer-0 attention projections
+
+On identical captured inputs, the Q, relative, sink and output-gate Q8_0
+projections used the same measured scale precision as K/V: F16 at widths 1
+and 8, F32 at 24, 31 and 64. The output projection differed at width 8:
+F32 matched there, while F16 did not. At each width and projection the
+matching replay was within 2.5e-7 relative L2 on sampled rows. The capture
+reproduced the five archived logit rows bit-for-bit. Width alone does not
+select the precision; the operator's shape matters too.
+
+Changing only the scale precision in the Rust layer-0 replay brought Q and R
+at 1,023 to within 2e-7 of CUDA. It barely changed the post-attention error
+and reduced the layer-output error from 4.85e-3 to 4.52e-3. Changing to the
+source-shaped reciprocal/rounding calculation as well made Q worse (1.18e-3)
+and roughly doubled post-attention error at 1,024 and 1,025. At 1,023 the
+Rust and CUDA inputs to Q differed by only 7.35e-8 relative L2; the reciprocal
+replay changed one activation code on Rust's input but not on the captured
+CUDA input. This is sensitivity to a quantization boundary, not evidence that
+CUDA's scale choice was wrong. Adding the shifted F16 mask to the reciprocal
+arm did not consistently recover the layer output. No variant was promoted or
+advanced to another full-model gate.
 
 Logs, tensor rows and the disposable driver are in the local
 `benchmarks/results/qualification/inkling-layer-taps/` directory.
