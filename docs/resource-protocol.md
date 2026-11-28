@@ -314,14 +314,20 @@ new submissions to this runtime without closing the shared pool or discarding
 accepted work. Existing requests can still execute or settle cancellation.
 Once the waiting queue is empty, `step` reports `AdmissionDrained` instead of
 `Idle`; terminal entries remain deliverable. This is not evidence of device
-completion, retirement, or release of output leases.
+completion, retirement, or release of output leases. If a caller no longer wants
+any results, `abandon` closes admission, discards queued inputs and terminal
+entries without producing further completions, and hands undelivered outputs
+and their leases to executor retirement. Dequeued outputs remain with their
+consumers. Abandonment is not a drain acknowledgement; it neither closes the
+shared pool nor refunds bytes on the runtime's authority.
 Before driving, callers register `local_wait` and, for a possible pool block,
 `capacity_wait`. Idle and retained-result waits arm the local registration.
 For a pool or executor block, `BlockReason::wake_on_change` arms the pre-step
 pool registration (including for pool closure) and any head or peer executor
 waits. Executors register their own `ReadinessWait`
 before checking a resource; `step` carries those registrations unchanged. The local source publishes after successful
-submission, first queued cancellation, terminal dequeue, or admission closure.
+submission, first queued cancellation, terminal dequeue, admission closure,
+or abandonment that changes local state.
 Dequeue returns a delivery slot without releasing the output's byte lease.
 Publication means retry, not reservation; a fresh step must check capacity
 again. A peer too large for the pool or permanently rejected is not a wakeup
@@ -341,9 +347,9 @@ Before exposing owned encoder access, establish these contracts through the real
 - Every temporary wait carries registration/recheck or an explicit completion dependency.
   A reason enum alone is insufficient. Local wakeups cover submission, cancellation,
   delivery-slot release and admission closure.
-- Extend admission closure with explicit, retryable shutdown. The execution owner must retain
-  submitted work, abandoned results, charges and retry/quarantine cleanup. Dequeued device
-  results retain their own safe-retirement owner after model shutdown.
+- Qualify explicit, retryable executor shutdown after abandonment. The execution owner must
+  retain submitted work, abandoned results, charges and retry/quarantine cleanup. Dequeued
+  device results retain their own safe-retirement owner after model shutdown.
 - Output dequeue returns delivery capacity, not physical bytes. Charges release only when
   backing is safely reusable within its charged arena or proven released to the byte pool.
 

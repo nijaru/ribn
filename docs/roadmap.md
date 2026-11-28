@@ -192,7 +192,11 @@ Source audits at `093cd28` and `70e5586` found gaps that passing fixtures do not
    usable and preserves accepted work, retained outputs and their leases.
    Pool and executor pressure permit bounded singleton bypass with a shared
    overtake limit. Host tests cover later progress, head priority and peer
-   readiness before wake arming. Explicit retryable executor shutdown remains open.
+   readiness before wake arming. `abandon` discards local delivery and transfers
+   undelivered output leases to executor retirement without touching consumer-owned
+   outputs or closing the pool. Host tests cover sibling pressure until drain.
+   Retryable executor shutdown remains open: BERT must retain the lease through
+   stream-ordered frees, not just until outstanding kernels finish.
    Queued cancellation settles before runnable
    selection even when the head is blocked on a sibling lease (host regression in
    `crates/batch/tests/cancellation.rs`); the terminal count bound still applies. The BERT

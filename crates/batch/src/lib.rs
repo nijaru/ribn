@@ -448,10 +448,9 @@ pub trait BatchExecutor {
         batch: Vec<Job<Self::Input>>,
     ) -> Result<Vec<JobOutput<Self::Output>>, EnqueueError<Self::Error>>;
 
-    /// Take back output the runtime cannot commit.
+    /// Take back output the runtime cannot deliver or that the caller abandons.
     ///
-    /// The runtime calls this when an executor's returned output does not match the
-    /// work it submitted, so no result can be delivered. The executor owns the
+    /// The executor owns the
     /// storage and the charge carried by every returned value again; it must keep
     /// both until completion is established, exactly as after a failed enqueue.
     /// Dropping them here would release device memory the device may still write.
@@ -569,6 +568,46 @@ impl<E: BatchExecutor> BatchRuntime<E> {
             self.admission_closed = true;
             self.publish_local_change();
         }
+    }
+
+    /// Close admission and discard all work still owned by this runtime. A
+    /// caller that needs terminal outcomes should use [`Self::close_admission`]
+    /// and continue driving instead. Results already handed out are untouched.
+    /// Undelivered outputs go back to the executor with their leases. This does
+    /// not close the shared pool or establish executor shutdown.
+    ///
+    /// # Panics
+    /// Panics if the runtime's invariant that every retained output carries a
+    /// lease has been broken.
+    pub fn abandon(&mut self) {
+        let changed = !self.admission_closed || !self.queue.is_empty() || !self.terminal.is_empty();
+        if !changed {
+            return;
+        }
+        self.admission_closed = true;
+        while let Some(input) = self.remove_queued(0) {
+            drop(input);
+        }
+        let outputs: Vec<_> = self
+            .terminal
+            .drain(..)
+            .filter_map(|entry| {
+                let request = entry.request();
+                let (outcome, lease) = entry.into_parts();
+                match outcome {
+                    Terminal::Output(output) => Some(JobOutput::new(
+                        request,
+                        output,
+                        lease.expect("executed output carries its lease"),
+                    )),
+                    Terminal::Cancelled | Terminal::Rejected(_) => None,
+                }
+            })
+            .collect();
+        if !outputs.is_empty() {
+            self.executor.retire(outputs);
+        }
+        self.publish_local_change();
     }
 
     /// # Errors
@@ -1015,7 +1054,7 @@ impl<E: BatchExecutor> BatchRuntime<E> {
     }
 
     /// Register before stepping. Successful submission, new queued cancellation,
-    /// terminal dequeue and the first admission closure publish after updating state.
+    /// terminal dequeue, admission closure and abandonment publish after updating state.
     /// This does not watch the byte pool or executor; arm those waits too when
     /// their resources block the step. Use a waker that schedules the driver
     /// without synchronously reentering the caller's lock. An unwinding callback

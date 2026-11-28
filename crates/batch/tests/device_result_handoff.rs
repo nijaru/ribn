@@ -290,6 +290,64 @@ fn an_asynchronous_result_is_charged_until_its_consumer_releases_it() {
 }
 
 #[test]
+fn abandoning_hands_back_undelivered_output_but_not_consumer_owned_output() {
+    let pool = BytePool::new(2 * ENVELOPE).shared();
+    let mut owner = runtime(&pool);
+    let mut sibling = runtime(&pool);
+    let delivered = owner.submit(1).unwrap();
+    let undelivered = owner.submit(2).unwrap();
+    assert_eq!(owner.step().unwrap(), StepOutcome::Executed { results: 2 });
+    let entry = owner.pop_completed().unwrap();
+    assert_eq!(entry.request(), delivered);
+    owner.submit(3).unwrap();
+    let cancelled = owner.submit(9).unwrap();
+    assert_eq!(owner.cancel(cancelled), CancelOutcome::Queued);
+    assert_eq!(
+        owner.step().unwrap(),
+        StepOutcome::Cancelled { request: cancelled }
+    );
+    let local = owner.local_wait();
+    let capacity = owner.capacity_wait();
+    owner.abandon();
+    assert!(local.changed());
+    assert!(!capacity.changed());
+    assert_eq!(owner.step().unwrap(), StepOutcome::AdmissionDrained);
+    assert!(matches!(
+        owner.submit(4),
+        Err(RuntimeError::AdmissionClosed)
+    ));
+    assert!(owner.pop_completed().is_none());
+    assert_eq!(owner.queued(), 0);
+    assert_eq!(owner.executor().quarantined.len(), 1);
+    assert_eq!(owner.executor().quarantined[0].request(), undelivered);
+    assert_eq!(pool.granted(), 2 * ENVELOPE);
+    let closed = owner.local_wait();
+    owner.abandon();
+    assert!(!closed.changed());
+
+    sibling.submit(5).unwrap();
+    assert!(matches!(
+        sibling.step().unwrap(),
+        StepOutcome::Blocked(BlockReason::Pool { .. })
+    ));
+    assert_eq!(owner.executor_mut().drain(), 0);
+    assert_eq!(pool.granted(), 2 * ENVELOPE);
+    owner.executor().complete_pending();
+    assert_eq!(owner.executor_mut().drain(), 1);
+    assert!(capacity.changed());
+    assert_eq!(pool.granted(), ENVELOPE);
+    assert_eq!(
+        sibling.step().unwrap(),
+        StepOutcome::Executed { results: 1 }
+    );
+    assert_eq!(entry.output().unwrap().read().unwrap(), [1.0; 4]);
+    drop(entry);
+    sibling.executor().complete_pending();
+    drop(sibling.pop_completed().unwrap());
+    assert_eq!(pool.granted(), 0);
+}
+
+#[test]
 fn closing_admission_preserves_accepted_work_and_does_not_drain_the_device() {
     let pool = BytePool::new(2 * ENVELOPE).shared();
     let mut closing = runtime(&pool);
