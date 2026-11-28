@@ -27,10 +27,9 @@
 //! the result owns its lease, so an executor cannot overshoot the budget by
 //! running first and accounting afterwards. When the pool cannot cover the whole
 //! selected batch, the runtime runs the largest prefix it can reserve instead of
-//! blocking: batching is an optimization, so a shorter batch produces the same
-//! results. `step` reports [`BlockReason::RetainedResults`] or
-//! [`BlockReason::Pool`] only when not even one request fits, which is the caller's
-//! signal to consume retained entries or wait for capacity to come back.
+//! blocking. When the first reservation fails, a bounded scan can offer a
+//! later candidate alone. Each head can be bypassed only a bounded number of
+//! times. If no eligible work fits, the caller waits for delivery or pool capacity.
 //!
 //! Take a [`BatchRuntime::local_wait`] and a [`BatchRuntime::capacity_wait`] before
 //! the step. When idle or blocked, arm the local registration before parking. Also
@@ -210,8 +209,8 @@ pub enum BatchSelection<C> {
     /// The oldest candidate cannot execute under this executor's limits, and no
     /// amount of waiting changes that.
     ///
-    /// The runtime fails only that request and keeps later work moving. FIFO
-    /// order is preserved, so only the queue head can be rejected.
+    /// Only the queue head can be rejected. During a bypass search the runtime
+    /// skips rejected candidates instead of settling them out of order.
     Rejected(C),
 }
 
@@ -224,9 +223,8 @@ pub enum BlockReason<C> {
     /// Not even the head request fits the retained-result bound, so the caller
     /// must consume retained results before more work can run.
     RetainedResults,
-    /// The shared pool cannot cover the head request while other leases hold
-    /// capacity. The caller must consume retained entries, or wait for a sibling
-    /// runtime to release its own, before more work can run.
+    /// The shared pool could not cover the head, and no eligible peer obtained a
+    /// reservation. A pool capacity change or local change gives a reason to retry.
     ///
     /// Register with [`BatchRuntime::capacity_wait`] *before* attempting, then arm
     /// [`ReadinessWait::wake_on_change`] before parking. Retry when the registration
@@ -384,9 +382,8 @@ pub trait BatchExecutor {
     /// shapes, padding, workspace, or another concrete execution constraint makes
     /// the whole candidate set unsuitable.
     ///
-    /// This provisional contract preserves FIFO order. Reordering/bucketing is
-    /// intentionally deferred until a real workload demonstrates that the
-    /// additional scheduling complexity belongs in this runtime.
+    /// The runtime normally offers the FIFO head and its peers. If the pool
+    /// cannot reserve the head, it may instead offer a later candidate alone.
     fn select_batch(&self, candidates: &[&Self::Input]) -> BatchSelection<Self::Constraint>;
 
     /// Heap bytes the input keeps alive while queued, including allocation spare
@@ -394,16 +391,12 @@ pub trait BatchExecutor {
     /// Report a conservative upper bound; inputs must not grow after acceptance.
     fn waiting_input_bytes(&self, input: &Self::Input) -> usize;
 
-    /// Bytes this request's completed output will retain until the caller
-    /// consumes it.
+    /// Bytes the completed output retains until its storage and lease retire.
     ///
     /// Include every host allocation and device buffer the retained output keeps
     /// alive, not just the bytes a caller is likely to read. The runtime reserves
-    /// this amount before executing the batch and releases it when the entry is
-    /// consumed, so under-reporting here is what allows the retained budget to be
-    /// exceeded. This is a per-request prediction rather than a post-execution
-    /// measurement, which is what lets the runtime reserve capacity before it
-    /// submits work.
+    /// this amount before execution. Under-reporting can exceed the retained
+    /// budget; measuring after execution is too late.
     fn retained_bytes(&self, input: &Self::Input) -> u64;
 
     /// Enqueue one prepared batch and return its results.
@@ -459,6 +452,10 @@ impl<E> EnqueueError<E> {
     }
 }
 
+// Local policy, not a cross-runtime fairness or wall-clock guarantee.
+const MAX_POOL_BYPASS_SCAN: usize = 8;
+const MAX_POOL_BYPASSES: u8 = 8;
+
 struct Queued<I> {
     request: RequestId,
     input: I,
@@ -466,6 +463,7 @@ struct Queued<I> {
     parameter_version: ParameterVersion,
     /// Cancellation intent, settled before runnable selection when delivery has room.
     cancelled: bool,
+    pool_bypasses: u8,
 }
 
 /// What the queue resolved to before any execution or reservation happened.
@@ -583,6 +581,7 @@ impl<E: BatchExecutor> BatchRuntime<E> {
             waiting_bytes,
             parameter_version: self.executor.parameter_version(),
             cancelled: false,
+            pool_bypasses: 0,
         });
         self.waiting_input_bytes += waiting_bytes;
         self.publish_local_change();
@@ -658,6 +657,8 @@ impl<E: BatchExecutor> BatchRuntime<E> {
     /// failure. Arm the pre-step [`Self::local_wait`] when idle or blocked.
     /// For a pool block, also arm the pre-step [`Self::capacity_wait`]; for an
     /// executor block, arm the returned executor wait alongside the local one.
+    /// Pool bypass considers at most eight following requests, and at most eight
+    /// bypassed submissions can overtake the same head.
     ///
     /// # Errors
     /// Rejects a parameter-version change while queued work still targets the
@@ -689,18 +690,26 @@ impl<E: BatchExecutor> BatchRuntime<E> {
         // an optimization, so the accepted range shrinks to the largest prefix the
         // pool grants rather than blocking on the whole selection.
         let mut leases = Vec::with_capacity(accepted);
-        for queued in self.queue.iter().take(accepted) {
-            let bytes = self.executor.retained_bytes(&queued.input);
+        let version = self.executor.parameter_version();
+        let mut start = 0;
+        for index in 0..accepted {
+            let bytes = self.executor.retained_bytes(&self.queue[index].input);
             match self.pool.reserve(bytes) {
                 Ok(lease) => leases.push(lease),
                 Err(ReserveError::Exhausted {
                     requested,
                     available,
                 }) if leases.is_empty() => {
-                    return Ok(StepOutcome::Blocked(BlockReason::Pool {
-                        requested,
-                        available,
-                    }));
+                    let Some((index, lease)) = self.reserve_pool_peer(version, available)? else {
+                        return Ok(StepOutcome::Blocked(BlockReason::Pool {
+                            requested,
+                            available,
+                        }));
+                    };
+                    self.queue[0].pool_bypasses += 1;
+                    start = index;
+                    leases.push(lease);
+                    break;
                 }
                 // A later oversized item stops the prefix here and becomes the
                 // queue head's own rejection once earlier work drains.
@@ -713,11 +722,10 @@ impl<E: BatchExecutor> BatchRuntime<E> {
         }
 
         let items = leases.len();
-        let version = self.executor.parameter_version();
         // The reservation granted for each accepted request travels into its job, so
         // an executor that fails after reaching the device owns that charge along with
         // the storage it covers instead of handing it back inside an error.
-        let executed = self.execute_selected(items, leases)?;
+        let executed = self.execute_selected(start, items, leases)?;
         let results = executed.len();
         self.terminal.extend(executed.into_iter().map(|output| {
             let (request, output, lease) = output.into_parts();
@@ -729,6 +737,51 @@ impl<E: BatchExecutor> BatchRuntime<E> {
             }
         }));
         Ok(StepOutcome::Executed { results })
+    }
+
+    /// Search a bounded window for one feasible job without taking anything
+    /// out of the queue. Only an actual lease authorizes the bypass: the
+    /// head's availability snapshot only filters candidates. A concurrent
+    /// release after that snapshot makes the caller's pool registration ready.
+    fn reserve_pool_peer(
+        &self,
+        version: ParameterVersion,
+        available: u64,
+    ) -> Result<Option<(usize, PoolLease)>, RuntimeError<E::Error>> {
+        if self.queue[0].pool_bypasses >= MAX_POOL_BYPASSES {
+            return Ok(None);
+        }
+        for (index, queued) in self
+            .queue
+            .iter()
+            .enumerate()
+            .skip(1)
+            .take(MAX_POOL_BYPASS_SCAN)
+        {
+            if queued.parameter_version != version {
+                break;
+            }
+            let bytes = self.executor.retained_bytes(&queued.input);
+            if bytes > available {
+                continue;
+            }
+            match self.executor.select_batch(&[&queued.input]) {
+                BatchSelection::Ready { items: 1 } => {}
+                BatchSelection::Ready { items } => {
+                    return Err(RuntimeError::MalformedBatchSelection {
+                        selected: items,
+                        candidates: 1,
+                    });
+                }
+                BatchSelection::Blocked { .. } | BatchSelection::Rejected(_) => continue,
+            }
+            match self.pool.reserve(bytes) {
+                Ok(lease) => return Ok(Some((index, lease))),
+                Err(ReserveError::Exhausted { .. } | ReserveError::TooLarge { .. }) => {}
+                Err(ReserveError::Closed) => return Err(RuntimeError::PoolClosed),
+            }
+        }
+        Ok(None)
     }
 
     /// Resolve cancellation or the runnable head without executing anything.
@@ -824,7 +877,7 @@ impl<E: BatchExecutor> BatchRuntime<E> {
         })
     }
 
-    /// Drain `items` queued requests and run them as one batch.
+    /// Remove a FIFO prefix or a single bypassed request starting at `start`.
     ///
     /// `leases` are the reservations made for those items, one per queued request in
     /// the same order. They travel into the jobs, so the executor owns every
@@ -833,12 +886,13 @@ impl<E: BatchExecutor> BatchRuntime<E> {
     /// returning it here.
     fn execute_selected(
         &mut self,
+        start: usize,
         items: usize,
         leases: Vec<PoolLease>,
     ) -> Result<Vec<JobOutput<E::Output>>, RuntimeError<E::Error>> {
         let mut queued = Vec::with_capacity(items);
         while queued.len() < items {
-            let Some(next) = self.remove_queued(0) else {
+            let Some(next) = self.remove_queued(start) else {
                 return Err(RuntimeError::QueueInvariant);
             };
             queued.push(next);
@@ -1128,6 +1182,7 @@ mod tests {
         /// Outputs handed back by the runtime after a malformed completion.
         retired_outputs: usize,
         max_batch_items: usize,
+        rejected_marker: Option<u32>,
     }
 
     impl Encoder {
@@ -1143,6 +1198,7 @@ mod tests {
                 short_return: false,
                 retired_outputs: 0,
                 max_batch_items: 2,
+                rejected_marker: None,
             }
         }
     }
@@ -1170,7 +1226,11 @@ mod tests {
                     items: candidates.len() + 1,
                 };
             }
-            if self.token_budget.is_some_and(|budget| head.len() > budget) {
+            if self.token_budget.is_some_and(|budget| head.len() > budget)
+                || self
+                    .rejected_marker
+                    .is_some_and(|marker| head.first() == Some(&marker))
+            {
                 return BatchSelection::Rejected(Constraint::ExceedsTokenBudget {
                     tokens: head.len(),
                 });
@@ -1509,6 +1569,89 @@ mod tests {
             second.step().expect("sibling step after release"),
             StepOutcome::Executed { results: 1 }
         );
+    }
+
+    #[test]
+    fn pool_bypass_is_bounded_and_an_aged_head_gets_the_next_grant() {
+        let pool = BytePool::new(8).shared();
+        let sibling_lease = pool.reserve(4).unwrap();
+        let mut runtime = BatchRuntime::new(Encoder::new(), Arc::clone(&pool), config()).unwrap();
+        let head = runtime.submit(vec![1; 8]).unwrap();
+        for peer in 0..8 {
+            let request = runtime.submit(vec![peer]).unwrap();
+            assert_eq!(
+                runtime.step().unwrap(),
+                StepOutcome::Executed { results: 1 }
+            );
+            assert_eq!(pool.granted(), 5);
+            let entry = runtime.pop_completed().unwrap();
+            assert_eq!(entry.request(), request);
+            assert_eq!(entry.output(), Some(&peer));
+            drop(entry);
+            assert_eq!(runtime.queued(), 1);
+        }
+        let later = runtime.submit(vec![9]).unwrap();
+        for _ in 0..2 {
+            assert_eq!(
+                runtime.step().unwrap(),
+                StepOutcome::Blocked(BlockReason::Pool {
+                    requested: 8,
+                    available: 4
+                })
+            );
+        }
+        drop(sibling_lease);
+        assert_eq!(
+            runtime.step().unwrap(),
+            StepOutcome::Executed { results: 1 }
+        );
+        let entry = runtime.pop_completed().unwrap();
+        assert_eq!(entry.request(), head);
+        drop(entry);
+        assert_eq!(
+            runtime.step().unwrap(),
+            StepOutcome::Executed { results: 1 }
+        );
+        assert_eq!(runtime.pop_completed().unwrap().request(), later);
+    }
+
+    #[test]
+    fn pool_bypass_respects_the_scan_bound_and_does_not_execute_a_rejected_peer() {
+        let pool = BytePool::new(16).shared();
+        let _held = pool.reserve(8).unwrap();
+        let mut executor = Encoder::new();
+        executor.rejected_marker = Some(42);
+        executor.bytes_per_token = 2;
+        let mut cfg = config();
+        cfg.max_waiting_requests = 12;
+        let mut runtime = BatchRuntime::new(executor, pool, cfg).unwrap();
+        runtime.submit(vec![0; 8]).unwrap();
+        let mut blockers = Vec::new();
+        for _ in 0..7 {
+            blockers.push(runtime.submit(vec![0; 5]).unwrap());
+        }
+        runtime.submit(vec![42]).unwrap();
+        let peer = runtime.submit(vec![1]).unwrap();
+        assert_eq!(
+            runtime.step().unwrap(),
+            StepOutcome::Blocked(BlockReason::Pool {
+                requested: 16,
+                available: 8
+            })
+        );
+        let cancelled = blockers[0];
+        assert_eq!(runtime.cancel(cancelled), CancelOutcome::Queued);
+        assert_eq!(
+            runtime.step().unwrap(),
+            StepOutcome::Cancelled { request: cancelled }
+        );
+        assert_eq!(runtime.pop_completed().unwrap().request(), cancelled);
+        assert_eq!(
+            runtime.step().unwrap(),
+            StepOutcome::Executed { results: 1 }
+        );
+        assert_eq!(runtime.pop_completed().unwrap().request(), peer);
+        assert_eq!(runtime.queued(), 8);
     }
 
     #[test]

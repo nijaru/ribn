@@ -300,7 +300,15 @@ Executors report queued input allocation capacity before admission; the runtime 
 an input exceeding the entire limit or temporarily refuses admission if queued inputs
 occupy the remaining budget. This queue-local budget ends on removal for execution,
 rejection, or cancellation settlement; it is separate from device/result leases.
-The runtime selects a FIFO runnable prefix. `close_admission` permanently refuses
+The runtime prefers a FIFO runnable prefix. If the shared byte pool cannot
+reserve even the head, it can try up to eight following requests in order and
+run the first same-version singleton that the executor accepts and the pool
+can reserve. It permits at most eight such submissions past a given head; each
+consumes a bypass even if enqueue fails. After that, only settling the head
+allows this runtime to advance (queued cancellation still comes first). The
+runtime does not hold partial reservations for the head. This policy bounds
+local overtaking; it does not guarantee fairness across sibling runtimes.
+`close_admission` permanently refuses
 new submissions to this runtime without closing the shared pool or discarding
 accepted work. Existing requests can still execute or settle cancellation.
 Once the waiting queue is empty, `step` reports `AdmissionDrained` instead of
@@ -312,10 +320,10 @@ pool and executor blocks arm both the local registration and the resource wait.
 An executor registers its own `ReadinessWait` before checking its resource;
 `step` returns it unchanged. The local source publishes after successful
 submission, first queued cancellation, terminal dequeue, or admission closure.
-Dequeue returns a
-delivery slot without releasing the output's byte lease. Publication means
-retry, not reservation; a fresh step must check capacity again. Temporary head
-pressure can strand feasible later requests. On a drive step, queued
+Dequeue returns a delivery slot without releasing the output's byte lease.
+Publication means retry, not reservation; a fresh step must check capacity
+again. Pool bypass is opportunistic: it does not run past an executor-blocked
+head or subscribe to readiness for skipped peers. On a drive step, queued
 cancellation settles before runnable selection,
 oldest cancelled request first, subject to the same terminal count bound as results.
 Terminal entries are delivered in settlement order, not submission order.
@@ -323,9 +331,10 @@ Terminal entries are delivered in settlement order, not submission order.
 Before exposing owned encoder access, establish these contracts through the real runtime:
 
 - Bound retained input/options before acceptance, independently of device/result leases.
-- Select bounded feasible peers with aging; keep result ordering in the chosen application
-  contract, not as a compulsory execution FIFO. Cancelled queued work must settle without
-  waiting for an unrelated head to become feasible, subject to delivery backpressure.
+- Bound overtaking and scan cost; keep result ordering in the chosen application contract,
+  not as a compulsory execution FIFO. Shared byte pressure has bounded singleton bypass;
+  executor-blocked heads and scheduling beyond this window remain open. Cancelled queued
+  work settles independently of head feasibility, subject to delivery backpressure.
 - Every temporary wait carries registration/recheck or an explicit completion dependency.
   A reason enum alone is insufficient. Local wakeups cover submission, cancellation,
   delivery-slot release and admission closure.

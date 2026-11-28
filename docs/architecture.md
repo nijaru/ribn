@@ -388,8 +388,8 @@ teardown still lack qualified charge retention through allocator-safe reuse/back
 post-enqueue tests do not prove a hard physical-memory bound. `ribn-batch` bounds
 waiting input bytes and waiting/result counts, and carries pool, executor, and local
 readiness. Its admission can close without affecting sibling runtimes using the same
-pool; this does not drain the executor. Retryable shutdown and bypass of temporarily
-infeasible FIFO heads remain open in the
+pool; this does not drain the executor. Shared-pool byte pressure permits bounded
+singleton bypass. Retryable shutdown and bypass of executor-blocked heads remain open in the
 [repair gates](roadmap.md#immediate-bounds-and-lifecycle-repairs).
 
 `ribn-foundation` owns `BytePool`/`PoolLease`/`AllocationId`, shared readiness,
