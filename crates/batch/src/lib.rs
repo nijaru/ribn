@@ -141,25 +141,41 @@ impl<I> Job<I> {
     }
 }
 
-/// One result handed back to the runtime, with the reservation covering its storage.
+/// One result and the reservation covering its storage, from execution to retirement.
 ///
-/// The executor returns the charge inside the same value that carries the result, so
-/// the runtime never has to guess which reservation belongs to which output. Output
-/// the runtime cannot commit is handed back through [`BatchExecutor::retire`]
-/// instead of being released here.
+/// Callers may borrow the output but cannot extract its lease independently. An
+/// executor must provide a retirement callback for storage whose destructor does
+/// not prove reuse. Undeliverable outputs still go through [`BatchExecutor::retire`].
+#[derive(Debug)]
 pub struct JobOutput<O> {
     request: RequestId,
-    output: O,
-    lease: PoolLease,
+    retained: Option<(O, PoolLease)>,
+    retire: fn(O, PoolLease),
 }
 
 impl<O> JobOutput<O> {
+    /// For output whose destructor releases its storage synchronously.
     #[must_use]
     pub fn new(request: RequestId, output: O, lease: PoolLease) -> Self {
+        Self::with_retirement(request, output, lease, |output, lease| {
+            drop(output);
+            drop(lease);
+        })
+    }
+
+    /// Register the owner that retires both storage and lease when discarded.
+    /// The callback must keep the lease until reuse is proven, including on failure.
+    #[must_use]
+    pub const fn with_retirement(
+        request: RequestId,
+        output: O,
+        lease: PoolLease,
+        retire: fn(O, PoolLease),
+    ) -> Self {
         Self {
             request,
-            output,
-            lease,
+            retained: Some((output, lease)),
+            retire,
         }
     }
 
@@ -170,21 +186,25 @@ impl<O> JobOutput<O> {
 
     #[must_use]
     pub fn output(&self) -> &O {
-        &self.output
+        &self.retained().0
     }
 
     /// The reservation covering this result's storage.
     #[must_use]
-    pub const fn lease(&self) -> &PoolLease {
-        &self.lease
+    pub fn lease(&self) -> &PoolLease {
+        &self.retained().1
     }
 
-    /// Split into the request identity, its result and the reservation that covers
-    /// it. The two must stay together: releasing the lease while the result's
-    /// storage is readable is what the pool's accounting must never allow.
-    #[must_use]
-    pub fn into_parts(self) -> (RequestId, O, PoolLease) {
-        (self.request, self.output, self.lease)
+    fn retained(&self) -> &(O, PoolLease) {
+        self.retained.as_ref().expect("taken only in Drop")
+    }
+}
+
+impl<O> Drop for JobOutput<O> {
+    fn drop(&mut self) {
+        if let Some((output, lease)) = self.retained.take() {
+            (self.retire)(output, lease);
+        }
     }
 }
 
@@ -304,8 +324,7 @@ pub enum Terminal<O, C> {
 pub struct Completed<O, C> {
     request: RequestId,
     parameter_version: ParameterVersion,
-    outcome: Terminal<O, C>,
-    lease: Option<PoolLease>,
+    outcome: Terminal<JobOutput<O>, C>,
 }
 
 impl<O, C> Completed<O, C> {
@@ -320,30 +339,29 @@ impl<O, C> Completed<O, C> {
     }
 
     #[must_use]
-    pub const fn outcome(&self) -> &Terminal<O, C> {
+    pub const fn outcome(&self) -> &Terminal<JobOutput<O>, C> {
         &self.outcome
     }
 
-    /// Split into the terminal outcome and the charge covering its storage.
-    ///
-    /// Handing the result to another owner means handing over the lease too:
-    /// dropping it releases pool bytes that owner's storage still needs.
-    /// Rejections and cancellations carry no lease.
+    /// Take the terminal outcome. Any output still owns its reservation.
     #[must_use]
-    pub fn into_parts(self) -> (Terminal<O, C>, Option<PoolLease>) {
-        (self.outcome, self.lease)
+    pub fn into_outcome(self) -> Terminal<JobOutput<O>, C> {
+        self.outcome
     }
 
     /// The reservation covering this entry's storage until it is consumed.
     #[must_use]
-    pub const fn lease(&self) -> Option<&PoolLease> {
-        self.lease.as_ref()
+    pub fn lease(&self) -> Option<&PoolLease> {
+        match &self.outcome {
+            Terminal::Output(output) => Some(output.lease()),
+            Terminal::Rejected(_) | Terminal::Cancelled => None,
+        }
     }
 
     /// Identity of the allocation this entry holds, when it produced output.
     #[must_use]
     pub fn allocation(&self) -> Option<AllocationId> {
-        self.lease.as_ref().map(PoolLease::allocation)
+        self.lease().map(PoolLease::allocation)
     }
 
     /// Bytes this entry retains until the caller consumes it.
@@ -351,7 +369,7 @@ impl<O, C> Completed<O, C> {
     /// Rejections and cancellations retain nothing and report zero.
     #[must_use]
     pub fn retained_bytes(&self) -> u64 {
-        self.lease.as_ref().map_or(0, PoolLease::bytes)
+        self.lease().map_or(0, PoolLease::bytes)
     }
 
     /// Whether this request was cancelled instead of finishing.
@@ -362,9 +380,9 @@ impl<O, C> Completed<O, C> {
 
     /// The completed output, when this request executed rather than failing.
     #[must_use]
-    pub const fn output(&self) -> Option<&O> {
+    pub fn output(&self) -> Option<&O> {
         match &self.outcome {
-            Terminal::Output(output) => Some(output),
+            Terminal::Output(output) => Some(output.output()),
             Terminal::Rejected(_) | Terminal::Cancelled => None,
         }
     }
@@ -589,10 +607,6 @@ impl<E: BatchExecutor> BatchRuntime<E> {
     /// and continue driving instead. Results already handed out are untouched.
     /// Undelivered outputs go back to the executor with their leases. This does
     /// not close the shared pool or establish executor shutdown.
-    ///
-    /// # Panics
-    /// Panics if the runtime's invariant that every retained output carries a
-    /// lease has been broken.
     pub fn abandon(&mut self) {
         let changed = !self.admission_closed || !self.queue.is_empty() || !self.terminal.is_empty();
         if !changed {
@@ -605,17 +619,9 @@ impl<E: BatchExecutor> BatchRuntime<E> {
         let outputs: Vec<_> = self
             .terminal
             .drain(..)
-            .filter_map(|entry| {
-                let request = entry.request();
-                let (outcome, lease) = entry.into_parts();
-                match outcome {
-                    Terminal::Output(output) => Some(JobOutput::new(
-                        request,
-                        output,
-                        lease.expect("executed output carries its lease"),
-                    )),
-                    Terminal::Cancelled | Terminal::Rejected(_) => None,
-                }
+            .filter_map(|entry| match entry.into_outcome() {
+                Terminal::Output(output) => Some(output),
+                Terminal::Cancelled | Terminal::Rejected(_) => None,
             })
             .collect();
         if !outputs.is_empty() {
@@ -718,19 +724,13 @@ impl<E: BatchExecutor> BatchRuntime<E> {
             return CancelOutcome::Unknown;
         };
         let parameter_version = entry.parameter_version();
-        let (outcome, lease) = entry.into_parts();
-        // A retained device result cannot be dropped by the runtime: the storage may
-        // still be running, and its charge must stay with it. The executor that
-        // materialized it is the only owner that can wait for completion.
-        if let (Terminal::Output(output), Some(lease)) = (outcome, lease) {
-            self.executor
-                .retire(vec![JobOutput::new(request, output, lease)]);
+        if let Terminal::Output(output) = entry.into_outcome() {
+            self.executor.retire(vec![output]);
         }
         self.terminal.push_back(Completed {
             request,
             parameter_version,
             outcome: Terminal::Cancelled,
-            lease: None,
         });
         CancelOutcome::Discarded
     }
@@ -823,15 +823,12 @@ impl<E: BatchExecutor> BatchRuntime<E> {
         // the storage it covers instead of handing it back inside an error.
         let executed = self.execute_selected(start, items, leases)?;
         let results = executed.len();
-        self.terminal.extend(executed.into_iter().map(|output| {
-            let (request, output, lease) = output.into_parts();
-            Completed {
-                request,
+        self.terminal
+            .extend(executed.into_iter().map(|output| Completed {
+                request: output.request(),
                 parameter_version: version,
                 outcome: Terminal::Output(output),
-                lease: Some(lease),
-            }
-        }));
+            }));
         Ok(StepOutcome::Executed { results })
     }
 
@@ -913,7 +910,6 @@ impl<E: BatchExecutor> BatchRuntime<E> {
                 request: cancelled.request,
                 parameter_version: cancelled.parameter_version,
                 outcome: Terminal::Cancelled,
-                lease: None,
             });
             return Ok(Resolved::Cancelled {
                 request: cancelled.request,
@@ -982,7 +978,6 @@ impl<E: BatchExecutor> BatchRuntime<E> {
             request: rejected.request,
             parameter_version: rejected.parameter_version,
             outcome: Terminal::Rejected(rejection),
-            lease: None,
         });
         Ok(Resolved::Rejected {
             request: rejected.request,
@@ -1057,7 +1052,7 @@ impl<E: BatchExecutor> BatchRuntime<E> {
 
     /// Consume the oldest terminal entry and hand over its reservation.
     ///
-    /// Dropping the returned entry after popping discards the output and releases
+    /// Dropping the returned entry after popping discards the output and retires
     /// its charge. Handing the entry to another owner transfers the charge with it,
     /// because the storage it covers travels too.
     #[must_use]
@@ -1465,8 +1460,7 @@ mod tests {
         after_device: bool,
         /// Reservations the executor still owns after its failure.
         quarantined: Vec<PoolLease>,
-        /// Outputs handed back by the runtime.
-        retired_outputs: usize,
+        retired_outputs: Vec<JobOutput<u32>>,
     }
 
     impl FailingEncoder {
@@ -1474,12 +1468,13 @@ mod tests {
             Self {
                 after_device,
                 quarantined: Vec::new(),
-                retired_outputs: 0,
+                retired_outputs: Vec::new(),
             }
         }
 
         fn release_quarantined(&mut self) {
             self.quarantined.clear();
+            self.retired_outputs.clear();
         }
     }
 
@@ -1527,9 +1522,7 @@ mod tests {
         }
 
         fn retire(&mut self, outputs: Vec<JobOutput<Self::Output>>) {
-            self.retired_outputs += outputs.len();
-            self.quarantined
-                .extend(outputs.into_iter().map(|output| output.into_parts().2));
+            self.retired_outputs.extend(outputs);
         }
     }
 
@@ -1670,13 +1663,14 @@ mod tests {
 
         // Consuming the entry hands the charge over rather than releasing it:
         // the caller's storage still occupies those bytes.
-        let (outcome, lease) = runtime
+        let Terminal::Output(output) = runtime
             .pop_completed()
             .expect("released entry")
-            .into_parts();
-        assert!(matches!(outcome, Terminal::Output(_)));
-        let lease = lease.expect("outputs carry a lease");
-        assert_eq!(lease.bytes(), 1 << 19);
+            .into_outcome()
+        else {
+            panic!("request should have executed");
+        };
+        assert_eq!(output.lease().bytes(), 1 << 19);
         assert_eq!(pool.granted(), 1 << 19);
         assert_eq!(runtime.retained_output_bytes(), 0);
         assert_eq!(
@@ -1689,7 +1683,7 @@ mod tests {
             }),
             "a popped result keeps its bytes reserved until its owner frees them"
         );
-        drop(lease);
+        drop(output);
         assert_eq!(pool.granted(), 0);
         assert_eq!(
             runtime.step().expect("step after release"),
@@ -1826,13 +1820,13 @@ mod tests {
             runtime.step().expect("rejecting step"),
             StepOutcome::Rejected { request: oversized }
         );
-        assert_eq!(
+        assert!(matches!(
             runtime.pop_completed().expect("rejection").outcome(),
-            &Terminal::Rejected(Rejection::RetainedOutputTooLarge {
+            Terminal::Rejected(Rejection::RetainedOutputTooLarge {
                 requested: 2048,
                 capacity: 1024
             })
-        );
+        ));
         assert_eq!(
             runtime.step().expect("healthy peer still runs"),
             StepOutcome::Executed { results: 1 }

@@ -79,7 +79,15 @@ impl BatchExecutor for CudaBertEncoder {
         for job in batch {
             let (request, input, lease) = job.into_parts();
             match self.enqueue(&input) {
-                Ok(submission) => enqueued.push(JobOutput::new(request, submission, lease)),
+                Ok(mut submission) => {
+                    submission.attach_retirement(self.retirement_handle());
+                    enqueued.push(JobOutput::with_retirement(
+                        request,
+                        submission,
+                        lease,
+                        EncoderSubmission::retire_pooled,
+                    ));
+                }
                 Err(failure) => {
                     // Anything already on the device keeps its storage and charge; the
                     // failing request keeps its reservation only if it created storage.
@@ -104,11 +112,8 @@ impl BatchExecutor for CudaBertEncoder {
     /// nothing may be delivered. Storage and charge wait here for a proven drain
     /// instead of returning to the pool while the device may still write them.
     fn retire(&mut self, outputs: Vec<JobOutput<Self::Output>>) {
-        for output in outputs {
-            let (_, submission, lease) = output.into_parts();
-            self.quarantine(submission, Some(lease));
-        }
-        let _ = self.drain_retirement();
+        // These carry the same completion-safe retirement as delivered results.
+        drop(outputs);
     }
 }
 
@@ -148,13 +153,8 @@ impl EncoderCompletion {
     #[must_use]
     pub fn from_completed(completed: Completed<EncoderSubmission, EncoderConstraint>) -> Self {
         let request = completed.request();
-        let (outcome, lease) = completed.into_parts();
-        match outcome {
-            Terminal::Output(submission) => Self::Result(EncoderResult {
-                request,
-                submission,
-                lease,
-            }),
+        match completed.into_outcome() {
+            Terminal::Output(output) => Self::Result(EncoderResult(output)),
             Terminal::Rejected(rejection) => Self::Rejected { request, rejection },
             Terminal::Cancelled => Self::Cancelled { request },
         }
@@ -167,23 +167,20 @@ impl EncoderCompletion {
 /// consumer cannot release the bytes while the storage is still readable. The
 /// producer's completion dependency stays explicit: [`Self::is_complete`] or
 /// [`Self::synchronize`] must establish completion before [`Self::read`], and the
-/// storage is only free for reuse once this value is dropped.
+/// storage is only free for reuse after checked retirement. Drop may wait for
+/// CUDA; a failed wait leaves the storage and charge with the retirement owner.
 #[derive(Debug)]
-pub struct EncoderResult {
-    request: RequestId,
-    submission: EncoderSubmission,
-    lease: Option<PoolLease>,
-}
+pub struct EncoderResult(JobOutput<EncoderSubmission>);
 
 impl EncoderResult {
     #[must_use]
     pub const fn request(&self) -> RequestId {
-        self.request
+        self.0.request()
     }
 
     #[must_use]
-    pub const fn submission(&self) -> &EncoderSubmission {
-        &self.submission
+    pub fn submission(&self) -> &EncoderSubmission {
+        self.0.output()
     }
 
     /// Whether every kernel and copy of this request has completed.
@@ -191,7 +188,7 @@ impl EncoderResult {
     /// # Errors
     /// Returns [`EncoderError`] for a device fault.
     pub fn is_complete(&self) -> Result<bool, EncoderError> {
-        self.submission.is_complete()
+        self.submission().is_complete()
     }
 
     /// Block until this request's device work has completed.
@@ -199,7 +196,7 @@ impl EncoderResult {
     /// # Errors
     /// Returns [`EncoderError`] when the stream reports a device failure.
     pub fn synchronize(&self) -> Result<(), EncoderError> {
-        self.submission.synchronize()
+        self.submission().synchronize()
     }
 
     /// Read the results, after completion has been established.
@@ -207,24 +204,24 @@ impl EncoderResult {
     /// # Errors
     /// Returns [`EncoderError`] when a copy fails.
     pub fn read(&self) -> Result<EncoderOutput, EncoderError> {
-        self.submission.read()
+        self.submission().read()
     }
 
     /// Bytes this result holds on the device until it is dropped.
     #[must_use]
     pub fn device_bytes(&self) -> u64 {
-        self.submission.device_bytes()
+        self.submission().device_bytes()
     }
 
     /// The pool charge covering this result's storage.
     #[must_use]
-    pub const fn lease(&self) -> Option<&PoolLease> {
-        self.lease.as_ref()
+    pub fn lease(&self) -> &PoolLease {
+        self.0.lease()
     }
 
-    /// Pool bytes this result keeps reserved until it is dropped.
+    /// Pool bytes this result keeps reserved until retirement is proven.
     #[must_use]
     pub fn retained_bytes(&self) -> u64 {
-        self.lease.as_ref().map_or(0, PoolLease::bytes)
+        self.lease().bytes()
     }
 }

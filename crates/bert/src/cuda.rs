@@ -120,7 +120,7 @@ pub struct CudaBertEncoder {
     requests: EncoderPreparation,
     max_batch_items: usize,
     prepared: Arc<Prepared>,
-    retirement: Mutex<Retirement>,
+    retirement: EncoderRetirement,
 }
 
 impl CudaBertEncoder {
@@ -198,8 +198,11 @@ impl CudaBertEncoder {
         Ok(Self {
             requests,
             max_batch_items: DEFAULT_MAX_BATCH_ITEMS,
+            retirement: EncoderRetirement(Arc::new(RetirementOwner {
+                stream,
+                state: Mutex::new(Retirement::default()),
+            })),
             prepared: Arc::new(Prepared { ops, blas, weights }),
-            retirement: Mutex::new(Retirement::default()),
         })
     }
 
@@ -326,6 +329,7 @@ impl CudaBertEncoder {
             first_row: alloc(stream, shape.hidden()).map_err(EnqueueFailure::refused)?,
             pooled: alloc(stream, shape.hidden()).map_err(EnqueueFailure::refused)?,
             completion: None,
+            retirement: None,
         };
         // From here the submission is complete and owns live device state: a failure
         // returns it so its owner can keep it until completion is proven.
@@ -366,7 +370,7 @@ impl CudaBertEncoder {
     ) -> EncoderError {
         let EnqueueFailure { error, storage } = failure;
         if let Some(submission) = storage {
-            self.quarantine(*submission, lease);
+            self.retirement.quarantine(*submission, lease);
             let _ = self.drain_retirement();
         }
         error
@@ -383,6 +387,102 @@ impl CudaBertEncoder {
         self.drain_retirement().map(|_| ())
     }
 
+    /// Wait for pending retirement on this encoder's stream.
+    ///
+    /// # Errors
+    /// Returns the device error that prevented retirement; unresolved charges
+    /// stay with the shared owner.
+    pub fn drain_retirement(&self) -> Result<usize, EncoderError> {
+        self.retirement.drain()
+    }
+
+    /// Keep a retry handle for this stream's retirement, even after the encoder
+    /// and its results are dropped.
+    #[must_use]
+    pub fn retirement_handle(&self) -> EncoderRetirement {
+        self.retirement.clone()
+    }
+
+    /// Requests whose device work is still held by this encoder.
+    #[must_use]
+    pub fn quarantined_requests(&self) -> usize {
+        let retirement = self.retirement();
+        retirement.quarantined.len() + retirement.free_pending.len()
+    }
+
+    /// Device bytes this encoder still holds for work that may not have completed.
+    #[must_use]
+    pub fn quarantined_bytes(&self) -> u64 {
+        let retirement = self.retirement();
+        retirement
+            .quarantined
+            .iter()
+            .map(|entry| entry.submission.device_bytes())
+            .chain(retirement.free_pending.iter().map(|entry| entry.bytes))
+            .sum()
+    }
+
+    /// Shared-pool bytes this encoder still holds for quarantined work.
+    ///
+    /// A quarantined request keeps the reservation that was granted for it, so this
+    /// equals its device bytes whenever a shared pool granted one. It is zero on the
+    /// standalone submission path, which has no pool to account to.
+    #[must_use]
+    pub fn quarantined_charge(&self) -> u64 {
+        let retirement = self.retirement();
+        retirement
+            .quarantined
+            .iter()
+            .map(|entry| entry.lease.as_ref())
+            .chain(
+                retirement
+                    .free_pending
+                    .iter()
+                    .map(|entry| entry.lease.as_ref()),
+            )
+            .flatten()
+            .fold(0_u64, |total, lease| total.saturating_add(lease.bytes()))
+    }
+
+    /// Whether the device failed and this encoder still holds quarantined work.
+    #[must_use]
+    pub fn is_faulted(&self) -> bool {
+        self.retirement().fault.is_some()
+    }
+
+    /// The fault that stopped this encoder from accepting work, when it has one.
+    #[must_use]
+    pub fn fault(&self) -> Option<String> {
+        self.retirement().fault.clone()
+    }
+
+    #[cfg(test)]
+    fn quarantine(&self, submission: EncoderSubmission, lease: Option<PoolLease>) {
+        self.retirement.quarantine(submission, lease);
+    }
+
+    fn retirement(&self) -> std::sync::MutexGuard<'_, Retirement> {
+        self.retirement.state()
+    }
+
+    /// Run one request to completion and read its results.
+    ///
+    /// # Errors
+    /// Returns [`EncoderError`] for an invalid request, an execution failure, or a
+    /// readback failure.
+    pub fn encode(&self, request: &EncoderRequest) -> Result<EncoderOutput, EncoderError> {
+        let submission = self.submit(request)?;
+        submission.synchronize()?;
+        submission.read()
+    }
+}
+
+/// Owner of pending BERT buffer releases on one CUDA stream. A handle can
+/// outlive submission and readback and can retry retirement after encoder shutdown.
+#[derive(Clone)]
+pub struct EncoderRetirement(Arc<RetirementOwner>);
+
+impl EncoderRetirement {
     /// Establish completion of every quarantined request and release what is proven
     /// done.
     ///
@@ -393,8 +493,8 @@ impl CudaBertEncoder {
     ///
     /// # Errors
     /// Returns the device error that prevented completion.
-    pub fn drain_retirement(&self) -> Result<usize, EncoderError> {
-        let mut retirement = self.retirement();
+    pub fn drain(&self) -> Result<usize, EncoderError> {
+        let mut retirement = self.state();
         if let Some(failure) = &retirement.free_failure {
             return Err(EncoderError::Faulted(failure.clone()));
         }
@@ -403,7 +503,7 @@ impl CudaBertEncoder {
         }
         // Serialize the drain with quarantine insertion. In particular, a new
         // submission may not join the set covered by an earlier stream fence.
-        let stream = self.stream();
+        let stream = &self.0.stream;
         let attempt: Result<(), EncoderError> = (|| {
             if !retirement.quarantined.is_empty() {
                 #[cfg(test)]
@@ -472,97 +572,29 @@ impl CudaBertEncoder {
         Ok(drained)
     }
 
-    /// Requests whose device work is still held by this encoder.
-    #[must_use]
-    pub fn quarantined_requests(&self) -> usize {
-        let retirement = self.retirement();
-        retirement.quarantined.len() + retirement.free_pending.len()
-    }
-
-    /// Device bytes this encoder still holds for work that may not have completed.
-    #[must_use]
-    pub fn quarantined_bytes(&self) -> u64 {
-        let retirement = self.retirement();
-        retirement
-            .quarantined
-            .iter()
-            .map(|entry| entry.submission.device_bytes())
-            .chain(retirement.free_pending.iter().map(|entry| entry.bytes))
-            .sum()
-    }
-
-    /// Shared-pool bytes this encoder still holds for quarantined work.
-    ///
-    /// A quarantined request keeps the reservation that was granted for it, so this
-    /// equals its device bytes whenever a shared pool granted one. It is zero on the
-    /// standalone submission path, which has no pool to account to.
-    #[must_use]
-    pub fn quarantined_charge(&self) -> u64 {
-        let retirement = self.retirement();
-        retirement
-            .quarantined
-            .iter()
-            .map(|entry| entry.lease.as_ref())
-            .chain(
-                retirement
-                    .free_pending
-                    .iter()
-                    .map(|entry| entry.lease.as_ref()),
-            )
-            .flatten()
-            .fold(0_u64, |total, lease| total.saturating_add(lease.bytes()))
-    }
-
-    /// Whether the device failed and this encoder still holds quarantined work.
-    #[must_use]
-    pub fn is_faulted(&self) -> bool {
-        self.retirement().fault.is_some()
-    }
-
-    /// The fault that stopped this encoder from accepting work, when it has one.
-    #[must_use]
-    pub fn fault(&self) -> Option<String> {
-        self.retirement().fault.clone()
-    }
-
-    /// Keep one live submission, and the charge covering it, until a proven drain.
-    pub(crate) fn quarantine(&self, submission: EncoderSubmission, lease: Option<PoolLease>) {
-        self.retirement()
+    fn quarantine(&self, submission: EncoderSubmission, lease: Option<PoolLease>) {
+        self.state()
             .quarantined
             .push(Quarantined { submission, lease });
     }
 
-    fn retirement(&self) -> std::sync::MutexGuard<'_, Retirement> {
-        // The retirement list holds no arithmetic that can panic while locked, so
-        // recovering the guard keeps one failed device from becoming a permanent
-        // panic for every later release attempt.
-        self.retirement
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-    }
-
-    /// Run one request to completion and read its results.
-    ///
-    /// # Errors
-    /// Returns [`EncoderError`] for an invalid request, an execution failure, or a
-    /// readback failure.
-    pub fn encode(&self, request: &EncoderRequest) -> Result<EncoderOutput, EncoderError> {
-        let submission = self.submit(request)?;
-        submission.synchronize()?;
-        submission.read()
+    fn state(&self) -> std::sync::MutexGuard<'_, Retirement> {
+        self.0.state.lock().unwrap_or_else(PoisonError::into_inner)
     }
 }
 
-impl Drop for CudaBertEncoder {
+struct RetirementOwner {
+    stream: Arc<CudaStream>,
+    state: Mutex<Retirement>,
+}
+
+impl Drop for RetirementOwner {
     fn drop(&mut self) {
-        let retirement = self
-            .retirement
-            .get_mut()
-            .unwrap_or_else(PoisonError::into_inner);
+        let retirement = self.state.get_mut().unwrap_or_else(PoisonError::into_inner);
         if !retirement.quarantined.is_empty() || !retirement.free_pending.is_empty() {
-            // Drop cannot certify a CUDA drain. Keep the unresolved allocations,
-            // their stream/context, and their charges together for process lifetime.
-            std::mem::forget((Arc::clone(&self.prepared), std::mem::take(retirement)));
+            // A last owner cannot certify an unresolved CUDA drain. Keep the
+            // allocations, their stream/context, and charges for process lifetime.
+            std::mem::forget((Arc::clone(&self.stream), std::mem::take(retirement)));
         }
     }
 }
@@ -703,9 +735,25 @@ pub struct EncoderSubmission {
     first_row: CudaSlice<f32>,
     pooled: CudaSlice<f32>,
     completion: Option<CudaEvent>,
+    retirement: Option<EncoderRetirement>,
 }
 
 impl EncoderSubmission {
+    pub(crate) fn attach_retirement(&mut self, owner: EncoderRetirement) {
+        self.retirement = Some(owner);
+    }
+
+    pub(crate) fn retire_pooled(mut self, lease: PoolLease) {
+        // Move the owner out before handing over the submission, so pending
+        // retirement never holds a reference to itself.
+        let owner = self
+            .retirement
+            .take()
+            .expect("pooled output has a retirement owner");
+        owner.quarantine(self, Some(lease));
+        let _ = owner.drain();
+    }
+
     /// Transfer exclusive ownership of the workspace pointers after proving
     /// completion. No field remains that can enqueue accesses to the buffers.
     fn into_device_ptrs(self) -> [sys::CUdeviceptr; 12] {
@@ -714,6 +762,7 @@ impl EncoderSubmission {
             prepared: _,
             shape: _,
             completion: _,
+            retirement: _,
             tokens,
             types,
             mask,
@@ -1097,6 +1146,66 @@ mod tests {
             owner.executor().submit(&request),
             Err(EncoderError::Closed)
         ));
+    }
+
+    #[test]
+    #[ignore = "requires an idle CUDA GPU; run serially with --test-threads=1"]
+    fn dropped_consumer_outputs_hold_the_charge_through_retry_after_shutdown() {
+        use crate::EncoderCompletion;
+        use ribn_batch::{BatchConfig, BatchRuntime, BlockReason, StepOutcome};
+
+        let request = EncoderRequest::single_segment(vec![4, 1, 9, 3]);
+        let peer = encoder();
+        let bytes = peer.request_bytes(request.sequence()).unwrap();
+        let pool = BytePool::new(bytes).shared();
+        let mut peer = BatchRuntime::new(peer, Arc::clone(&pool), BatchConfig::default()).unwrap();
+        for convert in [false, true] {
+            let mut producer =
+                BatchRuntime::new(encoder(), Arc::clone(&pool), BatchConfig::default()).unwrap();
+            let retirement = producer.executor().retirement_handle();
+            producer.submit(request.clone()).unwrap();
+            assert_eq!(
+                producer.step().unwrap(),
+                StepOutcome::Executed { results: 1 }
+            );
+            let completion = producer.pop_completed().unwrap();
+            producer.shutdown().unwrap();
+            drop(producer);
+            assert_eq!(retirement.drain().unwrap(), 0);
+            let wait = pool.capacity_wait();
+            INJECTED_FREE_WAIT_FAILURES.store(1, Ordering::SeqCst);
+            if convert {
+                let EncoderCompletion::Result(result) =
+                    EncoderCompletion::from_completed(completion)
+                else {
+                    panic!("expected output");
+                };
+                result.synchronize().unwrap();
+                assert_eq!(result.read().unwrap().pooled.len(), 12);
+                drop(result);
+            } else {
+                // Discard the generic completion directly, without reading it.
+                drop(completion);
+            }
+            assert_eq!(pool.granted(), bytes);
+            assert!(!wait.changed());
+            {
+                let state = retirement.state();
+                assert_eq!(state.free_pending.len(), 1);
+                assert!(state.free_pending[0].pointers.as_slice().is_empty());
+            }
+            peer.submit(request.clone()).unwrap();
+            assert!(matches!(
+                peer.step().unwrap(),
+                StepOutcome::Blocked(BlockReason::Pool { .. })
+            ));
+            assert_eq!(retirement.drain().unwrap(), 1);
+            assert!(wait.changed());
+            assert_eq!(pool.granted(), 0);
+            assert_eq!(peer.step().unwrap(), StepOutcome::Executed { results: 1 });
+            drop(peer.pop_completed().unwrap());
+            assert_eq!(pool.granted(), 0);
+        }
     }
 
     /// A quarantine that cannot be released must keep the charge covering it, refuse

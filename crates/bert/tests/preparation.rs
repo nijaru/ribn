@@ -169,7 +169,7 @@ fn a_backend_infeasible_request_does_not_fail_accepted_or_later_peers() {
     );
     let completed = runtime.pop_completed().unwrap();
     assert_eq!(completed.request(), before);
-    assert_eq!(completed.outcome(), &Terminal::Output(4));
+    assert_eq!(completed.output(), Some(&4));
     drop(completed);
     assert_eq!(pool.granted(), 0);
 
@@ -179,15 +179,15 @@ fn a_backend_infeasible_request_does_not_fail_accepted_or_later_peers() {
     );
     let rejected = runtime.pop_completed().unwrap();
     assert_eq!(rejected.request(), bad);
-    assert_eq!(
+    assert!(matches!(
         rejected.outcome(),
-        &Terminal::Rejected(Rejection::Executor(
+        Terminal::Rejected(Rejection::Executor(
             EncoderConstraint::BackendSequenceLimit {
                 sequence: 5,
                 max_sequence: 4
             }
         ))
-    );
+    ));
     assert_eq!(pool.granted(), 0, "an infeasible head reserves nothing");
 
     assert_eq!(
@@ -196,7 +196,7 @@ fn a_backend_infeasible_request_does_not_fail_accepted_or_later_peers() {
     );
     let completed = runtime.pop_completed().unwrap();
     assert_eq!(completed.request(), after);
-    assert_eq!(completed.outcome(), &Terminal::Output(2));
+    assert_eq!(completed.output(), Some(&2));
     drop(completed);
     assert_eq!(runtime.executor().executed, [4, 2]);
     assert_eq!(pool.granted(), 0);

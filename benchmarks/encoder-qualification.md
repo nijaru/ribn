@@ -122,6 +122,24 @@ be awaited before reading, charge surviving dequeue, a stalled consumer beside a
 healthy peer) is in `crates/batch/tests/{capacity_readiness,device_result_handoff}.rs`,
 which exercise the real `BatchRuntime` and `BytePool` against a fixture device.
 
+## CUDA shutdown and consumer retirement (2026-11-28)
+
+The release suite above passed all 13 device tests on the RTX 4090, driver
+620.70.10, CUDA toolkit 13.3. The four pinned reference cases retained their
+original worst deviations.
+
+- A failed producer drain keeps the checkout charged and faults the encoder.
+  A failed wait after checked frees keeps the full grant without submitting
+  those frees again. Retrying runtime shutdown keeps direct admission closed.
+- Both direct Drop of a dequeued `Completed` and Drop after conversion to
+  `EncoderResult` keep the grant across an injected post-free wait failure.
+  The producer runtime was shut down and dropped first. A sibling runtime
+  could not reserve the bytes until the retained retirement handle retried the
+  wait successfully and published capacity readiness.
+
+The sibling test covers a shared pool, not cross-stream overlap: BERT still
+uses the default CUDA stream. The device faults are injected, not real OOMs.
+
 ## Host sequence-limit repair
 
 ```sh
@@ -168,7 +186,7 @@ bounds, readiness and local shutdown are still required before encoder applicati
   failure during buffer creation returns no storage, and the buffers drop. Freeing is
   still ordered (cudarc frees in stream order or drains first), but the charge returns
   before the device has necessarily reached that free.
-- The whole request envelope stays charged until its result is dropped. Releasing
+- The whole request envelope stays charged through result retirement. Releasing
   completed temporary storage early (the activations after the last kernel) is not
   implemented, so peak pool demand is the request's full footprint rather than its
   settled footprint.

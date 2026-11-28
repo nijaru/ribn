@@ -31,7 +31,9 @@ mod cuda;
 mod executor;
 
 #[cfg(feature = "cuda")]
-pub use cuda::{CudaBertEncoder, EncoderError, EncoderOutput, EncoderSubmission};
+pub use cuda::{
+    CudaBertEncoder, EncoderError, EncoderOutput, EncoderRetirement, EncoderSubmission,
+};
 
 #[cfg(feature = "cuda")]
 pub use executor::{EncoderCompletion, EncoderResult};

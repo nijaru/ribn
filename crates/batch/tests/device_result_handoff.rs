@@ -269,13 +269,13 @@ fn an_asynchronous_result_is_charged_until_its_consumer_releases_it() {
 
     // Taking the result takes its charge: the storage is still readable, so its
     // bytes stay reserved even though the entry left the runtime's terminal queue.
-    let (outcome, lease) = entry.into_parts();
-    let Terminal::Output(result) = outcome else {
+    let Terminal::Output(retained) = entry.into_outcome() else {
         panic!("this request executed");
     };
-    let lease = lease.expect("outputs carry a lease");
-    assert_eq!(lease.bytes(), ENVELOPE);
-    assert_eq!(result.bytes, lease.bytes(), "the charge covers the storage");
+    let result = retained.output();
+    let bytes = retained.lease().bytes();
+    assert_eq!(bytes, ENVELOPE);
+    assert_eq!(result.bytes, bytes, "the charge covers the storage");
     assert_eq!(pool.granted(), 2 * ENVELOPE);
     assert_eq!(runtime.retained_output_bytes(), ENVELOPE);
     assert_eq!(
@@ -295,8 +295,7 @@ fn an_asynchronous_result_is_charged_until_its_consumer_releases_it() {
     assert_eq!(result.read().expect("read"), [1.0, 1.0, 1.0, 1.0]);
 
     // Storage and charge travel together and are released together.
-    drop(result);
-    drop(lease);
+    drop(retained);
     assert_eq!(pool.granted(), ENVELOPE, "the second result is still held");
     drop(runtime.pop_completed().expect("second entry"));
     assert_eq!(pool.granted(), 0);

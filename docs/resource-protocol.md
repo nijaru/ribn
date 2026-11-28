@@ -217,18 +217,24 @@ storage early. BERT's explicit quarantine drain now proves producer completion,
 submits frees with checked driver calls and waits for those frees before refunding
 leases. A failed completion wait keeps the same retirement owner for retry. A free
 call that returns an error leaves an ambiguous allocation and faults the encoder
-without refunding or retrying that pointer. Dropping an encoder with unresolved
-quarantine retains its stream/context and leases for the process lifetime instead
-of refunding them. These changes require CUDA-device qualification. Default consumer
-result Drop still does not prove physical reuse/release. The unused extraction
-that silently discarded a result's lease is removed; explicit transfers still must move
-storage and lease together. These logical lease rules do not prove queued frees completed.
-Partial allocation/upload failure during submission construction is an additional
+without refunding or retrying that pointer. BERT's quarantine and retryable shutdown
+were exercised on the RTX 4090, including a failed wait after frees were submitted.
+A batch result is one owning `JobOutput`: generic completions cannot split its
+storage from the lease. Device executors supply a retirement callback when ordinary
+output Drop cannot prove reuse. BERT's callback transfers both storage and charge
+into a shared retirement owner and attempts the same checked drain. This may block;
+a returned delivery slot is not a returned byte grant. The retirement owner can
+outlive the encoder; callers can keep a drain handle across result Drop to retry
+failed waits. Dropping the last owner with unresolved work retains the stream/context
+and leases for process lifetime rather than refunding them. Partial allocation/upload
+failure during submission construction is an additional
 source-traced gap: already-created buffers can drop into stream-ordered frees while
 no retained submission carries their charge. Post-enqueue qualification does not
-cover that path or prove global physical-byte availability after normal result Drop.
-These paths need completion-safe charge retirement before a hard cross-stream peak
-bound is claimed; safe ordering of device accesses alone is not physical release.
+cover that path. The
+[consumer device gate](../benchmarks/encoder-qualification.md#cuda-shutdown-and-consumer-retirement-2026-11-28)
+qualifies delayed refund and retry after encoder shutdown, not cross-stream
+reuse. No hard cross-stream peak bound follows; safe ordering of device
+accesses alone is not physical release.
 Locked [cudarc 0.19.9](https://github.com/coreylowman/cudarc/blob/08ae53f143b635e77df5f68f273b7e277632c449/src/driver/safe/core.rs#L1534-L1560)
 also calls `malloc_async`/`malloc_sync` before creating tracking
 events in `CudaStream::alloc`. If event creation fails, it returns without a `CudaSlice`
@@ -357,7 +363,7 @@ Before exposing owned encoder access, establish these contracts through the real
   to shut down; failure leaves admission closed and the executor available for retry.
   Success is idempotent. It does not close sibling pools or retire dequeued results.
   BERT closes direct submission on the first attempt and retries quarantined frees.
-  Device qualification and completion-safe consumer result retirement remain open.
+  The CUDA fixture covers shutdown and consumer-owned retirement after shutdown.
 - Output dequeue returns delivery capacity, not physical bytes. Charges release only when
   backing is safely reusable within its charged arena or proven released to the byte pool.
 
