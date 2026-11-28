@@ -17,8 +17,8 @@
 //! of owning a second scheduler.
 
 use ribn_batch::{
-    BatchExecutor, BatchSelection, Completed, EnqueueError, Job, JobOutput, Rejection, RequestId,
-    Terminal,
+    BatchExecutor, BatchExecutorShutdown, BatchSelection, Completed, EnqueueError, Job, JobOutput,
+    Rejection, RequestId, Terminal,
 };
 use ribn_foundation::{ParameterVersion, PoolLease};
 
@@ -109,6 +109,12 @@ impl BatchExecutor for CudaBertEncoder {
             self.quarantine(submission, Some(lease));
         }
         let _ = self.drain_retirement();
+    }
+}
+
+impl BatchExecutorShutdown for CudaBertEncoder {
+    fn shutdown(&mut self) -> Result<(), Self::Error> {
+        CudaBertEncoder::shutdown(self)
     }
 }
 

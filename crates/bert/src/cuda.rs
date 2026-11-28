@@ -58,6 +58,8 @@ pub enum EncoderError {
     /// The device failed and completion could not be established, so the encoder
     /// keeps quarantined work and refuses new submissions until it can.
     Faulted(String),
+    /// Explicit shutdown has begun; direct submissions are no longer allowed.
+    Closed,
 }
 
 impl fmt::Display for EncoderError {
@@ -69,6 +71,7 @@ impl fmt::Display for EncoderError {
             Self::Kernels(error) => write!(f, "encoder kernels: {error}"),
             Self::Driver(message) => write!(f, "encoder driver: {message}"),
             Self::InvalidRequest(constraint) => write!(f, "encoder request: {constraint}"),
+            Self::Closed => f.write_str("encoder admission is closed"),
             Self::Faulted(message) => write!(
                 f,
                 "encoder is faulted and retains quarantined device work: {message}"
@@ -278,8 +281,16 @@ impl CudaBertEncoder {
         &self,
         request: &EncoderRequest,
     ) -> Result<EncoderSubmission, EnqueueFailure> {
-        if let Some(fault) = self.fault() {
-            return Err(EnqueueFailure::refused(EncoderError::Faulted(fault)));
+        {
+            let retirement = self.retirement();
+            if retirement.closed {
+                return Err(EnqueueFailure::refused(EncoderError::Closed));
+            }
+            if let Some(fault) = &retirement.fault {
+                return Err(EnqueueFailure::refused(EncoderError::Faulted(
+                    fault.clone(),
+                )));
+            }
         }
         let shape = self.requests.shape_of(request).map_err(|constraint| {
             EnqueueFailure::refused(EncoderError::InvalidRequest(constraint))
@@ -359,6 +370,17 @@ impl CudaBertEncoder {
             let _ = self.drain_retirement();
         }
         error
+    }
+
+    /// Close direct admission and drain executor-owned retirement. Consumer
+    /// outputs can outlive the encoder and are not taken back by shutdown.
+    ///
+    /// # Errors
+    /// Returns the drain error and retains pending work for retry. Direct
+    /// admission stays closed even if the drain fails.
+    pub fn shutdown(&mut self) -> Result<(), EncoderError> {
+        self.retirement().closed = true;
+        self.drain_retirement().map(|_| ())
     }
 
     /// Establish completion of every quarantined request and release what is proven
@@ -556,6 +578,7 @@ struct Retirement {
     quarantined: Vec<Quarantined>,
     free_pending: Vec<PendingFree>,
     free_failure: Option<String>,
+    closed: bool,
     /// Set when a drain failed; new submissions are refused until one succeeds.
     fault: Option<String>,
 }
@@ -1038,6 +1061,42 @@ mod tests {
         assert!(wait.changed());
         assert_eq!(pool.granted(), 0);
         assert_eq!(encoder.drain_retirement().unwrap(), 0);
+    }
+
+    #[test]
+    #[ignore = "requires an idle CUDA GPU; run serially with --test-threads=1"]
+    fn shutdown_retries_a_post_free_wait_and_keeps_direct_admission_closed() {
+        use ribn_batch::{BatchConfig, BatchRuntime, RuntimeError};
+
+        let encoder = encoder();
+        let request = EncoderRequest::single_segment(vec![4, 1, 9, 3]);
+        let bytes = encoder.request_bytes(request.sequence()).unwrap();
+        let pool = BytePool::new(bytes).shared();
+        let mut owner =
+            BatchRuntime::new(encoder, Arc::clone(&pool), BatchConfig::default()).unwrap();
+        owner.submit(request.clone()).unwrap();
+        owner.step().unwrap();
+        // Abandonment performs one opportunistic drain, then shutdown calls the
+        // drain explicitly. Both fail after the same batch of frees was queued.
+        INJECTED_FREE_WAIT_FAILURES.store(2, Ordering::SeqCst);
+        assert!(owner.shutdown().is_err());
+        assert_eq!(pool.granted(), bytes);
+        assert!(matches!(
+            owner.submit(request.clone()),
+            Err(RuntimeError::AdmissionClosed)
+        ));
+        assert!(matches!(
+            owner.executor().submit(&request),
+            Err(EncoderError::Closed)
+        ));
+        owner.shutdown().unwrap();
+        owner.shutdown().unwrap();
+        assert_eq!(pool.granted(), 0);
+        assert!(!pool.is_closed());
+        assert!(matches!(
+            owner.executor().submit(&request),
+            Err(EncoderError::Closed)
+        ));
     }
 
     /// A quarantine that cannot be released must keep the charge covering it, refuse

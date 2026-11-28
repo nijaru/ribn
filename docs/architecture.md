@@ -389,8 +389,9 @@ post-enqueue tests do not prove a hard physical-memory bound. `ribn-batch` bound
 waiting input bytes and waiting/result counts, and carries pool, executor, and local
 readiness. Its admission can close without affecting sibling runtimes using the same
 pool; this does not drain the executor. Pool and executor blocks permit bounded
-singleton bypass. Retryable shutdown remains open in the
-[repair gates](roadmap.md#immediate-bounds-and-lifecycle-repairs).
+singleton bypass. Retryable shutdown closes BERT admission and drains its
+quarantine; device qualification and consumer-result retirement remain open in
+the [repair gates](roadmap.md#immediate-bounds-and-lifecycle-repairs).
 
 `ribn-foundation` owns `BytePool`/`PoolLease`/`AllocationId`, shared readiness,
 parameter version labels and scalar metadata. Unused topology/materialization/placement

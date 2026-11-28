@@ -20,8 +20,8 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use ribn_batch::{
-    BatchConfig, BatchExecutor, BatchRuntime, BatchSelection, BlockReason, CancelOutcome,
-    EnqueueError, Job, JobOutput, RuntimeError, StepOutcome, Terminal,
+    BatchConfig, BatchExecutor, BatchExecutorShutdown, BatchRuntime, BatchSelection, BlockReason,
+    CancelOutcome, EnqueueError, Job, JobOutput, RuntimeError, StepOutcome, Terminal,
 };
 use ribn_foundation::{BytePool, ParameterVersion};
 
@@ -90,6 +90,7 @@ struct DeferredEncoder {
     /// Storage and charge a failed or uncommittable batch left with this executor.
     /// Nothing here is released until a proven drain.
     quarantined: Vec<JobOutput<DeviceResult>>,
+    shutdown_calls: usize,
 }
 
 impl DeferredEncoder {
@@ -98,6 +99,7 @@ impl DeferredEncoder {
             complete: Arc::new(AtomicBool::new(false)),
             misbehaviour: None,
             quarantined: Vec::new(),
+            shutdown_calls: 0,
         }
     }
 
@@ -171,6 +173,9 @@ impl BatchExecutor for DeferredEncoder {
         &mut self,
         batch: Vec<Job<Self::Input>>,
     ) -> Result<Vec<JobOutput<Self::Output>>, EnqueueError<Self::Error>> {
+        if self.shutdown_calls != 0 {
+            return Err(EnqueueError::Refused(DeviceError::Unavailable));
+        }
         // Enqueue only: nothing here waits for the device, which is what makes the
         // result asynchronous.
         self.complete.store(false, Ordering::SeqCst);
@@ -206,6 +211,18 @@ impl BatchExecutor for DeferredEncoder {
     fn retire(&mut self, outputs: Vec<JobOutput<Self::Output>>) {
         // Storage and charge come back together and wait for a proven drain.
         self.quarantined.extend(outputs);
+    }
+}
+
+impl BatchExecutorShutdown for DeferredEncoder {
+    fn shutdown(&mut self) -> Result<(), Self::Error> {
+        self.shutdown_calls += 1;
+        self.drain();
+        if self.quarantined.is_empty() {
+            Ok(())
+        } else {
+            Err(DeviceError::Unavailable)
+        }
     }
 }
 
@@ -287,6 +304,51 @@ fn an_asynchronous_result_is_charged_until_its_consumer_releases_it() {
         runtime.step().expect("step after release"),
         StepOutcome::Executed { results: 1 }
     );
+}
+
+#[test]
+fn shutdown_retries_the_same_owner_without_reopening_admission_or_refunding_early() {
+    let pool = BytePool::new(2 * ENVELOPE).shared();
+    let mut owner = runtime(&pool);
+    let mut sibling = runtime(&pool);
+    owner.submit(1).unwrap();
+    let discarded = owner.submit(2).unwrap();
+    assert_eq!(owner.step().unwrap(), StepOutcome::Executed { results: 2 });
+    let consumer = owner.pop_completed().unwrap();
+    owner.submit(3).unwrap();
+    let wait = owner.local_wait();
+    assert_eq!(owner.shutdown(), Err(DeviceError::Unavailable));
+    assert!(wait.changed());
+    assert_eq!(owner.executor().shutdown_calls, 1);
+    assert_eq!(owner.executor().quarantined[0].request(), discarded);
+    assert_eq!(pool.granted(), 2 * ENVELOPE);
+    assert_eq!(owner.step().unwrap(), StepOutcome::AdmissionDrained);
+    assert!(matches!(
+        owner.submit(8),
+        Err(RuntimeError::AdmissionClosed)
+    ));
+    assert!(owner.pop_completed().is_none());
+    sibling.submit(4).unwrap();
+    assert!(matches!(
+        sibling.step().unwrap(),
+        StepOutcome::Blocked(BlockReason::Pool { .. })
+    ));
+
+    owner.executor().complete_pending();
+    owner.shutdown().unwrap();
+    owner.shutdown().unwrap();
+    assert_eq!(owner.executor().shutdown_calls, 2);
+    assert_eq!(pool.granted(), ENVELOPE);
+    drop(owner);
+    assert_eq!(consumer.output().unwrap().read().unwrap(), [1.0; 4]);
+    assert_eq!(
+        sibling.step().unwrap(),
+        StepOutcome::Executed { results: 1 }
+    );
+    sibling.executor().complete_pending();
+    drop(sibling.pop_completed().unwrap());
+    drop(consumer);
+    assert_eq!(pool.granted(), 0);
 }
 
 #[test]

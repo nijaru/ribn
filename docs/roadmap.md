@@ -195,8 +195,11 @@ Source audits at `093cd28` and `70e5586` found gaps that passing fixtures do not
    readiness before wake arming. `abandon` discards local delivery and transfers
    undelivered output leases to executor retirement without touching consumer-owned
    outputs or closing the pool. Host tests cover sibling pressure until drain.
-   Retryable executor shutdown remains open. BERT's quarantine drain now waits
-   for stream-ordered frees before refunding leases; the device gate is pending.
+   Explicit shutdown is wired through `BatchRuntime` and BERT. The host fixture
+   verifies retry on the same owner without reopening admission, losing a
+   consumer output, or refunding a retained lease. BERT's fault-injection
+   shutdown gate is pending on CUDA; consumer-result retirement and partial
+   construction remain separate gaps.
    Queued cancellation settles before runnable
    selection even when the head is blocked on a sibling lease (host regression in
    `crates/batch/tests/cancellation.rs`); the terminal count bound still applies. The BERT

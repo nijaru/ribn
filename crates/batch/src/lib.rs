@@ -457,6 +457,18 @@ pub trait BatchExecutor {
     fn retire(&mut self, outputs: Vec<JobOutput<Self::Output>>);
 }
 
+/// Opt-in shutdown for an execution owner. Already delivered outputs are
+/// outside the executor's shutdown obligation.
+pub trait BatchExecutorShutdown: BatchExecutor {
+    /// Permanently close the executor and retire work it still owns.
+    ///
+    /// # Errors
+    /// Failure retains uncertain work and reservations for retry. Success
+    /// acknowledges completion of executor-owned retirement, not of work
+    /// already handed to a consumer.
+    fn shutdown(&mut self) -> Result<(), Self::Error>;
+}
+
 /// Why a batch could not be enqueued, and what the executor still owns.
 ///
 /// The distinction is the point: it tells the caller whether device work may exist for
@@ -525,6 +537,7 @@ pub struct BatchRuntime<E: BatchExecutor> {
     terminal: VecDeque<Completed<E::Output, E::Constraint>>,
     local_readiness: Readiness,
     admission_closed: bool,
+    shutdown_complete: bool,
 }
 
 impl<E: BatchExecutor> BatchRuntime<E> {
@@ -557,6 +570,7 @@ impl<E: BatchExecutor> BatchRuntime<E> {
             terminal: VecDeque::new(),
             local_readiness: Readiness::default(),
             admission_closed: false,
+            shutdown_complete: false,
         })
     }
 
@@ -1121,6 +1135,23 @@ impl<E: BatchExecutor> BatchRuntime<E> {
 }
 
 /// How one [`BatchRuntime::cancel`] ended.
+impl<E: BatchExecutorShutdown> BatchRuntime<E> {
+    /// Abandon local delivery and shut down the same executor. Once successful
+    /// subsequent calls are no-ops. Does not close the shared pool.
+    ///
+    /// # Errors
+    /// Returns the executor's failure. Retry on this same runtime; neither
+    /// admission nor delivery reopens.
+    pub fn shutdown(&mut self) -> Result<(), E::Error> {
+        if !self.shutdown_complete {
+            self.abandon();
+            self.executor.shutdown()?;
+            self.shutdown_complete = true;
+        }
+        Ok(())
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum CancelOutcome {
     /// The request was still waiting; it will report cancellation rather than run.

@@ -352,9 +352,12 @@ Before exposing owned encoder access, establish these contracts through the real
 - Every temporary wait carries registration/recheck or an explicit completion dependency.
   A reason enum alone is insufficient. Local wakeups cover submission, cancellation,
   delivery-slot release and admission closure.
-- Qualify explicit, retryable executor shutdown after abandonment. The execution owner must
-  retain submitted work, abandoned results, charges and retry/quarantine cleanup. Dequeued
-  device results retain their own safe-retirement owner after model shutdown.
+- `BatchRuntime::shutdown` is available only for executors that implement
+  `BatchExecutorShutdown`. It abandons local delivery before asking the same executor
+  to shut down; failure leaves admission closed and the executor available for retry.
+  Success is idempotent. It does not close sibling pools or retire dequeued results.
+  BERT closes direct submission on the first attempt and retries quarantined frees.
+  Device qualification and completion-safe consumer result retirement remain open.
 - Output dequeue returns delivery capacity, not physical bytes. Charges release only when
   backing is safely reusable within its charged arena or proven released to the byte pool.
 
