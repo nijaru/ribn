@@ -195,8 +195,8 @@ Source audits at `093cd28` and `70e5586` found gaps that passing fixtures do not
    readiness before wake arming. `abandon` discards local delivery and transfers
    undelivered output leases to executor retirement without touching consumer-owned
    outputs or closing the pool. Host tests cover sibling pressure until drain.
-   Retryable executor shutdown remains open: BERT must retain the lease through
-   stream-ordered frees, not just until outstanding kernels finish.
+   Retryable executor shutdown remains open. BERT's quarantine drain now waits
+   for stream-ordered frees before refunding leases; the device gate is pending.
    Queued cancellation settles before runnable
    selection even when the head is blocked on a sibling lease (host regression in
    `crates/batch/tests/cancellation.rs`); the terminal count bound still applies. The BERT
@@ -206,18 +206,20 @@ Source audits at `093cd28` and `70e5586` found gaps that passing fixtures do not
    Larger model position tables remain valid for shorter requests. Other non-AR
    bounds/readiness/shutdown work above remains open; preserve request identity/result
    ownership. This gates encoder application exposure, not the text-only server. See the [non-AR contract](resource-protocol.md#non-ar-application-lifecycle).
-3. **Physical release/accounting.** BERT partial construction and normal result/quarantine
-   teardown need charge ownership until safe allocator reuse or backing release. Locked
+3. **Physical release/accounting.** BERT partial construction and normal result
+   teardown still need charge ownership until safe allocator reuse or backing release. Locked
    cudarc 0.19.9 can lose an allocation pointer if tracking-event creation fails; a drain
    cannot release an unreachable pointer. Cudarc 0.19.10 includes a pinned-allocation
    error cleanup change. Qualify the patch against the locked 0.19.9 path, including
    failed construction and retirement, before editing the lockfile. NVIDIA's deferred-release acknowledgement and
    Qwen's following logical refund must be reconciled before overlapping submissions make
    that an ordinary path. Pinned allocation construction also needs an owner before
-   fallible tracking-event creation. BERT's default quarantine/result teardown can refund
-   charges without a successful drain; an explicit retry method alone does not make Drop
-   safe. Gate partial allocation/upload, teardown, failed drain and sibling-stream
-   pressure. No hard shared-device peak claim until these owners qualify.
+   fallible tracking-event creation. BERT's quarantine keeps its charge across failed
+   completion waits and faults permanently if a free call is ambiguous. Dropping an
+   unresolved quarantine retains the stream and charge; consumer result Drop still
+   needs a safe retirement owner. Gate partial allocation/upload, teardown, failed
+   drain and sibling-stream pressure. No hard shared-device peak claim until these
+   owners qualify.
 
 The 2026-10-15 audit repaired preprocessing insertion racing final-worker exit,
 removed the unused charge-dropping `Completed::into_outcome` extraction, validated all

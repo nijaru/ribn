@@ -213,9 +213,14 @@ surviving dequeue) except for one criterion whose precondition does not exist ye
 downstream workspace headroom needs a real downstream stage sharing the pool; it
 is not established by the separate AR/encoder fixtures. Two limits are recorded:
 a request's whole envelope remains with its result rather than releasing temporary
-storage early; an explicit failed retirement attempt retains storage and charge for
-retry. Default result/quarantine Drop is not a completion-safe retirement protocol:
-it can refund the charge without proving physical reuse/release. The unused extraction
+storage early. BERT's explicit quarantine drain now proves producer completion,
+submits frees with checked driver calls and waits for those frees before refunding
+leases. A failed completion wait keeps the same retirement owner for retry. A free
+call that returns an error leaves an ambiguous allocation and faults the encoder
+without refunding or retrying that pointer. Dropping an encoder with unresolved
+quarantine retains its stream/context and leases for the process lifetime instead
+of refunding them. These changes require CUDA-device qualification. Default consumer
+result Drop still does not prove physical reuse/release. The unused extraction
 that silently discarded a result's lease is removed; explicit transfers still must move
 storage and lease together. These logical lease rules do not prove queued frees completed.
 Partial allocation/upload failure during submission construction is an additional

@@ -20,7 +20,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 
 use cudarc::cublas::sys::cublasOperation_t;
 use cudarc::cublas::{CudaBlas, Gemm, GemmConfig};
-use cudarc::driver::{CudaEvent, CudaSlice, CudaStream};
+use cudarc::driver::{CudaEvent, CudaSlice, CudaStream, result, sys};
 use engine_nvidia::{CudaEncoderKernelError, CudaEncoderOps};
 use ribn_foundation::PoolLease;
 use ribn_hf::LocalModelPackage;
@@ -364,53 +364,108 @@ impl CudaBertEncoder {
     /// Establish completion of every quarantined request and release what is proven
     /// done.
     ///
-    /// A successful drain is the only evidence that permits release. While it fails,
-    /// the encoder keeps the storage and the charge and refuses new submissions:
-    /// releasing a charge early would let another owner reserve bytes the device is
-    /// still holding, and the storage behind an outstanding stream-ordered free has
-    /// not returned to the allocator either.
+    /// The encoder first drains the producer stream, then submits checked frees
+    /// and drains again before releasing any charge. A failed synchronization
+    /// keeps the retirement stage for retry. A failed free call is ambiguous:
+    /// the encoder stays faulted and does not free that pointer a second time.
     ///
     /// # Errors
     /// Returns the device error that prevented completion.
     pub fn drain_retirement(&self) -> Result<usize, EncoderError> {
-        let (pending, faulted) = {
-            let retirement = self.retirement();
-            (retirement.quarantined.len(), retirement.fault.is_some())
-        };
-        if pending == 0 && !faulted {
+        let mut retirement = self.retirement();
+        if let Some(failure) = &retirement.free_failure {
+            return Err(EncoderError::Faulted(failure.clone()));
+        }
+        if retirement.quarantined.is_empty() && retirement.free_pending.is_empty() {
             return Ok(0);
         }
-        #[cfg(test)]
-        if tests::take_injected_drain_failure() {
-            let message = "injected drain failure".to_owned();
-            self.retirement().fault = Some(message.clone());
-            return Err(EncoderError::Driver(message));
+        // Serialize the drain with quarantine insertion. In particular, a new
+        // submission may not join the set covered by an earlier stream fence.
+        let stream = self.stream();
+        let attempt: Result<(), EncoderError> = (|| {
+            if !retirement.quarantined.is_empty() {
+                #[cfg(test)]
+                if tests::take_injected_drain_failure() {
+                    return Err(EncoderError::Driver(
+                        "injected producer drain failure".into(),
+                    ));
+                }
+                stream
+                    .synchronize()
+                    .map_err(|e| EncoderError::Driver(e.to_string()))?;
+                for entry in std::mem::take(&mut retirement.quarantined) {
+                    let bytes = entry.submission.device_bytes();
+                    retirement.free_pending.push(PendingFree {
+                        pointers: entry.submission.into_device_ptrs().into_iter(),
+                        bytes,
+                        lease: entry.lease,
+                    });
+                }
+            }
+            // Bind again after converting slices. Cudarc's event/stream teardown
+            // may have recorded an error; no raw pointer is consumed by this check.
+            stream
+                .context()
+                .bind_to_thread()
+                .map_err(|e| EncoderError::Driver(e.to_string()))?;
+            for entry in &mut retirement.free_pending {
+                for ptr in entry.pointers.by_ref() {
+                    // SAFETY: producer completion on the sole stream was confirmed
+                    // before extracting these private buffers. `into_device_ptrs`
+                    // consumed their slice owners. This is the only free attempt.
+                    let free = unsafe {
+                        if stream.context().has_async_alloc() {
+                            result::free_async(ptr, stream.cu_stream())
+                        } else {
+                            result::free_sync(ptr)
+                        }
+                    };
+                    if let Err(error) = free {
+                        let message = format!("BERT allocation free could not be proven: {error}");
+                        retirement.free_failure = Some(message.clone());
+                        return Err(EncoderError::Driver(message));
+                    }
+                }
+            }
+            #[cfg(test)]
+            if tests::take_injected_free_wait_failure() {
+                return Err(EncoderError::Driver(
+                    "injected post-free drain failure".into(),
+                ));
+            }
+            stream
+                .synchronize()
+                .map_err(|e| EncoderError::Driver(e.to_string()))
+        })();
+        if let Err(error) = attempt {
+            retirement.fault = Some(error.to_string());
+            return Err(error);
         }
-        if let Err(error) = self.stream().synchronize() {
-            let message = error.to_string();
-            self.retirement().fault = Some(message);
-            return Err(EncoderError::Driver(error.to_string()));
-        }
-        let mut retirement = self.retirement();
-        let drained = retirement.quarantined.len();
-        retirement.quarantined.clear();
+        let released = std::mem::take(&mut retirement.free_pending);
         retirement.fault = None;
+        drop(retirement);
+        let drained = released.len();
+        // Returning leases publishes sibling readiness, outside the lock.
+        drop(released);
         Ok(drained)
     }
 
     /// Requests whose device work is still held by this encoder.
     #[must_use]
     pub fn quarantined_requests(&self) -> usize {
-        self.retirement().quarantined.len()
+        let retirement = self.retirement();
+        retirement.quarantined.len() + retirement.free_pending.len()
     }
 
     /// Device bytes this encoder still holds for work that may not have completed.
     #[must_use]
     pub fn quarantined_bytes(&self) -> u64 {
-        self.retirement()
+        let retirement = self.retirement();
+        retirement
             .quarantined
             .iter()
             .map(|entry| entry.submission.device_bytes())
+            .chain(retirement.free_pending.iter().map(|entry| entry.bytes))
             .sum()
     }
 
@@ -421,10 +476,18 @@ impl CudaBertEncoder {
     /// standalone submission path, which has no pool to account to.
     #[must_use]
     pub fn quarantined_charge(&self) -> u64 {
-        self.retirement()
+        let retirement = self.retirement();
+        retirement
             .quarantined
             .iter()
-            .filter_map(|entry| entry.lease.as_ref())
+            .map(|entry| entry.lease.as_ref())
+            .chain(
+                retirement
+                    .free_pending
+                    .iter()
+                    .map(|entry| entry.lease.as_ref()),
+            )
+            .flatten()
             .fold(0_u64, |total, lease| total.saturating_add(lease.bytes()))
     }
 
@@ -468,6 +531,20 @@ impl CudaBertEncoder {
     }
 }
 
+impl Drop for CudaBertEncoder {
+    fn drop(&mut self) {
+        let retirement = self
+            .retirement
+            .get_mut()
+            .unwrap_or_else(PoisonError::into_inner);
+        if !retirement.quarantined.is_empty() || !retirement.free_pending.is_empty() {
+            // Drop cannot certify a CUDA drain. Keep the unresolved allocations,
+            // their stream/context, and their charges together for process lifetime.
+            std::mem::forget((Arc::clone(&self.prepared), std::mem::take(retirement)));
+        }
+    }
+}
+
 /// Device work the encoder may still hold after a failed or uncommittable
 /// submission.
 ///
@@ -477,8 +554,18 @@ impl CudaBertEncoder {
 #[derive(Default)]
 struct Retirement {
     quarantined: Vec<Quarantined>,
+    free_pending: Vec<PendingFree>,
+    free_failure: Option<String>,
     /// Set when a drain failed; new submissions are refused until one succeeds.
     fault: Option<String>,
+}
+
+struct PendingFree {
+    /// The iterator consumes a pointer before its free attempt, so an ambiguous
+    /// failure cannot cause a double free on retry.
+    pointers: std::array::IntoIter<sys::CUdeviceptr, 12>,
+    bytes: u64,
+    lease: Option<PoolLease>,
 }
 
 /// One quarantined request: its device storage and the charge covering it.
@@ -596,6 +683,43 @@ pub struct EncoderSubmission {
 }
 
 impl EncoderSubmission {
+    /// Transfer exclusive ownership of the workspace pointers after proving
+    /// completion. No field remains that can enqueue accesses to the buffers.
+    fn into_device_ptrs(self) -> [sys::CUdeviceptr; 12] {
+        let Self {
+            layer_norm_eps: _,
+            prepared: _,
+            shape: _,
+            completion: _,
+            tokens,
+            types,
+            mask,
+            hidden,
+            query,
+            key,
+            value,
+            context,
+            projection,
+            intermediate,
+            first_row,
+            pooled,
+        } = self;
+        [
+            tokens.leak(),
+            types.leak(),
+            mask.leak(),
+            hidden.leak(),
+            query.leak(),
+            key.leak(),
+            value.leak(),
+            context.leak(),
+            projection.leak(),
+            intermediate.leak(),
+            first_row.leak(),
+            pooled.leak(),
+        ]
+    }
+
     /// The concrete shape this submission was launched with.
     #[must_use]
     pub const fn shape(&self) -> EncoderShape {
@@ -849,6 +973,7 @@ mod tests {
 
     /// Countdown of drains that are deliberately reported as unprovable.
     static INJECTED_DRAIN_FAILURES: AtomicUsize = AtomicUsize::new(0);
+    static INJECTED_FREE_WAIT_FAILURES: AtomicUsize = AtomicUsize::new(0);
 
     pub(super) fn take_injected_enqueue_failure() -> bool {
         take(&INJECTED_ENQUEUE_FAILURES)
@@ -856,6 +981,10 @@ mod tests {
 
     pub(super) fn take_injected_drain_failure() -> bool {
         take(&INJECTED_DRAIN_FAILURES)
+    }
+
+    pub(super) fn take_injected_free_wait_failure() -> bool {
+        take(&INJECTED_FREE_WAIT_FAILURES)
     }
 
     fn take(counter: &AtomicUsize) -> bool {
@@ -872,6 +1001,43 @@ mod tests {
 
     fn encoder() -> CudaBertEncoder {
         CudaBertEncoder::load(fixture(), 0).expect("prepare encoder")
+    }
+
+    #[test]
+    #[ignore = "requires an idle CUDA GPU; run serially with --test-threads=1"]
+    fn a_failed_post_free_wait_does_not_refund_or_resubmit_frees() {
+        let encoder = encoder();
+        let request = EncoderRequest::single_segment(vec![4, 1, 9, 3]);
+        let bytes = encoder.request_bytes(request.sequence()).unwrap();
+        let pool = BytePool::new(bytes).shared();
+        let submission = encoder.submit(&request).unwrap();
+        encoder.quarantine(submission, Some(pool.reserve(bytes).unwrap()));
+        let wait = pool.capacity_wait();
+        INJECTED_FREE_WAIT_FAILURES.store(1, Ordering::SeqCst);
+        let error = encoder.drain_retirement().unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("injected post-free drain failure")
+        );
+        {
+            let retirement = encoder.retirement();
+            assert!(retirement.quarantined.is_empty());
+            assert_eq!(retirement.free_pending.len(), 1);
+            assert_eq!(retirement.free_pending[0].pointers.len(), 0);
+        }
+        assert_eq!(encoder.quarantined_bytes(), bytes);
+        assert_eq!(encoder.quarantined_charge(), bytes);
+        assert_eq!(pool.granted(), bytes);
+        assert!(!wait.changed());
+        assert!(matches!(
+            encoder.submit(&request),
+            Err(EncoderError::Faulted(_))
+        ));
+        assert_eq!(encoder.drain_retirement().unwrap(), 1);
+        assert!(wait.changed());
+        assert_eq!(pool.granted(), 0);
+        assert_eq!(encoder.drain_retirement().unwrap(), 0);
     }
 
     /// A quarantine that cannot be released must keep the charge covering it, refuse
