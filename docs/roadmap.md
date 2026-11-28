@@ -190,9 +190,10 @@ Source audits at `093cd28` and `70e5586` found gaps that passing fixtures do not
    Local submission, queued cancellation, result dequeue and admission closure
    wake the driver. Host tests verify that closing one runtime leaves siblings
    usable and preserves accepted work, retained outputs and their leases.
-   Shared byte-pool pressure permits bounded singleton bypass with an overtake
-   limit; host tests cover later progress and restoration of head priority.
-   Executor-blocked heads and explicit retryable executor shutdown remain open. Queued cancellation now settles before runnable
+   Pool and executor pressure permit bounded singleton bypass with a shared
+   overtake limit. Host tests cover later progress, head priority and peer
+   readiness before wake arming. Explicit retryable executor shutdown remains open.
+   Queued cancellation settles before runnable
    selection even when the head is blocked on a sibling lease (host regression in
    `crates/batch/tests/cancellation.rs`); the terminal count bound still applies. The BERT
    sequence-limit preparation defect is repaired and [host-qualified](../benchmarks/encoder-qualification.md#host-sequence-limit-repair):

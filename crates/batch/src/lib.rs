@@ -27,14 +27,14 @@
 //! the result owns its lease, so an executor cannot overshoot the budget by
 //! running first and accounting afterwards. When the pool cannot cover the whole
 //! selected batch, the runtime runs the largest prefix it can reserve instead of
-//! blocking. When the first reservation fails, a bounded scan can offer a
-//! later candidate alone. Each head can be bypassed only a bounded number of
-//! times. If no eligible work fits, the caller waits for delivery or pool capacity.
+//! blocking. On temporary head contention, a bounded scan can offer a later
+//! candidate alone. Each head can be bypassed only a bounded number of times.
+//! A blocked scan returns readiness for the head and its eligible peers.
 //!
 //! Take a [`BatchRuntime::local_wait`] and a [`BatchRuntime::capacity_wait`] before
-//! the step. When idle or blocked, arm the local registration before parking. Also
-//! arm the capacity registration for a pool block, or the returned registration for
-//! an executor block. Publication before arming is not lost. The caller owns
+//! the step. When idle or blocked, arm the local registration before parking. For
+//! a blocked step, also call [`BlockReason::wake_on_change`] with the pre-step pool
+//! registration. Publication before arming is not lost. The caller owns
 //! parking and retry; this runtime adds no worker.
 //!
 //! Output is executor-defined and may be device-resident. A result that completes
@@ -197,7 +197,7 @@ pub enum BatchSelection<C> {
     /// for every selected input before it runs them, so an executor that
     /// under-reports its retention is what breaks the bound, not the runtime.
     Ready { items: usize },
-    /// The oldest candidates are valid but cannot run yet.
+    /// The oldest candidate is valid but cannot run yet.
     ///
     /// The queue is left untouched. This is temporary contention, not an
     /// executor invariant failure, and it must not be reported as an error.
@@ -235,9 +235,40 @@ pub enum BlockReason<C> {
         /// Bytes the pool had available when the reservation failed.
         available: u64,
     },
-    /// The executor reports temporary contention. Arm `wait` before parking;
-    /// a change is a signal to retry, not a reservation.
+    /// The executor reports temporary contention. Use [`Self::wake_on_change`]
+    /// to arm both its wait and pool readiness, including pool closure.
     Executor { reason: C, wait: ReadinessWait },
+    /// The head was blocked and the bounded scan found additional conditions
+    /// that may make later work runnable. Arm every wait before parking.
+    Peers {
+        head: Box<Self>,
+        executor_waits: Vec<ReadinessWait>,
+    },
+}
+
+impl<C> BlockReason<C> {
+    /// Arm all resource waits reported by this step. `pool_wait` must have been
+    /// registered through [`BatchRuntime::capacity_wait`] before stepping. The
+    /// driver also arms its pre-step local wait independently.
+    pub fn wake_on_change(&mut self, pool_wait: &mut ReadinessWait, waker: &std::task::Waker) {
+        match self {
+            Self::RetainedResults => {}
+            Self::Pool { .. } => pool_wait.wake_on_change(waker),
+            Self::Executor { wait, .. } => {
+                pool_wait.wake_on_change(waker);
+                wait.wake_on_change(waker);
+            }
+            Self::Peers {
+                head,
+                executor_waits,
+            } => {
+                head.wake_on_change(pool_wait, waker);
+                for wait in executor_waits {
+                    wait.wake_on_change(waker);
+                }
+            }
+        }
+    }
 }
 
 /// Why a request was refused before any work was submitted for it.
@@ -382,8 +413,8 @@ pub trait BatchExecutor {
     /// shapes, padding, workspace, or another concrete execution constraint makes
     /// the whole candidate set unsuitable.
     ///
-    /// The runtime normally offers the FIFO head and its peers. If the pool
-    /// cannot reserve the head, it may instead offer a later candidate alone.
+    /// The runtime normally offers the FIFO head and its peers. If the head
+    /// is temporarily blocked, it may instead offer a later candidate alone.
     fn select_batch(&self, candidates: &[&Self::Input]) -> BatchSelection<Self::Constraint>;
 
     /// Heap bytes the input keeps alive while queued, including allocation spare
@@ -453,8 +484,8 @@ impl<E> EnqueueError<E> {
 }
 
 // Local policy, not a cross-runtime fairness or wall-clock guarantee.
-const MAX_POOL_BYPASS_SCAN: usize = 8;
-const MAX_POOL_BYPASSES: u8 = 8;
+const MAX_BYPASS_SCAN: usize = 8;
+const MAX_BYPASSES: u8 = 8;
 
 struct Queued<I> {
     request: RequestId,
@@ -463,7 +494,7 @@ struct Queued<I> {
     parameter_version: ParameterVersion,
     /// Cancellation intent, settled before runnable selection when delivery has room.
     cancelled: bool,
-    pool_bypasses: u8,
+    bypasses: u8,
 }
 
 /// What the queue resolved to before any execution or reservation happened.
@@ -581,7 +612,7 @@ impl<E: BatchExecutor> BatchRuntime<E> {
             waiting_bytes,
             parameter_version: self.executor.parameter_version(),
             cancelled: false,
-            pool_bypasses: 0,
+            bypasses: 0,
         });
         self.waiting_input_bytes += waiting_bytes;
         self.publish_local_change();
@@ -655,43 +686,48 @@ impl<E: BatchExecutor> BatchRuntime<E> {
     ///
     /// A [`StepOutcome::Blocked`] result is a wakeup contract rather than a
     /// failure. Arm the pre-step [`Self::local_wait`] when idle or blocked.
-    /// For a pool block, also arm the pre-step [`Self::capacity_wait`]; for an
-    /// executor block, arm the returned executor wait alongside the local one.
-    /// Pool bypass considers at most eight following requests, and at most eight
-    /// bypassed submissions can overtake the same head.
+    /// For a block, also arm [`BlockReason::wake_on_change`] with the pre-step
+    /// [`Self::capacity_wait`]. A bypass scan considers at most eight following
+    /// requests, and at most eight submissions may overtake the same head.
     ///
     /// # Errors
     /// Rejects a parameter-version change while queued work still targets the
     /// previous version, a malformed executor batch selection, malformed executor
     /// output, an internal queue invariant failure, or an executor failure.
     pub fn step(&mut self) -> Result<StepOutcome<E::Constraint>, RuntimeError<E::Error>> {
-        let mut accepted = match self.resolve_queue()? {
-            Resolved::Idle if self.admission_closed => return Ok(StepOutcome::AdmissionDrained),
-            Resolved::Idle => return Ok(StepOutcome::Idle),
-            Resolved::Blocked(reason) => return Ok(StepOutcome::Blocked(reason)),
-            Resolved::Rejected { request } => return Ok(StepOutcome::Rejected { request }),
-            Resolved::Cancelled { request } => return Ok(StepOutcome::Cancelled { request }),
-            Resolved::Ready { items } => items,
-        };
-
-        // A rejection occupies the retained-result budget until it is consumed,
-        // exactly like an output, so the count bound applies before anything runs.
+        // Terminal entries all occupy delivery capacity until consumed.
         let free_slots = self
             .config
             .max_retained_results
             .saturating_sub(self.terminal.len());
-        if free_slots == 0 {
-            return Ok(StepOutcome::Blocked(BlockReason::RetainedResults));
-        }
-        accepted = accepted.min(free_slots);
+        let accepted = match self.resolve_queue()? {
+            Resolved::Idle if self.admission_closed => return Ok(StepOutcome::AdmissionDrained),
+            Resolved::Idle => return Ok(StepOutcome::Idle),
+            Resolved::Rejected { request } => return Ok(StepOutcome::Rejected { request }),
+            Resolved::Cancelled { request } => return Ok(StepOutcome::Cancelled { request }),
+            Resolved::Blocked(_) | Resolved::Ready { .. } if free_slots == 0 => {
+                return Ok(StepOutcome::Blocked(BlockReason::RetainedResults));
+            }
+            Resolved::Blocked(reason @ BlockReason::Executor { .. }) => {
+                if self.pool.is_closed() {
+                    return Err(RuntimeError::PoolClosed);
+                }
+                return self.try_bypass(
+                    reason,
+                    self.pool.available(),
+                    self.executor.parameter_version(),
+                );
+            }
+            Resolved::Blocked(reason) => return Ok(StepOutcome::Blocked(reason)),
+            Resolved::Ready { items } => items.min(free_slots),
+        };
+        let version = self.executor.parameter_version();
 
         // Reserve every retained output before submitting work, so a full pool
         // stops execution instead of being discovered after the fact. Batching is
         // an optimization, so the accepted range shrinks to the largest prefix the
         // pool grants rather than blocking on the whole selection.
         let mut leases = Vec::with_capacity(accepted);
-        let version = self.executor.parameter_version();
-        let mut start = 0;
         for index in 0..accepted {
             let bytes = self.executor.retained_bytes(&self.queue[index].input);
             match self.pool.reserve(bytes) {
@@ -700,16 +736,14 @@ impl<E: BatchExecutor> BatchRuntime<E> {
                     requested,
                     available,
                 }) if leases.is_empty() => {
-                    let Some((index, lease)) = self.reserve_pool_peer(version, available)? else {
-                        return Ok(StepOutcome::Blocked(BlockReason::Pool {
+                    return self.try_bypass(
+                        BlockReason::Pool {
                             requested,
                             available,
-                        }));
-                    };
-                    self.queue[0].pool_bypasses += 1;
-                    start = index;
-                    leases.push(lease);
-                    break;
+                        },
+                        available,
+                        version,
+                    );
                 }
                 // A later oversized item stops the prefix here and becomes the
                 // queue head's own rejection once earlier work drains.
@@ -721,6 +755,15 @@ impl<E: BatchExecutor> BatchRuntime<E> {
             return Err(RuntimeError::QueueInvariant);
         }
 
+        self.execute_granted(0, leases, version)
+    }
+
+    fn execute_granted(
+        &mut self,
+        start: usize,
+        leases: Vec<PoolLease>,
+        version: ParameterVersion,
+    ) -> Result<StepOutcome<E::Constraint>, RuntimeError<E::Error>> {
         let items = leases.len();
         // The reservation granted for each accepted request travels into its job, so
         // an executor that fails after reaching the device owns that charge along with
@@ -739,30 +782,24 @@ impl<E: BatchExecutor> BatchRuntime<E> {
         Ok(StepOutcome::Executed { results })
     }
 
-    /// Search a bounded window for one feasible job without taking anything
-    /// out of the queue. Only an actual lease authorizes the bypass: the
-    /// head's availability snapshot only filters candidates. A concurrent
-    /// release after that snapshot makes the caller's pool registration ready.
-    fn reserve_pool_peer(
-        &self,
-        version: ParameterVersion,
+    /// Submit at most one feasible peer with its own lease. On no progress,
+    /// carry each relevant pre-check wait back to the driver.
+    fn try_bypass(
+        &mut self,
+        head: BlockReason<E::Constraint>,
         available: u64,
-    ) -> Result<Option<(usize, PoolLease)>, RuntimeError<E::Error>> {
-        if self.queue[0].pool_bypasses >= MAX_POOL_BYPASSES {
-            return Ok(None);
+        version: ParameterVersion,
+    ) -> Result<StepOutcome<E::Constraint>, RuntimeError<E::Error>> {
+        if self.queue[0].bypasses >= MAX_BYPASSES {
+            return Ok(StepOutcome::Blocked(head));
         }
-        for (index, queued) in self
-            .queue
-            .iter()
-            .enumerate()
-            .skip(1)
-            .take(MAX_POOL_BYPASS_SCAN)
-        {
+        let mut executor_waits = Vec::new();
+        for (index, queued) in self.queue.iter().enumerate().skip(1).take(MAX_BYPASS_SCAN) {
             if queued.parameter_version != version {
                 break;
             }
             let bytes = self.executor.retained_bytes(&queued.input);
-            if bytes > available {
+            if bytes > self.pool.capacity() {
                 continue;
             }
             match self.executor.select_batch(&[&queued.input]) {
@@ -773,15 +810,37 @@ impl<E: BatchExecutor> BatchRuntime<E> {
                         candidates: 1,
                     });
                 }
-                BatchSelection::Blocked { .. } | BatchSelection::Rejected(_) => continue,
+                BatchSelection::Blocked { wait, .. } => {
+                    let head_watches_it = matches!(&head, BlockReason::Executor { wait: current, .. } if *current == wait);
+                    if !head_watches_it && !executor_waits.contains(&wait) {
+                        executor_waits.push(wait);
+                    }
+                    continue;
+                }
+                BatchSelection::Rejected(_) => continue,
+            }
+            if bytes > available {
+                continue;
             }
             match self.pool.reserve(bytes) {
-                Ok(lease) => return Ok(Some((index, lease))),
-                Err(ReserveError::Exhausted { .. } | ReserveError::TooLarge { .. }) => {}
+                Ok(lease) => {
+                    self.queue[0].bypasses += 1;
+                    return self.execute_granted(index, vec![lease], version);
+                }
+                Err(ReserveError::Exhausted { .. }) => {}
+                Err(ReserveError::TooLarge { .. }) => return Err(RuntimeError::QueueInvariant),
                 Err(ReserveError::Closed) => return Err(RuntimeError::PoolClosed),
             }
         }
-        Ok(None)
+        let reason = if executor_waits.is_empty() {
+            head
+        } else {
+            BlockReason::Peers {
+                head: Box::new(head),
+                executor_waits,
+            }
+        };
+        Ok(StepOutcome::Blocked(reason))
     }
 
     /// Resolve cancellation or the runnable head without executing anything.
@@ -979,9 +1038,9 @@ impl<E: BatchExecutor> BatchRuntime<E> {
         self.terminal.len()
     }
 
-    /// Register before attempting work against this runtime's pool. For
-    /// [`BlockReason::Pool`], arm [`ReadinessWait::wake_on_change`] before parking;
-    /// a release or closure notifies the caller even if it preceded arming.
+    /// Register before stepping and pass this registration to
+    /// [`BlockReason::wake_on_change`] if blocked. A release or closure notifies
+    /// the caller even if it preceded arming.
     /// A changed registration permits retrying [`Self::step`], not a reservation.
     #[must_use]
     pub fn capacity_wait(&self) -> ReadinessWait {
@@ -1147,8 +1206,21 @@ impl<E: Error + 'static> Error for RuntimeError<E> {}
 #[cfg(test)]
 mod tests {
     use std::convert::Infallible;
+    use std::sync::mpsc;
+    use std::task::{Wake, Waker};
 
     use super::*;
+
+    fn wake_channel() -> (Waker, mpsc::Receiver<()>) {
+        struct Notify(mpsc::Sender<()>);
+        impl Wake for Notify {
+            fn wake(self: Arc<Self>) {
+                self.0.send(()).unwrap();
+            }
+        }
+        let (tx, rx) = mpsc::channel();
+        (Waker::from(Arc::new(Notify(tx))), rx)
+    }
 
     #[derive(Debug, Eq, PartialEq)]
     enum Constraint {
@@ -1183,6 +1255,8 @@ mod tests {
         retired_outputs: usize,
         max_batch_items: usize,
         rejected_marker: Option<u32>,
+        blocked_heads: [Option<u32>; 2],
+        head_readiness: [Readiness; 2],
     }
 
     impl Encoder {
@@ -1199,6 +1273,8 @@ mod tests {
                 retired_outputs: 0,
                 max_batch_items: 2,
                 rejected_marker: None,
+                blocked_heads: [None; 2],
+                head_readiness: std::array::from_fn(|_| Readiness::default()),
             }
         }
     }
@@ -1242,9 +1318,23 @@ mod tests {
                     wait,
                 };
             }
+            for (marker, readiness) in self.blocked_heads.iter().zip(&self.head_readiness) {
+                if marker.as_ref().is_some_and(|m| head.first() == Some(m)) {
+                    return BatchSelection::Blocked {
+                        reason: Constraint::WorkspaceBusy,
+                        wait: readiness.register(),
+                    };
+                }
+            }
             let mut items = 0_usize;
             let mut tokens = 0_usize;
             for candidate in candidates {
+                if candidate
+                    .first()
+                    .is_some_and(|m| self.blocked_heads.contains(&Some(*m)))
+                {
+                    break;
+                }
                 let next = tokens.saturating_add(candidate.len());
                 if items > 0 && self.token_budget.is_some_and(|budget| next > budget) {
                     break;
@@ -1725,14 +1815,96 @@ mod tests {
     }
 
     #[test]
-    fn blocked_selection_carries_the_original_readiness_registration() {
-        struct Notify(std::sync::mpsc::Sender<()>);
-        impl std::task::Wake for Notify {
-            fn wake(self: Arc<Self>) {
-                self.0.send(()).unwrap();
-            }
+    fn executor_and_pool_bypass_share_head_priority() {
+        let pool = BytePool::new(8).shared();
+        let sibling_lease = pool.reserve(4).unwrap();
+        let mut encoder = Encoder::new();
+        encoder.blocked_heads[0] = Some(1);
+        let mut owner = BatchRuntime::new(encoder, Arc::clone(&pool), config()).unwrap();
+        let first = owner.submit(vec![1; 8]).unwrap();
+        for _ in 0..8 {
+            let peer = owner.submit(vec![2]).unwrap();
+            assert_eq!(owner.step().unwrap(), StepOutcome::Executed { results: 1 });
+            assert_eq!(owner.pop_completed().unwrap().request(), peer);
         }
+        let later = owner.submit(vec![3]).unwrap();
+        assert!(matches!(
+            owner.step().unwrap(),
+            StepOutcome::Blocked(BlockReason::Executor { .. })
+        ));
+        owner.executor_mut().blocked_heads[0] = None;
+        assert!(matches!(
+            owner.step().unwrap(),
+            StepOutcome::Blocked(BlockReason::Pool { .. })
+        ));
+        drop(sibling_lease);
+        assert_eq!(owner.step().unwrap(), StepOutcome::Executed { results: 1 });
+        assert_eq!(owner.pop_completed().unwrap().request(), first);
+        assert_eq!(owner.step().unwrap(), StepOutcome::Executed { results: 1 });
+        assert_eq!(owner.pop_completed().unwrap().request(), later);
+    }
 
+    #[test]
+    fn blocked_peer_publication_before_arming_is_preserved() {
+        for head_on_pool in [false, true] {
+            let pool = BytePool::new(8).shared();
+            let _sibling_lease = pool.reserve(4).unwrap();
+            let mut encoder = Encoder::new();
+            encoder.blocked_heads = [(!head_on_pool).then_some(1), Some(2)];
+            let mut owner = BatchRuntime::new(encoder, pool, config()).unwrap();
+            owner.submit(vec![1; 8]).unwrap();
+            let peer = owner.submit(vec![2]).unwrap();
+            let mut capacity = owner.capacity_wait();
+            let StepOutcome::Blocked(mut reason @ BlockReason::Peers { .. }) =
+                owner.step().unwrap()
+            else {
+                panic!("the head and peer wait on distinct resources");
+            };
+            owner.executor_mut().blocked_heads[1] = None;
+            owner.executor().head_readiness[1].publish();
+            let (waker, rx) = wake_channel();
+            reason.wake_on_change(&mut capacity, &waker);
+            assert_eq!(rx.try_recv(), Ok(()));
+            assert!(!capacity.changed());
+            assert_eq!(owner.step().unwrap(), StepOutcome::Executed { results: 1 });
+            assert_eq!(owner.pop_completed().unwrap().request(), peer);
+        }
+    }
+
+    #[test]
+    fn executor_block_watches_pool_release_and_closure_with_a_ready_peer() {
+        let pool = BytePool::new(8).shared();
+        let sibling_lease = pool.reserve(8).unwrap();
+        let mut encoder = Encoder::new();
+        encoder.blocked_heads[0] = Some(1);
+        let mut owner = BatchRuntime::new(encoder, Arc::clone(&pool), config()).unwrap();
+        owner.submit(vec![1]).unwrap();
+        let peer = owner.submit(vec![2]).unwrap();
+        let mut capacity = owner.capacity_wait();
+        let StepOutcome::Blocked(mut reason @ BlockReason::Executor { .. }) = owner.step().unwrap()
+        else {
+            panic!("the head is blocked and the ready peer cannot reserve");
+        };
+        let (waker, rx) = wake_channel();
+        reason.wake_on_change(&mut capacity, &waker);
+        drop(sibling_lease);
+        assert_eq!(rx.try_recv(), Ok(()));
+        drop((reason, capacity));
+        assert_eq!(owner.step().unwrap(), StepOutcome::Executed { results: 1 });
+        assert_eq!(owner.pop_completed().unwrap().request(), peer);
+        let mut capacity = owner.capacity_wait();
+        let StepOutcome::Blocked(mut reason @ BlockReason::Executor { .. }) = owner.step().unwrap()
+        else {
+            panic!("only the executor-blocked head remains");
+        };
+        pool.close();
+        reason.wake_on_change(&mut capacity, &waker);
+        assert_eq!(rx.try_recv(), Ok(()));
+        assert!(matches!(owner.step(), Err(RuntimeError::PoolClosed)));
+    }
+
+    #[test]
+    fn blocked_selection_carries_the_original_readiness_registration() {
         let mut runtime = runtime();
         runtime.submit(vec![1]).expect("first request");
         runtime.submit(vec![2]).expect("second request");
@@ -1753,8 +1925,8 @@ mod tests {
         runtime.executor_mut().busy = false;
         runtime.executor().workspace_readiness.publish();
         assert!(wait.changed());
-        let (tx, rx) = std::sync::mpsc::channel();
-        wait.wake_on_change(&std::task::Waker::from(Arc::new(Notify(tx))));
+        let (waker, rx) = wake_channel();
+        wait.wake_on_change(&waker);
         assert_eq!(rx.try_recv(), Ok(()));
         assert_eq!(
             runtime.step().expect("step after wakeup"),
