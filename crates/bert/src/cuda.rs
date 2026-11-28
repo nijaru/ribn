@@ -20,7 +20,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 
 use cudarc::cublas::sys::cublasOperation_t;
 use cudarc::cublas::{CudaBlas, Gemm, GemmConfig};
-use cudarc::driver::{CudaEvent, CudaSlice, CudaStream, result, sys};
+use cudarc::driver::{CudaContext, CudaEvent, CudaSlice, CudaStream, DeviceRepr, result, sys};
 use engine_nvidia::{CudaEncoderKernelError, CudaEncoderOps};
 use ribn_foundation::PoolLease;
 use ribn_hf::LocalModelPackage;
@@ -149,8 +149,17 @@ impl CudaBertEncoder {
     ) -> Result<Self, EncoderError> {
         host.validate(&config)?;
         let requests = EncoderPreparation::new(config, CudaEncoderOps::MAX_ATTENTION_SEQUENCE)?;
-        let ops = CudaEncoderOps::new(device_index).map_err(EncoderError::Kernels)?;
-        let stream = Arc::clone(ops.stream());
+        let context = CudaContext::new(device_index)
+            .map_err(|error| EncoderError::Driver(error.to_string()))?;
+        // SAFETY: this context handle and stream are private. All allocation,
+        // use (including cuBLAS and readback), and frees are ordered on this
+        // one stream. No buffer or stream escapes the encoder/result API.
+        // Untracked alloc has no fallible tracking-event creation after malloc.
+        unsafe { context.disable_event_tracking() };
+        let stream = context
+            .new_stream()
+            .map_err(|error| EncoderError::Driver(error.to_string()))?;
+        let ops = CudaEncoderOps::from_context(&context, Arc::clone(&stream))?;
         let blas = CudaBlas::new(Arc::clone(&stream))
             .map_err(|error| EncoderError::Driver(error.to_string()))?;
         let upload = |values: &[f32]| -> Result<CudaSlice<f32>, EncoderError> {
@@ -235,7 +244,7 @@ impl CudaBertEncoder {
 
     /// The stream every submission of this encoder runs on.
     #[must_use]
-    pub fn stream(&self) -> &Arc<CudaStream> {
+    fn stream(&self) -> &Arc<CudaStream> {
         self.prepared.ops.stream()
     }
 
@@ -299,42 +308,28 @@ impl CudaBertEncoder {
             EnqueueFailure::refused(EncoderError::InvalidRequest(constraint))
         })?;
         let stream = self.stream();
-        // Buffers released here are safe: a dropped device buffer is either freed in
-        // stream order or freed after an explicit drain, so nothing is returned to the
-        // allocator while the device can still write it. The charge is a different
-        // question, and that is what the retirement list answers.
-        let upload_tokens = |values: &[u32]| -> Result<CudaSlice<u32>, EnqueueFailure> {
-            stream
-                .clone_htod(values)
-                .map_err(|error| EnqueueFailure::refused(EncoderError::Driver(error.to_string())))
-        };
-        let mask: Vec<i32> = request.attention_mask.clone();
-        let mut submission = EncoderSubmission {
-            layer_norm_eps: self.config().layer_norm_eps,
-            prepared: Arc::clone(&self.prepared),
+        let mut workspace = PartialWorkspace::default();
+        if let Err(error) = workspace.allocate(stream, shape) {
+            return Err(if workspace.tokens.is_some() {
+                EnqueueFailure::partial(error, RequestStorage::Partial(workspace))
+            } else {
+                EnqueueFailure::refused(error)
+            });
+        }
+        let mut submission = workspace.finish(
+            Arc::clone(&self.prepared),
             shape,
-            tokens: upload_tokens(&request.token_ids)?,
-            types: upload_tokens(&request.token_type_ids)?,
-            mask: stream.clone_htod(&mask).map_err(|error| {
-                EnqueueFailure::refused(EncoderError::Driver(error.to_string()))
-            })?,
-            hidden: alloc(stream, shape.hidden_values()).map_err(EnqueueFailure::refused)?,
-            query: alloc(stream, shape.hidden_values()).map_err(EnqueueFailure::refused)?,
-            key: alloc(stream, shape.hidden_values()).map_err(EnqueueFailure::refused)?,
-            value: alloc(stream, shape.hidden_values()).map_err(EnqueueFailure::refused)?,
-            context: alloc(stream, shape.hidden_values()).map_err(EnqueueFailure::refused)?,
-            projection: alloc(stream, shape.hidden_values()).map_err(EnqueueFailure::refused)?,
-            intermediate: alloc(stream, shape.intermediate_values())
-                .map_err(EnqueueFailure::refused)?,
-            first_row: alloc(stream, shape.hidden()).map_err(EnqueueFailure::refused)?,
-            pooled: alloc(stream, shape.hidden()).map_err(EnqueueFailure::refused)?,
-            completion: None,
-            retirement: None,
-        };
-        // From here the submission is complete and owns live device state: a failure
-        // returns it so its owner can keep it until completion is proven.
-        if let Err(error) = submission.run() {
-            return Err(EnqueueFailure::partial(error, submission));
+            self.config().layer_norm_eps,
+        );
+        // Every buffer has an owner before any upload or clear can fail.
+        if let Err(error) = submission
+            .initialize(request)
+            .and_then(|()| submission.run())
+        {
+            return Err(EnqueueFailure::partial(
+                error,
+                RequestStorage::Submission(submission),
+            ));
         }
         #[cfg(test)]
         if tests::take_injected_enqueue_failure() {
@@ -343,7 +338,7 @@ impl CudaBertEncoder {
             // path itself testable on device.
             return Err(EnqueueFailure::partial(
                 EncoderError::Driver("injected post-enqueue failure".to_owned()),
-                submission,
+                RequestStorage::Submission(submission),
             ));
         }
         match stream.record_event(None) {
@@ -353,7 +348,7 @@ impl CudaBertEncoder {
             }
             Err(error) => Err(EnqueueFailure::partial(
                 EncoderError::Driver(error.to_string()),
-                submission,
+                RequestStorage::Submission(submission),
             )),
         }
     }
@@ -369,8 +364,8 @@ impl CudaBertEncoder {
         lease: Option<PoolLease>,
     ) -> EncoderError {
         let EnqueueFailure { error, storage } = failure;
-        if let Some(submission) = storage {
-            self.retirement.quarantine(*submission, lease);
+        if let Some(storage) = storage {
+            self.retirement.quarantine(*storage, lease);
             let _ = self.drain_retirement();
         }
         error
@@ -417,7 +412,7 @@ impl CudaBertEncoder {
         retirement
             .quarantined
             .iter()
-            .map(|entry| entry.submission.device_bytes())
+            .map(|entry| entry.storage.device_bytes())
             .chain(retirement.free_pending.iter().map(|entry| entry.bytes))
             .sum()
     }
@@ -458,7 +453,8 @@ impl CudaBertEncoder {
 
     #[cfg(test)]
     fn quarantine(&self, submission: EncoderSubmission, lease: Option<PoolLease>) {
-        self.retirement.quarantine(submission, lease);
+        self.retirement
+            .quarantine(RequestStorage::Submission(submission), lease);
     }
 
     fn retirement(&self) -> std::sync::MutexGuard<'_, Retirement> {
@@ -516,9 +512,9 @@ impl EncoderRetirement {
                     .synchronize()
                     .map_err(|e| EncoderError::Driver(e.to_string()))?;
                 for entry in std::mem::take(&mut retirement.quarantined) {
-                    let bytes = entry.submission.device_bytes();
+                    let bytes = entry.storage.device_bytes();
                     retirement.free_pending.push(PendingFree {
-                        pointers: entry.submission.into_device_ptrs().into_iter(),
+                        pointers: entry.storage.into_device_ptrs().into_iter(),
                         bytes,
                         lease: entry.lease,
                     });
@@ -531,7 +527,7 @@ impl EncoderRetirement {
                 .bind_to_thread()
                 .map_err(|e| EncoderError::Driver(e.to_string()))?;
             for entry in &mut retirement.free_pending {
-                for ptr in entry.pointers.by_ref() {
+                for ptr in entry.pointers.by_ref().flatten() {
                     // SAFETY: producer completion on the sole stream was confirmed
                     // before extracting these private buffers. `into_device_ptrs`
                     // consumed their slice owners. This is the only free attempt.
@@ -572,10 +568,10 @@ impl EncoderRetirement {
         Ok(drained)
     }
 
-    fn quarantine(&self, submission: EncoderSubmission, lease: Option<PoolLease>) {
+    fn quarantine(&self, storage: RequestStorage, lease: Option<PoolLease>) {
         self.state()
             .quarantined
-            .push(Quarantined { submission, lease });
+            .push(Quarantined { storage, lease });
     }
 
     fn state(&self) -> std::sync::MutexGuard<'_, Retirement> {
@@ -618,7 +614,7 @@ struct Retirement {
 struct PendingFree {
     /// The iterator consumes a pointer before its free attempt, so an ambiguous
     /// failure cannot cause a double free on retry.
-    pointers: std::array::IntoIter<sys::CUdeviceptr, 12>,
+    pointers: std::array::IntoIter<Option<sys::CUdeviceptr>, 12>,
     bytes: u64,
     lease: Option<PoolLease>,
 }
@@ -628,8 +624,29 @@ struct PendingFree {
 /// The charge is absent only on the standalone submission path, which has no shared
 /// pool to account to. Whenever a reservation exists, the two stay here together.
 struct Quarantined {
-    submission: EncoderSubmission,
+    storage: RequestStorage,
     lease: Option<PoolLease>,
+}
+
+enum RequestStorage {
+    Partial(PartialWorkspace),
+    Submission(EncoderSubmission),
+}
+
+impl RequestStorage {
+    fn device_bytes(&self) -> u64 {
+        match self {
+            Self::Partial(workspace) => workspace.device_bytes(),
+            Self::Submission(submission) => submission.device_bytes(),
+        }
+    }
+
+    fn into_device_ptrs(self) -> [Option<sys::CUdeviceptr>; 12] {
+        match self {
+            Self::Partial(workspace) => workspace.into_device_ptrs(),
+            Self::Submission(submission) => submission.into_device_ptrs().map(Some),
+        }
+    }
 }
 
 /// Why one request could not be enqueued, and what the encoder still owns.
@@ -639,11 +656,11 @@ pub(crate) struct EnqueueFailure {
     /// so its owner must keep it — with the reservation covering it — until a proven
     /// drain. Boxed because a submission owns a whole activation workspace and this
     /// travels as an error.
-    storage: Option<Box<EncoderSubmission>>,
+    storage: Option<Box<RequestStorage>>,
 }
 
 impl EnqueueFailure {
-    /// A failure that left no owned storage: validation, allocation or upload.
+    /// A failure before any request buffer was allocated.
     fn refused(error: EncoderError) -> Self {
         Self {
             error,
@@ -651,8 +668,8 @@ impl EnqueueFailure {
         }
     }
 
-    /// A failure after the request's device state existed and was already enqueued.
-    fn partial(error: EncoderError, storage: EncoderSubmission) -> Self {
+    /// A failure after allocating any request buffer.
+    fn partial(error: EncoderError, storage: RequestStorage) -> Self {
         Self {
             error,
             storage: Some(Box::new(storage)),
@@ -717,6 +734,121 @@ impl Prepared {
     }
 }
 
+/// Allocations accumulated before any upload or initialization.
+#[derive(Default)]
+struct PartialWorkspace {
+    tokens: Option<CudaSlice<u32>>,
+    types: Option<CudaSlice<u32>>,
+    mask: Option<CudaSlice<i32>>,
+    floats: [Option<CudaSlice<f32>>; 9],
+}
+
+impl PartialWorkspace {
+    fn allocate(
+        &mut self,
+        stream: &Arc<CudaStream>,
+        shape: EncoderShape,
+    ) -> Result<(), EncoderError> {
+        let seq = shape.sequence();
+        self.tokens = Some(allocate(stream, seq)?);
+        self.types = Some(allocate(stream, seq)?);
+        self.mask = Some(allocate(stream, seq)?);
+        let hidden = shape.hidden_values();
+        for (slot, len) in self.floats.iter_mut().zip([
+            hidden,
+            hidden,
+            hidden,
+            hidden,
+            hidden,
+            hidden,
+            shape.intermediate_values(),
+            shape.hidden(),
+            shape.hidden(),
+        ]) {
+            *slot = Some(allocate(stream, len)?);
+        }
+        Ok(())
+    }
+
+    fn finish(
+        self,
+        prepared: Arc<Prepared>,
+        shape: EncoderShape,
+        layer_norm_eps: f32,
+    ) -> EncoderSubmission {
+        let allocated =
+            |slot: Option<CudaSlice<f32>>| slot.expect("workspace allocation succeeded");
+        let [
+            hidden,
+            query,
+            key,
+            value,
+            context,
+            projection,
+            intermediate,
+            first_row,
+            pooled,
+        ] = self.floats.map(allocated);
+        EncoderSubmission {
+            layer_norm_eps,
+            prepared,
+            shape,
+            tokens: self.tokens.expect("workspace allocation succeeded"),
+            types: self.types.expect("workspace allocation succeeded"),
+            mask: self.mask.expect("workspace allocation succeeded"),
+            hidden,
+            query,
+            key,
+            value,
+            context,
+            projection,
+            intermediate,
+            first_row,
+            pooled,
+            completion: None,
+            retirement: None,
+        }
+    }
+
+    fn device_bytes(&self) -> u64 {
+        let ids = self.tokens.as_ref().map_or(0, CudaSlice::len)
+            + self.types.as_ref().map_or(0, CudaSlice::len)
+            + self.mask.as_ref().map_or(0, CudaSlice::len);
+        let floats: usize = self.floats.iter().flatten().map(CudaSlice::len).sum();
+        // Shape validation bounds the whole allocation, and all buffer elements
+        // (token IDs, mask and activations) are 32 bits.
+        ((ids + floats) * size_of::<u32>()) as u64
+    }
+
+    fn into_device_ptrs(self) -> [Option<sys::CUdeviceptr>; 12] {
+        let [
+            hidden,
+            query,
+            key,
+            value,
+            context,
+            projection,
+            intermediate,
+            first_row,
+            pooled,
+        ] = self.floats.map(|slot| slot.map(CudaSlice::leak));
+        [
+            self.tokens.map(CudaSlice::leak),
+            self.types.map(CudaSlice::leak),
+            self.mask.map(CudaSlice::leak),
+            hidden,
+            query,
+            key,
+            value,
+            context,
+            projection,
+            intermediate,
+            first_row,
+            pooled,
+        ]
+    }
+}
+
 /// One request's device state, owned until the submission is dropped.
 pub struct EncoderSubmission {
     layer_norm_eps: f32,
@@ -750,7 +882,7 @@ impl EncoderSubmission {
             .retirement
             .take()
             .expect("pooled output has a retirement owner");
-        owner.quarantine(self, Some(lease));
+        owner.quarantine(RequestStorage::Submission(self), Some(lease));
         let _ = owner.drain();
     }
 
@@ -872,6 +1004,40 @@ impl EncoderSubmission {
             last_hidden_state: hidden,
             pooled,
         })
+    }
+
+    fn initialize(&mut self, request: &EncoderRequest) -> Result<(), EncoderError> {
+        let stream = self.prepared.ops.stream();
+        let driver = |error: result::DriverError| EncoderError::Driver(error.to_string());
+        stream
+            .memcpy_htod(&request.token_ids, &mut self.tokens)
+            .map_err(driver)?;
+        #[cfg(test)]
+        if tests::take_injected_upload_failure() {
+            return Err(EncoderError::Driver(
+                "injected upload failure after token copy".into(),
+            ));
+        }
+        stream
+            .memcpy_htod(&request.token_type_ids, &mut self.types)
+            .map_err(driver)?;
+        stream
+            .memcpy_htod(&request.attention_mask, &mut self.mask)
+            .map_err(driver)?;
+        for buffer in [
+            &mut self.hidden,
+            &mut self.query,
+            &mut self.key,
+            &mut self.value,
+            &mut self.context,
+            &mut self.projection,
+            &mut self.intermediate,
+            &mut self.first_row,
+            &mut self.pooled,
+        ] {
+            stream.memset_zeros(buffer).map_err(driver)?;
+        }
+        Ok(())
     }
 
     /// Enqueue the whole forward pass on this encoder's stream.
@@ -1021,10 +1187,18 @@ struct DeviceWeights {
     pooler: DeviceDense,
 }
 
-fn alloc(stream: &Arc<CudaStream>, values: usize) -> Result<CudaSlice<f32>, EncoderError> {
-    stream
-        .alloc_zeros::<f32>(values)
-        .map_err(|error| EncoderError::Driver(error.to_string()))
+fn allocate<T: DeviceRepr>(
+    stream: &Arc<CudaStream>,
+    len: usize,
+) -> Result<CudaSlice<T>, EncoderError> {
+    #[cfg(test)]
+    if tests::take_injected_allocation_failure() {
+        return Err(EncoderError::Driver("injected allocation failure".into()));
+    }
+    // SAFETY: the request shape checked the full workspace size. Storage is
+    // installed in PartialWorkspace before another operation can fail and fully
+    // initialized with ordered copies or memset before being passed to a kernel.
+    unsafe { stream.alloc(len) }.map_err(|error| EncoderError::Driver(error.to_string()))
 }
 
 #[cfg(test)]
@@ -1046,6 +1220,8 @@ mod tests {
     /// Countdown of drains that are deliberately reported as unprovable.
     static INJECTED_DRAIN_FAILURES: AtomicUsize = AtomicUsize::new(0);
     static INJECTED_FREE_WAIT_FAILURES: AtomicUsize = AtomicUsize::new(0);
+    static INJECTED_ALLOCATION_FAILURE_AT: AtomicUsize = AtomicUsize::new(0);
+    static INJECTED_UPLOAD_FAILURES: AtomicUsize = AtomicUsize::new(0);
 
     pub(super) fn take_injected_enqueue_failure() -> bool {
         take(&INJECTED_ENQUEUE_FAILURES)
@@ -1057,6 +1233,18 @@ mod tests {
 
     pub(super) fn take_injected_free_wait_failure() -> bool {
         take(&INJECTED_FREE_WAIT_FAILURES)
+    }
+
+    pub(super) fn take_injected_allocation_failure() -> bool {
+        INJECTED_ALLOCATION_FAILURE_AT
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |remaining| {
+                remaining.checked_sub(1)
+            })
+            .is_ok_and(|previous| previous == 1)
+    }
+
+    pub(super) fn take_injected_upload_failure() -> bool {
+        take(&INJECTED_UPLOAD_FAILURES)
     }
 
     fn take(counter: &AtomicUsize) -> bool {
@@ -1162,6 +1350,10 @@ mod tests {
         for convert in [false, true] {
             let mut producer =
                 BatchRuntime::new(encoder(), Arc::clone(&pool), BatchConfig::default()).unwrap();
+            assert_ne!(
+                producer.executor().stream().cu_stream(),
+                peer.executor().stream().cu_stream()
+            );
             let retirement = producer.executor().retirement_handle();
             producer.submit(request.clone()).unwrap();
             assert_eq!(
@@ -1202,6 +1394,67 @@ mod tests {
             assert_eq!(retirement.drain().unwrap(), 1);
             assert!(wait.changed());
             assert_eq!(pool.granted(), 0);
+            assert_eq!(peer.step().unwrap(), StepOutcome::Executed { results: 1 });
+            drop(peer.pop_completed().unwrap());
+            assert_eq!(pool.granted(), 0);
+        }
+    }
+
+    #[test]
+    #[ignore = "requires an idle CUDA GPU; run serially with --test-threads=1"]
+    fn failed_workspace_construction_retires_every_acquired_buffer() {
+        use ribn_batch::{BatchConfig, BatchRuntime, BlockReason, RuntimeError, StepOutcome};
+
+        let request = EncoderRequest::single_segment(vec![4, 1, 9, 3]);
+        let owner = encoder();
+        let bytes = owner.request_bytes(request.sequence()).unwrap();
+        let pool = BytePool::new(bytes).shared();
+        let mut owner =
+            BatchRuntime::new(owner, Arc::clone(&pool), BatchConfig::default()).unwrap();
+        let mut peer =
+            BatchRuntime::new(encoder(), Arc::clone(&pool), BatchConfig::default()).unwrap();
+        assert_ne!(
+            owner.executor().stream().cu_stream(),
+            peer.executor().stream().cu_stream()
+        );
+
+        let id = owner.submit(request.clone()).unwrap();
+        INJECTED_ALLOCATION_FAILURE_AT.store(1, Ordering::SeqCst);
+        assert!(
+            matches!(owner.step(), Err(RuntimeError::Executor { requests, .. }) if requests == [id])
+        );
+        assert_eq!(pool.granted(), 0);
+        assert_eq!(owner.executor().quarantined_requests(), 0);
+
+        for (failed_upload, actual_bytes) in [(false, 48), (true, bytes)] {
+            let id = owner.submit(request.clone()).unwrap();
+            let wait = pool.capacity_wait();
+            if failed_upload {
+                INJECTED_UPLOAD_FAILURES.store(1, Ordering::SeqCst);
+                INJECTED_FREE_WAIT_FAILURES.store(1, Ordering::SeqCst);
+            } else {
+                // Tokens, types and mask were allocated; the fourth allocation fails.
+                INJECTED_ALLOCATION_FAILURE_AT.store(4, Ordering::SeqCst);
+                INJECTED_DRAIN_FAILURES.store(1, Ordering::SeqCst);
+            }
+            assert!(
+                matches!(owner.step(), Err(RuntimeError::Uncertain { requests, .. }) if requests == [id])
+            );
+            assert!(owner.pop_completed().is_none());
+            assert!(owner.executor().is_faulted());
+            assert_eq!(owner.executor().quarantined_requests(), 1);
+            assert_eq!(owner.executor().quarantined_bytes(), actual_bytes);
+            assert_eq!(owner.executor().quarantined_charge(), bytes);
+            assert_eq!(pool.granted(), bytes);
+            assert!(!wait.changed());
+            peer.submit(request.clone()).unwrap();
+            assert!(matches!(
+                peer.step().unwrap(),
+                StepOutcome::Blocked(BlockReason::Pool { .. })
+            ));
+            assert_eq!(owner.executor().drain_retirement().unwrap(), 1);
+            assert!(wait.changed());
+            assert!(!owner.executor().is_faulted());
             assert_eq!(peer.step().unwrap(), StepOutcome::Executed { results: 1 });
             drop(peer.pop_completed().unwrap());
             assert_eq!(pool.granted(), 0);

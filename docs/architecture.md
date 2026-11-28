@@ -390,8 +390,10 @@ waiting input bytes and waiting/result counts, and carries pool, executor, and l
 readiness. Its admission can close without affecting sibling runtimes using the same
 pool; this does not drain the executor. Pool and executor blocks permit bounded
 singleton bypass. Retryable shutdown closes BERT admission and drains its
-quarantine; device qualification and consumer-result retirement remain open in
-the [repair gates](roadmap.md#immediate-bounds-and-lifecycle-repairs).
+quarantine. BERT holds each request lease through checked retirement, including
+consumer discard and partial construction. The
+[repair gates](roadmap.md#immediate-bounds-and-lifecycle-repairs) distinguish
+this workspace accounting from a whole-device memory bound.
 
 `ribn-foundation` owns `BytePool`/`PoolLease`/`AllocationId`, shared readiness,
 parameter version labels and scalar metadata. Unused topology/materialization/placement

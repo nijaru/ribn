@@ -94,7 +94,6 @@ impl BatchExecutor for CudaBertEncoder {
                     let uncertain = !enqueued.is_empty() || failure.owns_storage();
                     let error = self.retire_failure(failure, Some(lease));
                     self.retire(enqueued);
-                    let _ = self.drain_retirement();
                     return Err(if uncertain {
                         EnqueueError::Uncertain(error)
                     } else {

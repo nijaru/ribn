@@ -226,15 +226,17 @@ into a shared retirement owner and attempts the same checked drain. This may blo
 a returned delivery slot is not a returned byte grant. The retirement owner can
 outlive the encoder; callers can keep a drain handle across result Drop to retry
 failed waits. Dropping the last owner with unresolved work retains the stream/context
-and leases for process lifetime rather than refunding them. Partial allocation/upload
-failure during submission construction is an additional
-source-traced gap: already-created buffers can drop into stream-ordered frees while
-no retained submission carries their charge. Post-enqueue qualification does not
-cover that path. The
-[consumer device gate](../benchmarks/encoder-qualification.md#cuda-shutdown-and-consumer-retirement-2026-11-28)
-qualifies delayed refund and retry after encoder shutdown, not cross-stream
-reuse. No hard cross-stream peak bound follows; safe ordering of device
-accesses alone is not physical release.
+and leases for process lifetime rather than refunding them. Request construction
+installs each successful allocation in a partial workspace before the next
+allocation. Upload and initialization start only after all buffers have owners.
+A failure with workspace storage transfers it and the full request lease to the
+same retirement owner. BERT uses one private stream per encoder: all buffer
+accesses are ordered there, so request allocation does not attempt fallible
+cross-stream tracking-event creation after acquiring a pointer. The
+[device gate](../benchmarks/encoder-qualification.md#cuda-shutdown-and-consumer-retirement-2026-11-28)
+qualifies refund and retry after encoder shutdown and partial construction, with
+sibling pool pressure on another CUDA stream. This is request-workspace
+accounting, not a hard physical peak bound for the device or its allocator.
 Locked [cudarc 0.19.9](https://github.com/coreylowman/cudarc/blob/08ae53f143b635e77df5f68f273b7e277632c449/src/driver/safe/core.rs#L1534-L1560)
 also calls `malloc_async`/`malloc_sync` before creating tracking
 events in `CudaStream::alloc`. If event creation fails, it returns without a `CudaSlice`

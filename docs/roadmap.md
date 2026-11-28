@@ -199,7 +199,8 @@ Source audits at `093cd28` and `70e5586` found gaps that passing fixtures do not
    [fixture-qualified on CUDA](../benchmarks/encoder-qualification.md#cuda-shutdown-and-consumer-retirement-2026-11-28).
    Generic completions and typed BERT results keep storage and its lease
    inseparable. Once the consumer discards the result, it can retry retirement
-   through a handle that outlives the encoder. Partial construction remains open.
+   through a handle that outlives the encoder. The same gate now covers partial
+   request allocation/upload failures and a sibling on a distinct stream.
    Queued cancellation settles before runnable
    selection even when the head is blocked on a sibling lease (host regression in
    `crates/batch/tests/cancellation.rs`); the terminal count bound still applies. The BERT
@@ -209,17 +210,16 @@ Source audits at `093cd28` and `70e5586` found gaps that passing fixtures do not
    Larger model position tables remain valid for shorter requests. Other non-AR
    bounds/readiness/shutdown work above remains open; preserve request identity/result
    ownership. This gates encoder application exposure, not the text-only server. See the [non-AR contract](resource-protocol.md#non-ar-application-lifecycle).
-3. **Physical release/accounting.** BERT partial construction still needs charge
-   ownership until safe allocator reuse or backing release. Locked
-   cudarc 0.19.9 can lose an allocation pointer if tracking-event creation fails; a drain
-   cannot release an unreachable pointer. Cudarc 0.19.10 includes a pinned-allocation
-   error cleanup change. Qualify the patch against the locked 0.19.9 path, including
-   failed construction and retirement, before editing the lockfile. NVIDIA's deferred-release acknowledgement and
-   Qwen's following logical refund must be reconciled before overlapping submissions make
-   that an ordinary path. Pinned allocation construction also needs an owner before
-   fallible tracking-event creation. Gate partial allocation/upload and genuine
-   sibling-stream pressure. No hard shared-device peak claim until these owners
-   qualify.
+3. **Physical release/accounting.** BERT's private request stream does not create
+   cudarc tracking events after allocation, and its workspace uses checked
+   retirement even on partial allocation or upload failure. This does not cover
+   prepared-model bytes, pinned staging or allocator caching. Locked cudarc 0.19.9
+   can lose an allocation pointer on tracking-event failure where tracking is
+   enabled. Qualify the 0.19.10 pinned-allocation cleanup against the locked path
+   before editing the lockfile. NVIDIA's deferred-release acknowledgement and
+   Qwen's following logical refund must be reconciled before overlapping
+   submissions make that an ordinary path. No hard shared-device peak claim until
+   these owners qualify.
 
 The 2026-10-15 audit repaired preprocessing insertion racing final-worker exit,
 removed the unused charge-dropping `Completed::into_outcome` extraction, validated all

@@ -137,8 +137,21 @@ original worst deviations.
   could not reserve the bytes until the retained retirement handle retried the
   wait successfully and published capacity readiness.
 
-The sibling test covers a shared pool, not cross-stream overlap: BERT still
-uses the default CUDA stream. The device faults are injected, not real OOMs.
+That run used the default CUDA stream, so the sibling test did not cover
+separate streams.
+
+### Partial workspace retirement
+
+The follow-up release run passed all 14 device tests with a private stream per
+encoder and the same reference deviations. It explicitly checked that producer
+and sibling used different streams. Failing the first allocation returned a
+clean refusal. Failing the fourth left three allocations (48 bytes), and
+failing after the first token upload left the full workspace. In both latter
+cases, the full request lease remained charged when a wait failed. The sibling
+was blocked until checked retirement succeeded and woke the pool waiter.
+
+These tests inject errors; they do not exercise natural CUDA OOM, concurrent
+forward-pass throughput, or a full physical-memory bound.
 
 ## Host sequence-limit repair
 
@@ -182,10 +195,9 @@ bounds, readiness and local shutdown are still required before encoder applicati
   genuinely lagging consumer, cancellation before and after enqueue, and a failed
   handoff are roadmap slice 3c; the uncertain-failure path is qualified behind fault
   injection rather than a natural device failure.
-- Half-constructed submissions are the one case the retirement list cannot hold: a
-  failure during buffer creation returns no storage, and the buffers drop. Freeing is
-  still ordered (cudarc frees in stream order or drains first), but the charge returns
-  before the device has necessarily reached that free.
+- The shared pool covers request workspace, not model weights, CUDA allocator
+  caching, or all driver allocations. Prepared-model loading and pinned staging
+  do not use the request workspace's retirement owner.
 - The whole request envelope stays charged through result retirement. Releasing
   completed temporary storage early (the activations after the last kernel) is not
   implemented, so peak pool demand is the request's full footprint rather than its
